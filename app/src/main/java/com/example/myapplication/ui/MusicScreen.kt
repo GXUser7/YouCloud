@@ -53,6 +53,7 @@ import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Shuffle
 import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.SkipPrevious
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.outlined.FavoriteBorder
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -68,11 +69,16 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import com.example.myapplication.data.SettingsRepository
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -228,6 +234,7 @@ fun MusicScreen(viewModel: MusicViewModel) {
             )
 
             AppScreen.SETTINGS -> SettingsScreen(
+                settingsRepository = viewModel.settingsRepository,
                 currentClientId = clientId,
                 defaultClientId = viewModel.defaultClientId,
                 currentOauthToken = oauthToken,
@@ -456,6 +463,7 @@ private fun HomeScreen(
 
 @Composable
 private fun SettingsScreen(
+    settingsRepository: SettingsRepository,
     currentClientId: String,
     defaultClientId: String,
     currentOauthToken: String,
@@ -630,6 +638,16 @@ private fun SettingsScreen(
                 }
             }
         }
+
+        item {
+            val eqEnabled by settingsRepository.equalizerEnabled.collectAsState()
+            val eqPreset by settingsRepository.equalizerPreset.collectAsState()
+            EqualizerCard(
+                settingsRepository = settingsRepository,
+                eqEnabled = eqEnabled,
+                eqPreset = eqPreset
+            )
+        }
     }
 }
 
@@ -646,6 +664,12 @@ private fun SearchScreen(
     onPlayTrack: (SoundCloudTrack) -> Unit,
     onFavoriteClick: (SoundCloudTrack) -> Unit
 ) {
+    val focusRequester = remember { FocusRequester() }
+    LaunchedEffect(Unit) {
+        kotlinx.coroutines.delay(100)
+        focusRequester.requestFocus()
+    }
+
     LazyColumn(
         modifier = Modifier
             .fillMaxSize()
@@ -658,7 +682,7 @@ private fun SearchScreen(
         }
 
         item {
-            SearchField(query = query, onQueryChange = onQueryChange)
+            SearchField(query = query, onQueryChange = onQueryChange, focusRequester = focusRequester)
         }
 
         // Removed LinearProgressIndicator to prevent layout jumping
@@ -803,11 +827,13 @@ private fun SearchLaunchCard(onClick: () -> Unit) {
 }
 
 @Composable
-private fun SearchField(query: String, onQueryChange: (String) -> Unit) {
+private fun SearchField(query: String, onQueryChange: (String) -> Unit, focusRequester: FocusRequester) {
     OutlinedTextField(
         value = query,
         onValueChange = onQueryChange,
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier
+            .fillMaxWidth()
+            .focusRequester(focusRequester),
         singleLine = true,
         shape = RoundedCornerShape(30.dp),
         placeholder = { Text("Найти трек") },
@@ -1463,6 +1489,23 @@ private fun TrackDetailScreen(
                         horizontalArrangement = Arrangement.spacedBy(10.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
+                        track.permalinkUrl?.let { url ->
+                            val context = LocalContext.current
+                            FilledTonalIconButton(
+                                onClick = {
+                                    val sendIntent = Intent().apply {
+                                        action = Intent.ACTION_SEND
+                                        putExtra(Intent.EXTRA_TEXT, url)
+                                        type = "text/plain"
+                                    }
+                                    val shareIntent = Intent.createChooser(sendIntent, null)
+                                    context.startActivity(shareIntent)
+                                },
+                                modifier = Modifier.size(52.dp)
+                            ) {
+                                Icon(Icons.Default.Share, contentDescription = "Поделиться")
+                            }
+                        }
                         DownloadBadge(downloadState ?: DownloadState.NONE)
                         if (favoriteTrack?.downloadState == DownloadState.DOWNLOADED) {
                             FilledTonalIconButton(
@@ -1941,6 +1984,169 @@ private fun ClientIdWarningCard(onOpenSettings: () -> Unit) {
                     text = "Нажмите, чтобы открыть настройки и ввести рабочий ключ, иначе поиск и воспроизведение работать не будут.",
                     style = MaterialTheme.typography.bodyMedium
                 )
+            }
+        }
+    }
+}
+
+@Composable
+private fun EqualizerPresetChip(
+    text: String,
+    selected: Boolean,
+    onClick: () -> Unit
+) {
+    Surface(
+        onClick = onClick,
+        color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+        contentColor = if (selected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant,
+        shape = RoundedCornerShape(16.dp),
+        modifier = Modifier.padding(end = 8.dp)
+    ) {
+        Text(
+            text = text,
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+            style = MaterialTheme.typography.labelLarge,
+            fontWeight = FontWeight.Bold
+        )
+    }
+}
+
+@Composable
+private fun EqualizerCard(
+    settingsRepository: SettingsRepository,
+    eqEnabled: Boolean,
+    eqPreset: String
+) {
+    val eqInfo = remember { settingsRepository.getEqualizerInfo() }
+    var bandLevels by remember(eqPreset) {
+        mutableStateOf(
+            (0 until eqInfo.numBands).map { band ->
+                settingsRepository.getBandLevel(band)
+            }
+        )
+    }
+
+    ElevatedCard(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(32.dp)
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column {
+                    Text(
+                        text = "Эквалайзер",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Text(
+                        text = "Настройка звуковых частот",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Switch(
+                    checked = eqEnabled,
+                    onCheckedChange = { settingsRepository.setEqualizerEnabled(it) }
+                )
+            }
+
+            if (eqEnabled) {
+                Spacer(modifier = Modifier.height(8.dp))
+                
+                Text(
+                    text = "Пресеты",
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.Bold
+                )
+                LazyRow(
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    val presetList = listOf("Flat", "Bass Boost", "Rock", "Pop", "Classical", "Jazz", "Vocal")
+                    items(presetList) { preset ->
+                        val isSelected = eqPreset == preset
+                        EqualizerPresetChip(
+                            text = preset,
+                            selected = isSelected,
+                            onClick = {
+                                settingsRepository.setEqualizerPreset(preset)
+                                val presetBands = when (preset) {
+                                    "Bass Boost" -> listOf(600, 400, 0, 0, 0)
+                                    "Rock" -> listOf(500, 300, -300, 200, 500)
+                                    "Pop" -> listOf(-200, -100, 300, 200, -200)
+                                    "Classical" -> listOf(500, 300, -200, 400, 400)
+                                    "Jazz" -> listOf(400, 200, -200, 200, 500)
+                                    "Vocal" -> listOf(-200, 0, 500, 400, 0)
+                                    else -> listOf(0, 0, 0, 0, 0) // Flat
+                                }
+                                for (i in 0 until eqInfo.numBands) {
+                                    val level = presetBands.getOrNull(i) ?: 0
+                                    settingsRepository.setBandLevel(i, level)
+                                }
+                                bandLevels = (0 until eqInfo.numBands).map { band ->
+                                    settingsRepository.getBandLevel(band)
+                                }
+                            }
+                        )
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(8.dp))
+
+                Text(
+                    text = "Полосы частот",
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.Bold
+                )
+                
+                for (i in 0 until eqInfo.numBands) {
+                    val frequency = eqInfo.frequencies.getOrNull(i) ?: 0
+                    val currentLevel = bandLevels.getOrNull(i) ?: 0
+                    
+                    val minVal = eqInfo.minLevel.toFloat()
+                    val maxVal = eqInfo.maxLevel.toFloat()
+
+                    Column {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = if (frequency >= 1000) "${frequency / 1000} kHz" else "$frequency Hz",
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                            Text(
+                                text = "${currentLevel / 100} dB",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.primary,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                        Slider(
+                            value = currentLevel.toFloat(),
+                            onValueChange = { newValue ->
+                                val levelInt = newValue.toInt()
+                                settingsRepository.setBandLevel(i, levelInt)
+                                if (eqPreset != "Custom") {
+                                    settingsRepository.setEqualizerPreset("Custom")
+                                }
+                                bandLevels = bandLevels.toMutableList().apply {
+                                    this[i] = levelInt
+                                }
+                            },
+                            valueRange = minVal..maxVal,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
+                }
             }
         }
     }

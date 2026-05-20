@@ -43,7 +43,7 @@ class MusicViewModel(
     private val favoritesRepository: FavoritesRepository,
     @get:androidx.media3.common.util.UnstableApi
     private val offlineMusicStore: OfflineMusicStore,
-    private val settingsRepository: SettingsRepository
+    val settingsRepository: SettingsRepository
 ) : ViewModel() {
 
     private val service = SoundCloudApi.createService(settingsRepository::oauthTokenValue)
@@ -467,6 +467,14 @@ class MusicViewModel(
                     }
                 }
                 favoritesRepository.remove(track.id)
+                val userIdValue = settingsRepository.userIdValue()
+                if (userIdValue.isNotBlank() && settingsRepository.oauthTokenValue().isNotBlank()) {
+                    try {
+                        service.unlikeTrack(userIdValue, track.id, settingsRepository.clientId.value)
+                    } catch (e: Exception) {
+                        Log.e("MusicViewModel", "Failed to unlike track on SoundCloud", e)
+                    }
+                }
                 return@launch
             }
 

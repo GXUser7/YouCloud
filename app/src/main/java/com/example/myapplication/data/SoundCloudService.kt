@@ -57,4 +57,11 @@ interface SoundCloudService {
         @retrofit2.http.Path("track_id") trackId: Long,
         @retrofit2.http.Query("client_id") clientId: String
     ): retrofit2.Response<Unit>
+
+    @retrofit2.http.DELETE("users/{user_id}/track_likes/{track_id}")
+    suspend fun unlikeTrack(
+        @retrofit2.http.Path("user_id") userId: String,
+        @retrofit2.http.Path("track_id") trackId: Long,
+        @retrofit2.http.Query("client_id") clientId: String
+    ): retrofit2.Response<Unit>
 }
