@@ -17,6 +17,10 @@ fun localProperty(name: String): String =
         ?: localProperties.getProperty(name)
         ?: ""
 
+kotlin {
+    jvmToolchain(21)
+}
+
 android {
     namespace = "com.example.myapplication"
     compileSdk = 35
