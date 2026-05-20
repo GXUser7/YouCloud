@@ -217,7 +217,7 @@ class MusicViewModel(
             try {
                 val tracks = mixesRepository.loadMixTracks(mix, clientId.value)
                 if (_selectedMix.value?.id == mix.id) {
-                    _mixTracks.value = tracks
+                    _mixTracks.value = tracks.filter { isPlayableMixTrack(it) }
                 }
             } catch (e: Exception) {
                 if (_selectedMix.value?.id == mix.id) {
@@ -320,9 +320,7 @@ class MusicViewModel(
                 query = query,
                 clientId = settingsRepository.clientId.value
             )
-            _tracks.value = results.collection.filter {
-                it.kind == "track" && it.streamable == true
-            }
+            _tracks.value = results.collection.filter { isPlayableMixTrack(it) }
         } catch (e: Exception) {
             _tracks.value = emptyList()
             _errorMessage.value = readableMessage(e)
@@ -668,7 +666,10 @@ class MusicViewModel(
         track.kind == "track" &&
             track.streamable == true &&
             track.policy != "BLOCK" &&
-            track.policy != "SNIP"
+            track.policy != "SNIP" &&
+            track.policy != "SNIPPET" &&
+            track.policy != "PREVIEW" &&
+            track.media?.transcodings?.isNotEmpty() == true
 
     private fun readableMessage(error: Exception): String = when (error) {
         is HttpException -> when (error.code()) {

@@ -1357,6 +1357,7 @@ private fun TrackDetailScreen(
     }
     val haptic = LocalHapticFeedback.current
     var lastVibratedRatio by remember { mutableStateOf(0f) }
+    var sliderProgress by remember { mutableStateOf<Float?>(null) }
 
     Surface(
         modifier = Modifier.fillMaxSize(),
@@ -1485,14 +1486,14 @@ private fun TrackDetailScreen(
 
                 Spacer(modifier = Modifier.weight(1f))
 
-                Slider(
-                    value = if (durationMs > 0) {
+                 Slider(
+                    value = sliderProgress ?: if (durationMs > 0) {
                         positionMs.coerceIn(0L, durationMs).toFloat() / durationMs.toFloat()
                     } else {
                         0f
                     },
                     onValueChange = { ratio ->
-                        onSeek((ratio * durationMs).toLong())
+                        sliderProgress = ratio
                         if (kotlin.math.abs(ratio - lastVibratedRatio) >= 0.02f) {
                             try {
                                 if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
@@ -1506,6 +1507,12 @@ private fun TrackDetailScreen(
                             }
                             lastVibratedRatio = ratio
                         }
+                    },
+                    onValueChangeFinished = {
+                        sliderProgress?.let { ratio ->
+                            onSeek((ratio * durationMs).toLong())
+                        }
+                        sliderProgress = null
                     },
                     modifier = Modifier.padding(vertical = 8.dp)
                 )
