@@ -625,35 +625,43 @@ private fun DownloadsScreen(
         }
     }
 
-    LazyColumn(
+    Column(
         modifier = Modifier
             .fillMaxSize()
-            .statusBarsPadding(),
-        contentPadding = PaddingValues(start = 16.dp, top = 12.dp, end = 16.dp, bottom = 120.dp),
-        verticalArrangement = Arrangement.spacedBy(14.dp)
+            .statusBarsPadding()
     ) {
-        item {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 8.dp)
+        ) {
             TopBar(title = "Скачанные", onBack = onBack)
         }
 
-        item {
-            FolderHero(
-                count = tracks.size,
-                artworkUri = folderArtworkUri,
-                onChangeArtwork = { imagePicker.launch(arrayOf("image/*")) }
-            )
-        }
-
-        if (tracks.isEmpty()) {
-            item { EmptyState("Здесь появятся треки, которые ты сохранишь на устройство.") }
-        } else {
-            items(tracks, key = { "downloaded-${it.id}" }) { track ->
-                DownloadedTrackCard(
-                    track = track,
-                    isSelected = track.id == currentTrackId,
-                    onClick = { onPlayTrack(track) },
-                    onDeleteDownload = { onDeleteDownload(track) }
+        LazyColumn(
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(start = 16.dp, top = 4.dp, end = 16.dp, bottom = 120.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp)
+        ) {
+            item {
+                FolderHero(
+                    count = tracks.size,
+                    artworkUri = folderArtworkUri,
+                    onChangeArtwork = { imagePicker.launch(arrayOf("image/*")) }
                 )
+            }
+
+            if (tracks.isEmpty()) {
+                item { EmptyState("Здесь появятся треки, которые ты сохранишь на устройство.") }
+            } else {
+                items(tracks, key = { "downloaded-${it.id}" }) { track ->
+                    DownloadedTrackCard(
+                        track = track,
+                        isSelected = track.id == currentTrackId,
+                        onClick = { onPlayTrack(track) },
+                        onDeleteDownload = { onDeleteDownload(track) }
+                    )
+                }
             }
         }
     }
