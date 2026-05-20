@@ -41,8 +41,8 @@ private val LightColorScheme = lightColorScheme(
 @Composable
 fun MyApplicationTheme(
     darkTheme: Boolean = isSystemInDarkTheme(),
-    // На Pixel и других Android 12+ устройствах берём палитру из обоев.
-    dynamicColor: Boolean = true,
+    // Использовать ли палитру обоев (Material You) или нашу кастомную
+    dynamicColor: Boolean = false,
     content: @Composable () -> Unit
 ) {
     val colorScheme = when {
