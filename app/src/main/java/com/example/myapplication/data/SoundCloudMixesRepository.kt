@@ -162,4 +162,8 @@ class SoundCloudMixesRepository(
         tracks.orEmpty().filter { track ->
             track.kind == "track" && track.title.isNotBlank()
         }
+
+    fun clearCache() {
+        prefs.edit().clear().apply()
+    }
 }

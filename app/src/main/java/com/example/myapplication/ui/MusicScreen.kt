@@ -120,6 +120,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import kotlinx.coroutines.launch
 import android.content.Context
 import android.widget.FrameLayout
+import android.widget.Toast
 import android.view.ViewGroup
 
 @Composable
@@ -259,6 +260,10 @@ fun MusicScreen(viewModel: MusicViewModel) {
                     onRelogin = {
                         haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                         viewModel.logout()
+                    },
+                    onClearCache = {
+                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                        viewModel.refreshMixesAndStations()
                     }
                 )
 
@@ -478,7 +483,8 @@ private fun HomeScreen(
 private fun SettingsScreen(
     settingsRepository: SettingsRepository,
     onBack: () -> Unit,
-    onRelogin: () -> Unit
+    onRelogin: () -> Unit,
+    onClearCache: () -> Unit
 ) {
     LazyColumn(
         modifier = Modifier
@@ -522,6 +528,47 @@ private fun SettingsScreen(
                         )
                     ) {
                         Text("Войти заново", color = Color.White, fontWeight = FontWeight.Bold)
+                    }
+                }
+            }
+        }
+
+        item {
+            val context = LocalContext.current
+            ElevatedCard(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(32.dp)
+            ) {
+                Column(
+                    modifier = Modifier.padding(24.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Text(
+                        text = "Данные и кэш",
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Text(
+                        text = "Сброс локального кэша миксов и станций. Это принудительно обновит списки треков из SoundCloud.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        textAlign = TextAlign.Center
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Button(
+                        onClick = {
+                            onClearCache()
+                            Toast.makeText(context, "Кэш миксов и станций успешно очищен", Toast.LENGTH_SHORT).show()
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(16.dp),
+                        colors = androidx.compose.material3.ButtonDefaults.buttonColors(
+                            containerColor = MaterialTheme.colorScheme.primaryContainer,
+                            contentColor = MaterialTheme.colorScheme.onPrimaryContainer
+                        )
+                    ) {
+                        Text("Сбросить кэш и обновить", fontWeight = FontWeight.Bold)
                     }
                 }
             }

@@ -203,6 +203,13 @@ class MusicViewModel(
         }
     }
 
+    fun refreshMixesAndStations() {
+        mixesRepository.clearCache()
+        _mixSection.value = null
+        _stationSection.value = null
+        loadMixes()
+    }
+
     fun openMix(mix: SoundCloudMix) {
         _selectedMix.value = mix
         _screen.value = AppScreen.MIX_DETAIL
