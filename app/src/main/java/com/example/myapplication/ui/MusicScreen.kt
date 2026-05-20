@@ -105,10 +105,27 @@ import com.example.myapplication.data.MixSection
 import com.example.myapplication.data.SoundCloudMix
 import com.example.myapplication.data.SoundCloudTrack
 import kotlin.math.max
+import android.webkit.CookieManager
+import android.webkit.WebResourceRequest
+import android.webkit.WebResourceResponse
+import android.webkit.WebView
+import android.webkit.WebViewClient
+import android.webkit.WebChromeClient
+import android.os.Message
+import androidx.compose.ui.viewinterop.AndroidView
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.animation.core.Animatable
+import androidx.compose.runtime.rememberCoroutineScope
+import kotlinx.coroutines.launch
+import android.content.Context
+import android.widget.FrameLayout
+import android.view.ViewGroup
 
 @Composable
 fun MusicScreen(viewModel: MusicViewModel) {
     val haptic = LocalHapticFeedback.current
+    val isLoggedOut by viewModel.isLoggedOut.collectAsState(initial = true)
     val tracks by viewModel.tracks.collectAsState()
     val searchQuery by viewModel.searchQuery.collectAsState()
     val isLoading by viewModel.isLoading.collectAsState()
@@ -137,15 +154,15 @@ fun MusicScreen(viewModel: MusicViewModel) {
 
     val downloadedTracks = favorites.filter { it.downloadState == DownloadState.DOWNLOADED }
 
-    BackHandler(enabled = selectedTrack != null) {
+    BackHandler(enabled = selectedTrack != null && !isLoggedOut) {
         viewModel.closeTrack()
     }
 
-    BackHandler(enabled = selectedMix != null && selectedTrack == null) {
+    BackHandler(enabled = selectedMix != null && selectedTrack == null && !isLoggedOut) {
         viewModel.closeMix()
     }
 
-    BackHandler(enabled = selectedTrack == null && selectedMix == null && screen != AppScreen.HOME) {
+    BackHandler(enabled = selectedTrack == null && selectedMix == null && screen != AppScreen.HOME && !isLoggedOut) {
         when (screen) {
             AppScreen.SEARCH -> viewModel.closeSearch()
             AppScreen.DOWNLOADS -> viewModel.closeDownloads()
@@ -158,202 +175,198 @@ fun MusicScreen(viewModel: MusicViewModel) {
     Box(modifier = Modifier.fillMaxSize()) {
         ExpressiveBackground()
 
-        when (screen) {
-            AppScreen.HOME -> HomeScreen(
-                downloadedTracks = downloadedTracks,
-                downloadedFolderArtworkUri = downloadedFolderArtworkUri,
-                mixSection = mixSection,
-                stationSection = stationSection,
-                mixesLoading = mixesLoading,
-                loadingMixId = loadingMixId,
-                hasOauthToken = oauthToken.isNotBlank(),
-                mixesError = if (screen == AppScreen.HOME) errorMessage else null,
-                clientId = clientId,
-                onOpenSearch = {
-                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                    viewModel.openSearch()
-                },
-                onOpenDownloads = {
-                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                    viewModel.openDownloads()
-                },
-                onOpenSettings = {
-                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                    viewModel.openSettings()
-                },
-                onPlayMix = { mix ->
-                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                    viewModel.playMix(mix)
-                },
-                onOpenMix = { mix ->
-                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                    viewModel.openMix(mix)
-                },
-                onReloadMixes = viewModel::loadMixes
-            )
+        if (isLoggedOut) {
+            SoundCloudLoginScreen(viewModel = viewModel)
+        } else {
+            when (screen) {
+                AppScreen.HOME -> HomeScreen(
+                    downloadedTracks = downloadedTracks,
+                    downloadedFolderArtworkUri = downloadedFolderArtworkUri,
+                    mixSection = mixSection,
+                    stationSection = stationSection,
+                    mixesLoading = mixesLoading,
+                    loadingMixId = loadingMixId,
+                    hasOauthToken = oauthToken.isNotBlank(),
+                    mixesError = if (screen == AppScreen.HOME) errorMessage else null,
+                    clientId = clientId,
+                    onOpenSearch = {
+                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                        viewModel.openSearch()
+                    },
+                    onOpenDownloads = {
+                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                        viewModel.openDownloads()
+                    },
+                    onOpenSettings = {
+                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                        viewModel.openSettings()
+                    },
+                    onPlayMix = { mix ->
+                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                        viewModel.playMix(mix)
+                    },
+                    onOpenMix = { mix ->
+                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                        viewModel.openMix(mix)
+                    },
+                    onReloadMixes = viewModel::loadMixes
+                )
 
-            AppScreen.SEARCH -> SearchScreen(
-                query = searchQuery,
-                tracks = tracks,
-                favorites = favorites,
-                currentTrackId = currentTrackId,
-                isLoading = isLoading,
-                errorMessage = errorMessage,
-                onBack = {
-                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                    viewModel.closeSearch()
-                },
-                onQueryChange = viewModel::onSearchQueryChange,
-                onPlayTrack = { track ->
-                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                    viewModel.playTrack(track)
-                },
-                onFavoriteClick = { track ->
-                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                    viewModel.toggleFavorite(track)
-                }
-            )
-
-            AppScreen.DOWNLOADS -> DownloadsScreen(
-                tracks = downloadedTracks,
-                folderArtworkUri = downloadedFolderArtworkUri,
-                currentTrackId = currentTrackId,
-                onBack = {
-                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                    viewModel.closeDownloads()
-                },
-                onChangeArtwork = viewModel::updateDownloadedFolderArtworkUri,
-                onPlayTrack = { track ->
-                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                    viewModel.playFavorite(track)
-                },
-                onDeleteDownload = { track ->
-                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                    viewModel.deleteDownloadedTrack(track)
-                }
-            )
-
-            AppScreen.SETTINGS -> SettingsScreen(
-                settingsRepository = viewModel.settingsRepository,
-                currentClientId = clientId,
-                defaultClientId = viewModel.defaultClientId,
-                currentOauthToken = oauthToken,
-                defaultOauthToken = viewModel.defaultOauthToken,
-                currentUserId = userId,
-                defaultUserId = viewModel.defaultUserId,
-                onBack = viewModel::closeSettings,
-                onSaveClientId = viewModel::saveClientId,
-                onResetClientId = viewModel::resetClientId,
-                onSaveOauthToken = viewModel::saveOauthToken,
-                onResetOauthToken = viewModel::resetOauthToken,
-                onSaveUserId = viewModel::saveUserId,
-                onResetUserId = viewModel::resetUserId
-            )
-
-            AppScreen.MIX_DETAIL -> Unit // Handled by selectedMix visibility
-        }
-
-        AnimatedVisibility(
-            visible = selectedMix != null && selectedTrack == null,
-            enter = slideInVertically(initialOffsetY = { it }) + fadeIn(),
-            exit = slideOutVertically(targetOffsetY = { it }) + fadeOut()
-        ) {
-            selectedMix?.let { mix ->
-                MixDetailScreen(
-                    mix = mix,
-                    tracks = mixTracks,
-                    currentTrackId = currentTrackId,
+                AppScreen.SEARCH -> SearchScreen(
+                    query = searchQuery,
+                    tracks = tracks,
                     favorites = favorites,
+                    currentTrackId = currentTrackId,
+                    isLoading = isLoading,
+                    errorMessage = errorMessage,
                     onBack = {
                         haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                        viewModel.closeMix()
+                        viewModel.closeSearch()
                     },
+                    onQueryChange = viewModel::onSearchQueryChange,
                     onPlayTrack = { track ->
                         haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                        viewModel.playMixTrack(track)
+                        viewModel.playTrack(track)
                     },
                     onFavoriteClick = { track ->
                         haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                         viewModel.toggleFavorite(track)
                     }
                 )
-            }
-        }
 
-        AnimatedVisibility(
-            visible = currentTrackTitle != null && selectedTrack == null,
-            enter = slideInVertically(initialOffsetY = { it }) + fadeIn(),
-            exit = slideOutVertically(targetOffsetY = { it }) + fadeOut(),
-            modifier = Modifier
-                .align(Alignment.BottomCenter)
-                .padding(16.dp)
-                .navigationBarsPadding()
-        ) {
-            PlayerBar(
-                title = currentTrackTitle.orEmpty(),
-                isPlaying = isPlaying,
-                onTogglePlay = {
-                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                    viewModel.togglePlayPause()
-                },
-                onOpen = {
-                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                    currentPlayingTrack?.let(viewModel::openTrack)
-                }
-            )
-        }
-
-        AnimatedVisibility(
-            visible = selectedTrack != null,
-            enter = slideInVertically(initialOffsetY = { it }) + fadeIn(),
-            exit = slideOutVertically(targetOffsetY = { it }) + fadeOut()
-        ) {
-            selectedTrack?.let { track ->
-                val favorite = favorites.firstOrNull { it.id == track.id }
-                TrackDetailScreen(
-                    track = track,
-                    isFavorite = favorite != null,
-                    favoriteTrack = favorite,
-                    downloadState = favorite?.downloadState,
-                    isPlaying = isPlaying,
-                    repeatMode = repeatMode,
-                    shuffleEnabled = shuffleEnabled,
-                    positionMs = playbackPositionMs,
-                    durationMs = max(playbackDurationMs, track.duration),
+                AppScreen.DOWNLOADS -> DownloadsScreen(
+                    tracks = downloadedTracks,
+                    folderArtworkUri = downloadedFolderArtworkUri,
+                    currentTrackId = currentTrackId,
                     onBack = {
                         haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                        viewModel.closeTrack()
+                        viewModel.closeDownloads()
                     },
+                    onChangeArtwork = viewModel::updateDownloadedFolderArtworkUri,
+                    onPlayTrack = { track ->
+                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                        viewModel.playFavorite(track)
+                    },
+                    onDeleteDownload = { track ->
+                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                        viewModel.deleteDownloadedTrack(track)
+                    }
+                )
+
+                AppScreen.SETTINGS -> SettingsScreen(
+                    settingsRepository = viewModel.settingsRepository,
+                    onBack = viewModel::closeSettings,
+                    onRelogin = {
+                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                        viewModel.logout()
+                    }
+                )
+
+                AppScreen.MIX_DETAIL -> Unit // Handled by selectedMix visibility
+            }
+
+            AnimatedVisibility(
+                visible = selectedMix != null && selectedTrack == null,
+                enter = slideInVertically(initialOffsetY = { it }) + fadeIn(),
+                exit = slideOutVertically(targetOffsetY = { it }) + fadeOut()
+            ) {
+                selectedMix?.let { mix ->
+                    MixDetailScreen(
+                        mix = mix,
+                        tracks = mixTracks,
+                        currentTrackId = currentTrackId,
+                        favorites = favorites,
+                        onBack = {
+                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                            viewModel.closeMix()
+                        },
+                        onPlayTrack = { track ->
+                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                            viewModel.playMixTrack(track)
+                        },
+                        onFavoriteClick = { track ->
+                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                            viewModel.toggleFavorite(track)
+                        }
+                    )
+                }
+            }
+
+            AnimatedVisibility(
+                visible = currentTrackTitle != null && selectedTrack == null,
+                enter = slideInVertically(initialOffsetY = { it }) + fadeIn(),
+                exit = slideOutVertically(targetOffsetY = { it }) + fadeOut(),
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(16.dp)
+                    .navigationBarsPadding()
+            ) {
+                PlayerBar(
+                    title = currentTrackTitle.orEmpty(),
+                    isPlaying = isPlaying,
                     onTogglePlay = {
                         haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                         viewModel.togglePlayPause()
                     },
-                    onSeek = viewModel::seekTo,
-                    onFavoriteClick = {
+                    onOpen = {
                         haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                        viewModel.toggleFavorite(track)
-                    },
-                    onPrevious = {
-                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                        viewModel.skipPrevious()
-                    },
-                    onNext = {
-                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                        viewModel.skipNext()
-                    },
-                    onRepeat = {
-                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                        viewModel.cycleRepeatMode()
-                    },
-                    onShuffle = {
-                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                        viewModel.toggleShuffle()
-                    },
-                    onDeleteDownload = { fav ->
-                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                        viewModel.deleteDownloadedTrack(fav)
+                        currentPlayingTrack?.let(viewModel::openTrack)
                     }
                 )
+            }
+
+            AnimatedVisibility(
+                visible = selectedTrack != null,
+                enter = slideInVertically(initialOffsetY = { it }) + fadeIn(),
+                exit = slideOutVertically(targetOffsetY = { it }) + fadeOut()
+            ) {
+                selectedTrack?.let { track ->
+                    val favorite = favorites.firstOrNull { it.id == track.id }
+                    TrackDetailScreen(
+                        track = track,
+                        isFavorite = favorite != null,
+                        favoriteTrack = favorite,
+                        downloadState = favorite?.downloadState,
+                        isPlaying = isPlaying,
+                        repeatMode = repeatMode,
+                        shuffleEnabled = shuffleEnabled,
+                        positionMs = playbackPositionMs,
+                        durationMs = max(playbackDurationMs, track.duration),
+                        onBack = {
+                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                            viewModel.closeTrack()
+                        },
+                        onTogglePlay = {
+                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                            viewModel.togglePlayPause()
+                        },
+                        onSeek = viewModel::seekTo,
+                        onFavoriteClick = {
+                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                            viewModel.toggleFavorite(track)
+                        },
+                        onPrevious = {
+                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                            viewModel.skipPrevious()
+                        },
+                        onNext = {
+                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                            viewModel.skipNext()
+                        },
+                        onRepeat = {
+                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                            viewModel.cycleRepeatMode()
+                        },
+                        onShuffle = {
+                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                            viewModel.toggleShuffle()
+                        },
+                        onDeleteDownload = { fav ->
+                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                            viewModel.deleteDownloadedTrack(fav)
+                        }
+                    )
+                }
             }
         }
     }
@@ -464,24 +477,9 @@ private fun HomeScreen(
 @Composable
 private fun SettingsScreen(
     settingsRepository: SettingsRepository,
-    currentClientId: String,
-    defaultClientId: String,
-    currentOauthToken: String,
-    defaultOauthToken: String,
-    currentUserId: String,
-    defaultUserId: String,
     onBack: () -> Unit,
-    onSaveClientId: (String) -> Unit,
-    onResetClientId: () -> Unit,
-    onSaveOauthToken: (String) -> Unit,
-    onResetOauthToken: () -> Unit,
-    onSaveUserId: (String) -> Unit,
-    onResetUserId: () -> Unit
+    onRelogin: () -> Unit
 ) {
-    var draftClientId by remember(currentClientId) { mutableStateOf(currentClientId) }
-    var draftOauthToken by remember(currentOauthToken) { mutableStateOf(currentOauthToken) }
-    var draftUserId by remember(currentUserId) { mutableStateOf(currentUserId) }
-
     LazyColumn(
         modifier = Modifier
             .fillMaxSize()
@@ -499,141 +497,31 @@ private fun SettingsScreen(
                 shape = RoundedCornerShape(32.dp)
             ) {
                 Column(
-                    modifier = Modifier.padding(16.dp),
-                    verticalArrangement = Arrangement.spacedBy(14.dp)
+                    modifier = Modifier.padding(24.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
                 ) {
                     Text(
-                        text = "SoundCloud client_id",
-                        style = MaterialTheme.typography.titleMedium,
+                        text = "Аккаунт SoundCloud",
+                        style = MaterialTheme.typography.titleLarge,
                         fontWeight = FontWeight.Bold
                     )
                     Text(
-                        text = "Если текущий ключ перестанет работать, сюда можно вставить новый без пересборки приложения.",
+                        text = "Вы вошли в систему. Если у вас возникли проблемы со стримингом или вы хотите сменить аккаунт, вы можете войти заново.",
                         style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        textAlign = TextAlign.Center
                     )
-                    OutlinedTextField(
-                        value = draftClientId,
-                        onValueChange = { draftClientId = it },
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Button(
+                        onClick = onRelogin,
                         modifier = Modifier.fillMaxWidth(),
-                        singleLine = true,
-                        shape = RoundedCornerShape(22.dp),
-                        label = { Text("client_id") }
-                    )
-                    Text(
-                        text = "Исходный: $defaultClientId",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                        Button(onClick = { onSaveClientId(draftClientId) }) {
-                            Text("Сохранить")
-                        }
-                        FilledTonalIconButton(
-                            onClick = {
-                                draftClientId = defaultClientId
-                                onResetClientId()
-                            }
-                        ) {
-                            Icon(Icons.Default.Repeat, contentDescription = null)
-                        }
-                    }
-                }
-            }
-        }
-
-        item {
-            ElevatedCard(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(32.dp)
-            ) {
-                Column(
-                    modifier = Modifier.padding(16.dp),
-                    verticalArrangement = Arrangement.spacedBy(14.dp)
-                ) {
-                    Text(
-                        text = "SoundCloud OAuth",
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold
-                    )
-                    Text(
-                        text = "Нужен для подборки your-moods и миксов Mixed for you. Вставь значение из заголовка Authorization без префикса OAuth.",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    OutlinedTextField(
-                        value = draftOauthToken,
-                        onValueChange = { draftOauthToken = it },
-                        modifier = Modifier.fillMaxWidth(),
-                        singleLine = false,
-                        minLines = 2,
-                        maxLines = 4,
-                        shape = RoundedCornerShape(22.dp),
-                        label = { Text("OAuth token") }
-                    )
-                    if (defaultOauthToken.isNotBlank()) {
-                        Text(
-                            text = "Из local.properties уже подставлен токен по умолчанию.",
-                            style = MaterialTheme.typography.labelMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        shape = RoundedCornerShape(16.dp),
+                        colors = androidx.compose.material3.ButtonDefaults.buttonColors(
+                            containerColor = Color(0xFFFF5500)
                         )
-                    }
-                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                        Button(onClick = { onSaveOauthToken(draftOauthToken) }) {
-                            Text("Сохранить")
-                        }
-                        FilledTonalIconButton(
-                            onClick = {
-                                draftOauthToken = defaultOauthToken
-                                onResetOauthToken()
-                            }
-                        ) {
-                            Icon(Icons.Default.Repeat, contentDescription = null)
-                        }
-                    }
-                }
-            }
-        }
-
-        item {
-            ElevatedCard(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(32.dp)
-            ) {
-                Column(
-                    modifier = Modifier.padding(16.dp),
-                    verticalArrangement = Arrangement.spacedBy(14.dp)
-                ) {
-                    Text(
-                        text = "SoundCloud User ID",
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold
-                    )
-                    Text(
-                        text = "Нужен для лайков треков. Вставь свой ID пользователя.",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    OutlinedTextField(
-                        value = draftUserId,
-                        onValueChange = { draftUserId = it },
-                        modifier = Modifier.fillMaxWidth(),
-                        singleLine = true,
-                        shape = RoundedCornerShape(22.dp),
-                        label = { Text("User ID") }
-                    )
-                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                        Button(onClick = { onSaveUserId(draftUserId) }) {
-                            Text("Сохранить")
-                        }
-                        FilledTonalIconButton(
-                            onClick = {
-                                draftUserId = defaultUserId
-                                onResetUserId()
-                            }
-                        ) {
-                            Icon(Icons.Default.Repeat, contentDescription = null)
-                        }
+                    ) {
+                        Text("Войти заново", color = Color.White, fontWeight = FontWeight.Bold)
                     }
                 }
             }
@@ -1449,6 +1337,19 @@ private fun TrackDetailScreen(
     onShuffle: () -> Unit,
     onDeleteDownload: (FavoriteTrack) -> Unit
 ) {
+    val context = LocalContext.current
+    val vibrator = remember {
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
+            val vibratorManager = context.getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as? android.os.VibratorManager
+            vibratorManager?.defaultVibrator
+        } else {
+            @Suppress("DEPRECATION")
+            context.getSystemService(Context.VIBRATOR_SERVICE) as? android.os.Vibrator
+        }
+    }
+    val haptic = LocalHapticFeedback.current
+    var lastVibratedRatio by remember { mutableStateOf(0f) }
+
     Surface(
         modifier = Modifier.fillMaxSize(),
         color = MaterialTheme.colorScheme.surface
@@ -1489,23 +1390,6 @@ private fun TrackDetailScreen(
                         horizontalArrangement = Arrangement.spacedBy(10.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        track.permalinkUrl?.let { url ->
-                            val context = LocalContext.current
-                            FilledTonalIconButton(
-                                onClick = {
-                                    val sendIntent = Intent().apply {
-                                        action = Intent.ACTION_SEND
-                                        putExtra(Intent.EXTRA_TEXT, url)
-                                        type = "text/plain"
-                                    }
-                                    val shareIntent = Intent.createChooser(sendIntent, null)
-                                    context.startActivity(shareIntent)
-                                },
-                                modifier = Modifier.size(52.dp)
-                            ) {
-                                Icon(Icons.Default.Share, contentDescription = "Поделиться")
-                            }
-                        }
                         DownloadBadge(downloadState ?: DownloadState.NONE)
                         if (favoriteTrack?.downloadState == DownloadState.DOWNLOADED) {
                             FilledTonalIconButton(
@@ -1525,11 +1409,50 @@ private fun TrackDetailScreen(
                     animationSpec = spring(stiffness = Spring.StiffnessLow),
                     label = "artworkScale"
                 )
+                val artworkPressedScale = remember { Animatable(1f) }
+                val coroutineScope = rememberCoroutineScope()
                 
-                Box(modifier = Modifier.graphicsLayer {
-                    scaleX = artworkScale
-                    scaleY = artworkScale
-                }) {
+                Box(
+                    modifier = Modifier
+                        .graphicsLayer {
+                            scaleX = artworkScale * artworkPressedScale.value
+                            scaleY = artworkScale * artworkPressedScale.value
+                        }
+                        .pointerInput(track.permalinkUrl) {
+                            detectTapGestures(
+                                onLongPress = {
+                                    track.permalinkUrl?.let { url ->
+                                        // 1. Heavy vibration click
+                                        try {
+                                            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
+                                                vibrator?.vibrate(android.os.VibrationEffect.createPredefined(android.os.VibrationEffect.EFFECT_HEAVY_CLICK))
+                                            } else {
+                                                @Suppress("DEPRECATION")
+                                                vibrator?.vibrate(80)
+                                            }
+                                        } catch (e: Exception) {
+                                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                        }
+
+                                        // 2. Visual spring pulse animation
+                                        coroutineScope.launch {
+                                            artworkPressedScale.animateTo(1.12f, animationSpec = tween(150))
+                                            artworkPressedScale.animateTo(1f, animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy))
+
+                                            // 3. Native share intent
+                                            val sendIntent = Intent().apply {
+                                                action = Intent.ACTION_SEND
+                                                putExtra(Intent.EXTRA_TEXT, url)
+                                                type = "text/plain"
+                                            }
+                                            val shareIntent = Intent.createChooser(sendIntent, null)
+                                            context.startActivity(shareIntent)
+                                        }
+                                    }
+                                }
+                            )
+                        }
+                ) {
                     TrackArtwork(track.artworkUrl, size = 320.dp)
                 }
                 
@@ -1560,7 +1483,22 @@ private fun TrackDetailScreen(
                     } else {
                         0f
                     },
-                    onValueChange = { ratio -> onSeek((ratio * durationMs).toLong()) },
+                    onValueChange = { ratio ->
+                        onSeek((ratio * durationMs).toLong())
+                        if (kotlin.math.abs(ratio - lastVibratedRatio) >= 0.02f) {
+                            try {
+                                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
+                                    vibrator?.vibrate(android.os.VibrationEffect.createPredefined(android.os.VibrationEffect.EFFECT_TICK))
+                                } else {
+                                    @Suppress("DEPRECATION")
+                                    vibrator?.vibrate(10)
+                                }
+                            } catch (e: Exception) {
+                                // fallback
+                            }
+                            lastVibratedRatio = ratio
+                        }
+                    },
                     modifier = Modifier.padding(vertical = 8.dp)
                 )
                 Row(
@@ -2151,3 +2089,257 @@ private fun EqualizerCard(
         }
     }
 }
+
+@Composable
+fun SoundCloudLoginScreen(
+    viewModel: MusicViewModel,
+    modifier: Modifier = Modifier
+) {
+    val isLoggingIn by viewModel.isLoggingIn.collectAsState()
+    val loginError by viewModel.loginError.collectAsState()
+    var isWebViewLoading by remember { mutableStateOf(true) }
+    val context = LocalContext.current
+
+    Box(
+        modifier = modifier
+            .fillMaxSize()
+            .background(MaterialTheme.colorScheme.background)
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .statusBarsPadding()
+                .navigationBarsPadding()
+        ) {
+            // Header
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(24.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Text(
+                    text = "SoundCloud",
+                    style = MaterialTheme.typography.headlineLarge.copy(
+                        fontWeight = FontWeight.Black,
+                        color = Color(0xFFFF5500)
+                    )
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+                Text(
+                    text = "Войдите в свой аккаунт, чтобы настроить приложение",
+                    style = MaterialTheme.typography.bodyLarge,
+                    textAlign = TextAlign.Center,
+                    color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.7f)
+                )
+                if (loginError != null) {
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text(
+                        text = loginError!!,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.error,
+                        fontWeight = FontWeight.Bold,
+                        textAlign = TextAlign.Center
+                    )
+                }
+            }
+
+            // WebView Container
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(topStart = 32.dp, topEnd = 32.dp))
+                    .background(Color.White)
+            ) {
+                AndroidView(
+                    factory = { ctx ->
+                        val container = FrameLayout(ctx).apply {
+                            layoutParams = ViewGroup.LayoutParams(
+                                ViewGroup.LayoutParams.MATCH_PARENT,
+                                ViewGroup.LayoutParams.MATCH_PARENT
+                            )
+                        }
+
+                        val mainWebView = WebView(ctx)
+                        mainWebView.apply {
+                            layoutParams = FrameLayout.LayoutParams(
+                                FrameLayout.LayoutParams.MATCH_PARENT,
+                                FrameLayout.LayoutParams.MATCH_PARENT
+                            )
+                            settings.apply {
+                                javaScriptEnabled = true
+                                domStorageEnabled = true
+                                databaseEnabled = true
+                                setSupportMultipleWindows(true)
+                                javaScriptCanOpenWindowsAutomatically = true
+                                userAgentString = "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Mobile Safari/537.36"
+                            }
+                            
+                            // Clear cookies, cache, and history to ensure clean login
+                            CookieManager.getInstance().removeAllCookies(null)
+                            CookieManager.getInstance().flush()
+                            clearCache(true)
+                            clearHistory()
+
+                            var popupWebView: WebView? = null
+
+                            webChromeClient = object : WebChromeClient() {
+                                override fun onCreateWindow(
+                                    view: WebView?,
+                                    isDialog: Boolean,
+                                    isUserGesture: Boolean,
+                                    resultMsg: Message?
+                                ): Boolean {
+                                    popupWebView?.let { container.removeView(it) }
+
+                                    val newWebView = WebView(ctx).apply {
+                                        layoutParams = FrameLayout.LayoutParams(
+                                            FrameLayout.LayoutParams.MATCH_PARENT,
+                                            FrameLayout.LayoutParams.MATCH_PARENT
+                                        )
+                                        settings.apply {
+                                            javaScriptEnabled = true
+                                            domStorageEnabled = true
+                                            setSupportMultipleWindows(true)
+                                            javaScriptCanOpenWindowsAutomatically = true
+                                            userAgentString = mainWebView.settings.userAgentString
+                                        }
+                                        
+                                        webChromeClient = object : WebChromeClient() {
+                                            override fun onCloseWindow(window: WebView?) {
+                                                container.removeView(window)
+                                                popupWebView = null
+                                            }
+                                        }
+                                        
+                                        webViewClient = object : WebViewClient() {
+                                            override fun onPageStarted(view: WebView?, url: String?, favicon: android.graphics.Bitmap?) {
+                                                super.onPageStarted(view, url, favicon)
+                                                isWebViewLoading = true
+                                            }
+
+                                            override fun onPageFinished(view: WebView?, url: String?) {
+                                                super.onPageFinished(view, url)
+                                                isWebViewLoading = false
+                                            }
+
+                                            override fun shouldInterceptRequest(
+                                                view: WebView?,
+                                                request: WebResourceRequest?
+                                            ): WebResourceResponse? {
+                                                if (request != null) {
+                                                    val url = request.url
+                                                    val clientId = url.getQueryParameter("client_id")
+                                                    val headers = request.requestHeaders
+                                                    val authHeader = headers["Authorization"] ?: headers["authorization"]
+
+                                                    if (!clientId.isNullOrBlank() && !authHeader.isNullOrBlank() && authHeader.startsWith("OAuth ", ignoreCase = true)) {
+                                                        val token = authHeader.removePrefix("OAuth ").trim()
+                                                        if (token.isNotEmpty()) {
+                                                            post {
+                                                                viewModel.onCredentialsCaptured(clientId, token)
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                                return super.shouldInterceptRequest(view, request)
+                                            }
+                                        }
+                                    }
+
+                                    popupWebView = newWebView
+                                    container.addView(newWebView)
+
+                                    val transport = resultMsg?.obj as? WebView.WebViewTransport
+                                    transport?.webView = newWebView
+                                    resultMsg?.sendToTarget()
+                                    return true
+                                }
+
+                                override fun onCloseWindow(window: WebView?) {
+                                    container.removeView(window)
+                                    if (window == popupWebView) {
+                                        popupWebView = null
+                                    }
+                                }
+                            }
+
+                            webViewClient = object : WebViewClient() {
+                                override fun onPageStarted(view: WebView?, url: String?, favicon: android.graphics.Bitmap?) {
+                                    super.onPageStarted(view, url, favicon)
+                                    isWebViewLoading = true
+                                }
+
+                                override fun onPageFinished(view: WebView?, url: String?) {
+                                    super.onPageFinished(view, url)
+                                    isWebViewLoading = false
+                                }
+
+                                override fun shouldInterceptRequest(
+                                    view: WebView?,
+                                    request: WebResourceRequest?
+                                ): WebResourceResponse? {
+                                    if (request != null) {
+                                        val url = request.url
+                                        val clientId = url.getQueryParameter("client_id")
+                                        val headers = request.requestHeaders
+                                        val authHeader = headers["Authorization"] ?: headers["authorization"]
+
+                                        if (!clientId.isNullOrBlank() && !authHeader.isNullOrBlank() && authHeader.startsWith("OAuth ", ignoreCase = true)) {
+                                            val token = authHeader.removePrefix("OAuth ").trim()
+                                            if (token.isNotEmpty()) {
+                                                post {
+                                                    viewModel.onCredentialsCaptured(clientId, token)
+                                                }
+                                            }
+                                        }
+                                    }
+                                    return super.shouldInterceptRequest(view, request)
+                                }
+                            }
+                            loadUrl("https://soundcloud.com/signin")
+                        }
+
+                        container.addView(mainWebView)
+                        container
+                    },
+                    modifier = Modifier.fillMaxSize()
+                )
+
+                if (isWebViewLoading) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .background(Color.White),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        CircularProgressIndicator(color = Color(0xFFFF5500))
+                    }
+                }
+            }
+        }
+
+        // Authentication Overlay
+        if (isLoggingIn) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color.Black.copy(alpha = 0.7f)),
+                contentAlignment = Alignment.Center
+            ) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    CircularProgressIndicator(color = Color(0xFFFF5500))
+                    Spacer(modifier = Modifier.height(16.dp))
+                    Text(
+                        text = "Авторизация в SoundCloud...",
+                        color = Color.White,
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+            }
+        }
+    }
+}
+

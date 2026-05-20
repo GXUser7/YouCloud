@@ -64,4 +64,9 @@ interface SoundCloudService {
         @retrofit2.http.Path("track_id") trackId: Long,
         @retrofit2.http.Query("client_id") clientId: String
     ): retrofit2.Response<Unit>
+
+    @retrofit2.http.GET("me")
+    suspend fun getMe(
+        @retrofit2.http.Query("client_id") clientId: String
+    ): SoundCloudMeResponse
 }

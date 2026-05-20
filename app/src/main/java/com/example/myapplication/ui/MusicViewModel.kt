@@ -15,6 +15,7 @@ import com.example.myapplication.data.SoundCloudMix
 import com.example.myapplication.data.SoundCloudMixesRepository
 import com.example.myapplication.data.SoundCloudPlaybackResolver
 import com.example.myapplication.data.SoundCloudTrack
+import com.example.myapplication.data.SoundCloudMeResponse
 import com.example.myapplication.player.MusicPlayer
 import com.example.myapplication.player.MusicPlayer.QueueTrack
 import java.io.IOException
@@ -78,6 +79,20 @@ class MusicViewModel(
     val userId = settingsRepository.userId
     val defaultUserId = settingsRepository.defaultUserId
 
+    private val _isLoggingIn = MutableStateFlow(false)
+    val isLoggingIn = _isLoggingIn.asStateFlow()
+
+    private val _loginError = MutableStateFlow<String?>(null)
+    val loginError = _loginError.asStateFlow()
+
+    val isLoggedOut = combine(
+        settingsRepository.clientId,
+        settingsRepository.oauthToken,
+        settingsRepository.userId
+    ) { cId, token, uId ->
+        cId.isBlank() || token.isBlank() || uId.isBlank()
+    }
+
     private val _mixSection = MutableStateFlow<MixSection?>(null)
     val mixSection = _mixSection.asStateFlow()
 
@@ -125,10 +140,13 @@ class MusicViewModel(
                     _selectedTrack.value = track
                 }
 
-                // Lazy resolve current and next track
+                // Lazy resolve current track
                 resolveTrackIfNeeded(trackIndex)
-                if (trackIndex + 1 < activeQueue.size) {
-                    resolveTrackIfNeeded(trackIndex + 1)
+                
+                // Lazy resolve the next track in the queue (respects shuffle!)
+                val nextIndex = musicPlayer.getNextMediaItemIndex()
+                if (nextIndex != -1 && nextIndex < activeQueue.size) {
+                    resolveTrackIfNeeded(nextIndex)
                 }
             }
         }
@@ -136,10 +154,11 @@ class MusicViewModel(
         viewModelScope.launch {
             combine(
                 settingsRepository.clientId,
-                settingsRepository.oauthToken
-            ) { clientId, oauthToken -> clientId to oauthToken }
-                .collectLatest { (_, oauthToken) ->
-                    if (oauthToken.isBlank()) {
+                settingsRepository.oauthToken,
+                settingsRepository.userId
+            ) { clientId, oauthToken, userId -> Triple(clientId, oauthToken, userId) }
+                .collectLatest { (clientId, oauthToken, userId) ->
+                    if (clientId.isBlank() || oauthToken.isBlank() || userId.isBlank()) {
                         _mixSection.value = null
                         _stationSection.value = null
                     } else {
@@ -243,12 +262,23 @@ class MusicViewModel(
 
                 activeQueue = tracks
                 resolvedUrls.clear()
+
+                // Pre-resolve the first track in the mix before playing to prevent instant failure / skip loop
+                val firstTrack = tracks.firstOrNull()
+                if (firstTrack != null) {
+                    val resolvedUrl = favoritesRepository.get(firstTrack.id)?.streamUrl
+                        ?: playbackResolver.resolve(firstTrack, clientId)
+                        ?: ""
+                    if (resolvedUrl.isNotEmpty()) {
+                        resolvedUrls[firstTrack.id] = resolvedUrl
+                    }
+                }
                 
-                // Play immediately with stubs
-                val stubs = tracks.map { it.toQueueTrack("") }
+                // Play immediately with first track resolved and others as stubs
+                val stubs = tracks.map { t ->
+                    t.toQueueTrack(resolvedUrls[t.id] ?: "")
+                }
                 musicPlayer.playQueue(stubs, 0)
-                
-                // Resolution will be triggered by currentTrackId observer in init
             } catch (e: Exception) {
                 Log.e("MusicViewModel", "playMix error", e)
                 _errorMessage.value = readableMessage(e)
@@ -321,11 +351,23 @@ class MusicViewModel(
                 activeQueue = playableTracks
                 resolvedUrls.clear()
 
-                // Play immediately with stubs
-                val stubs = playableTracks.map { it.toQueueTrack("") }
+                // Pre-resolve the clicked track before starting playback to avoid instant failure / skip loop
+                val startTrack = playableTracks.getOrNull(startIndex)
+                if (startTrack != null) {
+                    val clientIdValue = settingsRepository.clientId.value
+                    val resolvedUrl = favoritesRepository.get(startTrack.id)?.streamUrl
+                        ?: playbackResolver.resolve(startTrack, clientIdValue)
+                        ?: ""
+                    if (resolvedUrl.isNotEmpty()) {
+                        resolvedUrls[startTrack.id] = resolvedUrl
+                    }
+                }
+
+                // Play immediately with starting track resolved and others as stubs
+                val stubs = playableTracks.map { t ->
+                    t.toQueueTrack(resolvedUrls[t.id] ?: "")
+                }
                 musicPlayer.playQueue(stubs, startIndex)
-                
-                // Resolution will be triggered by currentTrackId observer in init
             } catch (e: Exception) {
                 Log.e("MusicViewModel", "playMixTrack error", e)
                 _errorMessage.value = readableMessage(e)
@@ -577,6 +619,43 @@ class MusicViewModel(
             } catch (e: Exception) {
                 _errorMessage.value = "Не удалось удалить локальную копию трека."
             }
+        }
+    }
+
+    fun onCredentialsCaptured(capturedClientId: String, capturedOauthToken: String) {
+        if (_isLoggingIn.value) return
+        _isLoggingIn.value = true
+        _loginError.value = null
+
+        viewModelScope.launch {
+            try {
+                // Fetch user ID using the captured credentials
+                val tempService = SoundCloudApi.createService { capturedOauthToken }
+                val meResponse = tempService.getMe(capturedClientId)
+                val userIdString = meResponse.id.toString()
+
+                // Save credentials to settings
+                settingsRepository.saveClientId(capturedClientId)
+                settingsRepository.saveOauthToken(capturedOauthToken)
+                settingsRepository.saveUserId(userIdString)
+
+                _isLoggingIn.value = false
+            } catch (e: Exception) {
+                Log.e("MusicViewModel", "Failed to login with captured credentials", e)
+                _loginError.value = "Ошибка при получении профиля SoundCloud. Попробуйте еще раз."
+                _isLoggingIn.value = false
+            }
+        }
+    }
+
+    fun logout() {
+        viewModelScope.launch {
+            settingsRepository.resetClientId()
+            settingsRepository.resetOauthToken()
+            settingsRepository.resetUserId()
+            _tracks.value = emptyList()
+            _mixSection.value = null
+            _stationSection.value = null
         }
     }
 

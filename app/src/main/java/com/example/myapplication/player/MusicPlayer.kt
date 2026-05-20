@@ -148,6 +148,10 @@ class MusicPlayer(context: Context) {
         _shuffleEnabled.value = enabled
     }
 
+    fun getNextMediaItemIndex(): Int {
+        return controller?.nextMediaItemIndex ?: -1
+    }
+
     fun release() {
         scope.cancel()
         controller?.removeListener(playerListener)

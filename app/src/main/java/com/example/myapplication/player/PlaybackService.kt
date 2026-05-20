@@ -11,6 +11,9 @@ import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.session.MediaSession
 import androidx.media3.session.MediaSessionService
+import android.app.PendingIntent
+import android.content.Intent
+import com.example.myapplication.MainActivity
 import com.example.myapplication.data.OfflineMusicStore
 
 class PlaybackService : MediaSessionService() {
@@ -63,13 +66,25 @@ class PlaybackService : MediaSessionService() {
 
         player.addListener(object : Player.Listener {
             override fun onAudioSessionIdChanged(audioSessionId: Int) {
-                if (audioSessionId != C.AUDIO_SESSION_ID_UNSPECIFIED) {
+                if (audioSessionId != C.AUDIO_SESSION_ID_UNSET) {
                     initEqualizer(audioSessionId)
                 }
             }
         })
 
-        mediaSession = MediaSession.Builder(this, player).build()
+        val intent = Intent(this, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_SINGLE_TOP
+        }
+        val pendingIntent = PendingIntent.getActivity(
+            this,
+            0,
+            intent,
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        )
+
+        mediaSession = MediaSession.Builder(this, player)
+            .setSessionActivity(pendingIntent)
+            .build()
     }
 
     private fun initEqualizer(audioSessionId: Int) {

@@ -45,3 +45,8 @@ data class SoundCloudFormat(
 data class SoundCloudStreamResponse(
     val url: String?
 )
+
+data class SoundCloudMeResponse(
+    val id: Long
+)
+
