@@ -35,7 +35,10 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -54,6 +57,7 @@ import androidx.compose.material.icons.filled.Shuffle
 import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.SkipPrevious
 import androidx.compose.material.icons.filled.Share
+import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material.icons.outlined.FavoriteBorder
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -104,6 +108,20 @@ import com.example.myapplication.data.FavoriteTrack
 import com.example.myapplication.data.MixSection
 import com.example.myapplication.data.SoundCloudMix
 import com.example.myapplication.data.SoundCloudTrack
+import com.example.myapplication.data.Playlist
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.PlaylistAdd
+import androidx.compose.material.icons.filled.QueueMusic
 import kotlin.math.max
 import android.webkit.CookieManager
 import android.webkit.WebResourceRequest
@@ -152,6 +170,11 @@ fun MusicScreen(viewModel: MusicViewModel) {
     val playbackDurationMs by viewModel.playbackDurationMs.collectAsState()
     val screen by viewModel.screen.collectAsState()
     val userId by viewModel.userId.collectAsState()
+    val playlists by viewModel.playlists.collectAsState(initial = emptyList())
+    val selectedPlaylist by viewModel.selectedPlaylist.collectAsState()
+    val isClientIdExpired by viewModel.isClientIdExpired.collectAsState()
+    val homeSelectedTab by viewModel.homeSelectedTab.collectAsState()
+    var showTrackActionsDialog by remember { mutableStateOf(false) }
 
     val downloadedTracks = favorites.filter { it.downloadState == DownloadState.DOWNLOADED }
 
@@ -169,6 +192,7 @@ fun MusicScreen(viewModel: MusicViewModel) {
             AppScreen.DOWNLOADS -> viewModel.closeDownloads()
             AppScreen.SETTINGS -> viewModel.closeSettings()
             AppScreen.MIX_DETAIL -> viewModel.closeMix()
+            AppScreen.PLAYLIST_DETAIL -> viewModel.closePlaylist()
             AppScreen.HOME -> Unit
         }
     }
@@ -190,6 +214,11 @@ fun MusicScreen(viewModel: MusicViewModel) {
                     hasOauthToken = oauthToken.isNotBlank(),
                     mixesError = if (screen == AppScreen.HOME) errorMessage else null,
                     clientId = clientId,
+                    playlists = playlists,
+                    isClientIdExpired = isClientIdExpired,
+                    onAutoRefreshClientId = viewModel::tryAutoRefreshClientId,
+                    selectedTab = homeSelectedTab,
+                    onTabSelected = viewModel::setHomeSelectedTab,
                     onOpenSearch = {
                         haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                         viewModel.openSearch()
@@ -210,7 +239,10 @@ fun MusicScreen(viewModel: MusicViewModel) {
                         haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                         viewModel.openMix(mix)
                     },
-                    onReloadMixes = viewModel::loadMixes
+                    onReloadMixes = viewModel::loadMixes,
+                    onCreatePlaylist = viewModel::createPlaylist,
+                    onDeletePlaylist = viewModel::deletePlaylist,
+                    onOpenPlaylist = viewModel::openPlaylist
                 )
 
                 AppScreen.SEARCH -> SearchScreen(
@@ -251,7 +283,8 @@ fun MusicScreen(viewModel: MusicViewModel) {
                     onDeleteDownload = { track ->
                         haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                         viewModel.deleteDownloadedTrack(track)
-                    }
+                    },
+                    onImportTracks = viewModel::importLocalTracks
                 )
 
                 AppScreen.SETTINGS -> SettingsScreen(
@@ -266,6 +299,30 @@ fun MusicScreen(viewModel: MusicViewModel) {
                         viewModel.refreshMixesAndStations()
                     }
                 )
+
+                AppScreen.PLAYLIST_DETAIL -> {
+                    selectedPlaylist?.let { playlist ->
+                        PlaylistDetailScreen(
+                            playlist = playlist,
+                            currentTrackId = currentTrackId,
+                            onBack = {
+                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                viewModel.closePlaylist()
+                            },
+                            onPlayTrack = { track ->
+                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                viewModel.playPlaylistTrack(playlist, track)
+                            },
+                            onRemoveTrack = { track ->
+                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                viewModel.removeTrackFromPlaylist(playlist.id, track.id)
+                            },
+                            onChangeArtwork = { uri ->
+                                viewModel.updatePlaylistArtwork(playlist.id, uri)
+                            }
+                        )
+                    }
+                }
 
                 AppScreen.MIX_DETAIL -> Unit // Handled by selectedMix visibility
             }
@@ -369,11 +426,40 @@ fun MusicScreen(viewModel: MusicViewModel) {
                         onDeleteDownload = { fav ->
                             haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                             viewModel.deleteDownloadedTrack(fav)
+                        },
+                        onLongPressCover = {
+                            showTrackActionsDialog = true
                         }
                     )
                 }
             }
         }
+    }
+
+    val context = LocalContext.current
+    if (showTrackActionsDialog && selectedTrack != null) {
+        TrackActionsDialog(
+            track = selectedTrack!!,
+            playlists = playlists,
+            onDismiss = { showTrackActionsDialog = false },
+            onAddToPlaylist = { playlist ->
+                viewModel.addTrackToPlaylist(playlist.id, selectedTrack!!)
+            },
+            onCreatePlaylist = { name ->
+                viewModel.createPlaylist(name)
+            },
+            onShare = {
+                selectedTrack?.permalinkUrl?.let { url ->
+                    val sendIntent = Intent().apply {
+                        action = Intent.ACTION_SEND
+                        putExtra(Intent.EXTRA_TEXT, url)
+                        type = "text/plain"
+                    }
+                    val shareIntent = Intent.createChooser(sendIntent, null)
+                    context.startActivity(shareIntent)
+                }
+            }
+        )
     }
 }
 
@@ -388,21 +474,50 @@ private fun HomeScreen(
     hasOauthToken: Boolean,
     mixesError: String?,
     clientId: String,
+    playlists: List<Playlist>,
+    isClientIdExpired: Boolean,
+    onAutoRefreshClientId: () -> Unit,
+    selectedTab: Int,
+    onTabSelected: (Int) -> Unit,
     onOpenSearch: () -> Unit,
     onOpenDownloads: () -> Unit,
     onOpenSettings: () -> Unit,
     onPlayMix: (SoundCloudMix) -> Unit,
     onOpenMix: (SoundCloudMix) -> Unit,
-    onReloadMixes: () -> Unit
+    onReloadMixes: () -> Unit,
+    onCreatePlaylist: (String) -> Unit,
+    onDeletePlaylist: (String) -> Unit,
+    onOpenPlaylist: (Playlist) -> Unit
 ) {
-    LazyColumn(
+    var showCreatePlaylistDialog by remember { mutableStateOf(false) }
+    var playlistNameInput by remember { mutableStateOf("") }
+    val haptic = LocalHapticFeedback.current
+
+    val pagerState = rememberPagerState(initialPage = selectedTab) { 2 }
+
+    LaunchedEffect(selectedTab) {
+        if (pagerState.currentPage != selectedTab) {
+            pagerState.animateScrollToPage(selectedTab)
+        }
+    }
+
+    LaunchedEffect(pagerState.currentPage) {
+        if (pagerState.currentPage != selectedTab) {
+            onTabSelected(pagerState.currentPage)
+        }
+    }
+
+    Column(
         modifier = Modifier
             .fillMaxSize()
-            .statusBarsPadding(),
-        contentPadding = PaddingValues(start = 16.dp, top = 20.dp, end = 16.dp, bottom = 120.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp)
+            .statusBarsPadding()
     ) {
-        item {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 8.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp)
+        ) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -415,67 +530,171 @@ private fun HomeScreen(
                         letterSpacing = (-2).sp
                     )
                 )
-                FilledTonalIconButton(
-                    onClick = onOpenSettings,
-                    modifier = Modifier.size(52.dp),
-                    shape = RoundedCornerShape(16.dp)
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Icon(Icons.Default.Settings, contentDescription = null, modifier = Modifier.size(28.dp))
+                    FilledTonalIconButton(
+                        onClick = onOpenSettings,
+                        modifier = Modifier.size(52.dp),
+                        shape = RoundedCornerShape(16.dp)
+                    ) {
+                        Icon(Icons.Default.Settings, contentDescription = null, modifier = Modifier.size(28.dp))
+                    }
+                }
+            }
+
+            if (clientId.isBlank()) {
+                ClientIdWarningCard(onOpenSettings = onOpenSettings)
+            } else if (isClientIdExpired) {
+                ClientIdExpiredWarningCard(onOpenSettings = onOpenSettings, onAutoRefresh = onAutoRefreshClientId)
+            }
+
+            SearchLaunchCard(onClick = onOpenSearch)
+
+            SegmentedControl(
+                items = listOf("Миксы", "Плейлисты"),
+                selectedIndex = pagerState.currentPage,
+                onSelectedIndexChanged = { index ->
+                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                    onTabSelected(index)
+                }
+            )
+        }
+
+        Spacer(modifier = Modifier.height(8.dp))
+
+        HorizontalPager(
+            state = pagerState,
+            modifier = Modifier
+                .fillMaxWidth()
+                .weight(1f)
+        ) { page ->
+            if (page == 0) {
+                LazyColumn(
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(start = 16.dp, top = 8.dp, end = 16.dp, bottom = 120.dp),
+                    verticalArrangement = Arrangement.spacedBy(16.dp)
+                ) {
+                    item {
+                        MixesSection(
+                            mixSection = mixSection,
+                            isLoading = mixesLoading,
+                            loadingMixId = loadingMixId,
+                            hasOauthToken = hasOauthToken,
+                            errorMessage = mixesError,
+                            onPlayMix = onPlayMix,
+                            onOpenMix = onOpenMix,
+                            onReload = onReloadMixes,
+                            onOpenSettings = onOpenSettings
+                        )
+                    }
+
+                    if (stationSection != null) {
+                        item {
+                            MixesSection(
+                                mixSection = stationSection,
+                                isLoading = mixesLoading,
+                                loadingMixId = loadingMixId,
+                                hasOauthToken = hasOauthToken,
+                                errorMessage = null,
+                                onPlayMix = onPlayMix,
+                                onOpenMix = onOpenMix,
+                                onReload = {},
+                                onOpenSettings = onOpenSettings
+                            )
+                        }
+                    }
+                }
+            } else {
+                LazyColumn(
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(start = 16.dp, top = 8.dp, end = 16.dp, bottom = 120.dp),
+                    verticalArrangement = Arrangement.spacedBy(16.dp)
+                ) {
+                    item {
+                        DownloadedFolderCard(
+                            count = downloadedTracks.size,
+                            artworkUri = downloadedFolderArtworkUri,
+                            onClick = onOpenDownloads
+                        )
+                    }
+
+                    item {
+                        Row(
+                            modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = "Плейлисты",
+                                style = MaterialTheme.typography.titleLarge,
+                                fontWeight = FontWeight.ExtraBold
+                            )
+                            IconButton(
+                                onClick = {
+                                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                    showCreatePlaylistDialog = true
+                                }
+                            ) {
+                                Icon(
+                                    Icons.Default.Add,
+                                    contentDescription = "Создать плейлист",
+                                    tint = MaterialTheme.colorScheme.primary
+                                )
+                            }
+                        }
+                    }
+
+                    if (playlists.isEmpty()) {
+                        item {
+                            EmptyState("Создайте свой первый плейлист, нажав кнопку выше.")
+                        }
+                    } else {
+                        items(playlists, key = { "playlist-${it.id}" }) { playlist ->
+                            PlaylistCard(
+                                playlist = playlist,
+                                onClick = { onOpenPlaylist(playlist) },
+                                onDelete = { onDeletePlaylist(playlist.id) }
+                            )
+                        }
+                    }
                 }
             }
         }
+    }
 
-        if (clientId.isBlank()) {
-            item {
-                ClientIdWarningCard(onOpenSettings = onOpenSettings)
-            }
-        }
-
-        item {
-            SearchLaunchCard(onClick = onOpenSearch)
-        }
-
-        item {
-            DownloadedFolderCard(
-                count = downloadedTracks.size,
-                artworkUri = downloadedFolderArtworkUri,
-                onClick = onOpenDownloads
-            )
-        }
-
-        item {
-            MixesSection(
-                mixSection = mixSection,
-                isLoading = mixesLoading,
-                loadingMixId = loadingMixId,
-                hasOauthToken = hasOauthToken,
-                errorMessage = mixesError,
-                onPlayMix = onPlayMix,
-                onOpenMix = onOpenMix,
-                onReload = onReloadMixes,
-                onOpenSettings = onOpenSettings
-            )
-        }
-
-        if (stationSection != null) {
-            item {
-                MixesSection(
-                    mixSection = stationSection,
-                    isLoading = mixesLoading,
-                    loadingMixId = loadingMixId,
-                    hasOauthToken = hasOauthToken,
-                    errorMessage = null,
-                    onPlayMix = onPlayMix,
-                    onOpenMix = onOpenMix,
-                    onReload = {},
-                    onOpenSettings = onOpenSettings
+    if (showCreatePlaylistDialog) {
+        AlertDialog(
+            onDismissRequest = { showCreatePlaylistDialog = false },
+            title = { Text("Создать плейлист") },
+            text = {
+                OutlinedTextField(
+                    value = playlistNameInput,
+                    onValueChange = { playlistNameInput = it },
+                    placeholder = { Text("Название плейлиста") },
+                    singleLine = true
                 )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        if (playlistNameInput.isNotBlank()) {
+                            onCreatePlaylist(playlistNameInput)
+                            showCreatePlaylistDialog = false
+                            playlistNameInput = ""
+                        }
+                    }
+                ) {
+                    Text("Создать")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showCreatePlaylistDialog = false }) {
+                    Text("Отмена")
+                }
             }
-        }
-
-        if (downloadedTracks.isEmpty()) {
-            item { EmptyState("Пока здесь тихо. Найди трек и нажми лайк, чтобы скачать его.") }
-        }
+        )
     }
 }
 
@@ -655,7 +874,8 @@ private fun DownloadsScreen(
     onBack: () -> Unit,
     onChangeArtwork: (String?) -> Unit,
     onPlayTrack: (FavoriteTrack) -> Unit,
-    onDeleteDownload: (FavoriteTrack) -> Unit
+    onDeleteDownload: (FavoriteTrack) -> Unit,
+    onImportTracks: (List<android.net.Uri>) -> Unit
 ) {
     val context = LocalContext.current
     val imagePicker = rememberLauncherForActivityResult(
@@ -669,6 +889,14 @@ private fun DownloadsScreen(
                 )
             }
             onChangeArtwork(uri.toString())
+        }
+    }
+
+    val audioPicker = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenMultipleDocuments()
+    ) { uris ->
+        if (uris.isNotEmpty()) {
+            onImportTracks(uris)
         }
     }
 
@@ -694,7 +922,8 @@ private fun DownloadsScreen(
                 FolderHero(
                     count = tracks.size,
                     artworkUri = folderArtworkUri,
-                    onChangeArtwork = { imagePicker.launch(arrayOf("image/*")) }
+                    onChangeArtwork = { imagePicker.launch(arrayOf("image/*")) },
+                    onImportLocalTrack = { audioPicker.launch(arrayOf("audio/*")) }
                 )
             }
 
@@ -841,7 +1070,12 @@ private fun DownloadedFolderCard(count: Int, artworkUri: String?, onClick: () ->
 }
 
 @Composable
-private fun FolderHero(count: Int, artworkUri: String?, onChangeArtwork: () -> Unit) {
+private fun FolderHero(
+    count: Int,
+    artworkUri: String?,
+    onChangeArtwork: () -> Unit,
+    onImportLocalTrack: (() -> Unit)? = null
+) {
     val haptic = LocalHapticFeedback.current
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -872,17 +1106,41 @@ private fun FolderHero(count: Int, artworkUri: String?, onChangeArtwork: () -> U
                 )
             }
 
-            Button(
-                onClick = {
-                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                    onChangeArtwork()
-                },
-                shape = RoundedCornerShape(20.dp),
-                modifier = Modifier.height(52.dp)
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                Icon(Icons.Default.Image, contentDescription = null)
-                Spacer(modifier = Modifier.width(10.dp))
-                Text("Сменить обложку")
+                Button(
+                    onClick = {
+                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                        onChangeArtwork()
+                    },
+                    shape = RoundedCornerShape(20.dp),
+                    modifier = Modifier.weight(1f).height(52.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.secondaryContainer,
+                        contentColor = MaterialTheme.colorScheme.onSecondaryContainer
+                    )
+                ) {
+                    Icon(Icons.Default.Image, contentDescription = null)
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Обложка", maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
+
+                if (onImportLocalTrack != null) {
+                    Button(
+                        onClick = {
+                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                            onImportLocalTrack()
+                        },
+                        shape = RoundedCornerShape(20.dp),
+                        modifier = Modifier.weight(1f).height(52.dp)
+                    ) {
+                        Icon(Icons.Default.Add, contentDescription = null)
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Импорт", maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    }
+                }
             }
         }
     }
@@ -1370,7 +1628,6 @@ private fun DownloadedTrackCard(
         }
     }
 }
-
 @Composable
 private fun TrackDetailScreen(
     track: SoundCloudTrack,
@@ -1390,7 +1647,8 @@ private fun TrackDetailScreen(
     onNext: () -> Unit,
     onRepeat: () -> Unit,
     onShuffle: () -> Unit,
-    onDeleteDownload: (FavoriteTrack) -> Unit
+    onDeleteDownload: (FavoriteTrack) -> Unit,
+    onLongPressCover: () -> Unit
 ) {
     val context = LocalContext.current
     val vibrator = remember {
@@ -1477,33 +1735,25 @@ private fun TrackDetailScreen(
                         .pointerInput(track.permalinkUrl) {
                             detectTapGestures(
                                 onLongPress = {
-                                    track.permalinkUrl?.let { url ->
-                                        // 1. Heavy vibration click
-                                        try {
-                                            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
-                                                vibrator?.vibrate(android.os.VibrationEffect.createPredefined(android.os.VibrationEffect.EFFECT_HEAVY_CLICK))
-                                            } else {
-                                                @Suppress("DEPRECATION")
-                                                vibrator?.vibrate(80)
-                                            }
-                                        } catch (e: Exception) {
-                                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                    // 1. Heavy vibration click
+                                    try {
+                                        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
+                                            vibrator?.vibrate(android.os.VibrationEffect.createPredefined(android.os.VibrationEffect.EFFECT_HEAVY_CLICK))
+                                        } else {
+                                            @Suppress("DEPRECATION")
+                                            vibrator?.vibrate(80)
                                         }
+                                    } catch (e: Exception) {
+                                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                    }
 
-                                        // 2. Visual spring pulse animation
-                                        coroutineScope.launch {
-                                            artworkPressedScale.animateTo(1.12f, animationSpec = tween(150))
-                                            artworkPressedScale.animateTo(1f, animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy))
+                                    // 2. Visual spring pulse animation
+                                    coroutineScope.launch {
+                                        artworkPressedScale.animateTo(1.12f, animationSpec = tween(150))
+                                        artworkPressedScale.animateTo(1f, animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy))
 
-                                            // 3. Native share intent
-                                            val sendIntent = Intent().apply {
-                                                action = Intent.ACTION_SEND
-                                                putExtra(Intent.EXTRA_TEXT, url)
-                                                type = "text/plain"
-                                            }
-                                            val shareIntent = Intent.createChooser(sendIntent, null)
-                                            context.startActivity(shareIntent)
-                                        }
+                                        // 3. Trigger bottom sheet dialog callback
+                                        onLongPressCover()
                                     }
                                 }
                             )
@@ -1990,6 +2240,75 @@ private fun ClientIdWarningCard(onOpenSettings: () -> Unit) {
 }
 
 @Composable
+private fun ClientIdExpiredWarningCard(onOpenSettings: () -> Unit, onAutoRefresh: () -> Unit) {
+    val haptic = LocalHapticFeedback.current
+    ElevatedCard(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(24.dp),
+        colors = CardDefaults.elevatedCardColors(
+            containerColor = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.85f),
+            contentColor = MaterialTheme.colorScheme.onErrorContainer
+        )
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(16.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Warning,
+                    contentDescription = null,
+                    modifier = Modifier.size(32.dp),
+                    tint = MaterialTheme.colorScheme.error
+                )
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "SoundCloud client_id устарел",
+                        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = "Текущий ключ SoundCloud больше недействителен. Попробуйте обновить его автоматически или укажите рабочий вручную.",
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                }
+            }
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.End,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                TextButton(
+                    onClick = {
+                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                        onOpenSettings()
+                    }
+                ) {
+                    Text("Настройки", color = MaterialTheme.colorScheme.error)
+                }
+                Spacer(modifier = Modifier.width(8.dp))
+                Button(
+                    onClick = {
+                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                        onAutoRefresh()
+                    },
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.error,
+                        contentColor = MaterialTheme.colorScheme.onError
+                    ),
+                    shape = RoundedCornerShape(12.dp)
+                ) {
+                    Text("Обновить автоматически")
+                }
+            }
+        }
+    }
+}
+
+@Composable
 private fun EqualizerPresetChip(
     text: String,
     selected: Boolean,
@@ -2383,6 +2702,7 @@ fun SoundCloudLoginScreen(
         }
 
         // Authentication Overlay
+        // Authentication Overlay
         if (isLoggingIn) {
             Box(
                 modifier = Modifier
@@ -2404,4 +2724,622 @@ fun SoundCloudLoginScreen(
         }
     }
 }
+
+@Composable
+fun SegmentedControl(
+    items: List<String>,
+    selectedIndex: Int,
+    onSelectedIndexChanged: (Int) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val haptic = LocalHapticFeedback.current
+    Surface(
+        modifier = modifier
+            .fillMaxWidth()
+            .height(54.dp),
+        shape = RoundedCornerShape(27.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+        tonalElevation = 2.dp
+    ) {
+        BoxWithConstraints(modifier = Modifier.fillMaxSize().padding(4.dp)) {
+            val width = maxWidth / items.size
+            
+            val offset by animateDpAsState(
+                targetValue = width * selectedIndex,
+                animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessLow),
+                label = "segmentedOffset"
+            )
+
+            Box(
+                modifier = Modifier
+                    .offset(x = offset)
+                    .width(width)
+                    .fillMaxHeight()
+                    .background(MaterialTheme.colorScheme.primary, RoundedCornerShape(23.dp))
+            )
+
+            Row(modifier = Modifier.fillMaxSize()) {
+                items.forEachIndexed { index, text ->
+                    val isSelected = index == selectedIndex
+                    val textColor by animateColorAsState(
+                        targetValue = if (isSelected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant,
+                        animationSpec = tween(150),
+                        label = "segmentedTextColor"
+                    )
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .fillMaxHeight()
+                            .clickable(
+                                interactionSource = remember { MutableInteractionSource() },
+                                indication = null,
+                                onClick = {
+                                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                    onSelectedIndexChanged(index)
+                                }
+                            ),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = text,
+                            style = MaterialTheme.typography.bodyLarge,
+                            fontWeight = FontWeight.Bold,
+                            color = textColor
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun PlaylistCard(playlist: Playlist, onClick: () -> Unit, onDelete: () -> Unit) {
+    val haptic = LocalHapticFeedback.current
+    var isPressed by remember { mutableStateOf(false) }
+    val scale by animateFloatAsState(
+        targetValue = if (isPressed) 0.98f else 1f,
+        animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy),
+        label = "playlistScale"
+    )
+
+    Card(
+        onClick = {
+            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+            onClick()
+        },
+        modifier = Modifier
+            .fillMaxWidth()
+            .graphicsLayer {
+                scaleX = scale
+                scaleY = scale
+            },
+        shape = RoundedCornerShape(36.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.85f)
+        ),
+        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(14.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            if (playlist.artworkUrl != null) {
+                FolderArtwork(playlist.artworkUrl, 82.dp)
+            } else {
+                Surface(
+                    color = MaterialTheme.colorScheme.secondaryContainer,
+                    shape = RoundedCornerShape(24.dp),
+                    modifier = Modifier.size(82.dp)
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Icon(
+                            Icons.Default.QueueMusic,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onSecondaryContainer,
+                            modifier = Modifier.size(36.dp)
+                        )
+                    }
+                }
+            }
+            Spacer(modifier = Modifier.width(16.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = playlist.name,
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.ExtraBold,
+                    letterSpacing = (-0.5).sp
+                )
+                Text(
+                    text = "${playlist.tracks.size} треков",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.8f)
+                )
+            }
+            IconButton(
+                onClick = {
+                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                    onDelete()
+                }
+            ) {
+                Icon(Icons.Default.Delete, contentDescription = null, tint = MaterialTheme.colorScheme.error)
+            }
+        }
+    }
+}
+
+@Composable
+private fun PlaylistDetailScreen(
+    playlist: Playlist,
+    currentTrackId: Long?,
+    onBack: () -> Unit,
+    onPlayTrack: (FavoriteTrack) -> Unit,
+    onRemoveTrack: (FavoriteTrack) -> Unit,
+    onChangeArtwork: (String?) -> Unit
+) {
+    val imagePicker = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) {
+            onChangeArtwork(uri.toString())
+        }
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .statusBarsPadding()
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 8.dp)
+        ) {
+            TopBar(title = playlist.name, onBack = onBack)
+        }
+
+        LazyColumn(
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(start = 16.dp, top = 4.dp, end = 16.dp, bottom = 120.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp)
+        ) {
+            item {
+                Column(
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 16.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(16.dp)
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(220.dp)
+                            .clip(RoundedCornerShape(32.dp))
+                            .clickable {
+                                imagePicker.launch(arrayOf("image/*"))
+                            }
+                    ) {
+                        if (playlist.artworkUrl != null) {
+                            FolderArtwork(playlist.artworkUrl, 220.dp)
+                        } else {
+                            Surface(
+                                color = MaterialTheme.colorScheme.secondaryContainer,
+                                shape = RoundedCornerShape(32.dp),
+                                modifier = Modifier.fillMaxSize()
+                            ) {
+                                Box(contentAlignment = Alignment.Center) {
+                                    Icon(
+                                        Icons.Default.QueueMusic,
+                                        contentDescription = null,
+                                        tint = MaterialTheme.colorScheme.onSecondaryContainer,
+                                        modifier = Modifier.size(72.dp)
+                                    )
+                                }
+                            }
+                        }
+
+                        // Premium edit overlay
+                        Box(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .background(Color.Black.copy(alpha = 0.2f))
+                                .padding(12.dp),
+                            contentAlignment = Alignment.BottomEnd
+                        ) {
+                            Surface(
+                                color = Color.Black.copy(alpha = 0.6f),
+                                shape = CircleShape,
+                                modifier = Modifier.size(36.dp)
+                            ) {
+                                Box(contentAlignment = Alignment.Center) {
+                                    Icon(
+                                        Icons.Default.Image,
+                                        contentDescription = null,
+                                        tint = Color.White,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Text(
+                            text = playlist.name,
+                            style = MaterialTheme.typography.headlineLarge,
+                            fontWeight = FontWeight.Black,
+                            letterSpacing = (-1).sp
+                        )
+                        Text(
+                            text = "${playlist.tracks.size} треков",
+                            style = MaterialTheme.typography.titleMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+            }
+
+            if (playlist.tracks.isEmpty()) {
+                item {
+                    EmptyState("Здесь пока нет треков. Зажмите обложку трека в плеере, чтобы добавить его.")
+                }
+            } else {
+                items(playlist.tracks, key = { "playlist-${playlist.id}-${it.id}" }) { track ->
+                    DownloadedTrackCard(
+                        track = track,
+                        isSelected = track.id == currentTrackId,
+                        onClick = { onPlayTrack(track) },
+                        onDeleteDownload = { onRemoveTrack(track) }
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun TrackActionsDialog(
+    track: SoundCloudTrack,
+    playlists: List<Playlist>,
+    onDismiss: () -> Unit,
+    onAddToPlaylist: (Playlist) -> Unit,
+    onCreatePlaylist: (String) -> Unit,
+    onShare: () -> Unit
+) {
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(
+            usePlatformDefaultWidth = false,
+            decorFitsSystemWindows = false
+        )
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Color.Black.copy(alpha = 0.6f))
+                .clickable(
+                    interactionSource = remember { MutableInteractionSource() },
+                    indication = null,
+                    onClick = onDismiss
+                ),
+            contentAlignment = Alignment.BottomCenter
+        ) {
+            var showPlaylistSelection by remember { mutableStateOf(false) }
+            var showCreatePlaylistDialog by remember { mutableStateOf(false) }
+            var playlistNameInput by remember { mutableStateOf("") }
+
+            Surface(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable(enabled = false, onClick = {}) // prevent click-through
+                    .navigationBarsPadding(),
+                shape = RoundedCornerShape(topStart = 32.dp, topEnd = 32.dp),
+                color = MaterialTheme.colorScheme.surface,
+                tonalElevation = 8.dp
+            ) {
+                Column(
+                    modifier = Modifier
+                        .padding(horizontal = 24.dp, vertical = 24.dp)
+                        .fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(20.dp)
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .align(Alignment.CenterHorizontally)
+                            .width(40.dp)
+                            .height(5.dp)
+                            .background(
+                                MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.3f),
+                                CircleShape
+                            )
+                    )
+
+                    // Cover Art & Title Info
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(bottom = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(16.dp)
+                    ) {
+                        TrackArtwork(artworkUrl = track.artworkUrl, size = 64.dp)
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = track.title,
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Bold,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            Text(
+                                text = track.user?.username ?: "SoundCloud Artist",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                    }
+
+                    if (!showPlaylistSelection) {
+                        // Options
+                        Surface(
+                            onClick = { showPlaylistSelection = true },
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(20.dp),
+                            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
+                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f))
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(16.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(16.dp)
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(44.dp)
+                                        .background(MaterialTheme.colorScheme.primaryContainer, CircleShape),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.PlaylistAdd,
+                                        contentDescription = null,
+                                        tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                                        modifier = Modifier.size(24.dp)
+                                    )
+                                }
+                                Column {
+                                    Text(
+                                        text = "Добавить в плейлист",
+                                        style = MaterialTheme.typography.bodyLarge,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                    Text(
+                                        text = "Сохраните этот трек в свои подборки",
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            }
+                        }
+
+                        Surface(
+                            onClick = {
+                                onShare()
+                                onDismiss()
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(20.dp),
+                            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
+                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f))
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(16.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(16.dp)
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(44.dp)
+                                        .background(MaterialTheme.colorScheme.secondaryContainer, CircleShape),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Share,
+                                        contentDescription = null,
+                                        tint = MaterialTheme.colorScheme.onSecondaryContainer,
+                                        modifier = Modifier.size(22.dp)
+                                    )
+                                }
+                                Column {
+                                    Text(
+                                        text = "Отправить ссылку на трек",
+                                        style = MaterialTheme.typography.bodyLarge,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                    Text(
+                                        text = "Поделитесь треком с друзьями",
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            }
+                        }
+
+                        Button(
+                            onClick = onDismiss,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(50.dp),
+                            shape = RoundedCornerShape(16.dp),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = MaterialTheme.colorScheme.surfaceVariant,
+                                contentColor = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        ) {
+                            Text("Отмена", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.bodyLarge)
+                        }
+                    } else {
+                        // Playlist Selection Header
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            IconButton(
+                                onClick = { showPlaylistSelection = false },
+                                modifier = Modifier
+                                    .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f), CircleShape)
+                                    .size(36.dp)
+                            ) {
+                                Icon(
+                                    Icons.Default.ArrowBack,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                            }
+                            Text(
+                                text = "Выберите плейлист",
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Bold
+                            )
+                            IconButton(
+                                onClick = { showCreatePlaylistDialog = true },
+                                modifier = Modifier
+                                    .background(MaterialTheme.colorScheme.primaryContainer, CircleShape)
+                                    .size(36.dp)
+                            ) {
+                                Icon(
+                                    Icons.Default.Add,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                            }
+                        }
+
+                        if (playlists.isEmpty()) {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(120.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(
+                                    text = "У вас пока нет плейлистов",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        } else {
+                            LazyColumn(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .heightIn(max = 300.dp),
+                                verticalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                items(playlists) { playlist ->
+                                    Surface(
+                                        onClick = {
+                                            onAddToPlaylist(playlist)
+                                            onDismiss()
+                                        },
+                                        modifier = Modifier.fillMaxWidth(),
+                                        shape = RoundedCornerShape(16.dp),
+                                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f),
+                                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.onSurface.copy(alpha = 0.06f))
+                                    ) {
+                                        Row(
+                                            modifier = Modifier.padding(12.dp),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(14.dp)
+                                        ) {
+                                            if (!playlist.artworkUrl.isNullOrBlank()) {
+                                                FolderArtwork(playlist.artworkUrl, size = 44.dp)
+                                            } else {
+                                                Box(
+                                                    modifier = Modifier
+                                                        .size(44.dp)
+                                                        .background(MaterialTheme.colorScheme.primaryContainer, RoundedCornerShape(10.dp)),
+                                                    contentAlignment = Alignment.Center
+                                                ) {
+                                                    Icon(
+                                                        imageVector = Icons.Default.QueueMusic,
+                                                        contentDescription = null,
+                                                        tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                                                        modifier = Modifier.size(24.dp)
+                                                    )
+                                                }
+                                            }
+                                            Column(modifier = Modifier.weight(1f)) {
+                                                Text(
+                                                    text = playlist.name,
+                                                    style = MaterialTheme.typography.bodyLarge,
+                                                    fontWeight = FontWeight.Bold
+                                                )
+                                                Text(
+                                                    text = "${playlist.tracks.size} треков",
+                                                    style = MaterialTheme.typography.bodySmall,
+                                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        Button(
+                            onClick = onDismiss,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(50.dp),
+                            shape = RoundedCornerShape(16.dp),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = MaterialTheme.colorScheme.surfaceVariant,
+                                contentColor = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        ) {
+                            Text("Отмена", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.bodyLarge)
+                        }
+                    }
+                }
+            }
+
+            if (showCreatePlaylistDialog) {
+                AlertDialog(
+                    onDismissRequest = { showCreatePlaylistDialog = false },
+                    title = { Text("Создать плейлист") },
+                    text = {
+                        OutlinedTextField(
+                            value = playlistNameInput,
+                            onValueChange = { playlistNameInput = it },
+                            placeholder = { Text("Название плейлиста") },
+                            singleLine = true
+                        )
+                    },
+                    confirmButton = {
+                        Button(
+                            onClick = {
+                                if (playlistNameInput.isNotBlank()) {
+                                    onCreatePlaylist(playlistNameInput)
+                                    showCreatePlaylistDialog = false
+                                    playlistNameInput = ""
+                                }
+                            }
+                        ) {
+                            Text("Создать")
+                        }
+                    },
+                    dismissButton = {
+                        TextButton(onClick = { showCreatePlaylistDialog = false }) {
+                            Text("Отмена")
+                        }
+                    }
+                )
+            }
+        }
+    }
+}
+
 

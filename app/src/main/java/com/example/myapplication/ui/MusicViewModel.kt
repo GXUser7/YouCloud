@@ -16,6 +16,9 @@ import com.example.myapplication.data.SoundCloudMixesRepository
 import com.example.myapplication.data.SoundCloudPlaybackResolver
 import com.example.myapplication.data.SoundCloudTrack
 import com.example.myapplication.data.SoundCloudMeResponse
+import com.example.myapplication.data.SoundCloudUser
+import com.example.myapplication.data.Playlist
+import com.example.myapplication.data.PlaylistsRepository
 import com.example.myapplication.player.MusicPlayer
 import com.example.myapplication.player.MusicPlayer.QueueTrack
 import java.io.IOException
@@ -25,6 +28,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import retrofit2.HttpException
 import kotlinx.coroutines.Dispatchers
@@ -35,17 +40,29 @@ enum class AppScreen {
     SEARCH,
     DOWNLOADS,
     SETTINGS,
-    MIX_DETAIL
+    MIX_DETAIL,
+    PLAYLIST_DETAIL
 }
 
 class MusicViewModel(
-    context: Context,
+    private val context: Context,
     private val musicPlayer: MusicPlayer,
     private val favoritesRepository: FavoritesRepository,
+    private val playlistsRepository: PlaylistsRepository,
     @get:androidx.media3.common.util.UnstableApi
     private val offlineMusicStore: OfflineMusicStore,
     val settingsRepository: SettingsRepository
 ) : ViewModel() {
+
+    val playlists = playlistsRepository.playlists
+
+    private val _selectedPlaylistId = MutableStateFlow<String?>(null)
+    val selectedPlaylist = combine(playlistsRepository.playlists, _selectedPlaylistId) { list, id ->
+        list.firstOrNull { it.id == id }
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
+
+    private val _isClientIdExpired = MutableStateFlow(false)
+    val isClientIdExpired = _isClientIdExpired.asStateFlow()
 
     private val service = SoundCloudApi.createService(settingsRepository::oauthTokenValue)
     private val playbackResolver = SoundCloudPlaybackResolver(service)
@@ -78,6 +95,7 @@ class MusicViewModel(
     val defaultOauthToken = settingsRepository.defaultOauthToken
     val userId = settingsRepository.userId
     val defaultUserId = settingsRepository.defaultUserId
+    val homeSelectedTab = settingsRepository.homeSelectedTab
 
     private val _isLoggingIn = MutableStateFlow(false)
     val isLoggingIn = _isLoggingIn.asStateFlow()
@@ -128,27 +146,31 @@ class MusicViewModel(
 
     init {
         viewModelScope.launch {
-            musicPlayer.currentTrackId.collectLatest { trackId ->
-                if (trackId == null) return@collectLatest
-                
-                val trackIndex = activeQueue.indexOfFirst { it.id == trackId }
-                if (trackIndex == -1) return@collectLatest
-                
-                val track = activeQueue[trackIndex]
-                _currentPlayingTrack.value = track
-                if (_selectedTrack.value != null) {
-                    _selectedTrack.value = track
-                }
+            combine(
+                musicPlayer.currentTrackId,
+                musicPlayer.shuffleEnabled
+            ) { trackId, _ -> trackId }
+                .collectLatest { trackId ->
+                    if (trackId == null) return@collectLatest
+                    
+                    val trackIndex = activeQueue.indexOfFirst { it.id == trackId }
+                    if (trackIndex == -1) return@collectLatest
+                    
+                    val track = activeQueue[trackIndex]
+                    _currentPlayingTrack.value = track
+                    if (_selectedTrack.value != null) {
+                        _selectedTrack.value = track
+                    }
 
-                // Lazy resolve current track
-                resolveTrackIfNeeded(trackIndex)
-                
-                // Lazy resolve the next track in the queue (respects shuffle!)
-                val nextIndex = musicPlayer.getNextMediaItemIndex()
-                if (nextIndex != -1 && nextIndex < activeQueue.size) {
-                    resolveTrackIfNeeded(nextIndex)
+                    // Lazy resolve current track
+                    resolveTrackIfNeeded(trackIndex)
+                    
+                    // Lazy resolve the next track in the queue (respects shuffle!)
+                    val nextIndex = musicPlayer.getNextMediaItemIndex()
+                    if (nextIndex != -1 && nextIndex < activeQueue.size) {
+                        resolveTrackIfNeeded(nextIndex)
+                    }
                 }
-            }
         }
 
         viewModelScope.launch {
@@ -283,7 +305,8 @@ class MusicViewModel(
                 
                 // Play immediately with first track resolved and others as stubs
                 val stubs = tracks.map { t ->
-                    t.toQueueTrack(resolvedUrls[t.id] ?: "")
+                    val localUrl = favoritesRepository.get(t.id)?.streamUrl
+                    t.toQueueTrack(localUrl ?: resolvedUrls[t.id] ?: "")
                 }
                 musicPlayer.playQueue(stubs, 0)
             } catch (e: Exception) {
@@ -370,7 +393,8 @@ class MusicViewModel(
 
                 // Play immediately with starting track resolved and others as stubs
                 val stubs = playableTracks.map { t ->
-                    t.toQueueTrack(resolvedUrls[t.id] ?: "")
+                    val localUrl = favoritesRepository.get(t.id)?.streamUrl
+                    t.toQueueTrack(localUrl ?: resolvedUrls[t.id] ?: "")
                 }
                 musicPlayer.playQueue(stubs, startIndex)
             } catch (e: Exception) {
@@ -396,11 +420,13 @@ class MusicViewModel(
                 resolvedUrls[track.id] = streamUrl
                 // Update the player queue with the new URL
                 val updatedQueue = activeQueue.map { t ->
-                    t.toQueueTrack(resolvedUrls[t.id] ?: "")
+                    val localUrl = favoritesRepository.get(t.id)?.streamUrl
+                    t.toQueueTrack(localUrl ?: resolvedUrls[t.id] ?: "")
                 }
                 musicPlayer.updateQueue(updatedQueue)
             }
         } catch (e: Exception) {
+            handleSoundCloudApiError(e)
             Log.e("MusicViewModel", "Lazy resolution failed for trackId=${track.id}", e)
         }
     }
@@ -499,6 +525,10 @@ class MusicViewModel(
         settingsRepository.resetUserId()
     }
 
+    fun setHomeSelectedTab(tab: Int) {
+        settingsRepository.setHomeSelectedTab(tab)
+    }
+
     fun updateDownloadedFolderArtworkUri(uri: String?) {
         favoritesRepository.updateDownloadedFolderArtworkUri(uri)
     }
@@ -579,6 +609,11 @@ class MusicViewModel(
         if (downloadedQueue.isEmpty()) return
 
         activeQueue = downloadedQueue.map { it.toSoundCloudTrack() }
+        downloadedQueue.forEach { fav ->
+            fav.streamUrl?.let { url ->
+                resolvedUrls[fav.id] = url
+            }
+        }
         musicPlayer.playQueue(
             tracks = downloadedQueue.mapNotNull { favorite ->
                 favorite.streamUrl?.let { favorite.toQueueTrack(it) }
@@ -678,17 +713,20 @@ class MusicViewModel(
             track.policy != "PREVIEW" &&
             track.media?.transcodings?.isNotEmpty() == true
 
-    private fun readableMessage(error: Exception): String = when (error) {
-        is HttpException -> when (error.code()) {
-            401 -> "SoundCloud отклонил запрос. Возможно, client_id устарел."
-            403 -> "SoundCloud запретил доступ к этому ресурсу."
-            404 -> "SoundCloud не нашёл нужный поток."
-            429 -> "Слишком много запросов к SoundCloud. Попробуй чуть позже."
-            else -> "Ошибка SoundCloud: HTTP ${error.code()}."
-        }
+    private fun readableMessage(error: Exception): String {
+        handleSoundCloudApiError(error)
+        return when (error) {
+            is HttpException -> when (error.code()) {
+                401 -> "SoundCloud отклонил запрос. Возможно, client_id устарел."
+                403 -> "SoundCloud запретил доступ к этому ресурсу."
+                404 -> "SoundCloud не нашёл нужный поток."
+                429 -> "Слишком много запросов к SoundCloud. Попробуй чуть позже."
+                else -> "Ошибка SoundCloud: HTTP ${error.code()}."
+            }
 
-        is IOException -> "Нет соединения с сетью."
-        else -> "Не удалось выполнить запрос к SoundCloud."
+            is IOException -> "Нет соединения с сетью."
+            else -> "Не удалось выполнить запрос к SoundCloud."
+        }
     }
 
     private fun SoundCloudTrack.toQueueTrack(streamUrl: String): QueueTrack =
@@ -708,4 +746,177 @@ class MusicViewModel(
             artist = artist,
             artworkUrl = artworkUrl
         )
+
+    private fun SoundCloudTrack.toFavoriteTrack(streamUrl: String? = null, downloadState: DownloadState = DownloadState.NONE) = FavoriteTrack(
+        id = id,
+        urn = urn ?: "",
+        title = title,
+        artworkUrl = artworkUrl,
+        permalinkUrl = permalinkUrl,
+        artist = user?.username ?: "Unknown Artist",
+        duration = duration,
+        streamUrl = streamUrl,
+        downloadState = downloadState
+    )
+
+    private fun FavoriteTrack.toSoundCloudTrack() = SoundCloudTrack(
+        id = id,
+        urn = urn,
+        title = title,
+        artworkUrl = artworkUrl,
+        permalinkUrl = permalinkUrl,
+        user = SoundCloudUser(username = artist),
+        duration = duration,
+        kind = "track",
+        streamable = true,
+        policy = null,
+        trackAuthorization = null,
+        media = null
+    )
+
+    // Playlist and Local Import Support
+    fun createPlaylist(name: String) {
+        playlistsRepository.createPlaylist(name)
+    }
+
+    fun deletePlaylist(playlistId: String) {
+        playlistsRepository.deletePlaylist(playlistId)
+        if (_selectedPlaylistId.value == playlistId) {
+            closePlaylist()
+        }
+    }
+
+    fun addTrackToPlaylist(playlistId: String, track: SoundCloudTrack) {
+        playlistsRepository.addTrackToPlaylist(playlistId, track.toFavoriteTrack())
+    }
+
+    fun addFavoriteTrackToPlaylist(playlistId: String, track: FavoriteTrack) {
+        playlistsRepository.addTrackToPlaylist(playlistId, track)
+    }
+
+    fun removeTrackFromPlaylist(playlistId: String, trackId: Long) {
+        playlistsRepository.removeTrackFromPlaylist(playlistId, trackId)
+    }
+
+    fun openPlaylist(playlist: Playlist) {
+        _selectedPlaylistId.value = playlist.id
+        _screen.value = AppScreen.PLAYLIST_DETAIL
+    }
+
+    fun closePlaylist() {
+        _selectedPlaylistId.value = null
+        _screen.value = AppScreen.HOME
+    }
+
+    fun updatePlaylistArtwork(playlistId: String, uriString: String?) {
+        viewModelScope.launch {
+            if (uriString == null) {
+                playlistsRepository.updatePlaylistArtwork(playlistId, null)
+                return@launch
+            }
+            val uri = android.net.Uri.parse(uriString)
+            val localPath = copyUriToInternalStorage(context, uri, "playlist_artworks")
+            if (localPath != null) {
+                playlistsRepository.updatePlaylistArtwork(playlistId, localPath)
+            }
+        }
+    }
+
+    private fun copyUriToInternalStorage(context: Context, uri: android.net.Uri, folderName: String): String? {
+        return try {
+            val inputStream = context.contentResolver.openInputStream(uri) ?: return null
+            val fileName = "img_${System.currentTimeMillis()}.jpg"
+            val folder = java.io.File(context.filesDir, folderName)
+            if (!folder.exists()) folder.mkdirs()
+            val destFile = java.io.File(folder, fileName)
+            destFile.outputStream().use { outputStream ->
+                inputStream.use { it.copyTo(outputStream) }
+            }
+            destFile.absolutePath
+        } catch (e: Exception) {
+            Log.e("MusicViewModel", "Error copying image to internal storage", e)
+            null
+        }
+    }
+
+    private var refreshingJob: Job? = null
+
+    fun tryAutoRefreshClientId() {
+        if (refreshingJob?.isActive == true) return
+        refreshingJob = viewModelScope.launch {
+            _isLoading.value = true
+            val newClientId = SoundCloudApi.fetchSoundCloudClientId()
+            if (newClientId != null) {
+                settingsRepository.saveClientId(newClientId)
+                _isClientIdExpired.value = false
+                _errorMessage.value = null
+                refreshMixesAndStations()
+            } else {
+                _isClientIdExpired.value = true
+                _errorMessage.value = "SoundCloud client_id устарел. Не удалось обновить его автоматически. Пожалуйста, укажите рабочий ID в настройках."
+            }
+            _isLoading.value = false
+        }
+    }
+
+    private fun handleSoundCloudApiError(e: Throwable) {
+        if (e is HttpException && (e.code() == 401 || e.code() == 403)) {
+            _isClientIdExpired.value = true
+            tryAutoRefreshClientId()
+        }
+    }
+
+    fun playPlaylistTrack(playlist: Playlist, track: FavoriteTrack) {
+        viewModelScope.launch {
+            _errorMessage.value = null
+            val playable = track.toSoundCloudTrack()
+            val tracks = playlist.tracks
+            if (tracks.isEmpty()) return@launch
+
+            activeQueue = tracks.map { it.toSoundCloudTrack() }
+            
+            tracks.forEach { fav ->
+                fav.streamUrl?.let { url ->
+                    resolvedUrls[fav.id] = url
+                }
+            }
+            
+            val startIndex = tracks.indexOfFirst { it.id == track.id }.coerceAtLeast(0)
+            val startTrack = tracks[startIndex]
+            if (startTrack.streamUrl == null) {
+                val clientIdValue = settingsRepository.clientId.value
+                val resolvedUrl = playbackResolver.resolve(startTrack.toSoundCloudTrack(), clientIdValue) ?: ""
+                if (resolvedUrl.isNotEmpty()) {
+                    resolvedUrls[startTrack.id] = resolvedUrl
+                }
+            }
+
+            val stubs = tracks.map { fav ->
+                val localUrl = favoritesRepository.get(fav.id)?.streamUrl
+                val url = localUrl ?: fav.streamUrl ?: resolvedUrls[fav.id] ?: ""
+                fav.toQueueTrack(url)
+            }
+
+            musicPlayer.playQueue(stubs, startIndex)
+            _currentPlayingTrack.value = playable
+            _selectedTrack.value = playable
+        }
+    }
+
+    fun importLocalTracks(uris: List<android.net.Uri>) {
+        viewModelScope.launch {
+            _isLoading.value = true
+            try {
+                val imported = importLocalAudio(context, uris)
+                for (track in imported) {
+                    favoritesRepository.addFavoriteTrack(track)
+                }
+            } catch (e: Exception) {
+                Log.e("MusicViewModel", "Error importing local tracks", e)
+                _errorMessage.value = "Не удалось импортировать треки"
+            } finally {
+                _isLoading.value = false
+            }
+        }
+    }
 }

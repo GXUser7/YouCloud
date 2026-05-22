@@ -13,6 +13,7 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.myapplication.data.FavoritesRepository
 import com.example.myapplication.data.OfflineMusicStore
+import com.example.myapplication.data.PlaylistsRepository
 import com.example.myapplication.data.SettingsRepository
 import com.example.myapplication.player.MusicPlayer
 import com.example.myapplication.ui.MusicScreen
@@ -26,6 +27,7 @@ class MainActivity : ComponentActivity() {
         
         val offlineMusicStore = OfflineMusicStore.getInstance(this)
         val favoritesRepository = FavoritesRepository(this)
+        val playlistsRepository = PlaylistsRepository(this)
         val settingsRepository = SettingsRepository(
             context = this,
             defaultClientId = BuildConfig.DEFAULT_SOUNDCLOUD_CLIENT_ID.trim(),
@@ -42,6 +44,7 @@ class MainActivity : ComponentActivity() {
                                 context = this@MainActivity,
                                 musicPlayer = musicPlayer,
                                 favoritesRepository = favoritesRepository,
+                                playlistsRepository = playlistsRepository,
                                 offlineMusicStore = offlineMusicStore,
                                 settingsRepository = settingsRepository
                             ) as T

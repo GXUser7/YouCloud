@@ -96,10 +96,14 @@ class MusicPlayer(context: Context) {
             if (index < player.mediaItemCount) {
                 val oldItem = player.getMediaItemAt(index)
                 val newUri = track.url
-                // Only replace if the URI has changed and the new one is not empty
-                if (newUri.isNotEmpty() && oldItem.localConfiguration?.uri.toString() != newUri) {
-                    val newItem = toMediaItem(track)
-                    player.replaceMediaItem(index, newItem)
+                if (newUri.isNotEmpty()) {
+                    val oldUriStr = oldItem.localConfiguration?.uri?.toString() ?: ""
+                    val normOld = if (oldUriStr.startsWith("file://")) oldUriStr.substring(7) else oldUriStr
+                    val normNew = if (newUri.startsWith("file://")) newUri.substring(7) else newUri
+                    if (normOld != normNew) {
+                        val newItem = toMediaItem(track)
+                        player.replaceMediaItem(index, newItem)
+                    }
                 }
             } else {
                 player.addMediaItem(toMediaItem(track))

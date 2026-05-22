@@ -41,6 +41,11 @@ class FavoritesRepository(context: Context) {
         )
     }
 
+    fun addFavoriteTrack(favoriteTrack: FavoriteTrack) {
+        if (isFavorite(favoriteTrack.id)) return
+        update(_favorites.value + favoriteTrack)
+    }
+
     fun remove(trackId: Long) {
         update(_favorites.value.filterNot { it.id == trackId })
     }

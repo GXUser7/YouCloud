@@ -26,6 +26,12 @@ class SettingsRepository(
 
     val equalizerEnabled = MutableStateFlow(preferences.getBoolean(KEY_EQ_ENABLED, false))
     val equalizerPreset = MutableStateFlow(preferences.getString(KEY_EQ_PRESET, "Flat") ?: "Flat")
+    val homeSelectedTab = MutableStateFlow(preferences.getInt(KEY_HOME_SELECTED_TAB, 0))
+
+    fun setHomeSelectedTab(tab: Int) {
+        homeSelectedTab.value = tab
+        preferences.edit().putInt(KEY_HOME_SELECTED_TAB, tab).apply()
+    }
 
     fun setEqualizerEnabled(enabled: Boolean) {
         equalizerEnabled.value = enabled
@@ -130,5 +136,6 @@ class SettingsRepository(
         const val KEY_USER_ID = "soundcloud_user_id"
         const val KEY_EQ_ENABLED = "equalizer_enabled"
         const val KEY_EQ_PRESET = "equalizer_preset"
+        const val KEY_HOME_SELECTED_TAB = "home_selected_tab"
     }
 }
