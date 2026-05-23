@@ -166,8 +166,8 @@ class MusicPlayer(context: Context) {
         playQueue(request.tracks, request.startIndex)
     }
 
-    private fun toMediaItem(track: QueueTrack): MediaItem =
-        MediaItem.Builder()
+    private fun toMediaItem(track: QueueTrack): MediaItem {
+        val builder = MediaItem.Builder()
             .setUri(track.url)
             .setMediaId(track.id.toString())
             .setMediaMetadata(
@@ -179,7 +179,12 @@ class MusicPlayer(context: Context) {
                     }
                     .build()
             )
-            .build()
+        
+        if (track.url.startsWith("soundcloud://") || track.url.contains(".m3u8") || track.url.contains("m3u8")) {
+            builder.setMimeType(androidx.media3.common.MimeTypes.APPLICATION_M3U8)
+        }
+        return builder.build()
+    }
 
     private fun syncState() {
         controller?.let { player ->

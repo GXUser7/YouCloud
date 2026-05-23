@@ -65,6 +65,7 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.contentColorFor
 import androidx.compose.material3.ElevatedCard
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -287,18 +288,25 @@ fun MusicScreen(viewModel: MusicViewModel) {
                     onImportTracks = viewModel::importLocalTracks
                 )
 
-                AppScreen.SETTINGS -> SettingsScreen(
-                    settingsRepository = viewModel.settingsRepository,
-                    onBack = viewModel::closeSettings,
-                    onRelogin = {
-                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                        viewModel.logout()
-                    },
-                    onClearCache = {
-                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                        viewModel.refreshMixesAndStations()
-                    }
-                )
+                AppScreen.SETTINGS -> {
+                    val likesSyncStatus by viewModel.likesSyncStatus.collectAsState()
+                    SettingsScreen(
+                        settingsRepository = viewModel.settingsRepository,
+                        likesSyncStatus = likesSyncStatus,
+                        startLikesSync = viewModel::startLikesSync,
+                        stopLikesSync = viewModel::stopLikesSync,
+                        resetLikesSyncStatus = viewModel::resetLikesSyncStatus,
+                        onBack = viewModel::closeSettings,
+                        onRelogin = {
+                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                            viewModel.logout()
+                        },
+                        onClearCache = {
+                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                            viewModel.refreshMixesAndStations()
+                        }
+                    )
+                }
 
                 AppScreen.PLAYLIST_DETAIL -> {
                     selectedPlaylist?.let { playlist ->
@@ -319,6 +327,10 @@ fun MusicScreen(viewModel: MusicViewModel) {
                             },
                             onChangeArtwork = { uri ->
                                 viewModel.updatePlaylistArtwork(playlist.id, uri)
+                            },
+                            onMoveDownloadedToDownloads = {
+                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                viewModel.moveDownloadedTracksToDownloads(playlist)
                             }
                         )
                     }
@@ -701,6 +713,10 @@ private fun HomeScreen(
 @Composable
 private fun SettingsScreen(
     settingsRepository: SettingsRepository,
+    likesSyncStatus: LikesSyncStatus,
+    startLikesSync: () -> Unit,
+    stopLikesSync: () -> Unit,
+    resetLikesSyncStatus: () -> Unit,
     onBack: () -> Unit,
     onRelogin: () -> Unit,
     onClearCache: () -> Unit
@@ -714,6 +730,130 @@ private fun SettingsScreen(
     ) {
         item {
             TopBar(title = "Настройки", onBack = onBack)
+        }
+
+        item {
+            ElevatedCard(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(32.dp)
+            ) {
+                Column(
+                    modifier = Modifier.padding(24.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Text(
+                        text = "Синхронизация SoundCloud",
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.align(Alignment.CenterHorizontally)
+                    )
+                    Text(
+                        text = "Автоматически добавляйте все треки, которые вы лайкнули на SoundCloud, в любимые и скачивайте их для прослушивания офлайн.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.align(Alignment.CenterHorizontally)
+                    )
+                    
+                    if (likesSyncStatus.state != SyncState.IDLE) {
+                        Spacer(modifier = Modifier.height(8.dp))
+                        
+                        val statusText = when (likesSyncStatus.state) {
+                            SyncState.FETCHING_LIKES -> "Получение лайкнутых треков..."
+                            SyncState.DOWNLOADING -> "Скачивание треков: ${likesSyncStatus.currentTrackIndex} из ${likesSyncStatus.totalTracks}"
+                            SyncState.COMPLETED -> "Синхронизация завершена!"
+                            SyncState.FAILED -> "Ошибка: ${likesSyncStatus.errorMessage}"
+                            else -> ""
+                        }
+                        
+                        Text(
+                            text = statusText,
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = if (likesSyncStatus.state == SyncState.FAILED) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
+                        )
+                        
+                        if (likesSyncStatus.state == SyncState.DOWNLOADING) {
+                            Text(
+                                text = "Скачивается: ${likesSyncStatus.currentTrackTitle}",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            
+                            val progress = if (likesSyncStatus.totalTracks > 0) {
+                                (likesSyncStatus.downloadedCount + likesSyncStatus.failedCount).toFloat() / likesSyncStatus.totalTracks
+                            } else 0f
+                            
+                            LinearProgressIndicator(
+                                progress = progress,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(8.dp)
+                                    .clip(RoundedCornerShape(4.dp)),
+                                color = Color(0xFFFF5500),
+                                trackColor = MaterialTheme.colorScheme.surfaceVariant
+                            )
+                            
+                            Text(
+                                text = "Успешно: ${likesSyncStatus.downloadedCount} | Ошибки: ${likesSyncStatus.failedCount}",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                    
+                    Spacer(modifier = Modifier.height(8.dp))
+                    
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        if (likesSyncStatus.state == SyncState.FETCHING_LIKES || likesSyncStatus.state == SyncState.DOWNLOADING) {
+                            Button(
+                                onClick = stopLikesSync,
+                                modifier = Modifier.weight(1f),
+                                shape = RoundedCornerShape(16.dp),
+                                colors = androidx.compose.material3.ButtonDefaults.buttonColors(
+                                    containerColor = MaterialTheme.colorScheme.error
+                                )
+                            ) {
+                                Text("Остановить", color = Color.White, fontWeight = FontWeight.Bold)
+                            }
+                        } else {
+                            Button(
+                                onClick = startLikesSync,
+                                modifier = Modifier.weight(1f),
+                                shape = RoundedCornerShape(16.dp),
+                                colors = androidx.compose.material3.ButtonDefaults.buttonColors(
+                                    containerColor = Color(0xFFFF5500)
+                                )
+                            ) {
+                                Text(
+                                    text = if (likesSyncStatus.state == SyncState.COMPLETED || likesSyncStatus.state == SyncState.FAILED) "Синхронизировать заново" else "Синхронизировать лайки",
+                                    color = Color.White,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                            
+                            if (likesSyncStatus.state == SyncState.COMPLETED || likesSyncStatus.state == SyncState.FAILED) {
+                                Button(
+                                    onClick = resetLikesSyncStatus,
+                                    modifier = Modifier.weight(1f),
+                                    shape = RoundedCornerShape(16.dp),
+                                    colors = androidx.compose.material3.ButtonDefaults.buttonColors(
+                                        containerColor = MaterialTheme.colorScheme.secondaryContainer,
+                                        contentColor = MaterialTheme.colorScheme.onSecondaryContainer
+                                    )
+                                ) {
+                                    Text("Сбросить", fontWeight = FontWeight.Bold)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
 
         item {
@@ -1512,7 +1652,7 @@ private fun TrackCard(
             Spacer(modifier = Modifier.width(16.dp))
             Column(modifier = Modifier.weight(1f)) {
                 Text(
-                    text = track.title,
+                    text = track.title ?: "Unknown Track",
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.ExtraBold,
                     maxLines = 1,
@@ -1765,7 +1905,7 @@ private fun TrackDetailScreen(
                 Spacer(modifier = Modifier.height(36.dp))
 
                 Text(
-                    text = track.title,
+                    text = track.title ?: "Unknown Track",
                     style = MaterialTheme.typography.headlineMedium,
                     fontWeight = FontWeight.ExtraBold,
                     textAlign = TextAlign.Center,
@@ -2557,11 +2697,10 @@ fun SoundCloudLoginScreen(
                                 userAgentString = "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Mobile Safari/537.36"
                             }
                             
-                            // Clear cookies, cache, and history to ensure clean login
-                            CookieManager.getInstance().removeAllCookies(null)
-                            CookieManager.getInstance().flush()
-                            clearCache(true)
-                            clearHistory()
+                            // Enable cookies and third-party cookies to persist Google/SoundCloud logins
+                            val cookieManager = CookieManager.getInstance()
+                            cookieManager.setAcceptCookie(true)
+                            cookieManager.setAcceptThirdPartyCookies(this, true)
 
                             var popupWebView: WebView? = null
 
@@ -2582,10 +2721,16 @@ fun SoundCloudLoginScreen(
                                         settings.apply {
                                             javaScriptEnabled = true
                                             domStorageEnabled = true
+                                            databaseEnabled = true
                                             setSupportMultipleWindows(true)
                                             javaScriptCanOpenWindowsAutomatically = true
                                             userAgentString = mainWebView.settings.userAgentString
                                         }
+                                        
+                                        // Enable cookies and third-party cookies for Google login popups
+                                        val cookieManager = CookieManager.getInstance()
+                                        cookieManager.setAcceptCookie(true)
+                                        cookieManager.setAcceptThirdPartyCookies(this, true)
                                         
                                         webChromeClient = object : WebChromeClient() {
                                             override fun onCloseWindow(window: WebView?) {
@@ -2603,6 +2748,7 @@ fun SoundCloudLoginScreen(
                                             override fun onPageFinished(view: WebView?, url: String?) {
                                                 super.onPageFinished(view, url)
                                                 isWebViewLoading = false
+                                                CookieManager.getInstance().flush()
                                             }
 
                                             override fun shouldInterceptRequest(
@@ -2655,6 +2801,7 @@ fun SoundCloudLoginScreen(
                                 override fun onPageFinished(view: WebView?, url: String?) {
                                     super.onPageFinished(view, url)
                                     isWebViewLoading = false
+                                    CookieManager.getInstance().flush()
                                 }
 
                                 override fun shouldInterceptRequest(
@@ -2877,7 +3024,8 @@ private fun PlaylistDetailScreen(
     onBack: () -> Unit,
     onPlayTrack: (FavoriteTrack) -> Unit,
     onRemoveTrack: (FavoriteTrack) -> Unit,
-    onChangeArtwork: (String?) -> Unit
+    onChangeArtwork: (String?) -> Unit,
+    onMoveDownloadedToDownloads: () -> Unit
 ) {
     val imagePicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument()
@@ -2975,6 +3123,21 @@ private fun PlaylistDetailScreen(
                             style = MaterialTheme.typography.titleMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
+                        
+                        val hasDownloaded = playlist.tracks.any { it.downloadState == DownloadState.DOWNLOADED }
+                        if (hasDownloaded) {
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Button(
+                                onClick = onMoveDownloadedToDownloads,
+                                shape = RoundedCornerShape(16.dp),
+                                colors = androidx.compose.material3.ButtonDefaults.buttonColors(
+                                    containerColor = MaterialTheme.colorScheme.primaryContainer,
+                                    contentColor = MaterialTheme.colorScheme.onPrimaryContainer
+                                )
+                            ) {
+                                Text("Переместить скачанные в Скачанное", fontWeight = FontWeight.Bold)
+                            }
+                        }
                     }
                 }
             }
@@ -3065,7 +3228,7 @@ fun TrackActionsDialog(
                         TrackArtwork(artworkUrl = track.artworkUrl, size = 64.dp)
                         Column(modifier = Modifier.weight(1f)) {
                             Text(
-                                text = track.title,
+                                text = track.title ?: "Unknown Track",
                                 style = MaterialTheme.typography.titleMedium,
                                 fontWeight = FontWeight.Bold,
                                 maxLines = 1,

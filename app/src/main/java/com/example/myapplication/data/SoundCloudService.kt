@@ -69,4 +69,12 @@ interface SoundCloudService {
     suspend fun getMe(
         @retrofit2.http.Query("client_id") clientId: String
     ): SoundCloudMeResponse
+
+    @retrofit2.http.GET("users/{user_id}/track_likes")
+    suspend fun getLikedTracks(
+        @retrofit2.http.Path("user_id") userId: String,
+        @retrofit2.http.Query("client_id") clientId: String,
+        @retrofit2.http.Query("limit") limit: Int = 50,
+        @retrofit2.http.Query("offset") offset: String? = null
+    ): SoundCloudLikesResponse
 }

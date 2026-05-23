@@ -10,8 +10,12 @@ import org.junit.Assert.*
  * See [testing documentation](http://d.android.com/tools/testing).
  */
 class ExampleUnitTest {
-    @Test
-    fun addition_isCorrect() {
-        assertEquals(4, 2 + 2)
+    @org.junit.Test
+    fun testFetchClientId() {
+        kotlinx.coroutines.runBlocking {
+            val clientId = com.example.myapplication.data.SoundCloudApi.fetchSoundCloudClientId()
+            println("EXTRACTED CLIENT ID: $clientId")
+            assertNotNull("Client ID should not be null", clientId)
+        }
     }
 }

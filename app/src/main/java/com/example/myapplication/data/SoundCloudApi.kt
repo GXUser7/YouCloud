@@ -52,13 +52,21 @@ object SoundCloudApi {
                 if (!response.isSuccessful) return@withContext null
                 val html = response.body?.string() ?: return@withContext null
 
-                val scriptRegex = """<script[^>]+src="([^"]+)"""".toRegex()
+                val scriptRegex = """<script[^>]+src=["']([^"']+)["']""".toRegex()
                 val scriptUrls = scriptRegex.findAll(html)
                     .map { it.groupValues[1] }
+                    .map { src ->
+                        when {
+                            src.startsWith("http://") || src.startsWith("https://") -> src
+                            src.startsWith("//") -> "https:$src"
+                            src.startsWith("/") -> "https://soundcloud.com$src"
+                            else -> "https://soundcloud.com/$src"
+                        }
+                    }
                     .toList()
                     .reversed()
 
-                val clientIdRegex = """client_id\s*:\s*"([0-9a-zA-Z]{32})"""".toRegex()
+                val clientIdRegex = """client_id["']?\s*[:=]\s*["']([a-zA-Z0-9]{32})["']""".toRegex()
                 for (url in scriptUrls) {
                     try {
                         val scriptRequest = okhttp3.Request.Builder()

@@ -34,6 +34,8 @@ import kotlinx.coroutines.launch
 import retrofit2.HttpException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.CancellationException
 
 enum class AppScreen {
     HOME,
@@ -137,6 +139,10 @@ class MusicViewModel(
 
     private val _currentPlayingTrack = MutableStateFlow<SoundCloudTrack?>(null)
     val currentPlayingTrack = _currentPlayingTrack.asStateFlow()
+
+    private val _likesSyncStatus = MutableStateFlow(LikesSyncStatus())
+    val likesSyncStatus = _likesSyncStatus.asStateFlow()
+    private var likesSyncJob: Job? = null
 
     private var searchJob: Job? = null
     private var openMixJob: Job? = null
@@ -306,7 +312,7 @@ class MusicViewModel(
                 // Play immediately with first track resolved and others as stubs
                 val stubs = tracks.map { t ->
                     val localUrl = favoritesRepository.get(t.id)?.streamUrl
-                    t.toQueueTrack(localUrl ?: resolvedUrls[t.id] ?: "")
+                    t.toQueueTrack(localUrl ?: resolvedUrls[t.id] ?: "soundcloud://track/${t.id}")
                 }
                 musicPlayer.playQueue(stubs, 0)
             } catch (e: Exception) {
@@ -394,7 +400,7 @@ class MusicViewModel(
                 // Play immediately with starting track resolved and others as stubs
                 val stubs = playableTracks.map { t ->
                     val localUrl = favoritesRepository.get(t.id)?.streamUrl
-                    t.toQueueTrack(localUrl ?: resolvedUrls[t.id] ?: "")
+                    t.toQueueTrack(localUrl ?: resolvedUrls[t.id] ?: "soundcloud://track/${t.id}")
                 }
                 musicPlayer.playQueue(stubs, startIndex)
             } catch (e: Exception) {
@@ -421,7 +427,7 @@ class MusicViewModel(
                 // Update the player queue with the new URL
                 val updatedQueue = activeQueue.map { t ->
                     val localUrl = favoritesRepository.get(t.id)?.streamUrl
-                    t.toQueueTrack(localUrl ?: resolvedUrls[t.id] ?: "")
+                    t.toQueueTrack(localUrl ?: resolvedUrls[t.id] ?: "soundcloud://track/${t.id}")
                 }
                 musicPlayer.updateQueue(updatedQueue)
             }
@@ -733,7 +739,7 @@ class MusicViewModel(
         QueueTrack(
             id = id,
             url = streamUrl,
-            title = title,
+            title = title ?: "Unknown Track",
             artist = user?.username ?: "Unknown Artist",
             artworkUrl = artworkUrl
         )
@@ -750,7 +756,7 @@ class MusicViewModel(
     private fun SoundCloudTrack.toFavoriteTrack(streamUrl: String? = null, downloadState: DownloadState = DownloadState.NONE) = FavoriteTrack(
         id = id,
         urn = urn ?: "",
-        title = title,
+        title = title ?: "Unknown Track",
         artworkUrl = artworkUrl,
         permalinkUrl = permalinkUrl,
         artist = user?.username ?: "Unknown Artist",
@@ -893,7 +899,7 @@ class MusicViewModel(
 
             val stubs = tracks.map { fav ->
                 val localUrl = favoritesRepository.get(fav.id)?.streamUrl
-                val url = localUrl ?: fav.streamUrl ?: resolvedUrls[fav.id] ?: ""
+                val url = localUrl ?: fav.streamUrl ?: resolvedUrls[fav.id] ?: "soundcloud://track/${fav.id}"
                 fav.toQueueTrack(url)
             }
 
@@ -916,6 +922,183 @@ class MusicViewModel(
                 _errorMessage.value = "Не удалось импортировать треки"
             } finally {
                 _isLoading.value = false
+            }
+        }
+    }
+
+    fun startLikesSync() {
+        likesSyncJob?.cancel()
+        likesSyncJob = viewModelScope.launch {
+            _likesSyncStatus.value = LikesSyncStatus(state = SyncState.FETCHING_LIKES)
+            val clientId = settingsRepository.clientId.value
+            val oauthToken = settingsRepository.oauthToken.value
+            val userId = settingsRepository.userId.value
+
+            if (clientId.isBlank() || oauthToken.isBlank() || userId.isBlank()) {
+                _likesSyncStatus.value = LikesSyncStatus(
+                    state = SyncState.FAILED,
+                    errorMessage = "Не все данные авторизации указаны в настройках"
+                )
+                return@launch
+            }
+
+            val allTracks = mutableListOf<SoundCloudTrack>()
+            var nextOffset: String? = null
+            var hasMore = true
+
+            try {
+                while (hasMore) {
+                    val response = service.getLikedTracks(
+                        userId = userId,
+                        clientId = clientId,
+                        limit = 50,
+                        offset = nextOffset
+                    )
+                    val items = response.collection.mapNotNull { it.track }
+                    allTracks.addAll(items)
+                    
+                    if (response.nextHref != null) {
+                        nextOffset = android.net.Uri.parse(response.nextHref).getQueryParameter("offset")
+                        if (nextOffset == null) {
+                            hasMore = false
+                        }
+                    } else {
+                        hasMore = false
+                    }
+                    
+                    delay(500)
+                }
+
+                if (allTracks.isEmpty()) {
+                    _likesSyncStatus.value = LikesSyncStatus(state = SyncState.COMPLETED)
+                    return@launch
+                }
+
+                _likesSyncStatus.value = LikesSyncStatus(
+                    state = SyncState.DOWNLOADING,
+                    totalTracks = allTracks.size,
+                    currentTrackIndex = 0
+                )
+
+                var downloadedCount = 0
+                var failedCount = 0
+
+                allTracks.forEachIndexed { index, track ->
+                    ensureActive()
+
+                    _likesSyncStatus.value = _likesSyncStatus.value.copy(
+                        currentTrackIndex = index + 1,
+                        currentTrackTitle = track.title ?: "Unknown Track"
+                    )
+
+                    val existing = favoritesRepository.get(track.id)
+                    val isAlreadyDownloaded = existing != null && existing.downloadState == DownloadState.DOWNLOADED && !existing.streamUrl.isNullOrBlank()
+
+                    if (isAlreadyDownloaded) {
+                        downloadedCount++
+                        _likesSyncStatus.value = _likesSyncStatus.value.copy(
+                            downloadedCount = downloadedCount
+                        )
+                    } else {
+                        try {
+                            if (existing == null) {
+                                favoritesRepository.add(track, streamUrl = null)
+                            }
+                            favoritesRepository.updateDownloadState(track.id, DownloadState.DOWNLOADING)
+
+                            var resolvedStreamUrl: String? = null
+                            try {
+                                resolvedStreamUrl = playbackResolver.resolve(track, clientId)
+                            } catch (e: Exception) {
+                                if (e is HttpException && (e.code() == 401 || e.code() == 403)) {
+                                    val newClientId = SoundCloudApi.fetchSoundCloudClientId()
+                                    if (newClientId != null) {
+                                        settingsRepository.saveClientId(newClientId)
+                                        resolvedStreamUrl = playbackResolver.resolve(track, newClientId)
+                                    }
+                                }
+                                if (resolvedStreamUrl == null) throw e
+                            }
+
+                            if (resolvedStreamUrl == null) {
+                                throw Exception("Could not resolve stream URL")
+                            }
+
+                            favoritesRepository.updateStreamUrl(track.id, resolvedStreamUrl)
+                            withContext(Dispatchers.IO) {
+                                offlineMusicStore.downloadHls(resolvedStreamUrl)
+                            }
+                            favoritesRepository.updateDownloadState(track.id, DownloadState.DOWNLOADED)
+                            downloadedCount++
+                        } catch (e: Exception) {
+                            Log.e("MusicViewModel", "Failed to sync/download track ${track.id}", e)
+                            favoritesRepository.updateDownloadState(track.id, DownloadState.FAILED)
+                            failedCount++
+                        }
+
+                        _likesSyncStatus.value = _likesSyncStatus.value.copy(
+                            downloadedCount = downloadedCount,
+                            failedCount = failedCount
+                        )
+                        
+                        delay(1000)
+                    }
+                }
+
+                _likesSyncStatus.value = _likesSyncStatus.value.copy(
+                    state = SyncState.COMPLETED
+                )
+
+            } catch (e: CancellationException) {
+                _likesSyncStatus.value = LikesSyncStatus(state = SyncState.IDLE)
+                throw e
+            } catch (e: Exception) {
+                Log.e("MusicViewModel", "Likes sync failed", e)
+                _likesSyncStatus.value = LikesSyncStatus(
+                    state = SyncState.FAILED,
+                    errorMessage = readableMessage(e)
+                )
+            }
+        }
+    }
+
+    fun stopLikesSync() {
+        likesSyncJob?.cancel()
+        likesSyncJob = null
+        _likesSyncStatus.value = LikesSyncStatus(state = SyncState.IDLE)
+    }
+
+    fun resetLikesSyncStatus() {
+        likesSyncJob?.cancel()
+        likesSyncJob = null
+        _likesSyncStatus.value = LikesSyncStatus(state = SyncState.IDLE)
+    }
+
+    fun moveDownloadedTracksToDownloads(playlist: Playlist) {
+        viewModelScope.launch {
+            val clientId = settingsRepository.clientId.value
+            val userIdValue = settingsRepository.userIdValue()
+            val token = settingsRepository.oauthTokenValue()
+
+            playlist.tracks.forEach { track ->
+                if (track.downloadState == DownloadState.DOWNLOADED && !track.streamUrl.isNullOrBlank()) {
+                    val existing = favoritesRepository.get(track.id)
+                    if (existing == null) {
+                        favoritesRepository.add(track.toSoundCloudTrack(), streamUrl = track.streamUrl)
+                        favoritesRepository.updateDownloadState(track.id, DownloadState.DOWNLOADED)
+                    } else if (existing.downloadState != DownloadState.DOWNLOADED) {
+                        favoritesRepository.updateStreamUrl(track.id, track.streamUrl)
+                        favoritesRepository.updateDownloadState(track.id, DownloadState.DOWNLOADED)
+                    }
+
+                    if (userIdValue.isNotBlank() && token.isNotBlank() && clientId.isNotBlank()) {
+                        try {
+                            service.likeTrack(userIdValue, track.id, clientId)
+                        } catch (e: Exception) {
+                            Log.e("MusicViewModel", "Failed to like track ${track.id} on SoundCloud", e)
+                        }
+                    }
+                }
             }
         }
     }

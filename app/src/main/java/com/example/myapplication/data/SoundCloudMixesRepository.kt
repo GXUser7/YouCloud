@@ -160,7 +160,7 @@ class SoundCloudMixesRepository(
 
     private fun SoundCloudSystemPlaylist.resolvedTracks(): List<SoundCloudTrack> =
         tracks.orEmpty().filter { track ->
-            track.kind == "track" && track.title.isNotBlank()
+            track.kind == "track" && !track.title.isNullOrBlank()
         }
 
     fun clearCache() {

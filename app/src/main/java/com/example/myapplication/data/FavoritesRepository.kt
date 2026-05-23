@@ -25,12 +25,12 @@ class FavoritesRepository(context: Context) {
 
     fun add(track: SoundCloudTrack, streamUrl: String?) {
         if (isFavorite(track.id)) return
-
+ 
         update(
             _favorites.value + FavoriteTrack(
                 id = track.id,
-                urn = track.urn,
-                title = track.title,
+                urn = track.urn ?: "",
+                title = track.title ?: "Unknown Track",
                 artworkUrl = track.artworkUrl,
                 permalinkUrl = track.permalinkUrl,
                 artist = track.user?.username ?: "Unknown Artist",

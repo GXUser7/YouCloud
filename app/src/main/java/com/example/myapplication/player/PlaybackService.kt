@@ -49,12 +49,28 @@ class PlaybackService : MediaSessionService() {
         preferences = getSharedPreferences("app_settings", Context.MODE_PRIVATE)
         preferences.registerOnSharedPreferenceChangeListener(prefListener)
 
+        val baseFactory = OfflineMusicStore.getInstance(this).cacheDataSourceFactory
+        val resolvingFactory = androidx.media3.datasource.ResolvingDataSource.Factory(
+            baseFactory,
+            object : androidx.media3.datasource.ResolvingDataSource.Resolver {
+                override fun resolveDataSpec(dataSpec: androidx.media3.datasource.DataSpec): androidx.media3.datasource.DataSpec {
+                    val uri = dataSpec.uri
+                    if (uri.scheme == "soundcloud") {
+                        val trackId = uri.lastPathSegment?.toLongOrNull()
+                        if (trackId != null) {
+                            val resolvedUri = resolveSoundCloudTrack(trackId)
+                            if (resolvedUri != null) {
+                                return dataSpec.buildUpon().setUri(android.net.Uri.parse(resolvedUri)).build()
+                            }
+                        }
+                    }
+                    return dataSpec
+                }
+            }
+        )
+
         val player = ExoPlayer.Builder(this)
-            .setMediaSourceFactory(
-                DefaultMediaSourceFactory(
-                    OfflineMusicStore.getInstance(this).cacheDataSourceFactory
-                )
-            )
+            .setMediaSourceFactory(DefaultMediaSourceFactory(resolvingFactory))
             .setAudioAttributes(
                 AudioAttributes.Builder()
                     .setContentType(C.AUDIO_CONTENT_TYPE_MUSIC)
@@ -85,6 +101,62 @@ class PlaybackService : MediaSessionService() {
         mediaSession = MediaSession.Builder(this, player)
             .setSessionActivity(pendingIntent)
             .build()
+    }
+
+    private fun resolveSoundCloudTrack(trackId: Long): String? {
+        val favoritesRepository = com.example.myapplication.data.FavoritesRepository(this)
+        val fav = favoritesRepository.get(trackId)
+        if (fav != null && fav.downloadState == com.example.myapplication.data.DownloadState.DOWNLOADED && !fav.streamUrl.isNullOrBlank()) {
+            Log.d("PlaybackService", "Playing track from cache: $trackId, url: ${fav.streamUrl}")
+            return fav.streamUrl
+        }
+
+        val playlistsRepository = com.example.myapplication.data.PlaylistsRepository(this)
+        val playlistTrack = playlistsRepository.playlists.value
+            .flatMap { it.tracks }
+            .firstOrNull { it.id == trackId && it.downloadState == com.example.myapplication.data.DownloadState.DOWNLOADED && !it.streamUrl.isNullOrBlank() }
+        if (playlistTrack != null) {
+            Log.d("PlaybackService", "Playing track from playlist cache: $trackId, url: ${playlistTrack.streamUrl}")
+            return playlistTrack.streamUrl
+        }
+
+        val clientId = preferences.getString("soundcloud_client_id", "") ?: ""
+        val oauthToken = preferences.getString("soundcloud_oauth_token", "") ?: ""
+
+        if (clientId.isBlank()) {
+            Log.e("PlaybackService", "Client ID is blank, cannot resolve track: $trackId")
+            return null
+        }
+
+        return kotlinx.coroutines.runBlocking {
+            try {
+                val service = com.example.myapplication.data.SoundCloudApi.createService { oauthToken }
+                val playbackResolver = com.example.myapplication.data.SoundCloudPlaybackResolver(service)
+                val track = service.getTrack(trackId, clientId)
+                playbackResolver.resolve(track, clientId)
+            } catch (e: Exception) {
+                Log.e("PlaybackService", "Error resolving track online: $trackId", e)
+                if (e is retrofit2.HttpException && (e.code() == 401 || e.code() == 403)) {
+                    val newClientId = com.example.myapplication.data.SoundCloudApi.fetchSoundCloudClientId()
+                    if (newClientId != null) {
+                        preferences.edit().putString("soundcloud_client_id", newClientId).apply()
+                        try {
+                            val service = com.example.myapplication.data.SoundCloudApi.createService { oauthToken }
+                            val playbackResolver = com.example.myapplication.data.SoundCloudPlaybackResolver(service)
+                            val track = service.getTrack(trackId, newClientId)
+                            playbackResolver.resolve(track, newClientId)
+                        } catch (retryEx: Exception) {
+                            Log.e("PlaybackService", "Error resolving track on retry: $trackId", retryEx)
+                            null
+                        }
+                    } else {
+                        null
+                    }
+                } else {
+                    null
+                }
+            }
+        }
     }
 
     private fun initEqualizer(audioSessionId: Int) {

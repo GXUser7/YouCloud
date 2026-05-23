@@ -80,6 +80,19 @@ class PlaylistsRepository(context: Context) {
         })
     }
 
+    fun updatePlaylistTracks(playlistId: String, tracks: List<FavoriteTrack>) {
+        update(_playlists.value.map { playlist ->
+            if (playlist.id == playlistId) {
+                playlist.copy(
+                    tracks = tracks,
+                    artworkUrl = playlist.artworkUrl ?: tracks.firstOrNull()?.artworkUrl
+                )
+            } else {
+                playlist
+            }
+        })
+    }
+
     private fun load(): List<Playlist> {
         val json = preferences.getString("playlists", null) ?: return emptyList()
         return runCatching { gson.fromJson<List<Playlist>>(json, listType) }
