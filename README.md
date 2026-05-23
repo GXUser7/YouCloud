@@ -1,4 +1,4 @@
-# SoundCloud Music Player
+# YouCloud Music Player
 
 Современный, премиальный и функциональный музыкальный плеер для Android на базе **Jetpack Compose** и **Media3 (ExoPlayer)**. Приложение разработано для бесшовного стриминга и полноценного офлайн-скачивания музыки с SoundCloud напрямую на устройство.
 
