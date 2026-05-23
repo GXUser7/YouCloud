@@ -1,0 +1,32 @@
+# Custom Rules for the YouCloud Project
+
+## Git Push Release Notes Generation
+
+When the user asks to push/send the project to Git, you must immediately write out the new changes in the following formats, incrementing the version accordingly (e.g. from v2.1 to v2.2):
+
+### 1. GitHub Release Notes Format (English & Russian)
+
+# YouCloud v[Version] Release
+
+[Short exciting summary of the release in English]
+
+## 🚀 What's New
+* **[Feature Name in English]**: [Brief description of what was changed/added in English]
+...
+
+---
+
+# YouCloud v[Version] — [Main feature names in Russian]
+
+## 🚀 Нововведения
+* **[Feature Name in Russian]**: [Brief description of what was changed/added in Russian]
+...
+
+### 2. Telegram Post Format (Russian)
+
+🎵 YouCloud — Версия [Version] (Наверно)
+
+Что нового:
+✨ [Highlight 1]: [Description in Russian]
+🎨 [Highlight 2]: [Description in Russian]
+...
