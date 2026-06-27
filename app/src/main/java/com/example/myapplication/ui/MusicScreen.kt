@@ -129,6 +129,7 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.PlaylistAdd
 import androidx.compose.material.icons.filled.QueueMusic
+import androidx.compose.material.icons.filled.Refresh
 import kotlin.math.max
 import android.webkit.CookieManager
 import android.webkit.WebResourceRequest
@@ -202,6 +203,9 @@ fun MusicScreen(viewModel: MusicViewModel) {
     val isClientIdExpired by viewModel.isClientIdExpired.collectAsState()
     val homeSelectedTab by viewModel.homeSelectedTab.collectAsState()
     var showTrackActionsDialog by remember { mutableStateOf(false) }
+    val showDebugPercentage by viewModel.settingsRepository.showDebugPercentage.collectAsState()
+    val downloadedPercentages by viewModel.downloadedPercentages.collectAsState()
+    val isAllArtistTracksLoaded by viewModel.isAllArtistTracksLoaded.collectAsState()
 
     val yandexPlaylists by viewModel.yandexPlaylists.collectAsState()
     val yandexToken by viewModel.settingsRepository.yandexToken.collectAsState()
@@ -361,7 +365,9 @@ fun MusicScreen(viewModel: MusicViewModel) {
                         haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                         viewModel.deleteDownloadedTrack(track)
                     },
-                    onImportTracks = viewModel::importLocalTracks
+                    onImportTracks = viewModel::importLocalTracks,
+                    showDebugPercentage = showDebugPercentage,
+                    downloadedPercentages = downloadedPercentages
                 )
 
                 AppScreen.SETTINGS -> {
@@ -494,6 +500,11 @@ fun MusicScreen(viewModel: MusicViewModel) {
                             onDeselectPlaylist = {
                                 haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                                 viewModel.deselectArtistPlaylist()
+                            },
+                            isAllTracksLoaded = isAllArtistTracksLoaded,
+                            onLoadAllTracks = {
+                                val isYandex = artist.permalinkUrl?.startsWith("yandex") == true || artist.id.toString().startsWith("yandex:")
+                                viewModel.loadAllArtistTracks(artist.id.toString(), isYandex)
                             }
                         )
                     }
@@ -644,6 +655,11 @@ fun MusicScreen(viewModel: MusicViewModel) {
                     }
                     val shareIntent = Intent.createChooser(sendIntent, null)
                     context.startActivity(shareIntent)
+                }
+            },
+            onRedownload = {
+                selectedTrack?.let { track ->
+                    viewModel.redownloadTrack(track)
                 }
             }
         )
@@ -1341,6 +1357,39 @@ private fun SettingsScreen(
                 eqPreset = eqPreset
             )
         }
+
+        item {
+            val showDebugPercentageVal by settingsRepository.showDebugPercentage.collectAsState()
+            ElevatedCard(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(32.dp)
+            ) {
+                Row(
+                    modifier = Modifier
+                        .padding(24.dp)
+                        .fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Дебаг информация",
+                            style = MaterialTheme.typography.titleLarge,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            text = "Показывать процент скачивания треков в память на экране загрузок.",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Switch(
+                        checked = showDebugPercentageVal,
+                        onCheckedChange = { settingsRepository.setShowDebugPercentage(it) }
+                    )
+                }
+            }
+        }
     }
 }
 
@@ -1512,7 +1561,9 @@ private fun DownloadsScreen(
     onChangeArtwork: (String?) -> Unit,
     onPlayTrack: (FavoriteTrack) -> Unit,
     onDeleteDownload: (FavoriteTrack) -> Unit,
-    onImportTracks: (List<android.net.Uri>) -> Unit
+    onImportTracks: (List<android.net.Uri>) -> Unit,
+    showDebugPercentage: Boolean = false,
+    downloadedPercentages: Map<Long, Int> = emptyMap()
 ) {
     val context = LocalContext.current
     val imagePicker = rememberLauncherForActivityResult(
@@ -1569,13 +1620,16 @@ private fun DownloadsScreen(
             } else {
                 items(tracks, key = { "downloaded-${it.id}" }) { track ->
                     val progress = downloadProgress[track.id]
+                    val debugPct = downloadedPercentages[track.id]
                     DownloadedTrackCard(
                         track = track,
                         isSelected = track.id == currentTrackId,
                         progress = progress,
                         isPlaying = isPlaying,
                         onClick = { onPlayTrack(track) },
-                        onDeleteDownload = { onDeleteDownload(track) }
+                        onDeleteDownload = { onDeleteDownload(track) },
+                        showDebugPercentage = showDebugPercentage,
+                        debugPercentage = debugPct
                     )
                 }
             }
@@ -2473,7 +2527,9 @@ private fun DownloadedTrackCard(
     progress: Float? = null,
     isPlaying: Boolean = false,
     onClick: () -> Unit,
-    onDeleteDownload: () -> Unit
+    onDeleteDownload: () -> Unit,
+    showDebugPercentage: Boolean = false,
+    debugPercentage: Int? = null
 ) {
     val haptic = LocalHapticFeedback.current
     Card(
@@ -2513,17 +2569,37 @@ private fun DownloadedTrackCard(
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
-                Text(
-                    text = track.artist,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = if (isSelected) {
-                        MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.8f)
-                    } else {
-                        MaterialTheme.colorScheme.onSurfaceVariant
-                    },
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    Text(
+                        text = track.artist,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = if (isSelected) {
+                            MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.8f)
+                        } else {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        },
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f, fill = false)
+                    )
+                    if (showDebugPercentage && debugPercentage != null) {
+                        Text(
+                            text = "• $debugPercentage%",
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = if (debugPercentage < 90) {
+                                Color.Red
+                            } else if (isSelected) {
+                                MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.8f)
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            }
+                        )
+                    }
+                }
             }
             if (track.downloadState == DownloadState.DOWNLOADING) {
                 CustomCircularWavyProgressIndicator(
@@ -2582,19 +2658,20 @@ private fun TrackDetailScreen(
 
     Surface(
         modifier = Modifier.fillMaxSize(),
-        color = MaterialTheme.colorScheme.surface
+        color = androidx.compose.ui.graphics.Color.Transparent
     ) {
         Box(modifier = Modifier.fillMaxSize()) {
-            // Rich dynamic gradient
+            ExpressiveBackground()
+            // Rich dynamic gradient overlaying the expressive background
             Box(
                 modifier = Modifier
                     .fillMaxSize()
                     .background(
                         Brush.verticalGradient(
                             colors = listOf(
-                                MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.85f),
-                                MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
-                                MaterialTheme.colorScheme.surface
+                                MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.4f),
+                                MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.2f),
+                                MaterialTheme.colorScheme.surface.copy(alpha = 0.6f)
                             )
                         )
                     )
@@ -4276,7 +4353,9 @@ private fun ArtistDetailScreen(
     onFavoriteClick: (SoundCloudTrack) -> Unit,
     onPlaylistClick: (SoundCloudPlaylist) -> Unit,
     selectedPlaylist: SoundCloudPlaylist? = null,
-    onDeselectPlaylist: () -> Unit = {}
+    onDeselectPlaylist: () -> Unit = {},
+    isAllTracksLoaded: Boolean = false,
+    onLoadAllTracks: () -> Unit = {}
 ) {
     if (selectedPlaylist != null) {
         Column(
@@ -4378,7 +4457,7 @@ private fun ArtistDetailScreen(
                     .fillMaxWidth()
                     .padding(horizontal = 16.dp, vertical = 8.dp)
             ) {
-                TopBar(title = artist.username.orEmpty(), onBack = onBack)
+                TopBar(title = "", onBack = onBack)
             }
 
             LazyColumn(
@@ -4482,7 +4561,9 @@ private fun ArtistDetailScreen(
                             )
                         }
 
-                        items(tracks.take(15), key = { "artist-track-${it.id}" }) { track ->
+                        val tracksToDisplay = if (isAllTracksLoaded) tracks else tracks.take(15)
+
+                        items(tracksToDisplay, key = { "artist-track-${it.id}" }) { track ->
                             val favorite = favorites.firstOrNull { it.id == track.id }
                             val progress = downloadProgress[track.id]
                             TrackCard(
@@ -4495,6 +4576,30 @@ private fun ArtistDetailScreen(
                                 onClick = { onPlayTrack(track) },
                                 onFavoriteClick = { onFavoriteClick(track) }
                             )
+                        }
+
+                        if (!isAllTracksLoaded) {
+                            item {
+                                Surface(
+                                    onClick = onLoadAllTracks,
+                                    modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                                    shape = RoundedCornerShape(20.dp),
+                                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
+                                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f))
+                                ) {
+                                    Box(
+                                        modifier = Modifier.padding(16.dp),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Text(
+                                            text = "Загрузить все популярные треки",
+                                            style = MaterialTheme.typography.bodyLarge,
+                                            fontWeight = FontWeight.Bold,
+                                            color = MaterialTheme.colorScheme.primary
+                                        )
+                                    }
+                                }
+                            }
                         }
                     }
 
@@ -4581,7 +4686,8 @@ fun TrackActionsDialog(
     onDismiss: () -> Unit,
     onAddToPlaylist: (Playlist) -> Unit,
     onCreatePlaylist: (String) -> Unit,
-    onShare: () -> Unit
+    onShare: () -> Unit,
+    onRedownload: () -> Unit = {}
 ) {
     Dialog(
         onDismissRequest = onDismiss,
@@ -4736,6 +4842,49 @@ fun TrackActionsDialog(
                                     )
                                     Text(
                                         text = "Поделитесь треком с друзьями",
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            }
+                        }
+
+                        Surface(
+                            onClick = {
+                                onRedownload()
+                                onDismiss()
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(20.dp),
+                            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
+                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f))
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(16.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(16.dp)
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(44.dp)
+                                        .background(MaterialTheme.colorScheme.tertiaryContainer, CircleShape),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Refresh,
+                                        contentDescription = null,
+                                        tint = MaterialTheme.colorScheme.onTertiaryContainer,
+                                        modifier = Modifier.size(22.dp)
+                                    )
+                                }
+                                Column {
+                                    Text(
+                                        text = "Перескачать трек",
+                                        style = MaterialTheme.typography.bodyLarge,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                    Text(
+                                        text = "Скачать файл заново на устройство",
                                         style = MaterialTheme.typography.bodyMedium,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant
                                     )

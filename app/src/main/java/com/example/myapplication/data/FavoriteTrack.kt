@@ -10,7 +10,8 @@ data class FavoriteTrack(
     val duration: Long,
     val streamUrl: String?,
     val downloadState: DownloadState,
-    val artistPermalinkUrl: String? = null
+    val artistPermalinkUrl: String? = null,
+    val artistId: Long? = null
 ) {
     fun toSoundCloudTrack(): SoundCloudTrack = SoundCloudTrack(
         id = id,
@@ -20,6 +21,7 @@ data class FavoriteTrack(
         artworkUrl = artworkUrl,
         permalinkUrl = permalinkUrl,
         user = SoundCloudUser(
+            id = artistId,
             username = artist,
             permalinkUrl = artistPermalinkUrl
         ),

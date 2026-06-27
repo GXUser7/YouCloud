@@ -1,6 +1,7 @@
 package com.example.myapplication.ui
 
 import android.content.Context
+import android.media.MediaMetadataRetriever
 import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -138,6 +139,12 @@ class MusicViewModel(
     private val _currentArtistTracks = MutableStateFlow<List<SoundCloudTrack>>(emptyList())
     val currentArtistTracks = _currentArtistTracks.asStateFlow()
 
+    private val _isAllArtistTracksLoaded = MutableStateFlow(false)
+    val isAllArtistTracksLoaded = _isAllArtistTracksLoaded.asStateFlow()
+
+    private val _downloadedPercentages = MutableStateFlow<Map<Long, Int>>(emptyMap())
+    val downloadedPercentages = _downloadedPercentages.asStateFlow()
+
     private val _artistLoading = MutableStateFlow(false)
     val artistLoading = _artistLoading.asStateFlow()
 
@@ -239,6 +246,14 @@ class MusicViewModel(
     private var activeQueue: List<SoundCloudTrack> = emptyList()
     private val resolvedUrls = mutableMapOf<Long, String>()
 
+    private class DownloadRequest(
+        val track: SoundCloudTrack,
+        val isRedownload: Boolean,
+        val onComplete: (Boolean) -> Unit = {}
+    )
+
+    private val downloadQueue = kotlinx.coroutines.channels.Channel<DownloadRequest>(kotlinx.coroutines.channels.Channel.UNLIMITED)
+
     init {
         viewModelScope.launch {
             combine(
@@ -291,6 +306,55 @@ class MusicViewModel(
                 } else {
                     loadYandexPlaylists()
                 }
+            }
+        }
+        viewModelScope.launch {
+            favorites.collectLatest { list ->
+                val newMap = mutableMapOf<Long, Int>()
+                withContext(Dispatchers.IO) {
+                    list.forEach { fav ->
+                        if (fav.downloadState == DownloadState.DOWNLOADED) {
+                            if (fav.urn.startsWith("yandex:track:")) {
+                                val path = fav.streamUrl
+                                if (path != null && java.io.File(path).exists()) {
+                                    val actual = getMp3Duration(path)
+                                    val expected = fav.duration
+                                    if (expected > 0) {
+                                        val pct = ((actual.toFloat() / expected.toFloat()) * 100).toInt().coerceIn(0, 100)
+                                        newMap[fav.id] = pct
+                                    } else {
+                                        newMap[fav.id] = 100
+                                    }
+                                } else {
+                                    newMap[fav.id] = 0
+                                }
+                            } else if (fav.urn.startsWith("local:track:")) {
+                                val path = fav.streamUrl
+                                if (path != null && java.io.File(path).exists()) {
+                                    val actual = getMp3Duration(path)
+                                    val expected = fav.duration
+                                    if (expected > 0) {
+                                        newMap[fav.id] = ((actual.toFloat() / expected.toFloat()) * 100).toInt().coerceIn(0, 100)
+                                    } else {
+                                        newMap[fav.id] = 100
+                                    }
+                                } else {
+                                    newMap[fav.id] = 0
+                                }
+                            } else {
+                                newMap[fav.id] = 100
+                            }
+                        }
+                    }
+                }
+                _downloadedPercentages.value = newMap
+            }
+        }
+
+        viewModelScope.launch(Dispatchers.Default) {
+            for (request in downloadQueue) {
+                val success = performDownload(request.track, request.isRedownload)
+                request.onComplete(success)
             }
         }
     }
@@ -800,6 +864,7 @@ class MusicViewModel(
             _currentArtistTracks.value = emptyList()
             _currentArtistPlaylists.value = emptyList()
             _selectedArtistPlaylist.value = null
+            _isAllArtistTracksLoaded.value = false
             
             var isYandex = permalinkUrl?.startsWith("yandex:artist:") == true || 
                            permalinkUrl?.contains("yandex:artist:") == true ||
@@ -1045,6 +1110,33 @@ class MusicViewModel(
         favoritesRepository.updateDownloadedFolderArtworkUri(uri)
     }
 
+    private suspend fun unlikeOnApiAndLocal(track: SoundCloudTrack) {
+        favoritesRepository.remove(track.id)
+        
+        val isYandex = track.urn?.startsWith("yandex:track:") == true
+        if (isYandex) {
+            val token = settingsRepository.yandexTokenValue()
+            val uid = getYandexUid()
+            if (token.isNotBlank() && uid != null) {
+                val yandexTrackId = track.urn!!.substringAfter("yandex:track:")
+                try {
+                    yandexService.unlikeTrack(uid, yandexTrackId)
+                } catch (e: Exception) {
+                    Log.e("MusicViewModel", "Failed to auto-unlike track on Yandex on download failure", e)
+                }
+            }
+        } else {
+            val userIdValue = settingsRepository.userIdValue()
+            if (userIdValue.isNotBlank() && settingsRepository.oauthTokenValue().isNotBlank()) {
+                try {
+                    service.unlikeTrack(userIdValue, track.id, settingsRepository.clientId.value)
+                } catch (e: Exception) {
+                    Log.e("MusicViewModel", "Failed to auto-unlike track on SoundCloud on download failure", e)
+                }
+            }
+        }
+    }
+
     fun toggleFavorite(track: SoundCloudTrack) {
         viewModelScope.launch {
             if (favoritesRepository.isFavorite(track.id)) {
@@ -1108,65 +1200,7 @@ class MusicViewModel(
                 }
             }
 
-            try {
-                val clientId = settingsRepository.clientId.value
-                val streamUrl = if (isYandex) {
-                    val yandexTrackId = track.urn?.substringAfter("yandex:track:") ?: ""
-                    val token = settingsRepository.yandexTokenValue()
-                    if (token.isNotBlank()) {
-                        YandexMusicApi.resolveTrackStream(yandexTrackId, token)
-                    } else {
-                        null
-                    }
-                } else {
-                    if (clientId.isNotBlank()) {
-                        playbackResolver.resolve(track, clientId)
-                    } else {
-                        null
-                    }
-                }
-
-                if (streamUrl == null) {
-                    favoritesRepository.updateDownloadState(track.id, DownloadState.FAILED)
-                    if (isYandex) {
-                        _errorMessage.value = "Укажите рабочий токен Яндекс Музыки в настройках."
-                    } else if (clientId.isBlank()) {
-                        _errorMessage.value = "Укажите SoundCloud client_id в настройках для загрузки трека"
-                    } else {
-                        _errorMessage.value = "Трек добавлен в любимое, но поток для загрузки не нашёлся."
-                    }
-                    return@launch
-                }
-
-                if (isYandex) {
-                    val localPath = withContext(Dispatchers.IO) {
-                        val yandexTrackId = track.urn?.substringAfter("yandex:track:") ?: ""
-                        offlineMusicStore.downloadProgressive(streamUrl, yandexTrackId) { progress ->
-                            updateDownloadProgress(track.id, progress)
-                        }
-                    }
-                    if (localPath != null) {
-                        favoritesRepository.updateStreamUrl(track.id, localPath)
-                        favoritesRepository.updateDownloadState(track.id, DownloadState.DOWNLOADED)
-                    } else {
-                        favoritesRepository.updateDownloadState(track.id, DownloadState.FAILED)
-                        _errorMessage.value = "Не удалось сохранить трек во внутреннюю память устройства."
-                    }
-                } else {
-                    favoritesRepository.updateStreamUrl(track.id, streamUrl)
-                    withContext(Dispatchers.IO) {
-                        offlineMusicStore.downloadHls(streamUrl) { progress ->
-                            updateDownloadProgress(track.id, progress / 100f)
-                        }
-                    }
-                    favoritesRepository.updateDownloadState(track.id, DownloadState.DOWNLOADED)
-                }
-            } catch (e: Exception) {
-                favoritesRepository.updateDownloadState(track.id, DownloadState.FAILED)
-                _errorMessage.value = readableMessage(e, isYandex = isYandex)
-            } finally {
-                _downloadProgress.value = _downloadProgress.value - track.id
-            }
+            downloadQueue.trySend(DownloadRequest(track, isRedownload = false))
         }
     }
 
@@ -1346,7 +1380,8 @@ class MusicViewModel(
         duration = duration,
         streamUrl = streamUrl,
         downloadState = downloadState,
-        artistPermalinkUrl = user?.permalinkUrl
+        artistPermalinkUrl = user?.permalinkUrl,
+        artistId = user?.id
     )
 
     // Playlist and Local Import Support
@@ -1527,25 +1562,32 @@ class MusicViewModel(
             }
 
             val allTracks = mutableListOf<SoundCloudTrack>()
+            var yandexTrackRefs: List<com.example.myapplication.data.YandexLikedTrackRef> = emptyList()
 
             try {
                 if (source == LikesSyncSource.SOUNDCLOUD) {
-                    var nextOffset: String? = null
+                    var nextUrl: String? = null
                     var hasMore = true
                     while (hasMore) {
-                        val response = service.getLikedTracks(
-                            userId = userId,
-                            clientId = clientId,
-                            limit = 50,
-                            offset = nextOffset
-                        )
+                        val response = if (nextUrl == null) {
+                            service.getLikedTracks(
+                                userId = userId,
+                                clientId = clientId,
+                                limit = 50
+                            )
+                        } else {
+                            service.getLikedTracksByUrl(nextUrl)
+                        }
                         val items = response.collection.mapNotNull { it.track }
                         allTracks.addAll(items)
                         
-                        if (response.nextHref != null) {
-                            nextOffset = android.net.Uri.parse(response.nextHref).getQueryParameter("offset")
-                            if (nextOffset == null) {
-                                hasMore = false
+                        val rawNextHref = response.nextHref
+                        if (!rawNextHref.isNullOrBlank()) {
+                            val uri = android.net.Uri.parse(rawNextHref)
+                            nextUrl = if (uri.getQueryParameter("client_id") == null) {
+                                uri.buildUpon().appendQueryParameter("client_id", clientId).build().toString()
+                            } else {
+                                rawNextHref
                             }
                         } else {
                             hasMore = false
@@ -1558,9 +1600,9 @@ class MusicViewModel(
                     if (yandexUid != null) {
                         try {
                             val likedResponse = yandexService.getLikedTracks(yandexUid)
-                            val trackRefs = likedResponse.result?.library?.tracks.orEmpty()
+                            yandexTrackRefs = likedResponse.result?.library?.tracks.orEmpty()
                             
-                            trackRefs.chunked(50).forEach { chunk ->
+                            yandexTrackRefs.chunked(50).forEach { chunk ->
                                 val trackIdsStr = chunk.joinToString(",") { if (it.albumId.isNullOrBlank()) it.id else "${it.id}:${it.albumId}" }
                                 try {
                                     val tracksDetailsResponse = yandexService.getTracksDetails(trackIdsStr)
@@ -1570,6 +1612,15 @@ class MusicViewModel(
                                 }
                                 delay(300)
                             }
+
+                            // Restore original chronological order of liked tracks from Yandex
+                            val orderMap = yandexTrackRefs.withIndex().associate { it.value.id to it.index }
+                            val sortedAllTracks = allTracks.sortedBy { track ->
+                                val yandexId = track.urn?.substringAfter("yandex:track:") ?: ""
+                                orderMap[yandexId] ?: Int.MAX_VALUE
+                            }
+                            allTracks.clear()
+                            allTracks.addAll(sortedAllTracks)
                         } catch (e: Exception) {
                             Log.e("MusicViewModel", "Failed to get Yandex liked tracks", e)
                         }
@@ -1613,54 +1664,14 @@ class MusicViewModel(
                             }
                             favoritesRepository.updateDownloadState(track.id, DownloadState.DOWNLOADING)
 
-                            val isYandexTrack = track.urn?.startsWith("yandex:track:") == true
-                            if (isYandexTrack) {
-                                val yandexTrackId = track.urn!!.substringAfter("yandex:track:")
-                                val resolvedStreamUrl = YandexMusicApi.resolveTrackStream(yandexTrackId, yandexToken)
-                                if (resolvedStreamUrl == null) {
-                                    throw Exception("Could not resolve Yandex stream URL")
-                                }
-                                
-                                val localPath = withContext(Dispatchers.IO) {
-                                    offlineMusicStore.downloadProgressive(resolvedStreamUrl, yandexTrackId)
-                                }
-                                
-                                if (localPath != null) {
-                                    favoritesRepository.updateStreamUrl(track.id, localPath)
-                                    favoritesRepository.updateDownloadState(track.id, DownloadState.DOWNLOADED)
-                                    downloadedCount++
-                                } else {
-                                    throw Exception("Failed to write Yandex progressive download file")
-                                }
-                            } else {
-                                var resolvedStreamUrl: String? = null
-                                try {
-                                    resolvedStreamUrl = playbackResolver.resolve(track, clientId)
-                                } catch (e: Exception) {
-                                    if (e is HttpException && (e.code() == 401 || e.code() == 403)) {
-                                        val newClientId = SoundCloudApi.fetchSoundCloudClientId()
-                                        if (newClientId != null) {
-                                            settingsRepository.saveClientId(newClientId)
-                                            resolvedStreamUrl = playbackResolver.resolve(track, newClientId)
-                                        }
-                                    }
-                                    if (resolvedStreamUrl == null) throw e
-                                }
-
-                                if (resolvedStreamUrl == null) {
-                                    throw Exception("Could not resolve stream URL")
-                                }
-
-                                favoritesRepository.updateStreamUrl(track.id, resolvedStreamUrl)
-                                withContext(Dispatchers.IO) {
-                                    offlineMusicStore.downloadHls(resolvedStreamUrl)
-                                }
-                                favoritesRepository.updateDownloadState(track.id, DownloadState.DOWNLOADED)
+                            val success = enqueueDownloadAndWait(track)
+                            if (success) {
                                 downloadedCount++
+                            } else {
+                                throw Exception("Track download failed or incomplete")
                             }
                         } catch (e: Exception) {
                             Log.e("MusicViewModel", "Failed to sync/download track ${track.id}", e)
-                            favoritesRepository.updateDownloadState(track.id, DownloadState.FAILED)
                             failedCount++
                         }
 
@@ -1671,6 +1682,19 @@ class MusicViewModel(
                         
                         delay(1000)
                     }
+                }
+
+                if (source == LikesSyncSource.YANDEX && yandexTrackRefs.isNotEmpty()) {
+                    val currentFavs = favoritesRepository.favorites.value
+                    val nonYandex = currentFavs.filter { !it.urn.startsWith("yandex:track:") }
+                    val yandex = currentFavs.filter { it.urn.startsWith("yandex:track:") }
+                    
+                    val orderMap = yandexTrackRefs.withIndex().associate { it.value.id to it.index }
+                    val sortedYandex = yandex.sortedBy { track ->
+                        val yandexId = track.urn.substringAfter("yandex:track:")
+                        orderMap[yandexId] ?: Int.MAX_VALUE
+                    }
+                    favoritesRepository.reorderTracks(nonYandex + sortedYandex)
                 }
 
                 statusFlow.value = statusFlow.value.copy(
@@ -1842,6 +1866,213 @@ class MusicViewModel(
                 _isLoading.value = false
             }
         }
+    }
+
+    private fun getMp3Duration(path: String): Long {
+        val retriever = MediaMetadataRetriever()
+        return try {
+            retriever.setDataSource(path)
+            val time = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)
+            time?.toLongOrNull() ?: 0L
+        } catch (e: java.lang.Exception) {
+            0L
+        } finally {
+            try {
+                retriever.release()
+            } catch (e: java.lang.Exception) {}
+        }
+    }
+
+    private suspend fun enqueueDownloadAndWait(track: SoundCloudTrack): Boolean {
+        val deferred = kotlinx.coroutines.CompletableDeferred<Boolean>()
+        downloadQueue.send(DownloadRequest(track, isRedownload = false) { success ->
+            deferred.complete(success)
+        })
+        return deferred.await()
+    }
+
+    private suspend fun performDownload(track: SoundCloudTrack, isRedownload: Boolean): Boolean {
+        if (!favoritesRepository.isFavorite(track.id) && !isRedownload) {
+            return false
+        }
+
+        if (isRedownload) {
+            favoritesRepository.get(track.id)?.let { favorite ->
+                if (favorite.streamUrl != null) {
+                    withContext(Dispatchers.IO) {
+                        if (favorite.urn.startsWith("yandex:track:")) {
+                            offlineMusicStore.removeProgressive(favorite.streamUrl)
+                        } else {
+                            offlineMusicStore.removeHls(favorite.streamUrl)
+                        }
+                    }
+                }
+            }
+            if (!favoritesRepository.isFavorite(track.id)) {
+                favoritesRepository.add(track, streamUrl = null)
+            } else {
+                favoritesRepository.updateStreamUrl(track.id, "")
+            }
+            favoritesRepository.updateDownloadState(track.id, DownloadState.DOWNLOADING)
+        }
+
+        val isYandex = track.urn?.startsWith("yandex:track:") == true
+        val clientId = settingsRepository.clientId.value
+
+        try {
+            val streamUrl = if (isYandex) {
+                val yandexTrackId = track.urn?.substringAfter("yandex:track:") ?: ""
+                val token = settingsRepository.yandexTokenValue()
+                if (token.isNotBlank()) {
+                    YandexMusicApi.resolveTrackStream(yandexTrackId, token)
+                } else {
+                    null
+                }
+            } else {
+                if (clientId.isNotBlank()) {
+                    var resolved: String? = null
+                    try {
+                        resolved = playbackResolver.resolve(track, clientId)
+                    } catch (e: Exception) {
+                        if (e is retrofit2.HttpException && (e.code() == 401 || e.code() == 403)) {
+                            val newClientId = SoundCloudApi.fetchSoundCloudClientId()
+                            if (newClientId != null) {
+                                settingsRepository.saveClientId(newClientId)
+                                resolved = playbackResolver.resolve(track, newClientId)
+                            }
+                        }
+                        if (resolved == null) throw e
+                    }
+                    resolved
+                } else {
+                    null
+                }
+            }
+
+            if (streamUrl == null) {
+                favoritesRepository.updateDownloadState(track.id, DownloadState.FAILED)
+                unlikeOnApiAndLocal(track)
+                if (isYandex) {
+                    _errorMessage.value = "Укажите рабочий токен Яндекс Музыки в настройках."
+                } else if (clientId.isBlank()) {
+                    _errorMessage.value = "Укажите SoundCloud client_id в настройках для загрузки трека"
+                } else {
+                    _errorMessage.value = "Поток для загрузки не нашёлся."
+                }
+                return false
+            }
+
+            if (isYandex) {
+                val yandexTrackId = track.urn?.substringAfter("yandex:track:") ?: ""
+                val localPath = withContext(Dispatchers.IO) {
+                    offlineMusicStore.downloadProgressive(streamUrl, yandexTrackId) { progress ->
+                        updateDownloadProgress(track.id, progress)
+                    }
+                }
+                if (localPath != null) {
+                    val actualDuration = getMp3Duration(localPath)
+                    var expectedDuration = track.duration
+                    if (expectedDuration <= 0L) {
+                        try {
+                            val yandexTrackId = track.urn?.substringAfter("yandex:track:") ?: ""
+                            val response = yandexService.getTracksDetails(yandexTrackId)
+                            expectedDuration = response.result?.firstOrNull()?.durationMs ?: 0L
+                        } catch (e: Exception) {
+                            Log.e("MusicViewModel", "Failed to fetch expected duration during download", e)
+                        }
+                    }
+                    val isValid = if (expectedDuration > 0) {
+                        val diff = kotlin.math.abs(actualDuration - expectedDuration)
+                        diff <= 8000L || (actualDuration.toFloat() / expectedDuration.toFloat()) >= 0.95f
+                    } else {
+                        actualDuration > 10000L
+                    }
+                    
+                    if (isValid) {
+                        if (favoritesRepository.isFavorite(track.id)) {
+                            favoritesRepository.updateStreamUrl(track.id, localPath)
+                            favoritesRepository.updateDownloadState(track.id, DownloadState.DOWNLOADED)
+                            return true
+                        } else {
+                            withContext(Dispatchers.IO) {
+                                java.io.File(localPath).delete()
+                            }
+                            return false
+                        }
+                    } else {
+                        withContext(Dispatchers.IO) {
+                            java.io.File(localPath).delete()
+                        }
+                        favoritesRepository.updateDownloadState(track.id, DownloadState.FAILED)
+                        unlikeOnApiAndLocal(track)
+                        _errorMessage.value = "Ошибка: Трек скачался не полностью."
+                        return false
+                    }
+                } else {
+                    favoritesRepository.updateDownloadState(track.id, DownloadState.FAILED)
+                    unlikeOnApiAndLocal(track)
+                    return false
+                }
+            } else {
+                favoritesRepository.updateStreamUrl(track.id, streamUrl)
+                withContext(Dispatchers.IO) {
+                    offlineMusicStore.downloadHls(streamUrl) { progress ->
+                        updateDownloadProgress(track.id, progress / 100f)
+                    }
+                }
+                if (favoritesRepository.isFavorite(track.id)) {
+                    favoritesRepository.updateDownloadState(track.id, DownloadState.DOWNLOADED)
+                    return true
+                } else {
+                    withContext(Dispatchers.IO) {
+                        offlineMusicStore.removeHls(streamUrl)
+                    }
+                    return false
+                }
+            }
+        } catch (e: Exception) {
+            Log.e("MusicViewModel", "Error downloading track ${track.id}", e)
+            favoritesRepository.updateDownloadState(track.id, DownloadState.FAILED)
+            unlikeOnApiAndLocal(track)
+            _errorMessage.value = readableMessage(e, isYandex = isYandex)
+            return false
+        } finally {
+            _downloadProgress.value = _downloadProgress.value - track.id
+        }
+    }
+
+    fun loadAllArtistTracks(artistId: String, isYandex: Boolean) {
+        viewModelScope.launch {
+            _artistLoading.value = true
+            _artistError.value = null
+            try {
+                if (isYandex) {
+                    val response = yandexService.getArtistTracks(artistId, page = 0, pageSize = 100)
+                    val tracksList = response.result?.tracks.orEmpty().map { it.toSoundCloudTrack() }
+                    _currentArtistTracks.value = tracksList
+                    _isAllArtistTracksLoaded.value = true
+                } else {
+                    val clientIdVal = settingsRepository.clientId.value
+                    if (clientIdVal.isNotBlank()) {
+                        val numericUserId = artistId.toLongOrNull() ?: 0L
+                        if (numericUserId != 0L) {
+                            val response = service.getUserTracks(numericUserId, clientIdVal, limit = 100)
+                            _currentArtistTracks.value = response.collection
+                            _isAllArtistTracksLoaded.value = true
+                        }
+                    }
+                }
+            } catch (e: java.lang.Exception) {
+                Log.e("MusicViewModel", "Failed to load all artist tracks", e)
+                _artistError.value = "Ошибка: ${readableMessage(e, isYandex = isYandex)}"
+            } finally {
+                _artistLoading.value = false
+            }
+        }
+    }
+
+    fun redownloadTrack(track: SoundCloudTrack) {
+        downloadQueue.trySend(DownloadRequest(track, isRedownload = true))
     }
 
     fun playYandexTrack(track: SoundCloudTrack, customQueue: List<SoundCloudTrack>? = null) {

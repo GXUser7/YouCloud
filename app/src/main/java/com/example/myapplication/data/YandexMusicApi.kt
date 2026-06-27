@@ -31,6 +31,13 @@ interface YandexMusicService {
         @Path("artistId") artistId: String
     ): YandexArtistBriefResponse
 
+    @GET("artists/{artistId}/tracks")
+    suspend fun getArtistTracks(
+        @Path("artistId") artistId: String,
+        @Query("page") page: Int = 0,
+        @Query("page-size") pageSize: Int = 100
+    ): YandexArtistTracksResponse
+
     @GET("account/status")
     suspend fun getAccountStatus(): YandexAccountStatusResponse
 

@@ -222,3 +222,11 @@ data class YandexLikeResponse(
 data class YandexTracksResponse(
     val result: List<YandexTrack>? = emptyList()
 )
+
+data class YandexArtistTracksResponse(
+    val result: YandexArtistTracksResult?
+)
+
+data class YandexArtistTracksResult(
+    val tracks: List<YandexTrack>? = emptyList()
+)

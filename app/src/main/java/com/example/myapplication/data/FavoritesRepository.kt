@@ -6,7 +6,7 @@ import com.google.gson.reflect.TypeToken
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 
-class FavoritesRepository(context: Context) {
+class FavoritesRepository(private val context: Context) {
     private val preferences = context.getSharedPreferences("favorite_tracks", Context.MODE_PRIVATE)
     private val gson = Gson()
     private val listType = object : TypeToken<List<FavoriteTrack>>() {}.type
@@ -37,7 +37,8 @@ class FavoritesRepository(context: Context) {
                 duration = track.duration,
                 streamUrl = streamUrl,
                 downloadState = DownloadState.NONE,
-                artistPermalinkUrl = track.user?.permalinkUrl
+                artistPermalinkUrl = track.user?.permalinkUrl,
+                artistId = track.user?.id
             )
         )
     }
@@ -45,6 +46,10 @@ class FavoritesRepository(context: Context) {
     fun addFavoriteTrack(favoriteTrack: FavoriteTrack) {
         if (isFavorite(favoriteTrack.id)) return
         update(_favorites.value + favoriteTrack)
+    }
+
+    fun reorderTracks(newTracks: List<FavoriteTrack>) {
+        update(newTracks)
     }
 
     fun remove(trackId: Long) {
@@ -68,10 +73,27 @@ class FavoritesRepository(context: Context) {
         preferences.edit().putString(KEY_DOWNLOADED_FOLDER_ARTWORK_URI, uri).apply()
     }
 
+    private fun resolveLocalPath(path: String?): String? {
+        if (path == null) return null
+        if (path.contains("/files/offline_music/")) {
+            val filename = path.substringAfterLast("/")
+            return java.io.File(java.io.File(context.filesDir, "offline_music"), filename).absolutePath
+        }
+        return path
+    }
+
     private fun load(): List<FavoriteTrack> {
         val json = preferences.getString(KEY_TRACKS, null) ?: return emptyList()
-        return runCatching { gson.fromJson<List<FavoriteTrack>>(json, listType) }
+        val list = runCatching { gson.fromJson<List<FavoriteTrack>>(json, listType) }
             .getOrDefault(emptyList())
+        return list.map { track ->
+            val resolvedUrl = resolveLocalPath(track.streamUrl)
+            if (resolvedUrl != track.streamUrl) {
+                track.copy(streamUrl = resolvedUrl)
+            } else {
+                track
+            }
+        }
     }
 
     private fun update(value: List<FavoriteTrack>) {

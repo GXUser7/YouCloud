@@ -17,7 +17,8 @@ import java.io.File
 class OfflineMusicStore private constructor(context: Context) {
     private val databaseProvider = StandaloneDatabaseProvider(context)
     private val downloadDirectory = File(context.filesDir, "offline_music").apply { mkdirs() }
-    private val cache = SimpleCache(downloadDirectory, NoOpCacheEvictor(), databaseProvider)
+    private val hlsCacheDirectory = File(downloadDirectory, "hls_cache").apply { mkdirs() }
+    private val cache = SimpleCache(hlsCacheDirectory, NoOpCacheEvictor(), databaseProvider)
 
     val cacheDataSourceFactory: CacheDataSource.Factory = CacheDataSource.Factory()
         .setCache(cache)
@@ -76,6 +77,10 @@ class OfflineMusicStore private constructor(context: Context) {
                 
                 if (contentLength > 0 && tempFile.length() != contentLength) {
                     throw java.io.IOException("File download incomplete. Expected $contentLength bytes, but got ${tempFile.length()} bytes")
+                }
+
+                if (tempFile.length() <= 0L) {
+                    throw java.io.IOException("File download empty. Got 0 bytes.")
                 }
                 
                 if (tempFile.renameTo(finalFile)) {
