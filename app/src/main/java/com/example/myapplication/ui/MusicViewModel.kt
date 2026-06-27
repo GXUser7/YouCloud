@@ -15,6 +15,7 @@ import com.example.myapplication.data.SoundCloudMix
 import com.example.myapplication.data.SoundCloudMixesRepository
 import com.example.myapplication.data.SoundCloudPlaybackResolver
 import com.example.myapplication.data.SoundCloudTrack
+import com.example.myapplication.data.SoundCloudPlaylist
 import com.example.myapplication.data.SoundCloudMeResponse
 import com.example.myapplication.data.SoundCloudUser
 import com.example.myapplication.data.Playlist
@@ -36,6 +37,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.CancellationException
+import com.example.myapplication.data.YandexMusicApi
+import com.example.myapplication.data.YandexMusicService
 
 enum class AppScreen {
     HOME,
@@ -43,7 +46,9 @@ enum class AppScreen {
     DOWNLOADS,
     SETTINGS,
     MIX_DETAIL,
-    PLAYLIST_DETAIL
+    PLAYLIST_DETAIL,
+    ARTIST_DETAIL,
+    YANDEX_PLAYLIST_DETAIL
 }
 
 class MusicViewModel(
@@ -67,11 +72,89 @@ class MusicViewModel(
     val isClientIdExpired = _isClientIdExpired.asStateFlow()
 
     private val service = SoundCloudApi.createService(settingsRepository::oauthTokenValue)
+    private val yandexService = YandexMusicApi.createService(settingsRepository::yandexTokenValue)
     private val playbackResolver = SoundCloudPlaybackResolver(service)
     private val mixesRepository = SoundCloudMixesRepository(service, context)
 
     private val _tracks = MutableStateFlow<List<SoundCloudTrack>>(emptyList())
     val tracks = _tracks.asStateFlow()
+
+    private val _yandexSearchQuery = MutableStateFlow("")
+    val yandexSearchQuery = _yandexSearchQuery.asStateFlow()
+
+    private val _yandexTracks = MutableStateFlow<List<SoundCloudTrack>>(emptyList())
+    val yandexTracks = _yandexTracks.asStateFlow()
+
+    private val _yandexLoading = MutableStateFlow(false)
+    val yandexLoading = _yandexLoading.asStateFlow()
+
+    private val _yandexError = MutableStateFlow<String?>(null)
+    val yandexError = _yandexError.asStateFlow()
+
+    private val _downloadProgress = MutableStateFlow<Map<Long, Float>>(emptyMap())
+    val downloadProgress = _downloadProgress.asStateFlow()
+
+    fun updateDownloadProgress(trackId: Long, progress: Float) {
+        viewModelScope.launch {
+            _downloadProgress.value = _downloadProgress.value + (trackId to progress)
+        }
+    }
+
+    // true = search in Yandex, false = search in SoundCloud
+    private val _searchInYandex = MutableStateFlow(false)
+    val searchInYandex = _searchInYandex.asStateFlow()
+
+    fun setSearchSource(useYandex: Boolean) {
+        _searchInYandex.value = useYandex
+        // Re-run search in the new source if there's already a query
+        val q = _searchQuery.value
+        if (q.length >= 3) {
+            if (useYandex) {
+                _tracks.value = emptyList()
+                onYandexSearchQueryChange(q)
+            } else {
+                _yandexTracks.value = emptyList()
+                onSearchQueryChange(q)
+            }
+        }
+    }
+
+    private val _silentLoginUrl = MutableStateFlow<String?>(null)
+    val silentLoginUrl = _silentLoginUrl.asStateFlow()
+    private var lastSilentLoginTime = 0L
+
+    private val _yandexLoginUrl = MutableStateFlow<String?>(null)
+    val yandexLoginUrl = _yandexLoginUrl.asStateFlow()
+
+    private val _currentArtistPlaylists = MutableStateFlow<List<SoundCloudPlaylist>>(emptyList())
+    val currentArtistPlaylists = _currentArtistPlaylists.asStateFlow()
+
+    private val _selectedArtistPlaylist = MutableStateFlow<SoundCloudPlaylist?>(null)
+    val selectedArtistPlaylist = _selectedArtistPlaylist.asStateFlow()
+
+    private val _currentArtist = MutableStateFlow<SoundCloudUser?>(null)
+    val currentArtist = _currentArtist.asStateFlow()
+
+    private val _currentArtistTracks = MutableStateFlow<List<SoundCloudTrack>>(emptyList())
+    val currentArtistTracks = _currentArtistTracks.asStateFlow()
+
+    private val _artistLoading = MutableStateFlow(false)
+    val artistLoading = _artistLoading.asStateFlow()
+
+    private val _artistError = MutableStateFlow<String?>(null)
+    val artistError = _artistError.asStateFlow()
+
+    private val _yandexPlaylists = MutableStateFlow<List<SoundCloudPlaylist>>(emptyList())
+    val yandexPlaylists = _yandexPlaylists.asStateFlow()
+
+    private val _yandexPlaylistsLoading = MutableStateFlow(false)
+    val yandexPlaylistsLoading = _yandexPlaylistsLoading.asStateFlow()
+
+    private val _selectedYandexPlaylist = MutableStateFlow<SoundCloudPlaylist?>(null)
+    val selectedYandexPlaylist = _selectedYandexPlaylist.asStateFlow()
+
+    private val _yandexPlaylistLoading = MutableStateFlow(false)
+    val yandexPlaylistLoading = _yandexPlaylistLoading.asStateFlow()
 
     private val _searchQuery = MutableStateFlow("")
     val searchQuery = _searchQuery.asStateFlow()
@@ -125,6 +208,9 @@ class MusicViewModel(
     private val _loadingMixId = MutableStateFlow<String?>(null)
     val loadingMixId = _loadingMixId.asStateFlow()
 
+    private val _playingMixId = MutableStateFlow<String?>(null)
+    val playingMixId = _playingMixId.asStateFlow()
+
     private val _screen = MutableStateFlow(AppScreen.HOME)
     val screen = _screen.asStateFlow()
 
@@ -140,8 +226,11 @@ class MusicViewModel(
     private val _currentPlayingTrack = MutableStateFlow<SoundCloudTrack?>(null)
     val currentPlayingTrack = _currentPlayingTrack.asStateFlow()
 
-    private val _likesSyncStatus = MutableStateFlow(LikesSyncStatus())
-    val likesSyncStatus = _likesSyncStatus.asStateFlow()
+    private val _soundcloudLikesSyncStatus = MutableStateFlow(LikesSyncStatus())
+    val soundcloudLikesSyncStatus = _soundcloudLikesSyncStatus.asStateFlow()
+
+    private val _yandexLikesSyncStatus = MutableStateFlow(LikesSyncStatus())
+    val yandexLikesSyncStatus = _yandexLikesSyncStatus.asStateFlow()
     private var likesSyncJob: Job? = null
 
     private var searchJob: Job? = null
@@ -193,6 +282,177 @@ class MusicViewModel(
                         loadMixes()
                     }
                 }
+        }
+        viewModelScope.launch {
+            settingsRepository.yandexToken.collectLatest { token ->
+                if (token.isBlank()) {
+                    _yandexPlaylists.value = emptyList()
+                    _selectedYandexPlaylist.value = null
+                } else {
+                    loadYandexPlaylists()
+                }
+            }
+        }
+    }
+
+    private suspend fun getYandexUid(): Long? {
+        val storedUid = settingsRepository.yandexUid.value
+        if (storedUid != 0L) return storedUid
+        
+        return try {
+            val response = yandexService.getAccountStatus()
+            val uid = response.result?.account?.uid
+            if (uid != null) {
+                settingsRepository.saveYandexUid(uid)
+            }
+            uid
+        } catch (e: Exception) {
+            Log.e("MusicViewModel", "Failed to fetch Yandex UID", e)
+            null
+        }
+    }
+
+    fun loadYandexPlaylists() {
+        val token = settingsRepository.yandexTokenValue()
+        if (token.isBlank()) {
+            _yandexPlaylists.value = emptyList()
+            return
+        }
+        viewModelScope.launch {
+            _yandexPlaylistsLoading.value = true
+            try {
+                val uid = getYandexUid()
+                if (uid != null) {
+                    val response = yandexService.getUserPlaylists(uid)
+                    val playlistList = response.result.orEmpty().map { 
+                        applyCustomYandexPlaylistArtwork(it.toSoundCloudPlaylist())
+                    }.toMutableList()
+
+                    var likedCount = 0
+                    try {
+                        val likedTracksResponse = yandexService.getLikedTracks(uid)
+                        likedCount = likedTracksResponse.result?.library?.tracks?.size ?: 0
+                    } catch (e: Exception) {
+                        Log.e("MusicViewModel", "Failed to fetch liked tracks size", e)
+                    }
+
+                    val likedPlaylist = SoundCloudPlaylist(
+                        id = -100L,
+                        title = "Мне нравится",
+                        trackCount = likedCount,
+                        artworkUrl = null,
+                        permalinkUrl = "yandex:playlist:liked"
+                    )
+
+                    playlistList.add(0, applyCustomYandexPlaylistArtwork(likedPlaylist))
+                    _yandexPlaylists.value = playlistList
+                }
+            } catch (e: Exception) {
+                Log.e("MusicViewModel", "Failed to load Yandex playlists", e)
+            } finally {
+                _yandexPlaylistsLoading.value = false
+            }
+        }
+    }
+
+    fun selectYandexPlaylist(playlist: SoundCloudPlaylist) {
+        val playlistWithArt = applyCustomYandexPlaylistArtwork(playlist)
+        viewModelScope.launch {
+            _yandexPlaylistLoading.value = true
+            _selectedYandexPlaylist.value = playlistWithArt
+            _screen.value = AppScreen.YANDEX_PLAYLIST_DETAIL
+            try {
+                val token = settingsRepository.yandexTokenValue()
+                val uid = getYandexUid()
+                if (uid != null && token.isNotBlank()) {
+                    if (playlistWithArt.id == -100L) {
+                        // Liked Tracks special playlist
+                        val response = yandexService.getLikedTracks(uid)
+                        val trackRefs = response.result?.library?.tracks.orEmpty()
+                        val allTracks = mutableListOf<SoundCloudTrack>()
+                        
+                        // Chunk by 50 to avoid big payloads and query limits
+                        trackRefs.chunked(50).forEach { chunk ->
+                            val trackIdsStr = chunk.joinToString(",") { if (it.albumId.isNullOrBlank()) it.id else "${it.id}:${it.albumId}" }
+                            try {
+                                val tracksDetailsResponse = yandexService.getTracksDetails(trackIdsStr)
+                                allTracks.addAll(tracksDetailsResponse.result.orEmpty().map { it.toSoundCloudTrack() })
+                            } catch (e: Exception) {
+                                Log.e("MusicViewModel", "Failed to get details for chunk of liked tracks", e)
+                            }
+                        }
+                        
+                        // Preserve original order of liked tracks from Yandex
+                        val orderMap = trackRefs.withIndex().associate { it.value.id to it.index }
+                        val sortedTracks = allTracks.sortedBy { track ->
+                            val yandexId = track.urn?.substringAfter("yandex:track:") ?: ""
+                            orderMap[yandexId] ?: Int.MAX_VALUE
+                        }
+                        
+                        _selectedYandexPlaylist.value = playlistWithArt.copy(
+                            tracks = sortedTracks,
+                            trackCount = sortedTracks.size
+                        )
+                    } else {
+                        // Regular playlist
+                        val yandexPlaylistId = playlist.id
+                        val response = yandexService.getPlaylistDetail(uid, yandexPlaylistId)
+                        val tracks = response.result?.tracks.orEmpty().mapNotNull { it.track?.toSoundCloudTrack() }
+                        _selectedYandexPlaylist.value = playlistWithArt.copy(tracks = tracks)
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e("MusicViewModel", "Failed to fetch Yandex playlist tracks", e)
+            } finally {
+                _yandexPlaylistLoading.value = false
+            }
+        }
+    }
+
+    fun deselectYandexPlaylist() {
+        _selectedYandexPlaylist.value = null
+        _screen.value = AppScreen.HOME
+    }
+
+    fun getCustomYandexPlaylistArtwork(playlistId: Long): String? {
+        val prefs = context.getSharedPreferences("app_settings", Context.MODE_PRIVATE)
+        return prefs.getString("yandex_playlist_art_$playlistId", null)
+    }
+
+    private fun applyCustomYandexPlaylistArtwork(playlist: SoundCloudPlaylist): SoundCloudPlaylist {
+        val path = getCustomYandexPlaylistArtwork(playlist.id)
+        return if (path != null) playlist.copy(artworkUrl = path) else playlist
+    }
+
+    fun updateYandexPlaylistArtwork(playlistId: Long, uriString: String?) {
+        viewModelScope.launch {
+            val prefs = context.getSharedPreferences("app_settings", Context.MODE_PRIVATE)
+            if (uriString == null) {
+                prefs.edit().remove("yandex_playlist_art_$playlistId").apply()
+                refreshYandexPlaylistsArtwork(playlistId, null)
+                return@launch
+            }
+            val uri = android.net.Uri.parse(uriString)
+            val localPath = copyUriToInternalStorage(context, uri, "yandex_playlist_artworks")
+            if (localPath != null) {
+                prefs.edit().putString("yandex_playlist_art_$playlistId", localPath).apply()
+                refreshYandexPlaylistsArtwork(playlistId, localPath)
+            }
+        }
+    }
+
+    private fun refreshYandexPlaylistsArtwork(playlistId: Long, path: String?) {
+        _selectedYandexPlaylist.value?.let { current ->
+            if (current.id == playlistId) {
+                _selectedYandexPlaylist.value = current.copy(artworkUrl = path)
+            }
+        }
+        _yandexPlaylists.value = _yandexPlaylists.value.map { playlist ->
+            if (playlist.id == playlistId) {
+                playlist.copy(artworkUrl = path)
+            } else {
+                playlist
+            }
         }
     }
 
@@ -315,6 +575,7 @@ class MusicViewModel(
                     t.toQueueTrack(localUrl ?: resolvedUrls[t.id] ?: "soundcloud://track/${t.id}")
                 }
                 musicPlayer.playQueue(stubs, 0)
+                _playingMixId.value = mix.id
             } catch (e: Exception) {
                 Log.e("MusicViewModel", "playMix error", e)
                 _errorMessage.value = readableMessage(e)
@@ -388,21 +649,35 @@ class MusicViewModel(
                 // Pre-resolve the clicked track before starting playback to avoid instant failure / skip loop
                 val startTrack = playableTracks.getOrNull(startIndex)
                 if (startTrack != null) {
-                    val clientIdValue = settingsRepository.clientId.value
-                    val resolvedUrl = favoritesRepository.get(startTrack.id)?.streamUrl
-                        ?: playbackResolver.resolve(startTrack, clientIdValue)
-                        ?: ""
-                    if (resolvedUrl.isNotEmpty()) {
-                        resolvedUrls[startTrack.id] = resolvedUrl
+                    val isYandex = startTrack.urn?.startsWith("yandex:track:") == true
+                    if (isYandex) {
+                        val yandexId = startTrack.urn?.removePrefix("yandex:track:")
+                        resolvedUrls[startTrack.id] = "yandex://track/$yandexId"
+                    } else {
+                        val clientIdValue = settingsRepository.clientId.value
+                        val resolvedUrl = favoritesRepository.get(startTrack.id)?.streamUrl
+                            ?: playbackResolver.resolve(startTrack, clientIdValue)
+                            ?: ""
+                        if (resolvedUrl.isNotEmpty()) {
+                            resolvedUrls[startTrack.id] = resolvedUrl
+                        }
                     }
                 }
 
                 // Play immediately with starting track resolved and others as stubs
                 val stubs = playableTracks.map { t ->
                     val localUrl = favoritesRepository.get(t.id)?.streamUrl
-                    t.toQueueTrack(localUrl ?: resolvedUrls[t.id] ?: "soundcloud://track/${t.id}")
+                    val isYandex = t.urn?.startsWith("yandex:track:") == true
+                    val fallbackUrl = if (isYandex) {
+                        val yandexId = t.urn?.removePrefix("yandex:track:")
+                        "yandex://track/$yandexId"
+                    } else {
+                        "soundcloud://track/${t.id}"
+                    }
+                    t.toQueueTrack(localUrl ?: resolvedUrls[t.id] ?: fallbackUrl)
                 }
                 musicPlayer.playQueue(stubs, startIndex)
+                _playingMixId.value = _selectedMix.value?.id
             } catch (e: Exception) {
                 Log.e("MusicViewModel", "playMixTrack error", e)
                 _errorMessage.value = readableMessage(e)
@@ -443,13 +718,19 @@ class MusicViewModel(
             _errorMessage.value = null
 
             try {
+                val isYandex = track.urn?.startsWith("yandex:track:") == true
                 val clientId = settingsRepository.clientId.value
-                if (clientId.isBlank()) {
+                if (clientId.isBlank() && !isYandex) {
                     _errorMessage.value = "Укажите SoundCloud client_id в настройках"
                     return@launch
                 }
-                val streamUrl = favoritesRepository.get(track.id)?.streamUrl
-                    ?: playbackResolver.resolve(track, clientId)
+                val streamUrl = if (isYandex) {
+                    val yandexId = track.urn?.removePrefix("yandex:track:")
+                    "yandex://track/$yandexId"
+                } else {
+                    favoritesRepository.get(track.id)?.streamUrl
+                        ?: playbackResolver.resolve(track, clientId)
+                }
 
                 if (streamUrl == null) {
                     _errorMessage.value = "Для этого трека не нашёлся доступный поток."
@@ -463,6 +744,7 @@ class MusicViewModel(
                     ),
                     startIndex = 0
                 )
+                _playingMixId.value = null
                 _currentPlayingTrack.value = track
                 _selectedTrack.value = track
             } catch (e: Exception) {
@@ -507,6 +789,230 @@ class MusicViewModel(
         _screen.value = AppScreen.HOME
     }
 
+    fun openArtistDetails(userId: Long, permalinkUrl: String?, username: String?, trackUrn: String? = null) {
+        val activeUrn = trackUrn ?: _selectedTrack.value?.urn ?: _currentPlayingTrack.value?.urn
+        viewModelScope.launch {
+            _selectedTrack.value = null // Close the player overlay
+            _selectedMix.value = null   // Close the mix screen if open (prevents mix list showing behind)
+            _screen.value = AppScreen.ARTIST_DETAIL
+            _artistLoading.value = true
+            _artistError.value = null
+            _currentArtistTracks.value = emptyList()
+            _currentArtistPlaylists.value = emptyList()
+            _selectedArtistPlaylist.value = null
+            
+            var isYandex = permalinkUrl?.startsWith("yandex:artist:") == true || 
+                           permalinkUrl?.contains("yandex:artist:") == true ||
+                           activeUrn?.startsWith("yandex:track:") == true
+            var yandexArtistId = if (permalinkUrl?.startsWith("yandex:artist:") == true) {
+                permalinkUrl.substringAfter("yandex:artist:")
+            } else null
+
+            if (isYandex && yandexArtistId == null) {
+                val trackId = activeUrn?.substringAfter("yandex:track:")
+                if (trackId != null) {
+                    try {
+                        val detailsResponse = yandexService.getTracksDetails(trackId)
+                        val artist = detailsResponse.result.orEmpty().firstOrNull()?.artists?.firstOrNull()
+                        if (artist != null) {
+                            yandexArtistId = artist.id
+                        }
+                    } catch (e: Exception) {
+                        Log.e("MusicViewModel", "Failed to resolve Yandex track artist info", e)
+                    }
+                }
+            }
+
+            // Robust fallback: if artist URN resolving failed but we have a valid non-zero userId (Yandex artist ID)
+            if (isYandex && (yandexArtistId == null || yandexArtistId.isBlank())) {
+                if (userId != 0L) {
+                    yandexArtistId = userId.toString()
+                }
+            }
+
+            if (isYandex) {
+                val artistId = yandexArtistId ?: ""
+                try {
+                    val response = yandexService.getArtistBriefInfo(artistId)
+                    val artist = response.result?.artist
+                    if (artist != null) {
+                        _currentArtist.value = SoundCloudUser(
+                            id = artist.id?.toLongOrNull() ?: 0L,
+                            username = artist.name ?: "Unknown Artist",
+                            avatarUrl = artist.cover?.getCoverUrl("200x200"),
+                            description = artist.description?.text,
+                            followersCount = artist.stats?.likes ?: 0,
+                            trackCount = response.result?.tracks.orEmpty().size,
+                            permalinkUrl = artist.id?.let { "yandex:artist:$it" }
+                        )
+                        _currentArtistTracks.value = response.result?.tracks.orEmpty().map { it.toSoundCloudTrack() }
+                        _currentArtistPlaylists.value = response.result?.albums.orEmpty().map { it.toSoundCloudPlaylist() }
+                    } else {
+                        _currentArtist.value = SoundCloudUser(username = username ?: "Яндекс Артист")
+                        _artistError.value = "Информация об артисте недоступна"
+                    }
+                } catch (e: Exception) {
+                    Log.e("MusicViewModel", "Failed to fetch Yandex artist info", e)
+                    _currentArtist.value = SoundCloudUser(username = username ?: "Яндекс Артист")
+                    _artistError.value = "Ошибка: ${readableMessage(e, isYandex = true)}"
+                } finally {
+                    _artistLoading.value = false
+                }
+            } else {
+                // SoundCloud artist
+                val clientIdVal = settingsRepository.clientId.value
+                if (clientIdVal.isBlank()) {
+                    _currentArtist.value = SoundCloudUser(id = userId, username = username)
+                    _artistError.value = "Укажите SoundCloud client_id в настройках"
+                    _artistLoading.value = false
+                    return@launch
+                }
+                
+                var resolvedUserId = userId
+                var resolvedUser = SoundCloudUser(id = userId, username = username, permalinkUrl = permalinkUrl)
+                
+                try {
+                    // 1. Resolve user: use permalink URL if available, else construct from numeric userId
+                    val urlToResolve = when {
+                        !permalinkUrl.isNullOrBlank() -> permalinkUrl
+                        resolvedUserId != 0L -> "https://soundcloud.com/users/$resolvedUserId"
+                        else -> null
+                    }
+                    if (resolvedUserId == 0L && urlToResolve != null) {
+                        Log.d("MusicViewModel", "Resolving SoundCloud artist: $urlToResolve")
+                        try {
+                            val resolved = service.resolveUrl(urlToResolve, clientIdVal)
+                            resolvedUserId = resolved.id ?: 0L
+                            resolvedUser = resolved
+                        } catch (e: Exception) {
+                            Log.e("MusicViewModel", "Failed to resolve artist url", e)
+                        }
+                    }
+
+                    // 2. Load full user details
+                    if (resolvedUserId != 0L) {
+                        try {
+                            resolvedUser = service.getUser(resolvedUserId, clientIdVal)
+                        } catch (e: Exception) {
+                            Log.e("MusicViewModel", "Failed to get user, fallback to initial resolvedUser", e)
+                        }
+                    }
+                    _currentArtist.value = resolvedUser
+
+                    // 3. Load user's stream feed (includes tracks and albums/playlists)
+                    if (resolvedUserId != 0L) {
+                        val streamResponse = service.getStreamUserTracks(resolvedUserId, clientIdVal)
+                        val tracksList = mutableListOf<SoundCloudTrack>()
+                        val playlistsList = mutableListOf<SoundCloudPlaylist>()
+                        
+                        streamResponse.collection.forEach { item ->
+                            if (item.type == "track" || item.type == "track-repost") {
+                                item.track?.let { tracksList.add(it) }
+                            } else if (item.type == "playlist" || item.type == "playlist-repost") {
+                                item.playlist?.let { playlistsList.add(it) }
+                            }
+                        }
+                        
+                        _currentArtistTracks.value = tracksList
+                        _currentArtistPlaylists.value = playlistsList
+                    } else {
+                        _artistError.value = "Не удалось определить ID артиста"
+                    }
+                } catch (e: Exception) {
+                    Log.e("MusicViewModel", "Failed to fetch SoundCloud artist stream", e)
+                    _artistError.value = "Не удалось загрузить данные: ${readableMessage(e)}"
+                } finally {
+                    _artistLoading.value = false
+                }
+            }
+        }
+    }
+
+    fun closeArtist() {
+        _currentArtist.value = null
+        _currentArtistTracks.value = emptyList()
+        _currentArtistPlaylists.value = emptyList()
+        _selectedArtistPlaylist.value = null
+        _screen.value = AppScreen.HOME
+    }
+
+    fun selectArtistPlaylist(playlist: SoundCloudPlaylist) {
+        _selectedArtistPlaylist.value = playlist
+        val isYandexAlbum = playlist.permalinkUrl?.startsWith("yandex:album:") == true
+        if (isYandexAlbum) {
+            viewModelScope.launch {
+                _artistLoading.value = true
+                try {
+                    val albumId = playlist.permalinkUrl!!.substringAfter("yandex:album:").toLongOrNull()
+                    if (albumId != null) {
+                        val response = yandexService.getAlbumWithTracks(albumId)
+                        val tracks = response.result?.volumes?.flatten()?.map { it.toSoundCloudTrack() } ?: emptyList()
+                        _selectedArtistPlaylist.value = playlist.copy(tracks = tracks)
+                    }
+                } catch (e: Exception) {
+                    Log.e("MusicViewModel", "Failed to fetch Yandex album tracks", e)
+                } finally {
+                    _artistLoading.value = false
+                }
+            }
+        }
+    }
+
+    fun deselectArtistPlaylist() {
+        _selectedArtistPlaylist.value = null
+    }
+
+    fun startYandexLogin() {
+        _yandexLoginUrl.value = "https://oauth.yandex.ru/authorize?response_type=token&client_id=23cabbbdc6cd418abb4b39c32c41195d"
+    }
+
+    fun onYandexTokenCaptured(token: String) {
+        Log.d("MusicViewModel", "Captured Yandex token: $token")
+        settingsRepository.saveYandexToken(token)
+        _yandexLoginUrl.value = null
+        onYandexSearchQueryChange(_yandexSearchQuery.value)
+    }
+
+    fun cancelYandexLogin() {
+        _yandexLoginUrl.value = null
+    }
+
+    fun logoutYandex() {
+        settingsRepository.resetYandexToken()
+        _yandexTracks.value = emptyList()
+        _yandexPlaylists.value = emptyList()
+        _selectedYandexPlaylist.value = null
+    }
+
+    fun triggerSilentRelogin() {
+        val now = System.currentTimeMillis()
+        if (now - lastSilentLoginTime < 60000L) return
+        lastSilentLoginTime = now
+        Log.d("MusicViewModel", "Triggering silent relogin in background WebView...")
+        _silentLoginUrl.value = "https://soundcloud.com/discover"
+    }
+
+    fun onSilentCredentialsCaptured(clientId: String, oauthToken: String) {
+        Log.d("MusicViewModel", "Captured silent credentials: clientId=$clientId, oauthToken=$oauthToken")
+        viewModelScope.launch {
+            try {
+                val tempService = SoundCloudApi.createService { oauthToken }
+                val meResponse = tempService.getMe(clientId)
+                val userIdString = meResponse.id.toString()
+
+                settingsRepository.saveClientId(clientId)
+                settingsRepository.saveOauthToken(oauthToken)
+                settingsRepository.saveUserId(userIdString)
+
+                _silentLoginUrl.value = null
+                Log.d("MusicViewModel", "Silent relogin successful!")
+                refreshMixesAndStations()
+            } catch (e: Exception) {
+                Log.e("MusicViewModel", "Failed to login silently with captured credentials", e)
+            }
+        }
+    }
+
     fun saveClientId(value: String) {
         settingsRepository.saveClientId(value)
     }
@@ -545,13 +1051,28 @@ class MusicViewModel(
                 favoritesRepository.get(track.id)?.let { favorite ->
                     if (favorite.downloadState == DownloadState.DOWNLOADED && favorite.streamUrl != null) {
                         withContext(Dispatchers.IO) {
-                            offlineMusicStore.removeHls(favorite.streamUrl)
+                            if (favorite.urn.startsWith("yandex:track:")) {
+                                offlineMusicStore.removeProgressive(favorite.streamUrl)
+                            } else {
+                                offlineMusicStore.removeHls(favorite.streamUrl)
+                            }
                         }
                     }
                 }
                 favoritesRepository.remove(track.id)
                 val userIdValue = settingsRepository.userIdValue()
-                if (userIdValue.isNotBlank() && settingsRepository.oauthTokenValue().isNotBlank()) {
+                if (track.urn?.startsWith("yandex:track:") == true) {
+                    val token = settingsRepository.yandexTokenValue()
+                    val uid = getYandexUid()
+                    if (token.isNotBlank() && uid != null) {
+                        val yandexTrackId = track.urn.substringAfter("yandex:track:")
+                        try {
+                            yandexService.unlikeTrack(uid, yandexTrackId)
+                        } catch (e: Exception) {
+                            Log.e("MusicViewModel", "Failed to unlike track on Yandex", e)
+                        }
+                    }
+                } else if (userIdValue.isNotBlank() && settingsRepository.oauthTokenValue().isNotBlank()) {
                     try {
                         service.unlikeTrack(userIdValue, track.id, settingsRepository.clientId.value)
                     } catch (e: Exception) {
@@ -564,25 +1085,52 @@ class MusicViewModel(
             favoritesRepository.add(track, streamUrl = null)
             favoritesRepository.updateDownloadState(track.id, DownloadState.DOWNLOADING)
 
-            val userIdValue = settingsRepository.userIdValue()
-            if (userIdValue.isNotBlank() && settingsRepository.oauthTokenValue().isNotBlank()) {
-                try {
-                    service.likeTrack(userIdValue, track.id, settingsRepository.clientId.value)
-                } catch (e: Exception) {
-                    Log.e("MusicViewModel", "Failed to like track on SoundCloud", e)
+            val isYandex = track.urn?.startsWith("yandex:track:") == true
+            if (isYandex) {
+                val token = settingsRepository.yandexTokenValue()
+                val uid = getYandexUid()
+                if (token.isNotBlank() && uid != null) {
+                    val yandexTrackId = track.urn!!.substringAfter("yandex:track:")
+                    try {
+                        yandexService.likeTrack(uid, yandexTrackId)
+                    } catch (e: Exception) {
+                        Log.e("MusicViewModel", "Failed to like track on Yandex", e)
+                    }
+                }
+            } else {
+                val soundCloudUserId = settingsRepository.userIdValue()
+                if (soundCloudUserId.isNotBlank() && settingsRepository.oauthTokenValue().isNotBlank()) {
+                    try {
+                        service.likeTrack(soundCloudUserId, track.id, settingsRepository.clientId.value)
+                    } catch (e: Exception) {
+                        Log.e("MusicViewModel", "Failed to like track on SoundCloud", e)
+                    }
                 }
             }
 
             try {
                 val clientId = settingsRepository.clientId.value
-                val streamUrl = if (clientId.isNotBlank()) {
-                    playbackResolver.resolve(track, clientId)
+                val streamUrl = if (isYandex) {
+                    val yandexTrackId = track.urn?.substringAfter("yandex:track:") ?: ""
+                    val token = settingsRepository.yandexTokenValue()
+                    if (token.isNotBlank()) {
+                        YandexMusicApi.resolveTrackStream(yandexTrackId, token)
+                    } else {
+                        null
+                    }
                 } else {
-                    null
+                    if (clientId.isNotBlank()) {
+                        playbackResolver.resolve(track, clientId)
+                    } else {
+                        null
+                    }
                 }
+
                 if (streamUrl == null) {
                     favoritesRepository.updateDownloadState(track.id, DownloadState.FAILED)
-                    if (clientId.isBlank()) {
+                    if (isYandex) {
+                        _errorMessage.value = "Укажите рабочий токен Яндекс Музыки в настройках."
+                    } else if (clientId.isBlank()) {
                         _errorMessage.value = "Укажите SoundCloud client_id в настройках для загрузки трека"
                     } else {
                         _errorMessage.value = "Трек добавлен в любимое, но поток для загрузки не нашёлся."
@@ -590,14 +1138,34 @@ class MusicViewModel(
                     return@launch
                 }
 
-                favoritesRepository.updateStreamUrl(track.id, streamUrl)
-                withContext(Dispatchers.IO) {
-                    offlineMusicStore.downloadHls(streamUrl)
+                if (isYandex) {
+                    val localPath = withContext(Dispatchers.IO) {
+                        val yandexTrackId = track.urn?.substringAfter("yandex:track:") ?: ""
+                        offlineMusicStore.downloadProgressive(streamUrl, yandexTrackId) { progress ->
+                            updateDownloadProgress(track.id, progress)
+                        }
+                    }
+                    if (localPath != null) {
+                        favoritesRepository.updateStreamUrl(track.id, localPath)
+                        favoritesRepository.updateDownloadState(track.id, DownloadState.DOWNLOADED)
+                    } else {
+                        favoritesRepository.updateDownloadState(track.id, DownloadState.FAILED)
+                        _errorMessage.value = "Не удалось сохранить трек во внутреннюю память устройства."
+                    }
+                } else {
+                    favoritesRepository.updateStreamUrl(track.id, streamUrl)
+                    withContext(Dispatchers.IO) {
+                        offlineMusicStore.downloadHls(streamUrl) { progress ->
+                            updateDownloadProgress(track.id, progress / 100f)
+                        }
+                    }
+                    favoritesRepository.updateDownloadState(track.id, DownloadState.DOWNLOADED)
                 }
-                favoritesRepository.updateDownloadState(track.id, DownloadState.DOWNLOADED)
             } catch (e: Exception) {
                 favoritesRepository.updateDownloadState(track.id, DownloadState.FAILED)
-                _errorMessage.value = readableMessage(e)
+                _errorMessage.value = readableMessage(e, isYandex = isYandex)
+            } finally {
+                _downloadProgress.value = _downloadProgress.value - track.id
             }
         }
     }
@@ -626,6 +1194,7 @@ class MusicViewModel(
             },
             startIndex = downloadedQueue.indexOfFirst { it.id == track.id }.coerceAtLeast(0)
         )
+        _playingMixId.value = null
         _currentPlayingTrack.value = playable
         _selectedTrack.value = playable
     }
@@ -719,39 +1288,53 @@ class MusicViewModel(
             track.policy != "PREVIEW" &&
             track.media?.transcodings?.isNotEmpty() == true
 
-    private fun readableMessage(error: Exception): String {
-        handleSoundCloudApiError(error)
+    private fun readableMessage(error: Exception, isYandex: Boolean = false): String {
+        if (!isYandex) {
+            handleSoundCloudApiError(error)
+        }
         return when (error) {
             is HttpException -> when (error.code()) {
-                401 -> "SoundCloud отклонил запрос. Возможно, client_id устарел."
-                403 -> "SoundCloud запретил доступ к этому ресурсу."
-                404 -> "SoundCloud не нашёл нужный поток."
-                429 -> "Слишком много запросов к SoundCloud. Попробуй чуть позже."
-                else -> "Ошибка SoundCloud: HTTP ${error.code()}."
+                401 -> if (isYandex) "Яндекс отклонил запрос. Возможно, токен устарел." else "SoundCloud отклонил запрос. Возможно, client_id устарел."
+                403 -> if (isYandex) "Яндекс запретил доступ к этому ресурсу." else "SoundCloud запретил доступ к этому ресурсу."
+                404 -> if (isYandex) "Яндекс не нашёл нужного ресурса." else "SoundCloud не нашёл нужный поток."
+                429 -> if (isYandex) "Слишком много запросов к Яндексу. Попробуй чуть позже." else "Слишком много запросов к SoundCloud. Попробуй чуть позже."
+                else -> if (isYandex) "Ошибка Яндекс Музыки: HTTP ${error.code()}." else "Ошибка SoundCloud: HTTP ${error.code()}."
             }
 
             is IOException -> "Нет соединения с сетью."
-            else -> "Не удалось выполнить запрос к SoundCloud."
+            else -> if (isYandex) "Не удалось выполнить запрос к Яндекс Музыке." else "Не удалось выполнить запрос к SoundCloud."
         }
     }
 
-    private fun SoundCloudTrack.toQueueTrack(streamUrl: String): QueueTrack =
-        QueueTrack(
+    private fun SoundCloudTrack.toQueueTrack(streamUrl: String): QueueTrack {
+        val finalUrl = if (streamUrl.startsWith("/") && !streamUrl.startsWith("file://")) {
+            "file://$streamUrl"
+        } else {
+            streamUrl
+        }
+        return QueueTrack(
             id = id,
-            url = streamUrl,
+            url = finalUrl,
             title = title ?: "Unknown Track",
             artist = user?.username ?: "Unknown Artist",
             artworkUrl = artworkUrl
         )
+    }
 
-    private fun FavoriteTrack.toQueueTrack(streamUrl: String): QueueTrack =
-        QueueTrack(
+    private fun FavoriteTrack.toQueueTrack(streamUrl: String): QueueTrack {
+        val finalUrl = if (streamUrl.startsWith("/") && !streamUrl.startsWith("file://")) {
+            "file://$streamUrl"
+        } else {
+            streamUrl
+        }
+        return QueueTrack(
             id = id,
-            url = streamUrl,
+            url = finalUrl,
             title = title,
             artist = artist,
             artworkUrl = artworkUrl
         )
+    }
 
     private fun SoundCloudTrack.toFavoriteTrack(streamUrl: String? = null, downloadState: DownloadState = DownloadState.NONE) = FavoriteTrack(
         id = id,
@@ -762,22 +1345,8 @@ class MusicViewModel(
         artist = user?.username ?: "Unknown Artist",
         duration = duration,
         streamUrl = streamUrl,
-        downloadState = downloadState
-    )
-
-    private fun FavoriteTrack.toSoundCloudTrack() = SoundCloudTrack(
-        id = id,
-        urn = urn,
-        title = title,
-        artworkUrl = artworkUrl,
-        permalinkUrl = permalinkUrl,
-        user = SoundCloudUser(username = artist),
-        duration = duration,
-        kind = "track",
-        streamable = true,
-        policy = null,
-        trackAuthorization = null,
-        media = null
+        downloadState = downloadState,
+        artistPermalinkUrl = user?.permalinkUrl
     )
 
     // Playlist and Local Import Support
@@ -869,6 +1438,7 @@ class MusicViewModel(
         if (e is HttpException && (e.code() == 401 || e.code() == 403)) {
             _isClientIdExpired.value = true
             tryAutoRefreshClientId()
+            triggerSilentRelogin()
         }
     }
 
@@ -904,6 +1474,7 @@ class MusicViewModel(
             }
 
             musicPlayer.playQueue(stubs, startIndex)
+            _playingMixId.value = null
             _currentPlayingTrack.value = playable
             _selectedTrack.value = playable
         }
@@ -926,55 +1497,91 @@ class MusicViewModel(
         }
     }
 
-    fun startLikesSync() {
+    private fun startLikesSync(source: LikesSyncSource) {
         likesSyncJob?.cancel()
         likesSyncJob = viewModelScope.launch {
-            _likesSyncStatus.value = LikesSyncStatus(state = SyncState.FETCHING_LIKES)
+            val statusFlow = if (source == LikesSyncSource.SOUNDCLOUD) _soundcloudLikesSyncStatus else _yandexLikesSyncStatus
+            statusFlow.value = LikesSyncStatus(state = SyncState.FETCHING_LIKES)
+            
             val clientId = settingsRepository.clientId.value
             val oauthToken = settingsRepository.oauthToken.value
             val userId = settingsRepository.userId.value
+            val yandexToken = settingsRepository.yandexTokenValue()
 
-            if (clientId.isBlank() || oauthToken.isBlank() || userId.isBlank()) {
-                _likesSyncStatus.value = LikesSyncStatus(
+            val hasSoundCloud = clientId.isNotBlank() && oauthToken.isNotBlank() && userId.isNotBlank()
+            val hasYandex = yandexToken.isNotBlank()
+
+            if (source == LikesSyncSource.SOUNDCLOUD && !hasSoundCloud) {
+                statusFlow.value = LikesSyncStatus(
                     state = SyncState.FAILED,
-                    errorMessage = "Не все данные авторизации указаны в настройках"
+                    errorMessage = "Не все данные авторизации SoundCloud указаны в настройках"
+                )
+                return@launch
+            }
+            if (source == LikesSyncSource.YANDEX && !hasYandex) {
+                statusFlow.value = LikesSyncStatus(
+                    state = SyncState.FAILED,
+                    errorMessage = "Укажите рабочий токен Яндекс Музыки в настройках"
                 )
                 return@launch
             }
 
             val allTracks = mutableListOf<SoundCloudTrack>()
-            var nextOffset: String? = null
-            var hasMore = true
 
             try {
-                while (hasMore) {
-                    val response = service.getLikedTracks(
-                        userId = userId,
-                        clientId = clientId,
-                        limit = 50,
-                        offset = nextOffset
-                    )
-                    val items = response.collection.mapNotNull { it.track }
-                    allTracks.addAll(items)
-                    
-                    if (response.nextHref != null) {
-                        nextOffset = android.net.Uri.parse(response.nextHref).getQueryParameter("offset")
-                        if (nextOffset == null) {
+                if (source == LikesSyncSource.SOUNDCLOUD) {
+                    var nextOffset: String? = null
+                    var hasMore = true
+                    while (hasMore) {
+                        val response = service.getLikedTracks(
+                            userId = userId,
+                            clientId = clientId,
+                            limit = 50,
+                            offset = nextOffset
+                        )
+                        val items = response.collection.mapNotNull { it.track }
+                        allTracks.addAll(items)
+                        
+                        if (response.nextHref != null) {
+                            nextOffset = android.net.Uri.parse(response.nextHref).getQueryParameter("offset")
+                            if (nextOffset == null) {
+                                hasMore = false
+                            }
+                        } else {
                             hasMore = false
                         }
-                    } else {
-                        hasMore = false
+                        
+                        delay(500)
                     }
-                    
-                    delay(500)
+                } else {
+                    val yandexUid = getYandexUid()
+                    if (yandexUid != null) {
+                        try {
+                            val likedResponse = yandexService.getLikedTracks(yandexUid)
+                            val trackRefs = likedResponse.result?.library?.tracks.orEmpty()
+                            
+                            trackRefs.chunked(50).forEach { chunk ->
+                                val trackIdsStr = chunk.joinToString(",") { if (it.albumId.isNullOrBlank()) it.id else "${it.id}:${it.albumId}" }
+                                try {
+                                    val tracksDetailsResponse = yandexService.getTracksDetails(trackIdsStr)
+                                    allTracks.addAll(tracksDetailsResponse.result.orEmpty().map { it.toSoundCloudTrack() })
+                                } catch (e: Exception) {
+                                    Log.e("MusicViewModel", "Failed to fetch Yandex tracks chunk details for sync", e)
+                                }
+                                delay(300)
+                            }
+                        } catch (e: Exception) {
+                            Log.e("MusicViewModel", "Failed to get Yandex liked tracks", e)
+                        }
+                    }
                 }
 
                 if (allTracks.isEmpty()) {
-                    _likesSyncStatus.value = LikesSyncStatus(state = SyncState.COMPLETED)
+                    statusFlow.value = LikesSyncStatus(state = SyncState.COMPLETED)
                     return@launch
                 }
 
-                _likesSyncStatus.value = LikesSyncStatus(
+                statusFlow.value = LikesSyncStatus(
                     state = SyncState.DOWNLOADING,
                     totalTracks = allTracks.size,
                     currentTrackIndex = 0
@@ -986,7 +1593,7 @@ class MusicViewModel(
                 allTracks.forEachIndexed { index, track ->
                     ensureActive()
 
-                    _likesSyncStatus.value = _likesSyncStatus.value.copy(
+                    statusFlow.value = statusFlow.value.copy(
                         currentTrackIndex = index + 1,
                         currentTrackTitle = track.title ?: "Unknown Track"
                     )
@@ -996,7 +1603,7 @@ class MusicViewModel(
 
                     if (isAlreadyDownloaded) {
                         downloadedCount++
-                        _likesSyncStatus.value = _likesSyncStatus.value.copy(
+                        statusFlow.value = statusFlow.value.copy(
                             downloadedCount = downloadedCount
                         )
                     } else {
@@ -1006,37 +1613,58 @@ class MusicViewModel(
                             }
                             favoritesRepository.updateDownloadState(track.id, DownloadState.DOWNLOADING)
 
-                            var resolvedStreamUrl: String? = null
-                            try {
-                                resolvedStreamUrl = playbackResolver.resolve(track, clientId)
-                            } catch (e: Exception) {
-                                if (e is HttpException && (e.code() == 401 || e.code() == 403)) {
-                                    val newClientId = SoundCloudApi.fetchSoundCloudClientId()
-                                    if (newClientId != null) {
-                                        settingsRepository.saveClientId(newClientId)
-                                        resolvedStreamUrl = playbackResolver.resolve(track, newClientId)
-                                    }
+                            val isYandexTrack = track.urn?.startsWith("yandex:track:") == true
+                            if (isYandexTrack) {
+                                val yandexTrackId = track.urn!!.substringAfter("yandex:track:")
+                                val resolvedStreamUrl = YandexMusicApi.resolveTrackStream(yandexTrackId, yandexToken)
+                                if (resolvedStreamUrl == null) {
+                                    throw Exception("Could not resolve Yandex stream URL")
                                 }
-                                if (resolvedStreamUrl == null) throw e
-                            }
+                                
+                                val localPath = withContext(Dispatchers.IO) {
+                                    offlineMusicStore.downloadProgressive(resolvedStreamUrl, yandexTrackId)
+                                }
+                                
+                                if (localPath != null) {
+                                    favoritesRepository.updateStreamUrl(track.id, localPath)
+                                    favoritesRepository.updateDownloadState(track.id, DownloadState.DOWNLOADED)
+                                    downloadedCount++
+                                } else {
+                                    throw Exception("Failed to write Yandex progressive download file")
+                                }
+                            } else {
+                                var resolvedStreamUrl: String? = null
+                                try {
+                                    resolvedStreamUrl = playbackResolver.resolve(track, clientId)
+                                } catch (e: Exception) {
+                                    if (e is HttpException && (e.code() == 401 || e.code() == 403)) {
+                                        val newClientId = SoundCloudApi.fetchSoundCloudClientId()
+                                        if (newClientId != null) {
+                                            settingsRepository.saveClientId(newClientId)
+                                            resolvedStreamUrl = playbackResolver.resolve(track, newClientId)
+                                        }
+                                    }
+                                    if (resolvedStreamUrl == null) throw e
+                                }
 
-                            if (resolvedStreamUrl == null) {
-                                throw Exception("Could not resolve stream URL")
-                            }
+                                if (resolvedStreamUrl == null) {
+                                    throw Exception("Could not resolve stream URL")
+                                }
 
-                            favoritesRepository.updateStreamUrl(track.id, resolvedStreamUrl)
-                            withContext(Dispatchers.IO) {
-                                offlineMusicStore.downloadHls(resolvedStreamUrl)
+                                favoritesRepository.updateStreamUrl(track.id, resolvedStreamUrl)
+                                withContext(Dispatchers.IO) {
+                                    offlineMusicStore.downloadHls(resolvedStreamUrl)
+                                }
+                                favoritesRepository.updateDownloadState(track.id, DownloadState.DOWNLOADED)
+                                downloadedCount++
                             }
-                            favoritesRepository.updateDownloadState(track.id, DownloadState.DOWNLOADED)
-                            downloadedCount++
                         } catch (e: Exception) {
                             Log.e("MusicViewModel", "Failed to sync/download track ${track.id}", e)
                             favoritesRepository.updateDownloadState(track.id, DownloadState.FAILED)
                             failedCount++
                         }
 
-                        _likesSyncStatus.value = _likesSyncStatus.value.copy(
+                        statusFlow.value = statusFlow.value.copy(
                             downloadedCount = downloadedCount,
                             failedCount = failedCount
                         )
@@ -1045,33 +1673,44 @@ class MusicViewModel(
                     }
                 }
 
-                _likesSyncStatus.value = _likesSyncStatus.value.copy(
+                statusFlow.value = statusFlow.value.copy(
                     state = SyncState.COMPLETED
                 )
 
             } catch (e: CancellationException) {
-                _likesSyncStatus.value = LikesSyncStatus(state = SyncState.IDLE)
+                statusFlow.value = LikesSyncStatus(state = SyncState.IDLE)
                 throw e
             } catch (e: Exception) {
                 Log.e("MusicViewModel", "Likes sync failed", e)
-                _likesSyncStatus.value = LikesSyncStatus(
+                statusFlow.value = LikesSyncStatus(
                     state = SyncState.FAILED,
-                    errorMessage = readableMessage(e)
+                    errorMessage = readableMessage(e, isYandex = (source == LikesSyncSource.YANDEX))
                 )
             }
         }
     }
 
+    fun startSoundCloudLikesSync() {
+        startLikesSync(LikesSyncSource.SOUNDCLOUD)
+    }
+
+    fun startYandexLikesSync() {
+        startLikesSync(LikesSyncSource.YANDEX)
+    }
+
     fun stopLikesSync() {
         likesSyncJob?.cancel()
         likesSyncJob = null
-        _likesSyncStatus.value = LikesSyncStatus(state = SyncState.IDLE)
+        _soundcloudLikesSyncStatus.value = LikesSyncStatus(state = SyncState.IDLE)
+        _yandexLikesSyncStatus.value = LikesSyncStatus(state = SyncState.IDLE)
     }
 
-    fun resetLikesSyncStatus() {
-        likesSyncJob?.cancel()
-        likesSyncJob = null
-        _likesSyncStatus.value = LikesSyncStatus(state = SyncState.IDLE)
+    fun resetSoundCloudLikesSyncStatus() {
+        _soundcloudLikesSyncStatus.value = LikesSyncStatus(state = SyncState.IDLE)
+    }
+
+    fun resetYandexLikesSyncStatus() {
+        _yandexLikesSyncStatus.value = LikesSyncStatus(state = SyncState.IDLE)
     }
 
     fun moveDownloadedTracksToDownloads(playlist: Playlist) {
@@ -1101,5 +1740,111 @@ class MusicViewModel(
                 }
             }
         }
+    }
+
+    private var yandexSearchJob: Job? = null
+
+    fun onYandexSearchQueryChange(query: String) {
+        _yandexSearchQuery.value = query
+        yandexSearchJob?.cancel()
+
+        if (query.trim().isEmpty()) {
+            _yandexTracks.value = emptyList()
+            _yandexError.value = null
+            _yandexLoading.value = false
+            return
+        }
+
+        yandexSearchJob = viewModelScope.launch {
+            delay(500)
+            _yandexLoading.value = true
+            _yandexError.value = null
+            try {
+                val response = yandexService.searchTracks(query)
+                val yList = response.result?.tracks?.results.orEmpty()
+                _yandexTracks.value = yList.map { it.toSoundCloudTrack() }
+            } catch (e: Exception) {
+                Log.e("MusicViewModel", "Failed to search Yandex tracks", e)
+                _yandexError.value = "Ошибка поиска: ${readableMessage(e)}"
+            } finally {
+                _yandexLoading.value = false
+            }
+        }
+    }
+
+    private fun isPlayableTrack(track: SoundCloudTrack): Boolean {
+        if (track.urn?.startsWith("yandex:track:") == true) {
+            return track.streamable == true
+        }
+        return track.kind == "track" &&
+            track.streamable == true &&
+            track.policy != "BLOCK" &&
+            track.policy != "SNIP" &&
+            track.policy != "SNIPPET" &&
+            track.policy != "PREVIEW" &&
+            track.media?.transcodings?.isNotEmpty() == true
+    }
+
+    fun playQueuedTrack(track: SoundCloudTrack, customQueue: List<SoundCloudTrack>? = null) {
+        viewModelScope.launch {
+            _errorMessage.value = null
+            val isYandexTrack = track.urn?.startsWith("yandex:track:") == true
+            val defaultQueue = if (isYandexTrack) _yandexTracks.value else _tracks.value
+            val qTracks = customQueue ?: defaultQueue
+            val playableTracks = qTracks.filter { isPlayableTrack(it) }
+            
+            if (playableTracks.isEmpty()) {
+                playTrack(track)
+                return@launch
+            }
+            _isLoading.value = true
+            try {
+                val startIndex = playableTracks.indexOfFirst { it.id == track.id }.coerceAtLeast(0)
+                activeQueue = playableTracks
+                resolvedUrls.clear()
+                
+                val startTrack = playableTracks.getOrNull(startIndex)
+                if (startTrack != null) {
+                    val isYandex = startTrack.urn?.startsWith("yandex:track:") == true
+                    if (isYandex) {
+                        val yandexId = startTrack.urn?.removePrefix("yandex:track:") ?: ""
+                        resolvedUrls[startTrack.id] = "yandex://track/$yandexId"
+                    } else {
+                        val clientIdValue = settingsRepository.clientId.value
+                        val resolvedUrl = favoritesRepository.get(startTrack.id)?.streamUrl
+                            ?: playbackResolver.resolve(startTrack, clientIdValue)
+                            ?: ""
+                        if (resolvedUrl.isNotEmpty()) {
+                            resolvedUrls[startTrack.id] = resolvedUrl
+                        }
+                    }
+                }
+                
+                val stubs = playableTracks.map { t ->
+                    val localUrl = favoritesRepository.get(t.id)?.streamUrl
+                    val isYandex = t.urn?.startsWith("yandex:track:") == true
+                    val fallbackUrl = if (isYandex) {
+                        val yandexId = t.urn?.removePrefix("yandex:track:") ?: ""
+                        "yandex://track/$yandexId"
+                    } else {
+                        "soundcloud://track/${t.id}"
+                    }
+                    t.toQueueTrack(localUrl ?: resolvedUrls[t.id] ?: fallbackUrl)
+                }
+                musicPlayer.playQueue(stubs, startIndex)
+                _playingMixId.value = null
+                _currentPlayingTrack.value = track
+                _selectedTrack.value = track
+            } catch (e: Exception) {
+                Log.e("MusicViewModel", "playQueuedTrack error", e)
+                _errorMessage.value = readableMessage(e)
+            } finally {
+                _isLoading.value = false
+            }
+        }
+    }
+
+    fun playYandexTrack(track: SoundCloudTrack, customQueue: List<SoundCloudTrack>? = null) {
+        playQueuedTrack(track, customQueue)
     }
 }

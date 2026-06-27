@@ -36,7 +36,8 @@ class FavoritesRepository(context: Context) {
                 artist = track.user?.username ?: "Unknown Artist",
                 duration = track.duration,
                 streamUrl = streamUrl,
-                downloadState = DownloadState.NONE
+                downloadState = DownloadState.NONE,
+                artistPermalinkUrl = track.user?.permalinkUrl
             )
         )
     }

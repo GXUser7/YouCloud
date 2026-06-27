@@ -63,6 +63,14 @@ class PlaybackService : MediaSessionService() {
                                 return dataSpec.buildUpon().setUri(android.net.Uri.parse(resolvedUri)).build()
                             }
                         }
+                    } else if (uri.scheme == "yandex") {
+                        val trackId = uri.lastPathSegment
+                        if (trackId != null) {
+                            val resolvedUri = resolveYandexTrack(trackId)
+                            if (resolvedUri != null) {
+                                return dataSpec.buildUpon().setUri(android.net.Uri.parse(resolvedUri)).build()
+                            }
+                        }
                     }
                     return dataSpec
                 }
@@ -107,17 +115,29 @@ class PlaybackService : MediaSessionService() {
         val favoritesRepository = com.example.myapplication.data.FavoritesRepository(this)
         val fav = favoritesRepository.get(trackId)
         if (fav != null && fav.downloadState == com.example.myapplication.data.DownloadState.DOWNLOADED && !fav.streamUrl.isNullOrBlank()) {
-            Log.d("PlaybackService", "Playing track from cache: $trackId, url: ${fav.streamUrl}")
-            return fav.streamUrl
+            val localPath = fav.streamUrl
+            val finalUrl = if (localPath.startsWith("/") && !localPath.startsWith("file://")) {
+                "file://$localPath"
+            } else {
+                localPath
+            }
+            Log.d("PlaybackService", "Playing track from cache: $trackId, url: $finalUrl")
+            return finalUrl
         }
-
+ 
         val playlistsRepository = com.example.myapplication.data.PlaylistsRepository(this)
         val playlistTrack = playlistsRepository.playlists.value
             .flatMap { it.tracks }
             .firstOrNull { it.id == trackId && it.downloadState == com.example.myapplication.data.DownloadState.DOWNLOADED && !it.streamUrl.isNullOrBlank() }
         if (playlistTrack != null) {
-            Log.d("PlaybackService", "Playing track from playlist cache: $trackId, url: ${playlistTrack.streamUrl}")
-            return playlistTrack.streamUrl
+            val localPath = playlistTrack.streamUrl!!
+            val finalUrl = if (localPath.startsWith("/") && !localPath.startsWith("file://")) {
+                "file://$localPath"
+            } else {
+                localPath
+            }
+            Log.d("PlaybackService", "Playing track from playlist cache: $trackId, url: $finalUrl")
+            return finalUrl
         }
 
         val clientId = preferences.getString("soundcloud_client_id", "") ?: ""
@@ -155,6 +175,63 @@ class PlaybackService : MediaSessionService() {
                 } else {
                     null
                 }
+            }
+        }
+    }
+
+    private fun resolveYandexTrack(trackId: String): String? {
+        val generatedId = -kotlin.math.abs(trackId.hashCode().toLong())
+        val favoritesRepository = com.example.myapplication.data.FavoritesRepository(this)
+        val fav = favoritesRepository.get(generatedId)
+        if (fav != null && fav.downloadState == com.example.myapplication.data.DownloadState.DOWNLOADED && !fav.streamUrl.isNullOrBlank()) {
+            val localPath = fav.streamUrl
+            val finalUrl = if (localPath.startsWith("/") && !localPath.startsWith("file://")) {
+                "file://$localPath"
+            } else {
+                localPath
+            }
+            Log.d("PlaybackService", "Playing Yandex track from cache: $trackId, url: $finalUrl")
+            return finalUrl
+        }
+
+        val token = preferences.getString("yandex_music_token", "") ?: ""
+        return kotlinx.coroutines.runBlocking {
+            try {
+                val service = com.example.myapplication.data.YandexMusicApi.createService { token }
+                val response = service.getDownloadInfo(trackId)
+                val bestItem = response.result.orEmpty().firstOrNull { it.codec == "mp3" } ?: response.result.orEmpty().firstOrNull()
+                    ?: return@runBlocking null
+                
+                val client = okhttp3.OkHttpClient()
+                val request = okhttp3.Request.Builder()
+                    .url(bestItem.downloadInfoUrl)
+                    .header("Authorization", "OAuth $token")
+                    .build()
+                
+                val xmlString = client.newCall(request).execute().use { response ->
+                    response.body?.string() ?: ""
+                }
+                
+                if (xmlString.isEmpty()) return@runBlocking null
+                
+                val regex = { tag: String ->
+                    val r = "<$tag>(.*?)</$tag>".toRegex()
+                    r.find(xmlString)?.groupValues?.get(1).orEmpty()
+                }
+                
+                val host = regex("host")
+                val path = regex("path")
+                val ts = regex("ts")
+                val s = regex("s")
+                
+                if (host.isNotEmpty() && path.isNotEmpty() && ts.isNotEmpty() && s.isNotEmpty()) {
+                    com.example.myapplication.data.YandexMusicApi.generateDirectLink(host, path, ts, s)
+                } else {
+                    null
+                }
+            } catch (e: Exception) {
+                Log.e("PlaybackService", "Error resolving Yandex track: $trackId", e)
+                null
             }
         }
     }

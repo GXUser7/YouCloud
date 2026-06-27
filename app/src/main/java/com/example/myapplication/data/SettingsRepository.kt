@@ -24,6 +24,12 @@ class SettingsRepository(
     private val _userId = MutableStateFlow(readUserId())
     val userId = _userId.asStateFlow()
 
+    private val _yandexToken = MutableStateFlow(preferences.getString(KEY_YANDEX_TOKEN, "") ?: "")
+    val yandexToken = _yandexToken.asStateFlow()
+
+    private val _yandexUid = MutableStateFlow(preferences.getLong(KEY_YANDEX_UID, 0L))
+    val yandexUid = _yandexUid.asStateFlow()
+
     val equalizerEnabled = MutableStateFlow(preferences.getBoolean(KEY_EQ_ENABLED, false))
     val equalizerPreset = MutableStateFlow(preferences.getString(KEY_EQ_PRESET, "Flat") ?: "Flat")
     val homeSelectedTab = MutableStateFlow(preferences.getInt(KEY_HOME_SELECTED_TAB, 0))
@@ -81,6 +87,7 @@ class SettingsRepository(
 
     fun oauthTokenValue(): String = _oauthToken.value
     fun userIdValue(): String = _userId.value
+    fun yandexTokenValue(): String = _yandexToken.value
 
     fun saveClientId(value: String) {
         val cleaned = value.trim()
@@ -117,6 +124,28 @@ class SettingsRepository(
         preferences.edit().remove(KEY_USER_ID).apply()
     }
 
+    fun saveYandexToken(value: String) {
+        val cleaned = value.trim()
+        _yandexToken.value = cleaned
+        preferences.edit().putString(KEY_YANDEX_TOKEN, cleaned).apply()
+    }
+
+    fun resetYandexToken() {
+        _yandexToken.value = ""
+        preferences.edit().remove(KEY_YANDEX_TOKEN).apply()
+        resetYandexUid()
+    }
+
+    fun saveYandexUid(value: Long) {
+        _yandexUid.value = value
+        preferences.edit().putLong(KEY_YANDEX_UID, value).apply()
+    }
+
+    fun resetYandexUid() {
+        _yandexUid.value = 0L
+        preferences.edit().remove(KEY_YANDEX_UID).apply()
+    }
+
     private fun readOauthToken(): String {
         val stored = preferences.getString(KEY_OAUTH_TOKEN, null)?.takeIf { it.isNotBlank() }
         return stored ?: defaultOauthToken
@@ -134,6 +163,8 @@ class SettingsRepository(
         const val KEY_CLIENT_ID = "soundcloud_client_id"
         const val KEY_OAUTH_TOKEN = "soundcloud_oauth_token"
         const val KEY_USER_ID = "soundcloud_user_id"
+        const val KEY_YANDEX_TOKEN = "yandex_music_token"
+        const val KEY_YANDEX_UID = "yandex_music_uid"
         const val KEY_EQ_ENABLED = "equalizer_enabled"
         const val KEY_EQ_PRESET = "equalizer_preset"
         const val KEY_HOME_SELECTED_TAB = "home_selected_tab"

@@ -10,6 +10,7 @@ data class SoundCloudTrack(
     @SerializedName("artwork_url") val artworkUrl: String? = null,
     @SerializedName("permalink_url") val permalinkUrl: String? = null,
     @SerializedName("user") val user: SoundCloudUser? = null,
+    @SerializedName("user_id") val userId: Long? = null,
     @SerializedName("duration") val duration: Long = 0L,
     val streamable: Boolean? = null,
     val policy: String? = null,
@@ -18,7 +19,13 @@ data class SoundCloudTrack(
 )
 
 data class SoundCloudUser(
-    val username: String? = null
+    val id: Long? = null,
+    val username: String? = null,
+    @SerializedName("avatar_url") val avatarUrl: String? = null,
+    val description: String? = null,
+    @SerializedName("followers_count") val followersCount: Int? = null,
+    @SerializedName("track_count") val trackCount: Int? = null,
+    @SerializedName("permalink_url") val permalinkUrl: String? = null
 )
 
 data class SoundCloudTracksResponse(
@@ -58,6 +65,27 @@ data class SoundCloudLikesResponse(
 data class SoundCloudLikeItem(
     @SerializedName("created_at") val createdAt: String?,
     val track: SoundCloudTrack?
+)
+
+data class SoundCloudPlaylist(
+    val id: Long,
+    val title: String? = null,
+    val tracks: List<SoundCloudTrack> = emptyList(),
+    @SerializedName("track_count") val trackCount: Int = 0,
+    @SerializedName("artwork_url") val artworkUrl: String? = null,
+    @SerializedName("permalink_url") val permalinkUrl: String? = null,
+    val user: SoundCloudUser? = null
+)
+
+data class SoundCloudStreamUserResponse(
+    val collection: List<SoundCloudStreamItem> = emptyList(),
+    @SerializedName("next_href") val nextHref: String? = null
+)
+
+data class SoundCloudStreamItem(
+    val type: String,
+    val track: SoundCloudTrack? = null,
+    val playlist: SoundCloudPlaylist? = null
 )
 
 

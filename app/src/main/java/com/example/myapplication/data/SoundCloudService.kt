@@ -77,4 +77,31 @@ interface SoundCloudService {
         @retrofit2.http.Query("limit") limit: Int = 50,
         @retrofit2.http.Query("offset") offset: String? = null
     ): SoundCloudLikesResponse
+
+    @GET("users/{id}")
+    suspend fun getUser(
+        @Path("id") userId: Long,
+        @Query("client_id") clientId: String
+    ): SoundCloudUser
+
+    @GET("users/{id}/tracks")
+    suspend fun getUserTracks(
+        @Path("id") userId: Long,
+        @Query("client_id") clientId: String,
+        @Query("limit") limit: Int = 30
+    ): SoundCloudTracksResponse
+
+    @GET("resolve")
+    suspend fun resolveUrl(
+        @Query("url") url: String,
+        @Query("client_id") clientId: String
+    ): SoundCloudUser
+
+    @GET("stream/users/{id}")
+    suspend fun getStreamUserTracks(
+        @Path("id") userId: Long,
+        @Query("client_id") clientId: String,
+        @Query("limit") limit: Int = 20,
+        @Query("offset") offset: Int = 0
+    ): SoundCloudStreamUserResponse
 }

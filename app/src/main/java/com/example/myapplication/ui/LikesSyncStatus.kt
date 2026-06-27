@@ -8,6 +8,11 @@ enum class SyncState {
     FAILED
 }
 
+enum class LikesSyncSource {
+    SOUNDCLOUD,
+    YANDEX
+}
+
 data class LikesSyncStatus(
     val state: SyncState = SyncState.IDLE,
     val currentTrackIndex: Int = 0,

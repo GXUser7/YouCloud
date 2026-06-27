@@ -12,6 +12,7 @@ import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.fadeIn
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.animation.fadeOut
@@ -110,8 +111,13 @@ import com.example.myapplication.data.MixSection
 import com.example.myapplication.data.SoundCloudMix
 import com.example.myapplication.data.SoundCloudTrack
 import com.example.myapplication.data.Playlist
+import com.example.myapplication.data.SoundCloudPlaylist
+import com.example.myapplication.data.SoundCloudUser
+import androidx.compose.material.icons.filled.Album
+import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.fillMaxHeight
@@ -141,6 +147,24 @@ import android.content.Context
 import android.widget.FrameLayout
 import android.widget.Toast
 import android.view.ViewGroup
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.foundation.Canvas
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.graphics.Shape
+import androidx.compose.ui.graphics.Outline
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.unit.Density
+import androidx.compose.ui.unit.LayoutDirection
+import kotlin.math.absoluteValue
+import kotlin.math.pow
 
 @Composable
 fun MusicScreen(viewModel: MusicViewModel) {
@@ -148,6 +172,7 @@ fun MusicScreen(viewModel: MusicViewModel) {
     val isLoggedOut by viewModel.isLoggedOut.collectAsState(initial = true)
     val tracks by viewModel.tracks.collectAsState()
     val searchQuery by viewModel.searchQuery.collectAsState()
+    val downloadProgress by viewModel.downloadProgress.collectAsState()
     val isLoading by viewModel.isLoading.collectAsState()
     val errorMessage by viewModel.errorMessage.collectAsState()
     val isPlaying by viewModel.isPlaying.collectAsState()
@@ -166,6 +191,7 @@ fun MusicScreen(viewModel: MusicViewModel) {
     val mixesLoading by viewModel.mixesLoading.collectAsState()
     val loadingMixId by viewModel.loadingMixId.collectAsState()
     val selectedMix by viewModel.selectedMix.collectAsState()
+    val playingMixId by viewModel.playingMixId.collectAsState()
     val mixTracks by viewModel.mixTracks.collectAsState()
     val playbackPositionMs by viewModel.playbackPositionMs.collectAsState()
     val playbackDurationMs by viewModel.playbackDurationMs.collectAsState()
@@ -176,6 +202,11 @@ fun MusicScreen(viewModel: MusicViewModel) {
     val isClientIdExpired by viewModel.isClientIdExpired.collectAsState()
     val homeSelectedTab by viewModel.homeSelectedTab.collectAsState()
     var showTrackActionsDialog by remember { mutableStateOf(false) }
+
+    val yandexPlaylists by viewModel.yandexPlaylists.collectAsState()
+    val yandexToken by viewModel.settingsRepository.yandexToken.collectAsState()
+    val hasYandexToken = yandexToken.isNotEmpty()
+    val yandexLoginUrl by viewModel.yandexLoginUrl.collectAsState()
 
     val downloadedTracks = favorites.filter { it.downloadState == DownloadState.DOWNLOADED }
 
@@ -194,12 +225,26 @@ fun MusicScreen(viewModel: MusicViewModel) {
             AppScreen.SETTINGS -> viewModel.closeSettings()
             AppScreen.MIX_DETAIL -> viewModel.closeMix()
             AppScreen.PLAYLIST_DETAIL -> viewModel.closePlaylist()
+            AppScreen.YANDEX_PLAYLIST_DETAIL -> viewModel.deselectYandexPlaylist()
+            AppScreen.ARTIST_DETAIL -> viewModel.closeArtist()
             AppScreen.HOME -> Unit
         }
     }
 
     Box(modifier = Modifier.fillMaxSize()) {
         ExpressiveBackground()
+
+        yandexLoginUrl?.let { url ->
+            YandexLoginDialog(
+                loginUrl = url,
+                onTokenCaptured = { token ->
+                    viewModel.onYandexTokenCaptured(token)
+                },
+                onDismiss = {
+                    viewModel.cancelYandexLogin()
+                }
+            )
+        }
 
         if (isLoggedOut) {
             SoundCloudLoginScreen(viewModel = viewModel)
@@ -215,6 +260,8 @@ fun MusicScreen(viewModel: MusicViewModel) {
                     hasOauthToken = oauthToken.isNotBlank(),
                     mixesError = if (screen == AppScreen.HOME) errorMessage else null,
                     clientId = clientId,
+                    playingMixId = playingMixId,
+                    isPlaying = isPlaying,
                     playlists = playlists,
                     isClientIdExpired = isClientIdExpired,
                     onAutoRefreshClientId = viewModel::tryAutoRefreshClientId,
@@ -243,35 +290,64 @@ fun MusicScreen(viewModel: MusicViewModel) {
                     onReloadMixes = viewModel::loadMixes,
                     onCreatePlaylist = viewModel::createPlaylist,
                     onDeletePlaylist = viewModel::deletePlaylist,
-                    onOpenPlaylist = viewModel::openPlaylist
-                )
-
-                AppScreen.SEARCH -> SearchScreen(
-                    query = searchQuery,
-                    tracks = tracks,
-                    favorites = favorites,
-                    currentTrackId = currentTrackId,
-                    isLoading = isLoading,
-                    errorMessage = errorMessage,
-                    onBack = {
+                    onOpenPlaylist = viewModel::openPlaylist,
+                    yandexPlaylists = yandexPlaylists,
+                    hasYandexToken = hasYandexToken,
+                    onOpenYandexPlaylist = { playlist ->
                         haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                        viewModel.closeSearch()
-                    },
-                    onQueryChange = viewModel::onSearchQueryChange,
-                    onPlayTrack = { track ->
-                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                        viewModel.playTrack(track)
-                    },
-                    onFavoriteClick = { track ->
-                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                        viewModel.toggleFavorite(track)
+                        viewModel.selectYandexPlaylist(playlist)
                     }
                 )
+
+                AppScreen.SEARCH -> {
+                    val searchInYandex by viewModel.searchInYandex.collectAsState()
+                    val yandexSearchQuery by viewModel.yandexSearchQuery.collectAsState()
+                    val yandexTracks by viewModel.yandexTracks.collectAsState()
+                    val yandexLoading by viewModel.yandexLoading.collectAsState()
+                    val yandexError by viewModel.yandexError.collectAsState()
+                    SearchScreen(
+                        query = searchQuery,
+                        tracks = tracks,
+                        favorites = favorites,
+                        currentTrackId = currentTrackId,
+                        downloadProgress = downloadProgress,
+                        isPlaying = isPlaying,
+                        isLoading = isLoading,
+                        errorMessage = errorMessage,
+                        onBack = {
+                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                            viewModel.closeSearch()
+                        },
+                        onQueryChange = viewModel::onSearchQueryChange,
+                        onPlayTrack = { track ->
+                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                            viewModel.playQueuedTrack(track)
+                        },
+                        onFavoriteClick = { track ->
+                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                            viewModel.toggleFavorite(track)
+                        },
+                        searchInYandex = searchInYandex,
+                        onSearchSourceChanged = viewModel::setSearchSource,
+                        yandexQuery = yandexSearchQuery,
+                        yandexTracks = yandexTracks,
+                        yandexLoading = yandexLoading,
+                        yandexError = yandexError,
+                        onYandexQueryChange = viewModel::onYandexSearchQueryChange,
+                        hasYandexToken = hasYandexToken,
+                        onOpenSettings = {
+                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                            viewModel.openSettings()
+                        }
+                    )
+                }
 
                 AppScreen.DOWNLOADS -> DownloadsScreen(
                     tracks = downloadedTracks,
                     folderArtworkUri = downloadedFolderArtworkUri,
                     currentTrackId = currentTrackId,
+                    downloadProgress = downloadProgress,
+                    isPlaying = isPlaying,
                     onBack = {
                         haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                         viewModel.closeDownloads()
@@ -289,13 +365,17 @@ fun MusicScreen(viewModel: MusicViewModel) {
                 )
 
                 AppScreen.SETTINGS -> {
-                    val likesSyncStatus by viewModel.likesSyncStatus.collectAsState()
+                    val soundcloudLikesSyncStatus by viewModel.soundcloudLikesSyncStatus.collectAsState()
+                    val yandexLikesSyncStatus by viewModel.yandexLikesSyncStatus.collectAsState()
                     SettingsScreen(
                         settingsRepository = viewModel.settingsRepository,
-                        likesSyncStatus = likesSyncStatus,
-                        startLikesSync = viewModel::startLikesSync,
+                        soundcloudLikesSyncStatus = soundcloudLikesSyncStatus,
+                        yandexLikesSyncStatus = yandexLikesSyncStatus,
+                        startSoundCloudLikesSync = viewModel::startSoundCloudLikesSync,
+                        startYandexLikesSync = viewModel::startYandexLikesSync,
                         stopLikesSync = viewModel::stopLikesSync,
-                        resetLikesSyncStatus = viewModel::resetLikesSyncStatus,
+                        resetSoundCloudLikesSyncStatus = viewModel::resetSoundCloudLikesSyncStatus,
+                        resetYandexLikesSyncStatus = viewModel::resetYandexLikesSyncStatus,
                         onBack = viewModel::closeSettings,
                         onRelogin = {
                             haptic.performHapticFeedback(HapticFeedbackType.LongPress)
@@ -304,6 +384,14 @@ fun MusicScreen(viewModel: MusicViewModel) {
                         onClearCache = {
                             haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                             viewModel.refreshMixesAndStations()
+                        },
+                        onYandexLoginClick = {
+                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                            viewModel.startYandexLogin()
+                        },
+                        onYandexLogoutClick = {
+                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                            viewModel.logoutYandex()
                         }
                     )
                 }
@@ -313,6 +401,8 @@ fun MusicScreen(viewModel: MusicViewModel) {
                         PlaylistDetailScreen(
                             playlist = playlist,
                             currentTrackId = currentTrackId,
+                            downloadProgress = downloadProgress,
+                            isPlaying = isPlaying,
                             onBack = {
                                 haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                                 viewModel.closePlaylist()
@@ -336,6 +426,79 @@ fun MusicScreen(viewModel: MusicViewModel) {
                     }
                 }
 
+                AppScreen.YANDEX_PLAYLIST_DETAIL -> {
+                    val selectedYandexPlaylist by viewModel.selectedYandexPlaylist.collectAsState()
+                    val yandexPlaylistLoading by viewModel.yandexPlaylistLoading.collectAsState()
+                    selectedYandexPlaylist?.let { playlist ->
+                        YandexPlaylistDetailScreen(
+                            playlist = playlist,
+                            isLoading = yandexPlaylistLoading,
+                            currentTrackId = currentTrackId,
+                            downloadProgress = downloadProgress,
+                            isPlaying = isPlaying,
+                            favorites = favorites,
+                            onBack = {
+                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                viewModel.deselectYandexPlaylist()
+                            },
+                            onPlayTrack = { track ->
+                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                viewModel.playQueuedTrack(track, playlist.tracks)
+                            },
+                            onFavoriteClick = { track ->
+                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                viewModel.toggleFavorite(track)
+                            },
+                            onChangeArtwork = { uri ->
+                                viewModel.updateYandexPlaylistArtwork(playlist.id, uri)
+                            }
+                        )
+                    }
+                }
+
+                AppScreen.ARTIST_DETAIL -> {
+                    val currentArtist by viewModel.currentArtist.collectAsState()
+                    val currentArtistTracks by viewModel.currentArtistTracks.collectAsState()
+                    val currentArtistPlaylists by viewModel.currentArtistPlaylists.collectAsState()
+                    val artistLoading by viewModel.artistLoading.collectAsState()
+                    val artistError by viewModel.artistError.collectAsState()
+                    val selectedArtistPlaylist by viewModel.selectedArtistPlaylist.collectAsState()
+                    currentArtist?.let { artist ->
+                        ArtistDetailScreen(
+                            artist = artist,
+                            tracks = currentArtistTracks,
+                            playlists = currentArtistPlaylists,
+                            isLoading = artistLoading,
+                            error = artistError,
+                            currentTrackId = currentTrackId,
+                            downloadProgress = downloadProgress,
+                            isPlaying = isPlaying,
+                            favorites = favorites,
+                            onBack = {
+                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                viewModel.closeArtist()
+                            },
+                            onPlayTrack = { track ->
+                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                viewModel.playQueuedTrack(track, currentArtistTracks)
+                            },
+                            onFavoriteClick = { track ->
+                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                viewModel.toggleFavorite(track)
+                            },
+                            onPlaylistClick = { playlist ->
+                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                viewModel.selectArtistPlaylist(playlist)
+                            },
+                            selectedPlaylist = selectedArtistPlaylist,
+                            onDeselectPlaylist = {
+                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                viewModel.deselectArtistPlaylist()
+                            }
+                        )
+                    }
+                }
+
                 AppScreen.MIX_DETAIL -> Unit // Handled by selectedMix visibility
             }
 
@@ -350,6 +513,8 @@ fun MusicScreen(viewModel: MusicViewModel) {
                         tracks = mixTracks,
                         currentTrackId = currentTrackId,
                         favorites = favorites,
+                        downloadProgress = downloadProgress,
+                        isPlaying = isPlaying,
                         onBack = {
                             haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                             viewModel.closeMix()
@@ -441,6 +606,16 @@ fun MusicScreen(viewModel: MusicViewModel) {
                         },
                         onLongPressCover = {
                             showTrackActionsDialog = true
+                        },
+                        onArtistClick = {
+                            track.user?.let { user ->
+                                viewModel.openArtistDetails(
+                                    userId = user.id ?: 0L,
+                                    permalinkUrl = user.permalinkUrl,
+                                    username = user.username,
+                                    trackUrn = track.urn
+                                )
+                            }
                         }
                     )
                 }
@@ -486,6 +661,8 @@ private fun HomeScreen(
     hasOauthToken: Boolean,
     mixesError: String?,
     clientId: String,
+    playingMixId: String?,
+    isPlaying: Boolean,
     playlists: List<Playlist>,
     isClientIdExpired: Boolean,
     onAutoRefreshClientId: () -> Unit,
@@ -499,7 +676,10 @@ private fun HomeScreen(
     onReloadMixes: () -> Unit,
     onCreatePlaylist: (String) -> Unit,
     onDeletePlaylist: (String) -> Unit,
-    onOpenPlaylist: (Playlist) -> Unit
+    onOpenPlaylist: (Playlist) -> Unit,
+    yandexPlaylists: List<SoundCloudPlaylist> = emptyList(),
+    hasYandexToken: Boolean = false,
+    onOpenYandexPlaylist: (SoundCloudPlaylist) -> Unit = {}
 ) {
     var showCreatePlaylistDialog by remember { mutableStateOf(false) }
     var playlistNameInput by remember { mutableStateOf("") }
@@ -595,13 +775,15 @@ private fun HomeScreen(
                             loadingMixId = loadingMixId,
                             hasOauthToken = hasOauthToken,
                             errorMessage = mixesError,
+                            playingMixId = playingMixId,
+                            isPlaying = isPlaying,
                             onPlayMix = onPlayMix,
                             onOpenMix = onOpenMix,
                             onReload = onReloadMixes,
                             onOpenSettings = onOpenSettings
                         )
                     }
-
+ 
                     if (stationSection != null) {
                         item {
                             MixesSection(
@@ -610,6 +792,8 @@ private fun HomeScreen(
                                 loadingMixId = loadingMixId,
                                 hasOauthToken = hasOauthToken,
                                 errorMessage = null,
+                                playingMixId = playingMixId,
+                                isPlaying = isPlaying,
                                 onPlayMix = onPlayMix,
                                 onOpenMix = onOpenMix,
                                 onReload = {},
@@ -658,17 +842,37 @@ private fun HomeScreen(
                         }
                     }
 
-                    if (playlists.isEmpty()) {
+                    if (playlists.isEmpty() && (!hasYandexToken || yandexPlaylists.isEmpty())) {
                         item {
                             EmptyState("Создайте свой первый плейлист, нажав кнопку выше.")
                         }
                     } else {
-                        items(playlists, key = { "playlist-${it.id}" }) { playlist ->
-                            PlaylistCard(
-                                playlist = playlist,
-                                onClick = { onOpenPlaylist(playlist) },
-                                onDelete = { onDeletePlaylist(playlist.id) }
-                            )
+                        if (playlists.isNotEmpty()) {
+                            items(playlists, key = { "playlist-${it.id}" }) { playlist ->
+                                PlaylistCard(
+                                    playlist = playlist,
+                                    onClick = { onOpenPlaylist(playlist) },
+                                    onDelete = { onDeletePlaylist(playlist.id) }
+                                )
+                            }
+                        }
+
+                        if (hasYandexToken && yandexPlaylists.isNotEmpty()) {
+                            item {
+                                Text(
+                                    text = "Плейлисты Яндекс Музыки",
+                                    style = MaterialTheme.typography.titleLarge,
+                                    fontWeight = FontWeight.ExtraBold,
+                                    modifier = Modifier.padding(top = 16.dp, bottom = 8.dp)
+                                )
+                            }
+
+                            items(yandexPlaylists, key = { "yandex-playlist-${it.id}" }) { playlist ->
+                                YandexPlaylistCard(
+                                    playlist = playlist,
+                                    onClick = { onOpenYandexPlaylist(playlist) }
+                                )
+                            }
                         }
                     }
                 }
@@ -713,14 +917,22 @@ private fun HomeScreen(
 @Composable
 private fun SettingsScreen(
     settingsRepository: SettingsRepository,
-    likesSyncStatus: LikesSyncStatus,
-    startLikesSync: () -> Unit,
+    soundcloudLikesSyncStatus: LikesSyncStatus,
+    yandexLikesSyncStatus: LikesSyncStatus,
+    startSoundCloudLikesSync: () -> Unit,
+    startYandexLikesSync: () -> Unit,
     stopLikesSync: () -> Unit,
-    resetLikesSyncStatus: () -> Unit,
+    resetSoundCloudLikesSyncStatus: () -> Unit,
+    resetYandexLikesSyncStatus: () -> Unit,
     onBack: () -> Unit,
     onRelogin: () -> Unit,
-    onClearCache: () -> Unit
+    onClearCache: () -> Unit,
+    onYandexLoginClick: () -> Unit,
+    onYandexLogoutClick: () -> Unit
 ) {
+    val yandexToken by settingsRepository.yandexToken.collectAsState()
+    val hasYandexToken = yandexToken.isNotEmpty()
+
     LazyColumn(
         modifier = Modifier
             .fillMaxSize()
@@ -732,6 +944,7 @@ private fun SettingsScreen(
             TopBar(title = "Настройки", onBack = onBack)
         }
 
+        // 1. SoundCloud Sync Card
         item {
             ElevatedCard(
                 modifier = Modifier.fillMaxWidth(),
@@ -755,14 +968,14 @@ private fun SettingsScreen(
                         modifier = Modifier.align(Alignment.CenterHorizontally)
                     )
                     
-                    if (likesSyncStatus.state != SyncState.IDLE) {
+                    if (soundcloudLikesSyncStatus.state != SyncState.IDLE) {
                         Spacer(modifier = Modifier.height(8.dp))
                         
-                        val statusText = when (likesSyncStatus.state) {
+                        val statusText = when (soundcloudLikesSyncStatus.state) {
                             SyncState.FETCHING_LIKES -> "Получение лайкнутых треков..."
-                            SyncState.DOWNLOADING -> "Скачивание треков: ${likesSyncStatus.currentTrackIndex} из ${likesSyncStatus.totalTracks}"
+                            SyncState.DOWNLOADING -> "Скачивание треков: ${soundcloudLikesSyncStatus.currentTrackIndex} из ${soundcloudLikesSyncStatus.totalTracks}"
                             SyncState.COMPLETED -> "Синхронизация завершена!"
-                            SyncState.FAILED -> "Ошибка: ${likesSyncStatus.errorMessage}"
+                            SyncState.FAILED -> "Ошибка: ${soundcloudLikesSyncStatus.errorMessage}"
                             else -> ""
                         }
                         
@@ -770,34 +983,33 @@ private fun SettingsScreen(
                             text = statusText,
                             style = MaterialTheme.typography.bodyMedium,
                             fontWeight = FontWeight.Bold,
-                            color = if (likesSyncStatus.state == SyncState.FAILED) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
+                            color = if (soundcloudLikesSyncStatus.state == SyncState.FAILED) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
                         )
                         
-                        if (likesSyncStatus.state == SyncState.DOWNLOADING) {
+                        if (soundcloudLikesSyncStatus.state == SyncState.DOWNLOADING) {
                             Text(
-                                text = "Скачивается: ${likesSyncStatus.currentTrackTitle}",
+                                text = "Скачивается: ${soundcloudLikesSyncStatus.currentTrackTitle}",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis
                             )
                             
-                            val progress = if (likesSyncStatus.totalTracks > 0) {
-                                (likesSyncStatus.downloadedCount + likesSyncStatus.failedCount).toFloat() / likesSyncStatus.totalTracks
+                            val progress = if (soundcloudLikesSyncStatus.totalTracks > 0) {
+                                (soundcloudLikesSyncStatus.downloadedCount + soundcloudLikesSyncStatus.failedCount).toFloat() / soundcloudLikesSyncStatus.totalTracks
                             } else 0f
                             
-                            LinearProgressIndicator(
+                            CustomWavyProgressIndicator(
                                 progress = progress,
+                                color = Color(0xFFFF5500),
+                                trackColor = Color(0xFFFF5500).copy(alpha = 0.2f),
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .height(8.dp)
-                                    .clip(RoundedCornerShape(4.dp)),
-                                color = Color(0xFFFF5500),
-                                trackColor = MaterialTheme.colorScheme.surfaceVariant
                             )
                             
                             Text(
-                                text = "Успешно: ${likesSyncStatus.downloadedCount} | Ошибки: ${likesSyncStatus.failedCount}",
+                                text = "Успешно: ${soundcloudLikesSyncStatus.downloadedCount} | Ошибки: ${soundcloudLikesSyncStatus.failedCount}",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
@@ -810,7 +1022,7 @@ private fun SettingsScreen(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(12.dp)
                     ) {
-                        if (likesSyncStatus.state == SyncState.FETCHING_LIKES || likesSyncStatus.state == SyncState.DOWNLOADING) {
+                        if (soundcloudLikesSyncStatus.state == SyncState.FETCHING_LIKES || soundcloudLikesSyncStatus.state == SyncState.DOWNLOADING) {
                             Button(
                                 onClick = stopLikesSync,
                                 modifier = Modifier.weight(1f),
@@ -823,7 +1035,7 @@ private fun SettingsScreen(
                             }
                         } else {
                             Button(
-                                onClick = startLikesSync,
+                                onClick = startSoundCloudLikesSync,
                                 modifier = Modifier.weight(1f),
                                 shape = RoundedCornerShape(16.dp),
                                 colors = androidx.compose.material3.ButtonDefaults.buttonColors(
@@ -831,15 +1043,15 @@ private fun SettingsScreen(
                                 )
                             ) {
                                 Text(
-                                    text = if (likesSyncStatus.state == SyncState.COMPLETED || likesSyncStatus.state == SyncState.FAILED) "Синхронизировать заново" else "Синхронизировать лайки",
+                                    text = if (soundcloudLikesSyncStatus.state == SyncState.COMPLETED || soundcloudLikesSyncStatus.state == SyncState.FAILED) "Синхронизировать заново" else "Синхронизировать лайки",
                                     color = Color.White,
                                     fontWeight = FontWeight.Bold
                                 )
                             }
                             
-                            if (likesSyncStatus.state == SyncState.COMPLETED || likesSyncStatus.state == SyncState.FAILED) {
+                            if (soundcloudLikesSyncStatus.state == SyncState.COMPLETED || soundcloudLikesSyncStatus.state == SyncState.FAILED) {
                                 Button(
-                                    onClick = resetLikesSyncStatus,
+                                    onClick = resetSoundCloudLikesSyncStatus,
                                     modifier = Modifier.weight(1f),
                                     shape = RoundedCornerShape(16.dp),
                                     colors = androidx.compose.material3.ButtonDefaults.buttonColors(
@@ -856,6 +1068,133 @@ private fun SettingsScreen(
             }
         }
 
+        // 2. Yandex Music Sync Card (only if logged in)
+        if (hasYandexToken) {
+            item {
+                ElevatedCard(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(32.dp)
+                ) {
+                    Column(
+                        modifier = Modifier.padding(24.dp),
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        Text(
+                            text = "Синхронизация Яндекс.Музыки",
+                            style = MaterialTheme.typography.titleLarge,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier.align(Alignment.CenterHorizontally)
+                        )
+                        Text(
+                            text = "Автоматически добавляйте все треки из вашего плейлиста 'Мне нравится' на Яндекс.Музыке в любимые и скачивайте их для прослушивания офлайн.",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            textAlign = TextAlign.Center,
+                            modifier = Modifier.align(Alignment.CenterHorizontally)
+                        )
+                        
+                        if (yandexLikesSyncStatus.state != SyncState.IDLE) {
+                            Spacer(modifier = Modifier.height(8.dp))
+                            
+                            val statusText = when (yandexLikesSyncStatus.state) {
+                                SyncState.FETCHING_LIKES -> "Получение лайкнутых треков..."
+                                SyncState.DOWNLOADING -> "Скачивание треков: ${yandexLikesSyncStatus.currentTrackIndex} из ${yandexLikesSyncStatus.totalTracks}"
+                                SyncState.COMPLETED -> "Синхронизация завершена!"
+                                SyncState.FAILED -> "Ошибка: ${yandexLikesSyncStatus.errorMessage}"
+                                else -> ""
+                            }
+                            
+                            Text(
+                                text = statusText,
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = FontWeight.Bold,
+                                color = if (yandexLikesSyncStatus.state == SyncState.FAILED) MaterialTheme.colorScheme.error else Color(0xFFF2C200)
+                            )
+                            
+                            if (yandexLikesSyncStatus.state == SyncState.DOWNLOADING) {
+                                Text(
+                                    text = "Скачивается: ${yandexLikesSyncStatus.currentTrackTitle}",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                
+                                val progress = if (yandexLikesSyncStatus.totalTracks > 0) {
+                                    (yandexLikesSyncStatus.downloadedCount + yandexLikesSyncStatus.failedCount).toFloat() / yandexLikesSyncStatus.totalTracks
+                                } else 0f
+                                
+                                CustomWavyProgressIndicator(
+                                    progress = progress,
+                                    color = Color(0xFFFFD600),
+                                    trackColor = Color(0xFFFFD600).copy(alpha = 0.2f),
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .height(8.dp)
+                                )
+                                
+                                Text(
+                                    text = "Успешно: ${yandexLikesSyncStatus.downloadedCount} | Ошибки: ${yandexLikesSyncStatus.failedCount}",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                        
+                        Spacer(modifier = Modifier.height(8.dp))
+                        
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            if (yandexLikesSyncStatus.state == SyncState.FETCHING_LIKES || yandexLikesSyncStatus.state == SyncState.DOWNLOADING) {
+                                Button(
+                                    onClick = stopLikesSync,
+                                    modifier = Modifier.weight(1f),
+                                    shape = RoundedCornerShape(16.dp),
+                                    colors = androidx.compose.material3.ButtonDefaults.buttonColors(
+                                        containerColor = MaterialTheme.colorScheme.error
+                                    )
+                                ) {
+                                    Text("Остановить", color = Color.White, fontWeight = FontWeight.Bold)
+                                }
+                            } else {
+                                Button(
+                                    onClick = startYandexLikesSync,
+                                    modifier = Modifier.weight(1f),
+                                    shape = RoundedCornerShape(16.dp),
+                                    colors = androidx.compose.material3.ButtonDefaults.buttonColors(
+                                        containerColor = Color(0xFFFFD600),
+                                        contentColor = Color.Black
+                                    )
+                                ) {
+                                    Text(
+                                        text = if (yandexLikesSyncStatus.state == SyncState.COMPLETED || yandexLikesSyncStatus.state == SyncState.FAILED) "Синхронизировать заново" else "Синхронизировать лайки",
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                }
+                                
+                                if (yandexLikesSyncStatus.state == SyncState.COMPLETED || yandexLikesSyncStatus.state == SyncState.FAILED) {
+                                    Button(
+                                        onClick = resetYandexLikesSyncStatus,
+                                        modifier = Modifier.weight(1f),
+                                        shape = RoundedCornerShape(16.dp),
+                                        colors = androidx.compose.material3.ButtonDefaults.buttonColors(
+                                            containerColor = MaterialTheme.colorScheme.secondaryContainer,
+                                            contentColor = MaterialTheme.colorScheme.onSecondaryContainer
+                                        )
+                                    ) {
+                                        Text("Сбросить", fontWeight = FontWeight.Bold)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // 3. Accounts Cards (SoundCloud and Yandex)
         item {
             ElevatedCard(
                 modifier = Modifier.fillMaxWidth(),
@@ -872,7 +1211,7 @@ private fun SettingsScreen(
                         fontWeight = FontWeight.Bold
                     )
                     Text(
-                        text = "Вы вошли в систему. Если у вас возникли проблемы со стримингом или вы хотите сменить аккаунт, вы можете войти заново.",
+                        text = "Вы вошли в систему SoundCloud. Если у вас возникли проблемы или вы хотите сменить аккаунт, вы можете перезайти.",
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         textAlign = TextAlign.Center
@@ -891,6 +1230,66 @@ private fun SettingsScreen(
                 }
             }
         }
+
+        item {
+            ElevatedCard(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(32.dp)
+            ) {
+                Column(
+                    modifier = Modifier.padding(24.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Text(
+                        text = "Яндекс.Музыка",
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.Bold
+                    )
+                    
+                    if (hasYandexToken) {
+                        Text(
+                            text = "Вы вошли в систему Яндекс.Музыка. Если вы хотите сменить аккаунт или выйти из него, используйте кнопку ниже.",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            textAlign = TextAlign.Center
+                        )
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Button(
+                            onClick = onYandexLogoutClick,
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(16.dp),
+                            colors = androidx.compose.material3.ButtonDefaults.buttonColors(
+                                containerColor = MaterialTheme.colorScheme.errorContainer,
+                                contentColor = MaterialTheme.colorScheme.onErrorContainer
+                            )
+                        ) {
+                            Text("Выйти из аккаунта", fontWeight = FontWeight.Bold)
+                        }
+                    } else {
+                        Text(
+                            text = "Подключите свой аккаунт Яндекс.Музыки, чтобы искать любимые треки, синхронизировать лайки и воспроизводить свои плейлисты.",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            textAlign = TextAlign.Center
+                        )
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Button(
+                            onClick = onYandexLoginClick,
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(16.dp),
+                            colors = androidx.compose.material3.ButtonDefaults.buttonColors(
+                                containerColor = Color(0xFFFFD600),
+                                contentColor = Color.Black
+                            )
+                        ) {
+                            Text("Войти через Яндекс", fontWeight = FontWeight.Bold)
+                        }
+                    }
+                }
+            }
+        }
+
 
         item {
             val context = LocalContext.current
@@ -951,18 +1350,35 @@ private fun SearchScreen(
     tracks: List<SoundCloudTrack>,
     favorites: List<FavoriteTrack>,
     currentTrackId: Long?,
+    downloadProgress: Map<Long, Float> = emptyMap(),
+    isPlaying: Boolean = false,
     isLoading: Boolean,
     errorMessage: String?,
     onBack: () -> Unit,
     onQueryChange: (String) -> Unit,
     onPlayTrack: (SoundCloudTrack) -> Unit,
-    onFavoriteClick: (SoundCloudTrack) -> Unit
+    onFavoriteClick: (SoundCloudTrack) -> Unit,
+    searchInYandex: Boolean,
+    onSearchSourceChanged: (Boolean) -> Unit,
+    yandexQuery: String,
+    yandexTracks: List<SoundCloudTrack>,
+    yandexLoading: Boolean,
+    yandexError: String?,
+    onYandexQueryChange: (String) -> Unit,
+    hasYandexToken: Boolean,
+    onOpenSettings: () -> Unit
 ) {
     val focusRequester = remember { FocusRequester() }
+    val haptic = LocalHapticFeedback.current
     LaunchedEffect(Unit) {
         kotlinx.coroutines.delay(100)
         focusRequester.requestFocus()
     }
+
+    val activeQuery = if (searchInYandex) yandexQuery else query
+    val activeTracks = if (searchInYandex) yandexTracks else tracks
+    val activeLoading = if (searchInYandex) yandexLoading else isLoading
+    val activeError = if (searchInYandex) yandexError else errorMessage
 
     LazyColumn(
         modifier = Modifier
@@ -976,31 +1392,110 @@ private fun SearchScreen(
         }
 
         item {
-            SearchField(query = query, onQueryChange = onQueryChange, focusRequester = focusRequester)
+            SearchField(
+                query = activeQuery,
+                onQueryChange = { newQuery ->
+                    if (searchInYandex) {
+                        onYandexQueryChange(newQuery)
+                    } else {
+                        onQueryChange(newQuery)
+                    }
+                },
+                focusRequester = focusRequester
+            )
         }
 
-        // Removed LinearProgressIndicator to prevent layout jumping
-
-        if (errorMessage != null) {
-            item { MessageCard(errorMessage) }
+        item {
+            SegmentedControl(
+                items = listOf("SoundCloud", "Яндекс Музыка"),
+                selectedIndex = if (searchInYandex) 1 else 0,
+                onSelectedIndexChanged = { index ->
+                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                    onSearchSourceChanged(index == 1)
+                }
+            )
         }
 
-        if (tracks.isEmpty() && !isLoading) {
+        if (activeLoading) {
             item {
-                EmptyState(
-                    if (query.isBlank()) "Напиши, что хочешь услышать."
-                    else "Ничего не нашлось."
+                CustomWavyProgressIndicator(
+                    progress = null,
+                    color = if (searchInYandex) Color(0xFFF2C200) else MaterialTheme.colorScheme.primary,
+                    trackColor = (if (searchInYandex) Color(0xFFF2C200) else MaterialTheme.colorScheme.primary).copy(alpha = 0.2f),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(6.dp)
                 )
             }
+        }
+
+        if (activeError != null) {
+            item { MessageCard(activeError) }
+        }
+
+        if (searchInYandex && !hasYandexToken) {
+            item {
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 16.dp),
+                    shape = RoundedCornerShape(28.dp),
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+                    )
+                ) {
+                    Column(
+                        modifier = Modifier.padding(24.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(16.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.MusicNote,
+                            contentDescription = null,
+                            tint = Color(0xFFF2C200),
+                            modifier = Modifier.size(48.dp)
+                        )
+                        Text(
+                            text = "Войдите в Яндекс Музыку в настройках, чтобы искать треки.",
+                            style = MaterialTheme.typography.titleMedium,
+                            textAlign = TextAlign.Center
+                        )
+                        Button(
+                            onClick = onOpenSettings,
+                            shape = RoundedCornerShape(16.dp),
+                            colors = androidx.compose.material3.ButtonDefaults.buttonColors(
+                                containerColor = Color(0xFFF2C200),
+                                contentColor = Color.Black
+                            )
+                        ) {
+                            Text("Перейти в настройки", fontWeight = FontWeight.Bold)
+                        }
+                    }
+                }
+            }
         } else {
-            items(tracks, key = { "search-${it.id}" }) { track ->
-                TrackCard(
-                    track = track,
-                    isFavorite = favorites.any { it.id == track.id },
-                    isSelected = track.id == currentTrackId,
-                    onClick = { onPlayTrack(track) },
-                    onFavoriteClick = { onFavoriteClick(track) }
-                )
+            if (activeTracks.isEmpty() && !activeLoading) {
+                item {
+                    EmptyState(
+                        if (activeQuery.isBlank()) "Напиши, что хочешь услышать."
+                        else "Ничего не нашлось."
+                    )
+                }
+            } else {
+                items(activeTracks, key = { "${if (searchInYandex) "yandex" else "sc"}-search-${it.id}" }) { track ->
+                    val favorite = favorites.firstOrNull { it.id == track.id }
+                    val progress = downloadProgress[track.id]
+                    TrackCard(
+                        track = track,
+                        isFavorite = favorite != null,
+                        isSelected = track.id == currentTrackId,
+                        downloadState = favorite?.downloadState,
+                        progress = progress,
+                        isPlaying = isPlaying,
+                        onClick = { onPlayTrack(track) },
+                        onFavoriteClick = { onFavoriteClick(track) }
+                    )
+                }
             }
         }
     }
@@ -1011,6 +1506,8 @@ private fun DownloadsScreen(
     tracks: List<FavoriteTrack>,
     folderArtworkUri: String?,
     currentTrackId: Long?,
+    downloadProgress: Map<Long, Float> = emptyMap(),
+    isPlaying: Boolean = false,
     onBack: () -> Unit,
     onChangeArtwork: (String?) -> Unit,
     onPlayTrack: (FavoriteTrack) -> Unit,
@@ -1071,9 +1568,12 @@ private fun DownloadsScreen(
                 item { EmptyState("Здесь появятся треки, которые ты сохранишь на устройство.") }
             } else {
                 items(tracks, key = { "downloaded-${it.id}" }) { track ->
+                    val progress = downloadProgress[track.id]
                     DownloadedTrackCard(
                         track = track,
                         isSelected = track.id == currentTrackId,
+                        progress = progress,
+                        isPlaying = isPlaying,
                         onClick = { onPlayTrack(track) },
                         onDeleteDownload = { onDeleteDownload(track) }
                     )
@@ -1085,19 +1585,272 @@ private fun DownloadsScreen(
 
 @Composable
 private fun ExpressiveBackground() {
+    val infiniteTransition = rememberInfiniteTransition(label = "expressive_bg")
+    
+    val rotationPhase1 by infiniteTransition.animateFloat(
+        initialValue = 0f,
+        targetValue = 360f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 180000, easing = LinearEasing),
+            repeatMode = RepeatMode.Restart
+        ),
+        label = "rotation1"
+    )
+    val rotationPhase2 by infiniteTransition.animateFloat(
+        initialValue = 0f,
+        targetValue = -360f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 240000, easing = LinearEasing),
+            repeatMode = RepeatMode.Restart
+        ),
+        label = "rotation2"
+    )
+    val rotationPhase3 by infiniteTransition.animateFloat(
+        initialValue = 0f,
+        targetValue = 360f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 280000, easing = LinearEasing),
+            repeatMode = RepeatMode.Restart
+        ),
+        label = "rotation3"
+    )
+    val rotationPhase4 by infiniteTransition.animateFloat(
+        initialValue = 0f,
+        targetValue = -360f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 320000, easing = LinearEasing),
+            repeatMode = RepeatMode.Restart
+        ),
+        label = "rotation4"
+    )
+    val rotationPhase5 by infiniteTransition.animateFloat(
+        initialValue = 0f,
+        targetValue = 360f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 360000, easing = LinearEasing),
+            repeatMode = RepeatMode.Restart
+        ),
+        label = "rotation5"
+    )
+    val rotationPhase6 by infiniteTransition.animateFloat(
+        initialValue = 0f,
+        targetValue = -360f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 400000, easing = LinearEasing),
+            repeatMode = RepeatMode.Restart
+        ),
+        label = "rotation6"
+    )
+    val rotationPhase7 by infiniteTransition.animateFloat(
+        initialValue = 0f,
+        targetValue = 360f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 440000, easing = LinearEasing),
+            repeatMode = RepeatMode.Restart
+        ),
+        label = "rotation7"
+    )
+    val rotationPhase8 by infiniteTransition.animateFloat(
+        initialValue = 0f,
+        targetValue = 360f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 200000, easing = LinearEasing),
+            repeatMode = RepeatMode.Restart
+        ),
+        label = "rotation8"
+    )
+    val rotationPhase9 by infiniteTransition.animateFloat(
+        initialValue = 0f,
+        targetValue = -360f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 220000, easing = LinearEasing),
+            repeatMode = RepeatMode.Restart
+        ),
+        label = "rotation9"
+    )
+    val rotationPhase10 by infiniteTransition.animateFloat(
+        initialValue = 0f,
+        targetValue = 360f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 260000, easing = LinearEasing),
+            repeatMode = RepeatMode.Restart
+        ),
+        label = "rotation10"
+    )
+    val rotationPhase11 by infiniteTransition.animateFloat(
+        initialValue = 0f,
+        targetValue = -360f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 300000, easing = LinearEasing),
+            repeatMode = RepeatMode.Restart
+        ),
+        label = "rotation11"
+    )
+    val rotationPhase12 by infiniteTransition.animateFloat(
+        initialValue = 0f,
+        targetValue = 360f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 340000, easing = LinearEasing),
+            repeatMode = RepeatMode.Restart
+        ),
+        label = "rotation12"
+    )
+    val rotationPhase13 by infiniteTransition.animateFloat(
+        initialValue = 0f,
+        targetValue = -360f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 380000, easing = LinearEasing),
+            repeatMode = RepeatMode.Restart
+        ),
+        label = "rotation13"
+    )
+    val rotationPhase14 by infiniteTransition.animateFloat(
+        initialValue = 0f,
+        targetValue = 360f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 420000, easing = LinearEasing),
+            repeatMode = RepeatMode.Restart
+        ),
+        label = "rotation14"
+    )
+
+    val rotationPhases = listOf(
+        rotationPhase1, rotationPhase2, rotationPhase3, rotationPhase4,
+        rotationPhase5, rotationPhase6, rotationPhase7, rotationPhase8,
+        rotationPhase9, rotationPhase10, rotationPhase11, rotationPhase12,
+        rotationPhase13, rotationPhase14
+    )
+
+    val colorPrimary = MaterialTheme.colorScheme.primary.copy(alpha = 0.05f)
+    val colorTertiary = MaterialTheme.colorScheme.tertiary.copy(alpha = 0.04f)
+    val colorSecondary = MaterialTheme.colorScheme.secondary.copy(alpha = 0.04f)
+
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(
-                Brush.verticalGradient(
-                    colors = listOf(
-                        MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.9f),
-                        MaterialTheme.colorScheme.surface,
-                        MaterialTheme.colorScheme.background
-                    )
-                )
-            )
-    )
+            .background(MaterialTheme.colorScheme.background)
+    ) {
+        Canvas(modifier = Modifier.fillMaxSize()) {
+            val width = size.width
+            val height = size.height
+            val steps = 120
+
+            // 1. Center: 8-petaled flower shape (primary)
+            drawContext.canvas.save()
+            drawContext.canvas.translate(width * 0.5f, height * 0.5f)
+            drawContext.canvas.rotate(rotationPhase1)
+            val flowerPath = Path()
+            val r1 = minOf(width, height) * 0.28f
+            for (i in 0..steps) {
+                val theta = (i * 2f * Math.PI / steps).toFloat()
+                val rFactor = 0.85f + 0.15f * kotlin.math.cos(8f * theta)
+                val r = r1 * rFactor
+                val x = r * kotlin.math.cos(theta)
+                val y = r * kotlin.math.sin(theta)
+                if (i == 0) {
+                    flowerPath.moveTo(x, y)
+                } else {
+                    flowerPath.lineTo(x, y)
+                }
+            }
+            flowerPath.close()
+            drawPath(path = flowerPath, color = colorPrimary)
+            drawContext.canvas.restore()
+
+            // 2. Top-Left: Squircle shape (tertiary) - slightly larger than medium
+            drawContext.canvas.save()
+            drawContext.canvas.translate(width * 0.12f, height * 0.14f)
+            drawContext.canvas.rotate(rotationPhase2)
+            val squirclePath = Path()
+            val r2 = minOf(width, height) * 0.28f
+            for (i in 0..steps) {
+                val theta = (i * 2f * Math.PI / steps).toFloat()
+                val cosT = kotlin.math.cos(theta)
+                val sinT = kotlin.math.sin(theta)
+                val cosT4 = cosT.absoluteValue.pow(4.5f)
+                val sinT4 = sinT.absoluteValue.pow(4.5f)
+                val r = r2 * (1f / (cosT4 + sinT4).pow(1f / 4.5f)) * 0.85f
+                val x = r * cosT
+                val y = r * sinT
+                if (i == 0) {
+                    squirclePath.moveTo(x, y)
+                } else {
+                    squirclePath.lineTo(x, y)
+                }
+            }
+            squirclePath.close()
+            drawPath(path = squirclePath, color = colorTertiary)
+            drawContext.canvas.restore()
+
+            // 3. Top-Right: 5-petaled star shape (secondary) - medium
+            drawContext.canvas.save()
+            drawContext.canvas.translate(width * 0.88f, height * 0.14f)
+            drawContext.canvas.rotate(rotationPhase3)
+            val starPath = Path()
+            val r3 = minOf(width, height) * 0.23f
+            for (i in 0..steps) {
+                val theta = (i * 2f * Math.PI / steps).toFloat()
+                val rFactor = 0.8f + 0.2f * kotlin.math.cos(5f * theta)
+                val r = r3 * rFactor
+                val x = r * kotlin.math.cos(theta)
+                val y = r * kotlin.math.sin(theta)
+                if (i == 0) {
+                    starPath.moveTo(x, y)
+                } else {
+                    starPath.lineTo(x, y)
+                }
+            }
+            starPath.close()
+            drawPath(path = starPath, color = colorSecondary)
+            drawContext.canvas.restore()
+
+            // 4. Bottom-Left: 6-pointed star/flower shape (tertiary) - smaller than medium, not small
+            drawContext.canvas.save()
+            drawContext.canvas.translate(width * 0.15f, height * 0.86f)
+            drawContext.canvas.rotate(rotationPhase4)
+            val path4 = Path()
+            val r4 = minOf(width, height) * 0.19f
+            for (i in 0..steps) {
+                val theta = (i * 2f * Math.PI / steps).toFloat()
+                val rFactor = 0.8f + 0.2f * kotlin.math.cos(6f * theta)
+                val x = r4 * rFactor * kotlin.math.cos(theta)
+                val y = r4 * rFactor * kotlin.math.sin(theta)
+                if (i == 0) {
+                    path4.moveTo(x, y)
+                } else {
+                    path4.lineTo(x, y)
+                }
+            }
+            path4.close()
+            drawPath(path = path4, color = colorTertiary)
+            drawContext.canvas.restore()
+
+            // 5. Bottom-Right: Squircle shape (secondary) - huge
+            drawContext.canvas.save()
+            drawContext.canvas.translate(width * 0.85f, height * 0.86f)
+            drawContext.canvas.rotate(rotationPhase5)
+            val path5 = Path()
+            val r5 = minOf(width, height) * 0.45f
+            for (i in 0..steps) {
+                val theta = (i * 2f * Math.PI / steps).toFloat()
+                val cosT = kotlin.math.cos(theta)
+                val sinT = kotlin.math.sin(theta)
+                val cosT4 = cosT.absoluteValue.pow(3f)
+                val sinT4 = sinT.absoluteValue.pow(3f)
+                val r = r5 * (1f / (cosT4 + sinT4).pow(1f / 3f)) * 0.85f
+                val x = r * cosT
+                val y = r * sinT
+                if (i == 0) {
+                    path5.moveTo(x, y)
+                } else {
+                    path5.lineTo(x, y)
+                }
+            }
+            path5.close()
+            drawPath(path = path5, color = colorSecondary)
+            drawContext.canvas.restore()
+        }
+    }
 }
 
 @Composable
@@ -1331,6 +2084,8 @@ private fun MixesSection(
     loadingMixId: String?,
     hasOauthToken: Boolean,
     errorMessage: String?,
+    playingMixId: String?,
+    isPlaying: Boolean,
     onPlayMix: (SoundCloudMix) -> Unit,
     onOpenMix: (SoundCloudMix) -> Unit,
     onReload: () -> Unit,
@@ -1388,9 +2143,11 @@ private fun MixesSection(
                     contentPadding = PaddingValues(end = 4.dp)
                 ) {
                     items(mixes, key = { it.id }) { mix ->
+                        val isMixPlaying = isPlaying && playingMixId == mix.id
                         MixCard(
                             mix = mix,
                             isLoading = loadingMixId == mix.id,
+                            isMixPlaying = isMixPlaying,
                             onPlay = { onPlayMix(mix) },
                             onClick = { onOpenMix(mix) }
                         )
@@ -1405,6 +2162,7 @@ private fun MixesSection(
 private fun MixCard(
     mix: SoundCloudMix,
     isLoading: Boolean,
+    isMixPlaying: Boolean,
     onPlay: () -> Unit,
     onClick: () -> Unit
 ) {
@@ -1429,7 +2187,16 @@ private fun MixCard(
             },
         shape = RoundedCornerShape(36.dp),
         colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.85f)
+            containerColor = if (isMixPlaying) {
+                MaterialTheme.colorScheme.primary.copy(alpha = 0.92f)
+            } else {
+                MaterialTheme.colorScheme.surface.copy(alpha = 0.85f)
+            },
+            contentColor = if (isMixPlaying) {
+                MaterialTheme.colorScheme.onPrimary
+            } else {
+                MaterialTheme.colorScheme.onSurface
+            }
         ),
         elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
     ) {
@@ -1439,49 +2206,25 @@ private fun MixCard(
         ) {
             Box {
                 if (mix.artworkUrl != null) {
-                    TrackArtwork(mix.artworkUrl, 166.dp)
+                    TrackArtwork(
+                        artworkUrl = mix.artworkUrl,
+                        size = 166.dp,
+                        isPlaying = isMixPlaying,
+                        useMorphing = true,
+                        fallbackShape = RoundedCornerShape(24.dp)
+                    )
                 } else {
                     Surface(
-                        color = MaterialTheme.colorScheme.secondaryContainer,
-                        shape = RoundedCornerShape(28.dp),
+                        color = if (isMixPlaying) MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.15f) else MaterialTheme.colorScheme.secondaryContainer,
+                        shape = RoundedCornerShape(24.dp),
                         modifier = Modifier.size(166.dp)
                     ) {
                         Box(contentAlignment = Alignment.Center) {
-                            Icon(Icons.Default.PlayArrow, contentDescription = null, modifier = Modifier.size(48.dp))
-                        }
-                    }
-                }
-
-                // Play button overlay
-                Surface(
-                    onClick = {
-                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                        onPlay()
-                    },
-                    color = MaterialTheme.colorScheme.primary,
-                    shape = CircleShape,
-                    modifier = Modifier
-                        .align(Alignment.BottomEnd)
-                        .padding(10.dp)
-                        .size(48.dp),
-                    tonalElevation = 8.dp
-                ) {
-                    Box(contentAlignment = Alignment.Center) {
-                        if (isLoading) {
-                            // Subtle loading: just change icon or add a very faint pulse
-                            // Removing CircularProgressIndicator as requested to prevent visual noise/shifting
                             Icon(
                                 Icons.Default.PlayArrow,
                                 contentDescription = null,
-                                tint = MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.5f),
-                                modifier = Modifier.size(30.dp)
-                            )
-                        } else {
-                            Icon(
-                                Icons.Default.PlayArrow,
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.onPrimary,
-                                modifier = Modifier.size(30.dp)
+                                tint = if (isMixPlaying) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSecondaryContainer,
+                                modifier = Modifier.size(48.dp)
                             )
                         }
                     }
@@ -1499,7 +2242,7 @@ private fun MixCard(
                 Text(
                     text = mix.description?.takeIf { it.isNotBlank() } ?: "${mix.trackIds.size} треков",
                     style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    color = if (isMixPlaying) MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.8f) else MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 2,
                     lineHeight = 16.sp,
                     overflow = TextOverflow.Ellipsis
@@ -1515,6 +2258,8 @@ private fun MixDetailScreen(
     tracks: List<SoundCloudTrack>,
     currentTrackId: Long?,
     favorites: List<FavoriteTrack>,
+    downloadProgress: Map<Long, Float> = emptyMap(),
+    isPlaying: Boolean = false,
     onBack: () -> Unit,
     onPlayTrack: (SoundCloudTrack) -> Unit,
     onFavoriteClick: (SoundCloudTrack) -> Unit
@@ -1562,7 +2307,7 @@ private fun MixDetailScreen(
 
                         Spacer(modifier = Modifier.height(24.dp))
                         
-                        TrackArtwork(mix.artworkUrl, 240.dp)
+                        TrackArtwork(mix.artworkUrl, 240.dp, useMorphing = false)
                         
                         Spacer(modifier = Modifier.height(24.dp))
                         
@@ -1588,10 +2333,15 @@ private fun MixDetailScreen(
                 // Removed CircularProgressIndicator to prevent layout jumping
 
                 items(tracks, key = { "mix-track-${it.id}" }) { track ->
+                    val favorite = favorites.firstOrNull { it.id == track.id }
+                    val progress = downloadProgress[track.id]
                     TrackCard(
                         track = track,
-                        isFavorite = favorites.any { it.id == track.id },
+                        isFavorite = favorite != null,
                         isSelected = track.id == currentTrackId,
+                        downloadState = favorite?.downloadState,
+                        progress = progress,
+                        isPlaying = isPlaying,
                         onClick = { onPlayTrack(track) },
                         onFavoriteClick = { onFavoriteClick(track) }
                     )
@@ -1606,6 +2356,9 @@ private fun TrackCard(
     track: SoundCloudTrack,
     isFavorite: Boolean,
     isSelected: Boolean = false,
+    downloadState: DownloadState? = null,
+    progress: Float? = null,
+    isPlaying: Boolean = false,
     onClick: () -> Unit,
     onFavoriteClick: () -> Unit
 ) {
@@ -1648,7 +2401,7 @@ private fun TrackCard(
                 .padding(14.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            TrackArtwork(track.artworkUrl, size = 68.dp)
+            TrackArtwork(track.artworkUrl, size = 68.dp, isPlaying = isSelected && isPlaying)
             Spacer(modifier = Modifier.width(16.dp))
             Column(modifier = Modifier.weight(1f)) {
                 Text(
@@ -1669,6 +2422,18 @@ private fun TrackCard(
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
+                
+                if (downloadState == DownloadState.DOWNLOADING) {
+                    Spacer(modifier = Modifier.height(4.dp))
+                    CustomWavyProgressIndicator(
+                        progress = progress,
+                        color = if (isSelected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.primary,
+                        trackColor = (if (isSelected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.primary).copy(alpha = 0.2f),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(6.dp)
+                    )
+                }
             }
             
             val favoriteScale by animateFloatAsState(
@@ -1705,6 +2470,8 @@ private fun TrackCard(
 private fun DownloadedTrackCard(
     track: FavoriteTrack,
     isSelected: Boolean = false,
+    progress: Float? = null,
+    isPlaying: Boolean = false,
     onClick: () -> Unit,
     onDeleteDownload: () -> Unit
 ) {
@@ -1736,7 +2503,7 @@ private fun DownloadedTrackCard(
                 .padding(12.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            TrackArtwork(track.artworkUrl, 64.dp)
+            TrackArtwork(track.artworkUrl, 64.dp, isPlaying = isSelected && isPlaying)
             Spacer(modifier = Modifier.width(14.dp))
             Column(modifier = Modifier.weight(1f)) {
                 Text(
@@ -1758,12 +2525,20 @@ private fun DownloadedTrackCard(
                     overflow = TextOverflow.Ellipsis
                 )
             }
-            IconButton(onClick = onDeleteDownload) {
-                Icon(
-                    Icons.Default.Delete,
-                    contentDescription = null,
-                    tint = if (isSelected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface
+            if (track.downloadState == DownloadState.DOWNLOADING) {
+                CustomCircularWavyProgressIndicator(
+                    progress = progress,
+                    color = if (isSelected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(36.dp)
                 )
+            } else {
+                IconButton(onClick = onDeleteDownload) {
+                    Icon(
+                        Icons.Default.Delete,
+                        contentDescription = null,
+                        tint = if (isSelected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface
+                    )
+                }
             }
         }
     }
@@ -1788,7 +2563,8 @@ private fun TrackDetailScreen(
     onRepeat: () -> Unit,
     onShuffle: () -> Unit,
     onDeleteDownload: (FavoriteTrack) -> Unit,
-    onLongPressCover: () -> Unit
+    onLongPressCover: () -> Unit,
+    onArtistClick: () -> Unit
 ) {
     val context = LocalContext.current
     val vibrator = remember {
@@ -1899,7 +2675,7 @@ private fun TrackDetailScreen(
                             )
                         }
                 ) {
-                    TrackArtwork(track.artworkUrl, size = 320.dp)
+                    TrackArtwork(track.artworkUrl, size = 320.dp, useMorphing = false)
                 }
                 
                 Spacer(modifier = Modifier.height(36.dp))
@@ -1918,7 +2694,11 @@ private fun TrackDetailScreen(
                     text = track.user?.username ?: "Unknown Artist",
                     style = MaterialTheme.typography.titleLarge,
                     color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f),
-                    textAlign = TextAlign.Center
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.clickable {
+                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                        onArtistClick()
+                    }
                 )
 
                 Spacer(modifier = Modifier.weight(1f))
@@ -2077,18 +2857,103 @@ private fun FolderArtwork(artworkUri: String?, size: Dp) {
     }
 }
 
+class MorphingArtworkShape(
+    private val progress: Float,
+    private val rotationPhase: Float = 0f
+) : Shape {
+    override fun createOutline(
+        size: Size,
+        layoutDirection: LayoutDirection,
+        density: Density
+    ): Outline {
+        val path = Path()
+        val width = size.width
+        val height = size.height
+        val centerX = width / 2f
+        val centerY = height / 2f
+        val maxRadius = minOf(width, height) / 2f
+
+        val steps = 120
+        for (i in 0..steps) {
+            val theta = (i * 2f * Math.PI / steps).toFloat()
+
+            // 1. Calculate squircle radius at theta (representing rounded square).
+            val cosT = kotlin.math.cos(theta)
+            val sinT = kotlin.math.sin(theta)
+            val cosT4 = cosT.absoluteValue.pow(4.5f)
+            val sinT4 = sinT.absoluteValue.pow(4.5f)
+            val rSquare = 1f / (cosT4 + sinT4).pow(1f / 4.5f)
+
+            // 2. Calculate flower radius at theta (representing an 8-petaled flower).
+            val rFlower = 1f + 0.12f * kotlin.math.cos(8f * (theta - rotationPhase))
+
+            // 3. Interpolate between squircle and flower based on progress
+            val rRaw = (1f - progress) * rSquare + progress * rFlower
+
+            // Normalize so it always fits comfortably
+            val rNormalized = rRaw * 0.82f
+
+            val x = centerX + rNormalized * maxRadius * cosT
+            val y = centerY + rNormalized * maxRadius * sinT
+
+            if (i == 0) {
+                path.moveTo(x, y)
+            } else {
+                path.lineTo(x, y)
+            }
+        }
+        path.close()
+        return Outline.Generic(path)
+    }
+}
+
 @Composable
-private fun TrackArtwork(artworkUrl: String?, size: Dp) {
+private fun TrackArtwork(
+    artworkUrl: String?,
+    size: Dp,
+    isPlaying: Boolean = false,
+    useMorphing: Boolean = true,
+    fallbackShape: Shape? = null
+) {
+    val clipShape = if (useMorphing) {
+        val morphProgress by animateFloatAsState(
+            targetValue = if (isPlaying) 1f else 0f,
+            animationSpec = tween(durationMillis = 600, easing = FastOutSlowInEasing),
+            label = "morphProgress"
+        )
+        val infiniteTransition = rememberInfiniteTransition(label = "rotation")
+        val rotationPhase by if (isPlaying) {
+            infiniteTransition.animateFloat(
+                initialValue = 0f,
+                targetValue = (2f * Math.PI).toFloat(),
+                animationSpec = infiniteRepeatable(
+                    animation = tween(durationMillis = 16000, easing = LinearEasing),
+                    repeatMode = RepeatMode.Restart
+                ),
+                label = "rotationPhase"
+            )
+        } else {
+            remember { mutableStateOf(0f) }
+        }
+
+        remember(morphProgress, rotationPhase) {
+            MorphingArtworkShape(morphProgress, rotationPhase)
+        }
+    } else {
+        fallbackShape ?: RoundedCornerShape(if (size > 100.dp) 36.dp else 18.dp)
+    }
+
     AsyncImage(
         model = artworkUrl?.replace("large", "t500x500"),
         contentDescription = null,
         modifier = Modifier
             .size(size)
-            .clip(RoundedCornerShape(if (size > 100.dp) 36.dp else 18.dp))
+            .clip(clipShape)
             .background(MaterialTheme.colorScheme.surfaceVariant),
         contentScale = ContentScale.Crop
     )
 }
+
 
 @Composable
 private fun DownloadBadge(state: DownloadState) {
@@ -3021,6 +3886,8 @@ private fun PlaylistCard(playlist: Playlist, onClick: () -> Unit, onDelete: () -
 private fun PlaylistDetailScreen(
     playlist: Playlist,
     currentTrackId: Long?,
+    downloadProgress: Map<Long, Float> = emptyMap(),
+    isPlaying: Boolean = false,
     onBack: () -> Unit,
     onPlayTrack: (FavoriteTrack) -> Unit,
     onRemoveTrack: (FavoriteTrack) -> Unit,
@@ -3148,12 +4015,559 @@ private fun PlaylistDetailScreen(
                 }
             } else {
                 items(playlist.tracks, key = { "playlist-${playlist.id}-${it.id}" }) { track ->
+                    val progress = downloadProgress[track.id]
                     DownloadedTrackCard(
                         track = track,
                         isSelected = track.id == currentTrackId,
+                        progress = progress,
+                        isPlaying = isPlaying,
                         onClick = { onPlayTrack(track) },
                         onDeleteDownload = { onRemoveTrack(track) }
                     )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun YandexPlaylistCard(
+    playlist: SoundCloudPlaylist,
+    onClick: () -> Unit
+) {
+    val haptic = LocalHapticFeedback.current
+    var isPressed by remember { mutableStateOf(false) }
+    val scale by animateFloatAsState(
+        targetValue = if (isPressed) 0.98f else 1f,
+        animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy),
+        label = "playlistScale"
+    )
+
+    Card(
+        onClick = {
+            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+            onClick()
+        },
+        modifier = Modifier
+            .fillMaxWidth()
+            .graphicsLayer {
+                scaleX = scale
+                scaleY = scale
+            },
+        shape = RoundedCornerShape(36.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.85f)
+        ),
+        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(14.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            val isLikedPlaylist = playlist.id == -100L
+            if (playlist.artworkUrl != null) {
+                FolderArtwork(playlist.artworkUrl, 82.dp)
+            } else {
+                val containerColor = if (isLikedPlaylist) MaterialTheme.colorScheme.tertiary.copy(alpha = 0.15f) else MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)
+                val tintColor = if (isLikedPlaylist) MaterialTheme.colorScheme.tertiary else MaterialTheme.colorScheme.primary
+                val icon = if (isLikedPlaylist) Icons.Default.Favorite else Icons.Default.QueueMusic
+                Surface(
+                    color = containerColor,
+                    shape = RoundedCornerShape(24.dp),
+                    modifier = Modifier.size(82.dp)
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Icon(
+                            icon,
+                            contentDescription = null,
+                            tint = tintColor,
+                            modifier = Modifier.size(36.dp)
+                        )
+                    }
+                }
+            }
+            Spacer(modifier = Modifier.width(16.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = playlist.title ?: "Без названия",
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.ExtraBold,
+                    letterSpacing = (-0.5).sp
+                )
+                Text(
+                    text = "${playlist.trackCount} треков",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun YandexPlaylistDetailScreen(
+    playlist: SoundCloudPlaylist,
+    isLoading: Boolean,
+    currentTrackId: Long?,
+    downloadProgress: Map<Long, Float> = emptyMap(),
+    isPlaying: Boolean = false,
+    favorites: List<FavoriteTrack>,
+    onBack: () -> Unit,
+    onPlayTrack: (SoundCloudTrack) -> Unit,
+    onFavoriteClick: (SoundCloudTrack) -> Unit,
+    onChangeArtwork: (String?) -> Unit
+) {
+    val imagePicker = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) {
+            onChangeArtwork(uri.toString())
+        }
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .statusBarsPadding()
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 8.dp)
+        ) {
+            TopBar(title = playlist.title ?: "Плейлист", onBack = onBack)
+        }
+
+        LazyColumn(
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(start = 16.dp, top = 4.dp, end = 16.dp, bottom = 120.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp)
+        ) {
+            item {
+                Column(
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 16.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(16.dp)
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(220.dp)
+                            .clip(RoundedCornerShape(32.dp))
+                            .clickable {
+                                imagePicker.launch(arrayOf("image/*"))
+                            }
+                    ) {
+                        val isLikedPlaylist = playlist.id == -100L
+                        if (playlist.artworkUrl != null) {
+                            FolderArtwork(playlist.artworkUrl, 220.dp)
+                        } else {
+                            val containerColor = if (isLikedPlaylist) MaterialTheme.colorScheme.tertiary.copy(alpha = 0.15f) else MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)
+                            val tintColor = if (isLikedPlaylist) MaterialTheme.colorScheme.tertiary else MaterialTheme.colorScheme.primary
+                            val icon = if (isLikedPlaylist) Icons.Default.Favorite else Icons.Default.QueueMusic
+                            Surface(
+                                color = containerColor,
+                                shape = RoundedCornerShape(32.dp),
+                                modifier = Modifier.fillMaxSize()
+                            ) {
+                                Box(contentAlignment = Alignment.Center) {
+                                    Icon(
+                                        icon,
+                                        contentDescription = null,
+                                        tint = tintColor,
+                                        modifier = Modifier.size(72.dp)
+                                    )
+                                }
+                            }
+                        }
+
+                        Box(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .background(Color.Black.copy(alpha = 0.2f))
+                                .padding(12.dp),
+                            contentAlignment = Alignment.BottomEnd
+                        ) {
+                            Surface(
+                                color = Color.Black.copy(alpha = 0.6f),
+                                shape = CircleShape,
+                                modifier = Modifier.size(36.dp)
+                            ) {
+                                Box(contentAlignment = Alignment.Center) {
+                                    Icon(
+                                        Icons.Default.Image,
+                                        contentDescription = null,
+                                        tint = Color.White,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        val isLikedPlaylist = playlist.id == -100L
+                        Text(
+                            text = playlist.title ?: "Без названия",
+                            style = MaterialTheme.typography.headlineLarge,
+                            fontWeight = FontWeight.Black,
+                            letterSpacing = (-1).sp
+                        )
+                        Text(
+                            text = "${playlist.trackCount} треков",
+                            style = MaterialTheme.typography.titleMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+            }
+
+            if (isLoading) {
+                item {
+                    Box(
+                        modifier = Modifier.fillMaxWidth().height(150.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        CustomCircularWavyProgressIndicator(
+                            progress = null,
+                            color = if (playlist.id == -100L) MaterialTheme.colorScheme.tertiary else MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(48.dp)
+                        )
+                    }
+                }
+            } else if (playlist.tracks.isEmpty()) {
+                item {
+                    EmptyState("Здесь пока нет треков.")
+                }
+            } else {
+                items(playlist.tracks, key = { "yandex-playlist-detail-${playlist.id}-${it.id}" }) { track ->
+                    val favorite = favorites.firstOrNull { it.id == track.id }
+                    val progress = downloadProgress[track.id]
+                    TrackCard(
+                        track = track,
+                        isFavorite = favorite != null,
+                        isSelected = track.id == currentTrackId,
+                        downloadState = favorite?.downloadState,
+                        progress = progress,
+                        isPlaying = isPlaying,
+                        onClick = { onPlayTrack(track) },
+                        onFavoriteClick = { onFavoriteClick(track) }
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ArtistDetailScreen(
+    artist: SoundCloudUser,
+    tracks: List<SoundCloudTrack>,
+    playlists: List<SoundCloudPlaylist>,
+    isLoading: Boolean,
+    error: String?,
+    currentTrackId: Long?,
+    downloadProgress: Map<Long, Float> = emptyMap(),
+    isPlaying: Boolean = false,
+    favorites: List<FavoriteTrack>,
+    onBack: () -> Unit,
+    onPlayTrack: (SoundCloudTrack) -> Unit,
+    onFavoriteClick: (SoundCloudTrack) -> Unit,
+    onPlaylistClick: (SoundCloudPlaylist) -> Unit,
+    selectedPlaylist: SoundCloudPlaylist? = null,
+    onDeselectPlaylist: () -> Unit = {}
+) {
+    if (selectedPlaylist != null) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .statusBarsPadding()
+        ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 8.dp)
+            ) {
+                TopBar(title = selectedPlaylist.title ?: "Альбом", onBack = onDeselectPlaylist)
+            }
+
+            LazyColumn(
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(start = 16.dp, top = 4.dp, end = 16.dp, bottom = 120.dp),
+                verticalArrangement = Arrangement.spacedBy(14.dp)
+            ) {
+                item {
+                    Column(
+                        modifier = Modifier.fillMaxWidth().padding(vertical = 16.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(16.dp)
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(200.dp)
+                                .clip(RoundedCornerShape(32.dp))
+                        ) {
+                            if (selectedPlaylist.artworkUrl != null) {
+                                FolderArtwork(selectedPlaylist.artworkUrl, 200.dp)
+                            } else {
+                                Surface(
+                                    color = if (selectedPlaylist.permalinkUrl?.contains("yandex") == true) Color(0xFFF2C200).copy(alpha = 0.15f) else MaterialTheme.colorScheme.secondaryContainer,
+                                    shape = RoundedCornerShape(32.dp),
+                                    modifier = Modifier.fillMaxSize()
+                                ) {
+                                    Box(contentAlignment = Alignment.Center) {
+                                        Icon(
+                                            Icons.Default.Album,
+                                            contentDescription = null,
+                                            tint = if (selectedPlaylist.permalinkUrl?.contains("yandex") == true) Color(0xFFF2C200) else MaterialTheme.colorScheme.onSecondaryContainer,
+                                            modifier = Modifier.size(64.dp)
+                                        )
+                                    }
+                                }
+                            }
+                        }
+
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            Text(
+                                text = selectedPlaylist.title ?: "Без названия",
+                                style = MaterialTheme.typography.headlineLarge,
+                                fontWeight = FontWeight.Black,
+                                letterSpacing = (-1).sp,
+                                textAlign = TextAlign.Center
+                            )
+                            Text(
+                                text = "${selectedPlaylist.tracks.size} треков",
+                                style = MaterialTheme.typography.titleMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                }
+
+                if (selectedPlaylist.tracks.isEmpty()) {
+                    item {
+                        EmptyState("Здесь пока нет треков.")
+                    }
+                } else {
+                    items(selectedPlaylist.tracks, key = { "album-${selectedPlaylist.id}-${it.id}" }) { track ->
+                        val favorite = favorites.firstOrNull { it.id == track.id }
+                        val progress = downloadProgress[track.id]
+                        TrackCard(
+                            track = track,
+                            isFavorite = favorite != null,
+                            isSelected = track.id == currentTrackId,
+                            downloadState = favorite?.downloadState,
+                            progress = progress,
+                            isPlaying = isPlaying,
+                            onClick = { onPlayTrack(track) },
+                            onFavoriteClick = { onFavoriteClick(track) }
+                        )
+                    }
+                }
+            }
+        }
+    } else {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .statusBarsPadding()
+        ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 8.dp)
+            ) {
+                TopBar(title = artist.username.orEmpty(), onBack = onBack)
+            }
+
+            LazyColumn(
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(start = 16.dp, top = 8.dp, end = 16.dp, bottom = 120.dp),
+                verticalArrangement = Arrangement.spacedBy(16.dp)
+            ) {
+                item {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 16.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        Surface(
+                            modifier = Modifier.size(120.dp),
+                            shape = CircleShape,
+                            color = MaterialTheme.colorScheme.surfaceVariant
+                        ) {
+                            if (artist.avatarUrl != null) {
+                                AsyncImage(
+                                    model = artist.avatarUrl.orEmpty().replace("large", "t500x500"),
+                                    contentDescription = null,
+                                    modifier = Modifier.fillMaxSize(),
+                                    contentScale = ContentScale.Crop
+                                )
+                            } else {
+                                Box(contentAlignment = Alignment.Center) {
+                                    Icon(
+                                        imageVector = Icons.Default.Image,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(48.dp)
+                                    )
+                                }
+                            }
+                        }
+
+                        Text(
+                            text = artist.username.orEmpty(),
+                            style = MaterialTheme.typography.headlineLarge,
+                            fontWeight = FontWeight.Black,
+                            letterSpacing = (-1).sp
+                        )
+
+                        if ((artist.followersCount ?: 0) > 0) {
+                            Text(
+                                text = "${artist.followersCount} подписчиков",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+
+                        if (!artist.description.isNullOrBlank()) {
+                            Card(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 8.dp),
+                                shape = RoundedCornerShape(20.dp),
+                                colors = CardDefaults.cardColors(
+                                    containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+                                )
+                            ) {
+                                Text(
+                                    text = artist.description,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    modifier = Modifier.padding(14.dp),
+                                    maxLines = 4,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+                        }
+                    }
+                }
+
+                if (isLoading) {
+                    item {
+                        Box(
+                            modifier = Modifier.fillMaxWidth().height(150.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            CustomCircularWavyProgressIndicator(
+                                progress = null,
+                                color = if (artist.permalinkUrl?.startsWith("yandex") == true) Color(0xFFF2C200) else MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(48.dp)
+                            )
+                        }
+                    }
+                } else if (error != null) {
+                    item {
+                        MessageCard(error)
+                    }
+                } else {
+                    if (tracks.isNotEmpty()) {
+                        item {
+                            Text(
+                                text = "Популярные треки",
+                                style = MaterialTheme.typography.titleLarge,
+                                fontWeight = FontWeight.ExtraBold,
+                                modifier = Modifier.padding(top = 8.dp)
+                            )
+                        }
+
+                        items(tracks.take(15), key = { "artist-track-${it.id}" }) { track ->
+                            val favorite = favorites.firstOrNull { it.id == track.id }
+                            val progress = downloadProgress[track.id]
+                            TrackCard(
+                                track = track,
+                                isFavorite = favorite != null,
+                                isSelected = track.id == currentTrackId,
+                                downloadState = favorite?.downloadState,
+                                progress = progress,
+                                isPlaying = isPlaying,
+                                onClick = { onPlayTrack(track) },
+                                onFavoriteClick = { onFavoriteClick(track) }
+                            )
+                        }
+                    }
+
+                    if (playlists.isNotEmpty()) {
+                        item {
+                            Text(
+                                text = "Альбомы и плейлисты",
+                                style = MaterialTheme.typography.titleLarge,
+                                fontWeight = FontWeight.ExtraBold,
+                                modifier = Modifier.padding(top = 16.dp, bottom = 8.dp)
+                            )
+                        }
+
+                        item {
+                            androidx.compose.foundation.lazy.LazyRow(
+                                horizontalArrangement = Arrangement.spacedBy(14.dp),
+                                contentPadding = PaddingValues(horizontal = 4.dp),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                items(playlists, key = { "artist-playlist-${it.id}" }) { playlist ->
+                                    val isYandex = playlist.permalinkUrl?.startsWith("yandex:album:") == true || artist.permalinkUrl?.startsWith("yandex") == true
+                                    Card(
+                                        onClick = { onPlaylistClick(playlist) },
+                                        modifier = Modifier.width(140.dp),
+                                        shape = RoundedCornerShape(24.dp),
+                                        colors = CardDefaults.cardColors(
+                                            containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.85f)
+                                        )
+                                    ) {
+                                        Column(modifier = Modifier.padding(8.dp)) {
+                                            Box(
+                                                modifier = Modifier
+                                                    .size(124.dp)
+                                                    .clip(RoundedCornerShape(18.dp))
+                                            ) {
+                                                if (playlist.artworkUrl != null) {
+                                                    FolderArtwork(playlist.artworkUrl, 124.dp)
+                                                } else {
+                                                    Surface(
+                                                        color = if (isYandex) Color(0xFFF2C200).copy(alpha = 0.15f) else MaterialTheme.colorScheme.secondaryContainer,
+                                                        shape = RoundedCornerShape(18.dp),
+                                                        modifier = Modifier.fillMaxSize()
+                                                    ) {
+                                                        Box(contentAlignment = Alignment.Center) {
+                                                            Icon(
+                                                                Icons.Default.Album,
+                                                                contentDescription = null,
+                                                                tint = if (isYandex) Color(0xFFF2C200) else MaterialTheme.colorScheme.onSecondaryContainer,
+                                                                modifier = Modifier.size(36.dp)
+                                                            )
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                            Spacer(modifier = Modifier.height(8.dp))
+                                            Text(
+                                                text = playlist.title ?: "Альбом",
+                                                style = MaterialTheme.typography.titleMedium,
+                                                fontWeight = FontWeight.Bold,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis
+                                            )
+                                            Text(
+                                                text = "${playlist.trackCount} треков",
+                                                style = MaterialTheme.typography.bodyMedium,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -3504,5 +4918,231 @@ fun TrackActionsDialog(
         }
     }
 }
+
+@Composable
+fun CustomWavyProgressIndicator(
+    progress: Float?,
+    modifier: Modifier = Modifier,
+    color: Color = MaterialTheme.colorScheme.primary,
+    trackColor: Color = color.copy(alpha = 0.2f)
+) {
+    val infiniteTransition = rememberInfiniteTransition(label = "wavy")
+    val phaseShift by infiniteTransition.animateFloat(
+        initialValue = 0f,
+        targetValue = 2f * Math.PI.toFloat(),
+        animationSpec = infiniteRepeatable(
+            animation = tween(1200, easing = LinearEasing),
+            repeatMode = RepeatMode.Restart
+        ),
+        label = "phaseShift"
+    )
+
+    Canvas(modifier = modifier.height(10.dp)) {
+        val width = size.width
+        val height = size.height
+        val centerY = height / 2f
+        val ampPx = 3.dp.toPx()
+        val waveLenPx = 20.dp.toPx()
+
+        drawLine(
+            color = trackColor,
+            start = Offset(0f, centerY),
+            end = Offset(width, centerY),
+            strokeWidth = 4.dp.toPx(),
+            cap = StrokeCap.Round
+        )
+
+        val prog = progress ?: 0.3f
+        val progressWidth = width * prog.coerceIn(0f, 1f)
+
+        if (progressWidth > 0f) {
+            val path = Path()
+            val startX = 0f
+            val startY = centerY + ampPx * kotlin.math.sin(-phaseShift)
+            path.moveTo(startX, startY)
+
+            val stepPx = 2.dp.toPx()
+            var x = stepPx
+            while (x <= progressWidth) {
+                val angle = (x / waveLenPx) * (2f * Math.PI.toFloat()) - phaseShift
+                val y = centerY + ampPx * kotlin.math.sin(angle)
+                path.lineTo(x, y)
+                x += stepPx
+            }
+
+            drawPath(
+                path = path,
+                color = color,
+                style = Stroke(width = 4.dp.toPx(), cap = StrokeCap.Round)
+            )
+        }
+    }
+}
+
+@Composable
+fun CustomCircularWavyProgressIndicator(
+    progress: Float?,
+    modifier: Modifier = Modifier,
+    color: Color = MaterialTheme.colorScheme.primary,
+    trackColor: Color = color.copy(alpha = 0.2f)
+) {
+    val infiniteTransition = rememberInfiniteTransition(label = "circularWavy")
+    val phaseShift by infiniteTransition.animateFloat(
+        initialValue = 0f,
+        targetValue = 2f * Math.PI.toFloat(),
+        animationSpec = infiniteRepeatable(
+            animation = tween(1500, easing = LinearEasing),
+            repeatMode = RepeatMode.Restart
+        ),
+        label = "phaseShift"
+    )
+
+    Canvas(modifier = modifier.size(40.dp)) {
+        val center = Offset(size.width / 2f, size.height / 2f)
+        val baseRadius = (minOf(size.width, size.height) / 2f) - 4.dp.toPx()
+        val ampPx = 2.dp.toPx()
+        val waveCount = 8
+
+        drawCircle(
+            color = trackColor,
+            radius = baseRadius,
+            center = center,
+            style = Stroke(width = 3.dp.toPx())
+        )
+
+        val prog = progress ?: 1f
+        val sweepAngle = 360f * prog.coerceIn(0f, 1f)
+
+        if (sweepAngle > 0f) {
+            val path = Path()
+            val steps = (sweepAngle * 2).toInt().coerceAtLeast(10)
+            
+            for (i in 0..steps) {
+                val angleDeg = i / 2f
+                val angleRad = Math.toRadians(angleDeg.toDouble()).toFloat()
+                
+                val currentAmp = ampPx * kotlin.math.sin(angleRad * waveCount - phaseShift)
+                val r = baseRadius + currentAmp
+                
+                val x = center.x + r * kotlin.math.cos(angleRad)
+                val y = center.y + r * kotlin.math.sin(angleRad)
+                
+                if (i == 0) {
+                    path.moveTo(x, y)
+                } else {
+                    path.lineTo(x, y)
+                }
+            }
+
+            drawPath(
+                path = path,
+                color = color,
+                style = Stroke(width = 4.dp.toPx(), cap = StrokeCap.Round)
+            )
+        }
+    }
+}
+
+@Composable
+fun YandexLoginDialog(
+    loginUrl: String,
+    onTokenCaptured: (String) -> Unit,
+    onDismiss: () -> Unit
+) {
+    var isWebViewLoading by remember { mutableStateOf(true) }
+
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(
+            usePlatformDefaultWidth = false,
+            dismissOnBackPress = true,
+            dismissOnClickOutside = false
+        )
+    ) {
+        Surface(
+            modifier = Modifier.fillMaxSize(),
+            color = MaterialTheme.colorScheme.background
+        ) {
+            Column(modifier = Modifier.fillMaxSize()) {
+                // Header
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .statusBarsPadding()
+                        .padding(horizontal = 16.dp, vertical = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    IconButton(onClick = onDismiss) {
+                        Icon(
+                            imageVector = Icons.Default.Close,
+                            contentDescription = "Close"
+                        )
+                    }
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = "Вход в Яндекс Музыку",
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+
+                // WebView Container
+                Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
+                    AndroidView(
+                        factory = { ctx ->
+                            WebView(ctx).apply {
+                                layoutParams = ViewGroup.LayoutParams(
+                                    ViewGroup.LayoutParams.MATCH_PARENT,
+                                    ViewGroup.LayoutParams.MATCH_PARENT
+                                )
+                                settings.apply {
+                                    javaScriptEnabled = true
+                                    domStorageEnabled = true
+                                    userAgentString = "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36"
+                                }
+                                webViewClient = object : WebViewClient() {
+                                    override fun onPageStarted(view: WebView?, url: String?, favicon: android.graphics.Bitmap?) {
+                                        super.onPageStarted(view, url, favicon)
+                                        isWebViewLoading = true
+                                        url?.let { checkUrl(it) }
+                                    }
+
+                                    override fun onPageFinished(view: WebView?, url: String?) {
+                                        super.onPageFinished(view, url)
+                                        isWebViewLoading = false
+                                        url?.let { checkUrl(it) }
+                                    }
+
+                                    private fun checkUrl(url: String) {
+                                        if (url.contains("access_token=")) {
+                                            val token = url.substringAfter("access_token=").substringBefore("&")
+                                            if (token.isNotEmpty()) {
+                                                onTokenCaptured(token)
+                                            }
+                                        }
+                                    }
+                                }
+                                loadUrl(loginUrl)
+                            }
+                        },
+                        modifier = Modifier.fillMaxSize()
+                    )
+
+                    if (isWebViewLoading) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .background(MaterialTheme.colorScheme.background),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            CircularProgressIndicator()
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 
 
