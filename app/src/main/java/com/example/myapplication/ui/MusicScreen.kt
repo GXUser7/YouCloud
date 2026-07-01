@@ -36,8 +36,10 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.CircleShape
@@ -48,6 +50,7 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.Image
+import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Repeat
@@ -86,10 +89,12 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import com.example.myapplication.data.SettingsRepository
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.blur
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
@@ -118,6 +123,7 @@ import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Reorder
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.fillMaxHeight
@@ -139,11 +145,18 @@ import android.webkit.WebViewClient
 import android.webkit.WebChromeClient
 import android.os.Message
 import androidx.compose.ui.viewinterop.AndroidView
-import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
+import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.drag
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.ui.input.pointer.positionChange
+import androidx.compose.ui.input.pointer.util.VelocityTracker
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.animation.core.Animatable
 import androidx.compose.runtime.rememberCoroutineScope
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.delay
 import android.content.Context
 import android.widget.FrameLayout
 import android.widget.Toast
@@ -170,7 +183,7 @@ import kotlin.math.pow
 @Composable
 fun MusicScreen(viewModel: MusicViewModel) {
     val haptic = LocalHapticFeedback.current
-    val isLoggedOut by viewModel.isLoggedOut.collectAsState(initial = true)
+    val isLoggedOut by viewModel.isLoggedOut.collectAsState(initial = false)
     val tracks by viewModel.tracks.collectAsState()
     val searchQuery by viewModel.searchQuery.collectAsState()
     val downloadProgress by viewModel.downloadProgress.collectAsState()
@@ -197,22 +210,23 @@ fun MusicScreen(viewModel: MusicViewModel) {
     val playbackPositionMs by viewModel.playbackPositionMs.collectAsState()
     val playbackDurationMs by viewModel.playbackDurationMs.collectAsState()
     val screen by viewModel.screen.collectAsState()
+    val activeQueue by viewModel.activeQueue.collectAsState()
     val userId by viewModel.userId.collectAsState()
     val playlists by viewModel.playlists.collectAsState(initial = emptyList())
     val selectedPlaylist by viewModel.selectedPlaylist.collectAsState()
     val isClientIdExpired by viewModel.isClientIdExpired.collectAsState()
     val homeSelectedTab by viewModel.homeSelectedTab.collectAsState()
     var showTrackActionsDialog by remember { mutableStateOf(false) }
-    val showDebugPercentage by viewModel.settingsRepository.showDebugPercentage.collectAsState()
+    val showDebugPercentage by viewModel.showDebugPercentage.collectAsState()
     val downloadedPercentages by viewModel.downloadedPercentages.collectAsState()
     val isAllArtistTracksLoaded by viewModel.isAllArtistTracksLoaded.collectAsState()
 
     val yandexPlaylists by viewModel.yandexPlaylists.collectAsState()
-    val yandexToken by viewModel.settingsRepository.yandexToken.collectAsState()
+    val yandexToken by viewModel.yandexToken.collectAsState()
     val hasYandexToken = yandexToken.isNotEmpty()
     val yandexLoginUrl by viewModel.yandexLoginUrl.collectAsState()
 
-    val downloadedTracks = favorites.filter { it.downloadState == DownloadState.DOWNLOADED }
+    val downloadedTracks = remember(favorites) { favorites.filter { it.downloadState == DownloadState.DOWNLOADED } }
 
     BackHandler(enabled = selectedTrack != null && !isLoggedOut) {
         viewModel.closeTrack()
@@ -374,7 +388,7 @@ fun MusicScreen(viewModel: MusicViewModel) {
                     val soundcloudLikesSyncStatus by viewModel.soundcloudLikesSyncStatus.collectAsState()
                     val yandexLikesSyncStatus by viewModel.yandexLikesSyncStatus.collectAsState()
                     SettingsScreen(
-                        settingsRepository = viewModel.settingsRepository,
+                        settingsRepository = viewModel.settingsRepo,
                         soundcloudLikesSyncStatus = soundcloudLikesSyncStatus,
                         yandexLikesSyncStatus = yandexLikesSyncStatus,
                         startSoundCloudLikesSync = viewModel::startSoundCloudLikesSync,
@@ -486,7 +500,8 @@ fun MusicScreen(viewModel: MusicViewModel) {
                             },
                             onPlayTrack = { track ->
                                 haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                viewModel.playQueuedTrack(track, currentArtistTracks)
+                                val queue = selectedArtistPlaylist?.tracks ?: currentArtistTracks
+                                viewModel.playQueuedTrack(track, queue)
                             },
                             onFavoriteClick = { track ->
                                 haptic.performHapticFeedback(HapticFeedbackType.LongPress)
@@ -574,6 +589,11 @@ fun MusicScreen(viewModel: MusicViewModel) {
                     val favorite = favorites.firstOrNull { it.id == track.id }
                     TrackDetailScreen(
                         track = track,
+                        activeQueue = activeQueue,
+                        onReorderQueue = viewModel::reorderActiveQueue,
+                        onPlayTrackFromQueue = { qTrack ->
+                            viewModel.playQueuedTrack(qTrack, activeQueue)
+                        },
                         isFavorite = favorite != null,
                         favoriteTrack = favorite,
                         downloadState = favorite?.downloadState,
@@ -636,18 +656,20 @@ fun MusicScreen(viewModel: MusicViewModel) {
 
     val context = LocalContext.current
     if (showTrackActionsDialog && selectedTrack != null) {
+        // Capture to local val to prevent NPE if state changes (#3)
+        val capturedTrack = selectedTrack ?: return
         TrackActionsDialog(
-            track = selectedTrack!!,
+            track = capturedTrack,
             playlists = playlists,
             onDismiss = { showTrackActionsDialog = false },
             onAddToPlaylist = { playlist ->
-                viewModel.addTrackToPlaylist(playlist.id, selectedTrack!!)
+                viewModel.addTrackToPlaylist(playlist.id, capturedTrack)
             },
             onCreatePlaylist = { name ->
                 viewModel.createPlaylist(name)
             },
             onShare = {
-                selectedTrack?.permalinkUrl?.let { url ->
+                capturedTrack.permalinkUrl?.let { url ->
                     val sendIntent = Intent().apply {
                         action = Intent.ACTION_SEND
                         putExtra(Intent.EXTRA_TEXT, url)
@@ -658,9 +680,7 @@ fun MusicScreen(viewModel: MusicViewModel) {
                 }
             },
             onRedownload = {
-                selectedTrack?.let { track ->
-                    viewModel.redownloadTrack(track)
-                }
+                viewModel.redownloadTrack(capturedTrack)
             }
         )
     }
@@ -1686,94 +1706,6 @@ private fun ExpressiveBackground() {
         ),
         label = "rotation5"
     )
-    val rotationPhase6 by infiniteTransition.animateFloat(
-        initialValue = 0f,
-        targetValue = -360f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 400000, easing = LinearEasing),
-            repeatMode = RepeatMode.Restart
-        ),
-        label = "rotation6"
-    )
-    val rotationPhase7 by infiniteTransition.animateFloat(
-        initialValue = 0f,
-        targetValue = 360f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 440000, easing = LinearEasing),
-            repeatMode = RepeatMode.Restart
-        ),
-        label = "rotation7"
-    )
-    val rotationPhase8 by infiniteTransition.animateFloat(
-        initialValue = 0f,
-        targetValue = 360f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 200000, easing = LinearEasing),
-            repeatMode = RepeatMode.Restart
-        ),
-        label = "rotation8"
-    )
-    val rotationPhase9 by infiniteTransition.animateFloat(
-        initialValue = 0f,
-        targetValue = -360f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 220000, easing = LinearEasing),
-            repeatMode = RepeatMode.Restart
-        ),
-        label = "rotation9"
-    )
-    val rotationPhase10 by infiniteTransition.animateFloat(
-        initialValue = 0f,
-        targetValue = 360f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 260000, easing = LinearEasing),
-            repeatMode = RepeatMode.Restart
-        ),
-        label = "rotation10"
-    )
-    val rotationPhase11 by infiniteTransition.animateFloat(
-        initialValue = 0f,
-        targetValue = -360f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 300000, easing = LinearEasing),
-            repeatMode = RepeatMode.Restart
-        ),
-        label = "rotation11"
-    )
-    val rotationPhase12 by infiniteTransition.animateFloat(
-        initialValue = 0f,
-        targetValue = 360f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 340000, easing = LinearEasing),
-            repeatMode = RepeatMode.Restart
-        ),
-        label = "rotation12"
-    )
-    val rotationPhase13 by infiniteTransition.animateFloat(
-        initialValue = 0f,
-        targetValue = -360f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 380000, easing = LinearEasing),
-            repeatMode = RepeatMode.Restart
-        ),
-        label = "rotation13"
-    )
-    val rotationPhase14 by infiniteTransition.animateFloat(
-        initialValue = 0f,
-        targetValue = 360f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 420000, easing = LinearEasing),
-            repeatMode = RepeatMode.Restart
-        ),
-        label = "rotation14"
-    )
-
-    val rotationPhases = listOf(
-        rotationPhase1, rotationPhase2, rotationPhase3, rotationPhase4,
-        rotationPhase5, rotationPhase6, rotationPhase7, rotationPhase8,
-        rotationPhase9, rotationPhase10, rotationPhase11, rotationPhase12,
-        rotationPhase13, rotationPhase14
-    )
 
     val colorPrimary = MaterialTheme.colorScheme.primary.copy(alpha = 0.05f)
     val colorTertiary = MaterialTheme.colorScheme.tertiary.copy(alpha = 0.04f)
@@ -1787,7 +1719,7 @@ private fun ExpressiveBackground() {
         Canvas(modifier = Modifier.fillMaxSize()) {
             val width = size.width
             val height = size.height
-            val steps = 120
+            val steps = 72  // Reduced from 120 for performance (#15)
 
             // 1. Center: 8-petaled flower shape (primary)
             drawContext.canvas.save()
@@ -2318,6 +2250,8 @@ private fun MixDetailScreen(
     onPlayTrack: (SoundCloudTrack) -> Unit,
     onFavoriteClick: (SoundCloudTrack) -> Unit
 ) {
+    // Map for O(1) favorite lookup (#37)
+    val favoritesMap = remember(favorites) { favorites.associateBy { it.id } }
     Surface(
         modifier = Modifier.fillMaxSize(),
         color = MaterialTheme.colorScheme.surface
@@ -2355,7 +2289,7 @@ private fun MixDetailScreen(
                             horizontalArrangement = Arrangement.Start
                         ) {
                             FilledTonalIconButton(onClick = onBack) {
-                                Icon(Icons.Default.ArrowBack, contentDescription = null)
+                                Icon(Icons.Default.ArrowBack, contentDescription = "Back")
                             }
                         }
 
@@ -2387,7 +2321,7 @@ private fun MixDetailScreen(
                 // Removed CircularProgressIndicator to prevent layout jumping
 
                 items(tracks, key = { "mix-track-${it.id}" }) { track ->
-                    val favorite = favorites.firstOrNull { it.id == track.id }
+                    val favorite = favoritesMap[track.id]
                     val progress = downloadProgress[track.id]
                     TrackCard(
                         track = track,
@@ -2622,6 +2556,9 @@ private fun DownloadedTrackCard(
 @Composable
 private fun TrackDetailScreen(
     track: SoundCloudTrack,
+    activeQueue: List<SoundCloudTrack>,
+    onReorderQueue: (Int, Int) -> Unit,
+    onPlayTrackFromQueue: (SoundCloudTrack) -> Unit,
     isFavorite: Boolean,
     favoriteTrack: FavoriteTrack?,
     downloadState: DownloadState?,
@@ -2653,36 +2590,63 @@ private fun TrackDetailScreen(
         }
     }
     val haptic = LocalHapticFeedback.current
-    var lastVibratedRatio by remember { mutableStateOf(0f) }
+    var lastVibratedRatio by remember(track.id) { mutableStateOf(0f) }
     var sliderProgress by remember { mutableStateOf<Float?>(null) }
+    var showQueue by remember { mutableStateOf(false) }
+    val coroutineScope = rememberCoroutineScope()
+    val blurRadius by animateDpAsState(
+        targetValue = if (showQueue) 20.dp else 0.dp,
+        animationSpec = tween(durationMillis = 300),
+        label = "blurRadius"
+    )
 
     Surface(
         modifier = Modifier.fillMaxSize(),
         color = androidx.compose.ui.graphics.Color.Transparent
     ) {
-        Box(modifier = Modifier.fillMaxSize()) {
-            ExpressiveBackground()
-            // Rich dynamic gradient overlaying the expressive background
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .pointerInput(showQueue) {
+                    detectDragGestures(
+                        onDrag = { change, dragAmount ->
+                            if (dragAmount.y < -40f && !showQueue) {
+                                showQueue = true
+                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                            }
+                        }
+                    )
+                }
+        ) {
             Box(
                 modifier = Modifier
                     .fillMaxSize()
-                    .background(
-                        Brush.verticalGradient(
-                            colors = listOf(
-                                MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.4f),
-                                MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.2f),
-                                MaterialTheme.colorScheme.surface.copy(alpha = 0.6f)
+                    .blur(blurRadius)
+            ) {
+                ExpressiveBackground()
+                // Rich dynamic gradient overlaying the expressive background
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(
+                            Brush.verticalGradient(
+                                colors = listOf(
+                                    MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.4f),
+                                    MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.2f),
+                                    MaterialTheme.colorScheme.surface.copy(alpha = 0.6f)
+                                )
                             )
                         )
-                    )
-            )
+                )
+            }
 
             Column(
                 modifier = Modifier
                     .fillMaxSize()
                     .statusBarsPadding()
                     .navigationBarsPadding()
-                    .padding(horizontal = 24.dp, vertical = 16.dp),
+                    .padding(horizontal = 24.dp, vertical = 16.dp)
+                    .blur(blurRadius),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
                 Row(
@@ -2691,7 +2655,7 @@ private fun TrackDetailScreen(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     FilledTonalIconButton(onClick = onBack, modifier = Modifier.size(52.dp)) {
-                        Icon(Icons.Default.ArrowBack, contentDescription = null)
+                        Icon(Icons.Default.ArrowBack, contentDescription = "Back")
                     }
                     Row(
                         horizontalArrangement = Arrangement.spacedBy(10.dp),
@@ -2703,7 +2667,7 @@ private fun TrackDetailScreen(
                                 onClick = { onDeleteDownload(favoriteTrack) },
                                 modifier = Modifier.size(52.dp)
                             ) {
-                                Icon(Icons.Default.Delete, contentDescription = null)
+                                Icon(Icons.Default.Delete, contentDescription = "Delete download")
                             }
                         }
                     }
@@ -2717,7 +2681,6 @@ private fun TrackDetailScreen(
                     label = "artworkScale"
                 )
                 val artworkPressedScale = remember { Animatable(1f) }
-                val coroutineScope = rememberCoroutineScope()
                 
                 Box(
                     modifier = Modifier
@@ -2833,7 +2796,7 @@ private fun TrackDetailScreen(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     FilledTonalIconButton(onClick = onPrevious, modifier = Modifier.size(64.dp)) {
-                        Icon(Icons.Default.SkipPrevious, contentDescription = null, modifier = Modifier.size(32.dp))
+                        Icon(Icons.Default.SkipPrevious, contentDescription = "Previous track", modifier = Modifier.size(32.dp))
                     }
                     ExpressivePlayButton(
                         isPlaying = isPlaying,
@@ -2844,7 +2807,7 @@ private fun TrackDetailScreen(
                         iconSize = 42.dp
                     )
                     FilledTonalIconButton(onClick = onNext, modifier = Modifier.size(64.dp)) {
-                        Icon(Icons.Default.SkipNext, contentDescription = null, modifier = Modifier.size(32.dp))
+                        Icon(Icons.Default.SkipNext, contentDescription = "Next track", modifier = Modifier.size(32.dp))
                     }
                 }
 
@@ -2884,10 +2847,276 @@ private fun TrackDetailScreen(
                 
                 Spacer(modifier = Modifier.height(12.dp))
             }
+
+            AnimatedVisibility(
+                visible = showQueue,
+                enter = slideInVertically(initialOffsetY = { it }) + fadeIn(),
+                exit = slideOutVertically(targetOffsetY = { it }) + fadeOut(),
+                modifier = Modifier.fillMaxSize()
+            ) {
+                QueueManagerPanel(
+                    activeQueue = activeQueue,
+                    currentTrack = track,
+                    isPlaying = isPlaying,
+                    onDismiss = { showQueue = false },
+                    onReorder = onReorderQueue,
+                    onPlayTrack = onPlayTrackFromQueue
+                )
+            }
         }
     }
 }
 
+@Composable
+private fun QueueManagerPanel(
+    activeQueue: List<SoundCloudTrack>,
+    currentTrack: SoundCloudTrack,
+    isPlaying: Boolean,
+    onDismiss: () -> Unit,
+    onReorder: (Int, Int) -> Unit,
+    onPlayTrack: (SoundCloudTrack) -> Unit
+) {
+    val haptic = LocalHapticFeedback.current
+    val density = androidx.compose.ui.platform.LocalDensity.current
+    var draggedIndex by remember { mutableStateOf<Int?>(null) }
+    var dragOffsetY by remember { mutableStateOf(0f) }
+    val coroutineScope = rememberCoroutineScope()
+
+    BackHandler(onBack = onDismiss)
+
+    Card(
+        shape = RoundedCornerShape(0.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.65f)
+        ),
+        modifier = Modifier
+            .fillMaxSize()
+            .pointerInput(Unit) {}
+    ) {
+        Column(
+            modifier = Modifier.fillMaxSize()
+        ) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 12.dp)
+                            .pointerInput(Unit) {
+                                detectDragGestures(
+                                    onDrag = { change, dragAmount ->
+                                        if (dragAmount.y > 10f) {
+                                            onDismiss()
+                                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                        }
+                                    }
+                                )
+                            },
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            // Drag handle with adequate touch target (#40)
+                            Box(
+                                modifier = Modifier
+                                    .size(40.dp, 5.dp)
+                                    .clip(CircleShape)
+                                    .background(MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f))
+                            )
+                            Spacer(modifier = Modifier.height(12.dp))
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 16.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = "Очередь воспроизведения",
+                                    style = MaterialTheme.typography.titleLarge,
+                                    fontWeight = FontWeight.ExtraBold,
+                                    letterSpacing = (-0.5).sp
+                                )
+                                IconButton(onClick = onDismiss) {
+                                    Icon(Icons.Default.Close, contentDescription = "Close")
+                                }
+                            }
+                        }
+                    }
+
+                    val lazyListState = rememberLazyListState()
+
+            LazyColumn(
+                state = lazyListState,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .weight(1f),
+                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                if (activeQueue.isEmpty()) {
+                    item {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 48.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                text = "Очередь пуста",
+                                style = MaterialTheme.typography.bodyLarge,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                }
+                itemsIndexed(activeQueue, key = { _, track -> "queue-${track.id}" }) { index, trackItem ->
+                    val currentIndex by rememberUpdatedState(index)
+                    val isCurrent = trackItem.id == currentTrack.id
+                    val isThisDragged = currentIndex == draggedIndex
+                    val scale by animateFloatAsState(
+                        targetValue = if (isThisDragged) 1.05f else 1f,
+                        animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy),
+                        label = "dragScale"
+                    )
+                    val elevation = if (isThisDragged) 8.dp else 0.dp
+
+                    Card(
+                        colors = CardDefaults.cardColors(
+                            containerColor = if (isCurrent) {
+                                MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.95f)
+                            } else {
+                                MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f)
+                            }
+                        ),
+                        elevation = CardDefaults.cardElevation(defaultElevation = elevation),
+                        shape = RoundedCornerShape(20.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .graphicsLayer {
+                                translationY = if (isThisDragged) dragOffsetY else 0f
+                                scaleX = scale
+                                scaleY = scale
+                                alpha = if (draggedIndex != null && !isThisDragged) 0.65f else 1f
+                            }
+                            .animateItem()
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(12.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(40.dp)
+                                    .pointerInput(trackItem.id) {
+                                        detectDragGesturesAfterLongPress(
+                                            onDragStart = {
+                                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                                draggedIndex = currentIndex
+                                                dragOffsetY = 0f
+                                            },
+                                            onDrag = { change, dragAmount ->
+                                                change.consume()
+                                                dragOffsetY += dragAmount.y
+                                                
+                                                // Use actual item height from layout info (#28)
+                                                val layoutInfo = lazyListState.layoutInfo
+                                                val itemHeightPx = layoutInfo.visibleItemsInfo
+                                                    .firstOrNull()?.size?.toFloat()
+                                                    ?: with(density) { 82.dp.toPx() }
+                                                
+                                                val currentDragIdx = draggedIndex ?: return@detectDragGesturesAfterLongPress
+                                                if (dragOffsetY > itemHeightPx * 0.7f) {
+                                                    val nextIdx = (currentDragIdx + 1).coerceAtMost(activeQueue.lastIndex)
+                                                    if (nextIdx != currentDragIdx) {
+                                                        onReorder(currentDragIdx, nextIdx)
+                                                        draggedIndex = nextIdx
+                                                        dragOffsetY -= itemHeightPx
+                                                        haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                                    }
+                                                } else if (dragOffsetY < -itemHeightPx * 0.7f) {
+                                                    val prevIdx = (currentDragIdx - 1).coerceAtLeast(0)
+                                                    if (prevIdx != currentDragIdx) {
+                                                        onReorder(currentDragIdx, prevIdx)
+                                                        draggedIndex = prevIdx
+                                                        dragOffsetY += itemHeightPx
+                                                        haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                                    }
+                                                }
+                                                // Auto-scroll near edges (#27)
+                                                val viewportHeight = layoutInfo.viewportSize.height.toFloat()
+                                                val touchY = layoutInfo.visibleItemsInfo
+                                                    .firstOrNull { it.index == currentDragIdx }
+                                                    ?.let { it.offset + it.size / 2f + dragOffsetY }
+                                                    ?: (viewportHeight / 2f)
+                                                val scrollThreshold = viewportHeight * 0.15f
+                                                if (touchY > viewportHeight - scrollThreshold) {
+                                                    lazyListState.dispatchRawDelta(itemHeightPx * 0.3f)
+                                                } else if (touchY < scrollThreshold) {
+                                                    lazyListState.dispatchRawDelta(-itemHeightPx * 0.3f)
+                                                }
+                                            },
+                                            onDragEnd = {
+                                                draggedIndex = null
+                                                dragOffsetY = 0f
+                                            },
+                                            onDragCancel = {
+                                                draggedIndex = null
+                                                dragOffsetY = 0f
+                                            }
+                                        )
+                                    },
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Reorder,
+                                    contentDescription = "Drag to reorder",
+                                    tint = if (isCurrent) MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f) else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                                    modifier = Modifier.size(24.dp)
+                                )
+                            }
+
+                            Spacer(modifier = Modifier.width(8.dp))
+
+                            TrackArtwork(
+                                artworkUrl = trackItem.artworkUrl,
+                                size = 50.dp,
+                                isPlaying = isCurrent && isPlaying
+                            )
+
+                            Spacer(modifier = Modifier.width(14.dp))
+
+                            Column(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .clickable {
+                                        if (!isCurrent) {
+                                            onPlayTrack(trackItem)
+                                        }
+                                    }
+                            ) {
+                                Text(
+                                    text = trackItem.title ?: "Unknown Track",
+                                    style = MaterialTheme.typography.bodyLarge,
+                                    fontWeight = FontWeight.Bold,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    color = if (isCurrent) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurface
+                                )
+                                Text(
+                                    text = trackItem.user?.username ?: "Unknown Artist",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = if (isCurrent) MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f) else MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
 @Composable
 private fun FolderArtwork(artworkUri: String?, size: Dp) {
     if (artworkUri.isNullOrBlank()) {
@@ -2950,7 +3179,7 @@ class MorphingArtworkShape(
         val centerY = height / 2f
         val maxRadius = minOf(width, height) / 2f
 
-        val steps = 120
+        val steps = 72  // Reduced from 120 for performance (#15)
         for (i in 0..steps) {
             val theta = (i * 2f * Math.PI / steps).toFloat()
 
@@ -4580,23 +4809,39 @@ private fun ArtistDetailScreen(
 
                         if (!isAllTracksLoaded) {
                             item {
-                                Surface(
-                                    onClick = onLoadAllTracks,
-                                    modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
-                                    shape = RoundedCornerShape(20.dp),
-                                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
-                                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f))
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(vertical = 12.dp),
+                                    contentAlignment = Alignment.Center
                                 ) {
-                                    Box(
-                                        modifier = Modifier.padding(16.dp),
-                                        contentAlignment = Alignment.Center
+                                    Button(
+                                        onClick = onLoadAllTracks,
+                                        colors = ButtonDefaults.buttonColors(
+                                            containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.9f),
+                                            contentColor = MaterialTheme.colorScheme.onPrimaryContainer
+                                        ),
+                                        shape = RoundedCornerShape(30.dp),
+                                        contentPadding = PaddingValues(horizontal = 24.dp, vertical = 14.dp),
+                                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)),
+                                        modifier = Modifier.fillMaxWidth(0.9f)
                                     ) {
-                                        Text(
-                                            text = "Загрузить все популярные треки",
-                                            style = MaterialTheme.typography.bodyLarge,
-                                            fontWeight = FontWeight.Bold,
-                                            color = MaterialTheme.colorScheme.primary
-                                        )
+                                        Row(
+                                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Default.KeyboardArrowDown,
+                                                contentDescription = null,
+                                                modifier = Modifier.size(22.dp)
+                                            )
+                                            Text(
+                                                text = "Показать все популярные треки",
+                                                style = MaterialTheme.typography.titleMedium,
+                                                fontWeight = FontWeight.Black,
+                                                letterSpacing = (-0.3).sp
+                                            )
+                                        }
                                     }
                                 }
                             }

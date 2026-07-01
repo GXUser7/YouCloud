@@ -66,7 +66,9 @@ class MusicPlayer(context: Context) {
 
         scope.launch {
             while (true) {
-                syncState()
+                if (controller?.isPlaying == true) {
+                    syncState()
+                }
                 delay(500)
             }
         }
@@ -109,6 +111,10 @@ class MusicPlayer(context: Context) {
                 player.addMediaItem(toMediaItem(track))
             }
         }
+        // Remove excess tail items if new list is shorter than old queue
+        while (player.mediaItemCount > tracks.size) {
+            player.removeMediaItem(player.mediaItemCount - 1)
+        }
     }
 
     fun togglePlayPause() {
@@ -148,8 +154,11 @@ class MusicPlayer(context: Context) {
 
     fun toggleShuffle() {
         val enabled = !_shuffleEnabled.value
-        controller?.shuffleModeEnabled = enabled
         _shuffleEnabled.value = enabled
+    }
+
+    fun moveMediaItem(fromIndex: Int, toIndex: Int) {
+        controller?.moveMediaItem(fromIndex, toIndex)
     }
 
     fun getNextMediaItemIndex(): Int {
@@ -159,6 +168,7 @@ class MusicPlayer(context: Context) {
     fun release() {
         scope.cancel()
         controller?.removeListener(playerListener)
+        controller = null
         MediaController.releaseFuture(controllerFuture)
     }
 
@@ -187,16 +197,19 @@ class MusicPlayer(context: Context) {
     }
 
     private fun syncState() {
-        controller?.let { player ->
-            _isPlaying.value = player.isPlaying
-            _positionMs.value = player.currentPosition.coerceAtLeast(0L)
-            _durationMs.value = player.duration.coerceAtLeast(0L)
-            _currentTrack.value =
-                player.currentMediaItem?.mediaMetadata?.title?.toString() ?: _currentTrack.value
-            _currentTrackId.value = player.currentMediaItem?.mediaId?.toLongOrNull()
-            _repeatMode.value = player.repeatMode
-            _shuffleEnabled.value = player.shuffleModeEnabled
+        val player = controller
+        if (player == null || player.mediaItemCount == 0) {
+            _currentTrack.value = null
+            _currentTrackId.value = null
+            return
         }
+        _isPlaying.value = player.isPlaying
+        _positionMs.value = player.currentPosition.coerceAtLeast(0L)
+        _durationMs.value = player.duration.coerceAtLeast(0L)
+        _currentTrack.value =
+            player.currentMediaItem?.mediaMetadata?.title?.toString()
+        _currentTrackId.value = player.currentMediaItem?.mediaId?.toLongOrNull()
+        _repeatMode.value = player.repeatMode
     }
 
     private val playerListener = object : Player.Listener {
@@ -214,10 +227,6 @@ class MusicPlayer(context: Context) {
 
         override fun onRepeatModeChanged(repeatMode: Int) {
             _repeatMode.value = repeatMode
-        }
-
-        override fun onShuffleModeEnabledChanged(shuffleModeEnabled: Boolean) {
-            _shuffleEnabled.value = shuffleModeEnabled
         }
     }
 

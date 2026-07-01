@@ -5,6 +5,7 @@ import com.google.gson.Gson
 import com.google.gson.reflect.TypeToken
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 
 class FavoritesRepository(private val context: Context) {
     private val preferences = context.getSharedPreferences("favorite_tracks", Context.MODE_PRIVATE)
@@ -25,47 +26,51 @@ class FavoritesRepository(private val context: Context) {
 
     fun add(track: SoundCloudTrack, streamUrl: String?) {
         if (isFavorite(track.id)) return
- 
-        update(
-            _favorites.value + FavoriteTrack(
-                id = track.id,
-                urn = track.urn ?: "",
-                title = track.title ?: "Unknown Track",
-                artworkUrl = track.artworkUrl,
-                permalinkUrl = track.permalinkUrl,
-                artist = track.user?.username ?: "Unknown Artist",
-                duration = track.duration,
-                streamUrl = streamUrl,
-                downloadState = DownloadState.NONE,
-                artistPermalinkUrl = track.user?.permalinkUrl,
-                artistId = track.user?.id
-            )
+        val newTrack = FavoriteTrack(
+            id = track.id,
+            urn = track.urn ?: "",
+            title = track.title ?: "Unknown Track",
+            artworkUrl = track.artworkUrl,
+            permalinkUrl = track.permalinkUrl,
+            artist = track.user?.username ?: "Unknown Artist",
+            duration = track.duration,
+            streamUrl = streamUrl,
+            downloadState = DownloadState.NONE,
+            artistPermalinkUrl = track.user?.permalinkUrl,
+            artistId = track.user?.id
         )
+        _favorites.update { current -> current + newTrack }
+        persist()
     }
 
     fun addFavoriteTrack(favoriteTrack: FavoriteTrack) {
         if (isFavorite(favoriteTrack.id)) return
-        update(_favorites.value + favoriteTrack)
+        _favorites.update { current -> current + favoriteTrack }
+        persist()
     }
 
     fun reorderTracks(newTracks: List<FavoriteTrack>) {
-        update(newTracks)
+        _favorites.update { newTracks }
+        persist()
     }
 
     fun remove(trackId: Long) {
-        update(_favorites.value.filterNot { it.id == trackId })
+        _favorites.update { current -> current.filterNot { it.id == trackId } }
+        persist()
     }
 
     fun updateStreamUrl(trackId: Long, streamUrl: String) {
-        update(_favorites.value.map {
-            if (it.id == trackId) it.copy(streamUrl = streamUrl) else it
-        })
+        _favorites.update { current ->
+            current.map { if (it.id == trackId) it.copy(streamUrl = streamUrl) else it }
+        }
+        persist()
     }
 
     fun updateDownloadState(trackId: Long, state: DownloadState) {
-        update(_favorites.value.map {
-            if (it.id == trackId) it.copy(downloadState = state) else it
-        })
+        _favorites.update { current ->
+            current.map { if (it.id == trackId) it.copy(downloadState = state) else it }
+        }
+        persist()
     }
 
     fun updateDownloadedFolderArtworkUri(uri: String?) {
@@ -96,9 +101,8 @@ class FavoritesRepository(private val context: Context) {
         }
     }
 
-    private fun update(value: List<FavoriteTrack>) {
-        _favorites.value = value
-        preferences.edit().putString(KEY_TRACKS, gson.toJson(value)).apply()
+    private fun persist() {
+        preferences.edit().putString(KEY_TRACKS, gson.toJson(_favorites.value)).apply()
     }
 
     private companion object {

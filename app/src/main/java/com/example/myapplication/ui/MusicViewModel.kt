@@ -38,8 +38,11 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import com.example.myapplication.data.YandexMusicApi
 import com.example.myapplication.data.YandexMusicService
+import java.util.concurrent.ConcurrentHashMap
 
 enum class AppScreen {
     HOME,
@@ -53,14 +56,21 @@ enum class AppScreen {
 }
 
 class MusicViewModel(
-    private val context: Context,
+    context: Context,
     private val musicPlayer: MusicPlayer,
     private val favoritesRepository: FavoritesRepository,
     private val playlistsRepository: PlaylistsRepository,
     @get:androidx.media3.common.util.UnstableApi
     private val offlineMusicStore: OfflineMusicStore,
-    val settingsRepository: SettingsRepository
+    private val settingsRepository: SettingsRepository
 ) : ViewModel() {
+    // Use applicationContext to avoid Activity memory leak (#16)
+    private val context: Context = context.applicationContext
+
+    // Expose settingsRepository read-only for SettingsScreen (#43)
+    val settingsRepo: SettingsRepository get() = settingsRepository
+    val showDebugPercentage = settingsRepository.showDebugPercentage
+    val yandexToken = settingsRepository.yandexToken
 
     val playlists = playlistsRepository.playlists
 
@@ -166,6 +176,8 @@ class MusicViewModel(
     private val _searchQuery = MutableStateFlow("")
     val searchQuery = _searchQuery.asStateFlow()
 
+    // TODO #19: Split into _searchLoading, _mixLoading etc. to avoid one operation's
+    // loading state interfering with another. Requires updating MusicScreen consumers.
     private val _isLoading = MutableStateFlow(false)
     val isLoading = _isLoading.asStateFlow()
 
@@ -243,8 +255,27 @@ class MusicViewModel(
     private var searchJob: Job? = null
     private var openMixJob: Job? = null
     private var playMixJob: Job? = null
-    private var activeQueue: List<SoundCloudTrack> = emptyList()
-    private val resolvedUrls = mutableMapOf<Long, String>()
+    private val _activeQueue = MutableStateFlow<List<SoundCloudTrack>>(emptyList())
+    val activeQueue = _activeQueue.asStateFlow()
+
+    fun reorderActiveQueue(fromIndex: Int, toIndex: Int) {
+        val list = _activeQueue.value.toMutableList()
+        if (fromIndex in list.indices && toIndex in list.indices) {
+            val element = list.removeAt(fromIndex)
+            list.add(toIndex, element)
+            _activeQueue.value = list
+            musicPlayer.moveMediaItem(fromIndex, toIndex)
+            if (!musicPlayer.shuffleEnabled.value) {
+                originalQueue = list
+            }
+        }
+    }
+    private val resolvedUrls = ConcurrentHashMap<Long, String>()
+    private val originalQueueFlow = MutableStateFlow<List<SoundCloudTrack>>(emptyList())
+    private var originalQueue: List<SoundCloudTrack>
+        get() = originalQueueFlow.value
+        set(value) { originalQueueFlow.value = value }
+    private val queueMutex = Mutex()
 
     private class DownloadRequest(
         val track: SoundCloudTrack,
@@ -263,10 +294,10 @@ class MusicViewModel(
                 .collectLatest { trackId ->
                     if (trackId == null) return@collectLatest
                     
-                    val trackIndex = activeQueue.indexOfFirst { it.id == trackId }
+                    val trackIndex = _activeQueue.value.indexOfFirst { it.id == trackId }
                     if (trackIndex == -1) return@collectLatest
                     
-                    val track = activeQueue[trackIndex]
+                    val track = _activeQueue.value[trackIndex]
                     _currentPlayingTrack.value = track
                     if (_selectedTrack.value != null) {
                         _selectedTrack.value = track
@@ -277,7 +308,7 @@ class MusicViewModel(
                     
                     // Lazy resolve the next track in the queue (respects shuffle!)
                     val nextIndex = musicPlayer.getNextMediaItemIndex()
-                    if (nextIndex != -1 && nextIndex < activeQueue.size) {
+                    if (nextIndex != -1 && nextIndex < _activeQueue.value.size) {
                         resolveTrackIfNeeded(nextIndex)
                     }
                 }
@@ -548,6 +579,7 @@ class MusicViewModel(
                     }
             } catch (e: Exception) {
                 if (_mixSection.value == null && _stationSection.value == null) {
+                    handleSoundCloudApiError(e)
                     _errorMessage.value = readableMessage(e)
                 }
                 _mixesLoading.value = false
@@ -576,10 +608,11 @@ class MusicViewModel(
             try {
                 val tracks = mixesRepository.loadMixTracks(mix, clientId.value)
                 if (_selectedMix.value?.id == mix.id) {
-                    _mixTracks.value = tracks.filter { isPlayableMixTrack(it) }
+                    _mixTracks.value = tracks.filter { isPlayableTrack(it) }
                 }
             } catch (e: Exception) {
                 if (_selectedMix.value?.id == mix.id) {
+                    handleSoundCloudApiError(e)
                     _errorMessage.value = readableMessage(e)
                 }
             } finally {
@@ -610,7 +643,7 @@ class MusicViewModel(
                     return@launch
                 }
                 val tracks = mixesRepository.loadMixTracks(mix, clientId)
-                    .filter(::isPlayableMixTrack)
+                    .filter(::isPlayableTrack)
 
                 if (_loadingMixId.value != mix.id) return@launch
 
@@ -619,22 +652,31 @@ class MusicViewModel(
                     return@launch
                 }
 
-                activeQueue = tracks
+                val firstTrack = tracks.firstOrNull()
+                originalQueue = tracks
+                val queueToPlay = if (shuffleEnabled.value && firstTrack != null) {
+                    val list = tracks.toMutableList()
+                    list.removeAt(0)
+                    listOf(firstTrack) + list.shuffled(java.util.Random())
+                } else {
+                    tracks
+                }
+                _activeQueue.value = queueToPlay
                 resolvedUrls.clear()
 
                 // Pre-resolve the first track in the mix before playing to prevent instant failure / skip loop
-                val firstTrack = tracks.firstOrNull()
-                if (firstTrack != null) {
-                    val resolvedUrl = favoritesRepository.get(firstTrack.id)?.streamUrl
-                        ?: playbackResolver.resolve(firstTrack, clientId)
+                val resolveTarget = queueToPlay.firstOrNull()
+                if (resolveTarget != null) {
+                    val resolvedUrl = favoritesRepository.get(resolveTarget.id)?.streamUrl
+                        ?: playbackResolver.resolve(resolveTarget, clientId)
                         ?: ""
                     if (resolvedUrl.isNotEmpty()) {
-                        resolvedUrls[firstTrack.id] = resolvedUrl
+                        resolvedUrls[resolveTarget.id] = resolvedUrl
                     }
                 }
                 
                 // Play immediately with first track resolved and others as stubs
-                val stubs = tracks.map { t ->
+                val stubs = queueToPlay.map { t ->
                     val localUrl = favoritesRepository.get(t.id)?.streamUrl
                     t.toQueueTrack(localUrl ?: resolvedUrls[t.id] ?: "soundcloud://track/${t.id}")
                 }
@@ -642,6 +684,7 @@ class MusicViewModel(
                 _playingMixId.value = mix.id
             } catch (e: Exception) {
                 Log.e("MusicViewModel", "playMix error", e)
+                handleSoundCloudApiError(e)
                 _errorMessage.value = readableMessage(e)
             } finally {
                 _loadingMixId.value = null
@@ -681,9 +724,10 @@ class MusicViewModel(
                 query = query,
                 clientId = settingsRepository.clientId.value
             )
-            _tracks.value = results.collection.filter { isPlayableMixTrack(it) }
+            _tracks.value = results.collection.filter { isPlayableTrack(it) }
         } catch (e: Exception) {
             _tracks.value = emptyList()
+            handleSoundCloudApiError(e)
             _errorMessage.value = readableMessage(e)
         } finally {
             _isLoading.value = false
@@ -696,7 +740,7 @@ class MusicViewModel(
             _errorMessage.value = null
 
             val tracks = _mixTracks.value
-            val playableTracks = tracks.filter { isPlayableMixTrack(it) }
+            val playableTracks = tracks.filter { isPlayableTrack(it) }
 
             if (playableTracks.isEmpty()) {
                 playTrack(track)
@@ -706,12 +750,21 @@ class MusicViewModel(
             _isLoading.value = true
             try {
                 val startIndex = playableTracks.indexOfFirst { it.id == track.id }.coerceAtLeast(0)
-
-                activeQueue = playableTracks
+                originalQueue = playableTracks
+                val clickedTrack = playableTracks.getOrNull(startIndex)
+                val queueToPlay = if (shuffleEnabled.value && clickedTrack != null) {
+                    val list = playableTracks.toMutableList()
+                    list.removeAt(startIndex)
+                    listOf(clickedTrack) + list.shuffled(java.util.Random())
+                } else {
+                    playableTracks
+                }
+                val newStartIndex = if (shuffleEnabled.value) 0 else startIndex
+                _activeQueue.value = queueToPlay
                 resolvedUrls.clear()
 
                 // Pre-resolve the clicked track before starting playback to avoid instant failure / skip loop
-                val startTrack = playableTracks.getOrNull(startIndex)
+                val startTrack = queueToPlay.getOrNull(newStartIndex)
                 if (startTrack != null) {
                     val isYandex = startTrack.urn?.startsWith("yandex:track:") == true
                     if (isYandex) {
@@ -729,7 +782,7 @@ class MusicViewModel(
                 }
 
                 // Play immediately with starting track resolved and others as stubs
-                val stubs = playableTracks.map { t ->
+                val stubs = queueToPlay.map { t ->
                     val localUrl = favoritesRepository.get(t.id)?.streamUrl
                     val isYandex = t.urn?.startsWith("yandex:track:") == true
                     val fallbackUrl = if (isYandex) {
@@ -740,10 +793,11 @@ class MusicViewModel(
                     }
                     t.toQueueTrack(localUrl ?: resolvedUrls[t.id] ?: fallbackUrl)
                 }
-                musicPlayer.playQueue(stubs, startIndex)
+                musicPlayer.playQueue(stubs, newStartIndex)
                 _playingMixId.value = _selectedMix.value?.id
             } catch (e: Exception) {
                 Log.e("MusicViewModel", "playMixTrack error", e)
+                handleSoundCloudApiError(e)
                 _errorMessage.value = readableMessage(e)
             } finally {
                 _isLoading.value = false
@@ -752,21 +806,36 @@ class MusicViewModel(
     }
 
     private suspend fun resolveTrackIfNeeded(index: Int) {
-        val track = activeQueue.getOrNull(index) ?: return
+        val track = _activeQueue.value.getOrNull(index) ?: return
         if (resolvedUrls.containsKey(track.id)) return
 
         Log.d("MusicViewModel", "Lazy resolving track: ${track.title}")
         try {
-            val streamUrl = favoritesRepository.get(track.id)?.streamUrl
-                ?: playbackResolver.resolve(track, settingsRepository.clientId.value)
-                ?: ""
+            // Handle Yandex tracks separately (#5)
+            val isYandex = track.urn?.startsWith("yandex:track:") == true
+            val streamUrl = if (isYandex) {
+                val yandexId = track.urn?.removePrefix("yandex:track:") ?: ""
+                favoritesRepository.get(track.id)?.streamUrl
+                    ?: "yandex://track/$yandexId"
+            } else {
+                favoritesRepository.get(track.id)?.streamUrl
+                    ?: playbackResolver.resolve(track, settingsRepository.clientId.value)
+                    ?: ""
+            }
             
             if (streamUrl.isNotEmpty()) {
                 resolvedUrls[track.id] = streamUrl
                 // Update the player queue with the new URL
-                val updatedQueue = activeQueue.map { t ->
+                val updatedQueue = _activeQueue.value.map { t ->
                     val localUrl = favoritesRepository.get(t.id)?.streamUrl
-                    t.toQueueTrack(localUrl ?: resolvedUrls[t.id] ?: "soundcloud://track/${t.id}")
+                    val isYandexT = t.urn?.startsWith("yandex:track:") == true
+                    val fallbackUrl = if (isYandexT) {
+                        val yId = t.urn?.removePrefix("yandex:track:") ?: ""
+                        "yandex://track/$yId"
+                    } else {
+                        "soundcloud://track/${t.id}"
+                    }
+                    t.toQueueTrack(localUrl ?: resolvedUrls[t.id] ?: fallbackUrl)
                 }
                 musicPlayer.updateQueue(updatedQueue)
             }
@@ -801,7 +870,7 @@ class MusicViewModel(
                     return@launch
                 }
 
-                activeQueue = listOf(track)
+                _activeQueue.value = listOf(track)
                 musicPlayer.playQueue(
                     tracks = listOf(
                         track.toQueueTrack(streamUrl)
@@ -812,6 +881,7 @@ class MusicViewModel(
                 _currentPlayingTrack.value = track
                 _selectedTrack.value = track
             } catch (e: Exception) {
+                handleSoundCloudApiError(e)
                 _errorMessage.value = readableMessage(e)
             }
         }
@@ -985,6 +1055,7 @@ class MusicViewModel(
                     }
                 } catch (e: Exception) {
                     Log.e("MusicViewModel", "Failed to fetch SoundCloud artist stream", e)
+                    handleSoundCloudApiError(e)
                     _artistError.value = "Не удалось загрузить данные: ${readableMessage(e)}"
                 } finally {
                     _artistLoading.value = false
@@ -1011,7 +1082,7 @@ class MusicViewModel(
                     val albumId = playlist.permalinkUrl!!.substringAfter("yandex:album:").toLongOrNull()
                     if (albumId != null) {
                         val response = yandexService.getAlbumWithTracks(albumId)
-                        val tracks = response.result?.volumes?.flatten()?.map { it.toSoundCloudTrack() } ?: emptyList()
+                        val tracks = response.result?.volumes?.flatten()?.map { it.toSoundCloudTrack(albumId.toString()) } ?: emptyList()
                         _selectedArtistPlaylist.value = playlist.copy(tracks = tracks)
                     }
                 } catch (e: Exception) {
@@ -1032,7 +1103,7 @@ class MusicViewModel(
     }
 
     fun onYandexTokenCaptured(token: String) {
-        Log.d("MusicViewModel", "Captured Yandex token: $token")
+        Log.d("MusicViewModel", "Captured Yandex token: ${token.take(4)}***")
         settingsRepository.saveYandexToken(token)
         _yandexLoginUrl.value = null
         onYandexSearchQueryChange(_yandexSearchQuery.value)
@@ -1058,7 +1129,7 @@ class MusicViewModel(
     }
 
     fun onSilentCredentialsCaptured(clientId: String, oauthToken: String) {
-        Log.d("MusicViewModel", "Captured silent credentials: clientId=$clientId, oauthToken=$oauthToken")
+        Log.d("MusicViewModel", "Captured silent credentials: clientId=${clientId.take(4)}***, oauthToken=${oauthToken.take(4)}***")
         viewModelScope.launch {
             try {
                 val tempService = SoundCloudApi.createService { oauthToken }
@@ -1216,17 +1287,35 @@ class MusicViewModel(
             .filter { it.downloadState == DownloadState.DOWNLOADED && it.streamUrl != null }
         if (downloadedQueue.isEmpty()) return
 
-        activeQueue = downloadedQueue.map { it.toSoundCloudTrack() }
+        val mappedTracks = downloadedQueue.map { it.toSoundCloudTrack() }
+        originalQueue = mappedTracks
+        val startIndex = downloadedQueue.indexOfFirst { it.id == track.id }.coerceAtLeast(0)
+        val clickedTrack = mappedTracks.getOrNull(startIndex)
+        
+        val queueToPlay = if (shuffleEnabled.value && clickedTrack != null) {
+            val list = mappedTracks.toMutableList()
+            list.removeAt(startIndex)
+            listOf(clickedTrack) + list.shuffled(java.util.Random())
+        } else {
+            mappedTracks
+        }
+        val newStartIndex = if (shuffleEnabled.value) 0 else startIndex
+        
+        _activeQueue.value = queueToPlay
         downloadedQueue.forEach { fav ->
             fav.streamUrl?.let { url ->
                 resolvedUrls[fav.id] = url
             }
         }
+        val stubs = queueToPlay.mapNotNull { t ->
+            val localUrl = favoritesRepository.get(t.id)?.streamUrl ?: resolvedUrls[t.id]
+            localUrl?.let { t.toQueueTrack(it) }
+        }
+        // Recalculate index in the filtered list (#2: avoid IndexOutOfBoundsException)
+        val safeStartIndex = stubs.indexOfFirst { it.id == track.id }.coerceAtLeast(0)
         musicPlayer.playQueue(
-            tracks = downloadedQueue.mapNotNull { favorite ->
-                favorite.streamUrl?.let { favorite.toQueueTrack(it) }
-            },
-            startIndex = downloadedQueue.indexOfFirst { it.id == track.id }.coerceAtLeast(0)
+            tracks = stubs,
+            startIndex = safeStartIndex
         )
         _playingMixId.value = null
         _currentPlayingTrack.value = playable
@@ -1254,7 +1343,50 @@ class MusicViewModel(
     }
 
     fun toggleShuffle() {
-        musicPlayer.toggleShuffle()
+        viewModelScope.launch {
+            queueMutex.withLock {
+                musicPlayer.toggleShuffle()
+                val enabled = musicPlayer.shuffleEnabled.value
+                val currentTrack = _currentPlayingTrack.value
+                
+                if (currentTrack != null && originalQueue.isNotEmpty()) {
+                    val currentPos = playbackPositionMs.value
+                    val list = originalQueue.toMutableList()
+                    val currentIdx = list.indexOfFirst { it.id == currentTrack.id }
+                    
+                    val newQueue = if (enabled) {
+                        if (currentIdx != -1) {
+                            list.removeAt(currentIdx)
+                        }
+                        val shuffled = list.shuffled(java.util.Random())
+                        if (currentIdx != -1) {
+                            listOf(currentTrack) + shuffled
+                        } else {
+                            shuffled
+                        }
+                    } else {
+                        originalQueue
+                    }
+                    
+                    _activeQueue.value = newQueue
+                    val newIndex = newQueue.indexOfFirst { it.id == currentTrack.id }.coerceAtLeast(0)
+                    
+                    val stubs = newQueue.map { t ->
+                        val localUrl = favoritesRepository.get(t.id)?.streamUrl
+                        val isYandex = t.urn?.startsWith("yandex:track:") == true
+                        val fallbackUrl = if (isYandex) {
+                            val yandexId = t.urn?.removePrefix("yandex:track:") ?: ""
+                            "yandex://track/$yandexId"
+                        } else {
+                            "soundcloud://track/${t.id}"
+                        }
+                        t.toQueueTrack(localUrl ?: resolvedUrls[t.id] ?: fallbackUrl)
+                    }
+                    musicPlayer.playQueue(stubs, newIndex)
+                    musicPlayer.seekTo(currentPos)
+                }
+            }
+        }
     }
 
     fun deleteDownloadedTrack(track: FavoriteTrack) {
@@ -1262,9 +1394,15 @@ class MusicViewModel(
         viewModelScope.launch {
             try {
                 withContext(Dispatchers.IO) {
-                    offlineMusicStore.removeHls(streamUrl)
+                    // Use correct removal method based on track source (#4)
+                    if (track.urn.startsWith("yandex:")) {
+                        offlineMusicStore.removeProgressive(streamUrl)
+                    } else {
+                        offlineMusicStore.removeHls(streamUrl)
+                    }
                 }
                 favoritesRepository.updateDownloadState(track.id, DownloadState.NONE)
+                favoritesRepository.updateStreamUrl(track.id, "")
             } catch (e: Exception) {
                 _errorMessage.value = "Не удалось удалить локальную копию трека."
             }
@@ -1313,19 +1451,21 @@ class MusicViewModel(
         musicPlayer.release()
     }
 
-    private fun isPlayableMixTrack(track: SoundCloudTrack): Boolean =
-        track.kind == "track" &&
+    // Unified playability check (#41: merged isPlayableMixTrack)
+    private fun isPlayableTrack(track: SoundCloudTrack): Boolean {
+        if (track.urn?.startsWith("yandex:track:") == true) {
+            return track.streamable == true
+        }
+        return track.kind == "track" &&
             track.streamable == true &&
             track.policy != "BLOCK" &&
             track.policy != "SNIP" &&
             track.policy != "SNIPPET" &&
             track.policy != "PREVIEW" &&
             track.media?.transcodings?.isNotEmpty() == true
-
+    }
+    // Pure formatter with no side effects (#26)
     private fun readableMessage(error: Exception, isYandex: Boolean = false): String {
-        if (!isYandex) {
-            handleSoundCloudApiError(error)
-        }
         return when (error) {
             is HttpException -> when (error.code()) {
                 401 -> if (isYandex) "Яндекс отклонил запрос. Возможно, токен устарел." else "SoundCloud отклонил запрос. Возможно, client_id устарел."
@@ -1484,7 +1624,21 @@ class MusicViewModel(
             val tracks = playlist.tracks
             if (tracks.isEmpty()) return@launch
 
-            activeQueue = tracks.map { it.toSoundCloudTrack() }
+            val mappedTracks = tracks.map { it.toSoundCloudTrack() }
+            originalQueue = mappedTracks
+            val startIndex = tracks.indexOfFirst { it.id == track.id }.coerceAtLeast(0)
+            val clickedTrack = mappedTracks.getOrNull(startIndex)
+            
+            val queueToPlay = if (shuffleEnabled.value && clickedTrack != null) {
+                val list = mappedTracks.toMutableList()
+                list.removeAt(startIndex)
+                listOf(clickedTrack) + list.shuffled(java.util.Random())
+            } else {
+                mappedTracks
+            }
+            val newStartIndex = if (shuffleEnabled.value) 0 else startIndex
+            
+            _activeQueue.value = queueToPlay
             
             tracks.forEach { fav ->
                 fav.streamUrl?.let { url ->
@@ -1492,23 +1646,31 @@ class MusicViewModel(
                 }
             }
             
-            val startIndex = tracks.indexOfFirst { it.id == track.id }.coerceAtLeast(0)
-            val startTrack = tracks[startIndex]
-            if (startTrack.streamUrl == null) {
-                val clientIdValue = settingsRepository.clientId.value
-                val resolvedUrl = playbackResolver.resolve(startTrack.toSoundCloudTrack(), clientIdValue) ?: ""
-                if (resolvedUrl.isNotEmpty()) {
-                    resolvedUrls[startTrack.id] = resolvedUrl
+            val startTrack = queueToPlay.getOrNull(newStartIndex)
+            if (startTrack != null) {
+                val hasLocal = favoritesRepository.get(startTrack.id)?.streamUrl != null
+                if (!hasLocal && resolvedUrls[startTrack.id] == null) {
+                    val clientIdValue = settingsRepository.clientId.value
+                    val resolvedUrl = playbackResolver.resolve(startTrack, clientIdValue) ?: ""
+                    if (resolvedUrl.isNotEmpty()) {
+                        resolvedUrls[startTrack.id] = resolvedUrl
+                    }
                 }
             }
 
-            val stubs = tracks.map { fav ->
-                val localUrl = favoritesRepository.get(fav.id)?.streamUrl
-                val url = localUrl ?: fav.streamUrl ?: resolvedUrls[fav.id] ?: "soundcloud://track/${fav.id}"
-                fav.toQueueTrack(url)
+            val stubs = queueToPlay.map { t ->
+                val localUrl = favoritesRepository.get(t.id)?.streamUrl
+                val isYandex = t.urn?.startsWith("yandex:track:") == true
+                val fallbackUrl = if (isYandex) {
+                    val yandexId = t.urn?.removePrefix("yandex:track:") ?: ""
+                    "yandex://track/$yandexId"
+                } else {
+                    "soundcloud://track/${t.id}"
+                }
+                t.toQueueTrack(localUrl ?: resolvedUrls[t.id] ?: fallbackUrl)
             }
 
-            musicPlayer.playQueue(stubs, startIndex)
+            musicPlayer.playQueue(stubs, newStartIndex)
             _playingMixId.value = null
             _currentPlayingTrack.value = playable
             _selectedTrack.value = playable
@@ -1725,8 +1887,13 @@ class MusicViewModel(
     fun stopLikesSync() {
         likesSyncJob?.cancel()
         likesSyncJob = null
-        _soundcloudLikesSyncStatus.value = LikesSyncStatus(state = SyncState.IDLE)
-        _yandexLikesSyncStatus.value = LikesSyncStatus(state = SyncState.IDLE)
+        // Only reset non-completed statuses (#42)
+        if (_soundcloudLikesSyncStatus.value.state != SyncState.COMPLETED) {
+            _soundcloudLikesSyncStatus.value = LikesSyncStatus(state = SyncState.IDLE)
+        }
+        if (_yandexLikesSyncStatus.value.state != SyncState.COMPLETED) {
+            _yandexLikesSyncStatus.value = LikesSyncStatus(state = SyncState.IDLE)
+        }
     }
 
     fun resetSoundCloudLikesSyncStatus() {
@@ -1796,18 +1963,7 @@ class MusicViewModel(
         }
     }
 
-    private fun isPlayableTrack(track: SoundCloudTrack): Boolean {
-        if (track.urn?.startsWith("yandex:track:") == true) {
-            return track.streamable == true
-        }
-        return track.kind == "track" &&
-            track.streamable == true &&
-            track.policy != "BLOCK" &&
-            track.policy != "SNIP" &&
-            track.policy != "SNIPPET" &&
-            track.policy != "PREVIEW" &&
-            track.media?.transcodings?.isNotEmpty() == true
-    }
+
 
     fun playQueuedTrack(track: SoundCloudTrack, customQueue: List<SoundCloudTrack>? = null) {
         viewModelScope.launch {
@@ -1815,7 +1971,7 @@ class MusicViewModel(
             val isYandexTrack = track.urn?.startsWith("yandex:track:") == true
             val defaultQueue = if (isYandexTrack) _yandexTracks.value else _tracks.value
             val qTracks = customQueue ?: defaultQueue
-            val playableTracks = qTracks.filter { isPlayableTrack(it) }
+            val playableTracks = if (customQueue != null) qTracks else qTracks.filter { isPlayableTrack(it) }
             
             if (playableTracks.isEmpty()) {
                 playTrack(track)
@@ -1824,10 +1980,24 @@ class MusicViewModel(
             _isLoading.value = true
             try {
                 val startIndex = playableTracks.indexOfFirst { it.id == track.id }.coerceAtLeast(0)
-                activeQueue = playableTracks
+                val isFromQueueManager = customQueue != null
+                if (!isFromQueueManager) {
+                    originalQueue = playableTracks
+                }
+                val clickedTrack = playableTracks.getOrNull(startIndex)
+                val queueToPlay = if (shuffleEnabled.value && clickedTrack != null && !isFromQueueManager) {
+                    val list = playableTracks.toMutableList()
+                    list.removeAt(startIndex)
+                    listOf(clickedTrack) + list.shuffled(java.util.Random())
+                } else {
+                    playableTracks
+                }
+                val newStartIndex = if (shuffleEnabled.value && !isFromQueueManager) 0 else startIndex
+                
+                _activeQueue.value = queueToPlay
                 resolvedUrls.clear()
                 
-                val startTrack = playableTracks.getOrNull(startIndex)
+                val startTrack = queueToPlay.getOrNull(newStartIndex)
                 if (startTrack != null) {
                     val isYandex = startTrack.urn?.startsWith("yandex:track:") == true
                     if (isYandex) {
@@ -1844,7 +2014,7 @@ class MusicViewModel(
                     }
                 }
                 
-                val stubs = playableTracks.map { t ->
+                val stubs = queueToPlay.map { t ->
                     val localUrl = favoritesRepository.get(t.id)?.streamUrl
                     val isYandex = t.urn?.startsWith("yandex:track:") == true
                     val fallbackUrl = if (isYandex) {
@@ -1855,7 +2025,7 @@ class MusicViewModel(
                     }
                     t.toQueueTrack(localUrl ?: resolvedUrls[t.id] ?: fallbackUrl)
                 }
-                musicPlayer.playQueue(stubs, startIndex)
+                musicPlayer.playQueue(stubs, newStartIndex)
                 _playingMixId.value = null
                 _currentPlayingTrack.value = track
                 _selectedTrack.value = track
@@ -2014,13 +2184,15 @@ class MusicViewModel(
                     return false
                 }
             } else {
-                favoritesRepository.updateStreamUrl(track.id, streamUrl)
+                // Don't store URL until download completes (#23)
                 withContext(Dispatchers.IO) {
                     offlineMusicStore.downloadHls(streamUrl) { progress ->
                         updateDownloadProgress(track.id, progress / 100f)
                     }
                 }
                 if (favoritesRepository.isFavorite(track.id)) {
+                    // Store URL only after successful download (#23)
+                    favoritesRepository.updateStreamUrl(track.id, streamUrl)
                     favoritesRepository.updateDownloadState(track.id, DownloadState.DOWNLOADED)
                     return true
                 } else {

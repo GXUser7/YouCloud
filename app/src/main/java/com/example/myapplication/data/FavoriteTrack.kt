@@ -1,15 +1,15 @@
 package com.example.myapplication.data
 
 data class FavoriteTrack(
-    val id: Long,
-    val urn: String,
-    val title: String,
-    val artworkUrl: String?,
-    val permalinkUrl: String?,
-    val artist: String,
-    val duration: Long,
-    val streamUrl: String?,
-    val downloadState: DownloadState,
+    val id: Long = 0L,
+    val urn: String = "",
+    val title: String = "Unknown Track",
+    val artworkUrl: String? = null,
+    val permalinkUrl: String? = null,
+    val artist: String = "Unknown Artist",
+    val duration: Long = 0L,
+    val streamUrl: String? = null,
+    val downloadState: DownloadState = DownloadState.NONE,
     val artistPermalinkUrl: String? = null,
     val artistId: Long? = null
 ) {

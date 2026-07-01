@@ -19,25 +19,36 @@ data class YandexTrack(
     val title: String?,
     val artists: List<YandexArtist>? = emptyList(),
     val durationMs: Long = 0L,
-    val coverUri: String?
+    val coverUri: String?,
+    val albums: List<YandexAlbum>? = emptyList()
 ) {
     fun getCoverUrl(size: String = "200x200"): String? {
         if (coverUri == null) return null
         return "https://" + coverUri.replace("%%", size)
     }
 
-    fun toSoundCloudTrack(): SoundCloudTrack {
+    fun toSoundCloudTrack(customAlbumId: String? = null): SoundCloudTrack {
         val artistList = artists.orEmpty()
         val artistName = artistList.firstOrNull()?.name ?: "Unknown Yandex Artist"
-        // Generate a deterministic negative ID from string id hashcode
-        val generatedId = -kotlin.math.abs(id.hashCode().toLong())
+        val rawId = id.substringBefore(":")
+        // Use toLong for numeric IDs with deterministic negative offset to avoid collision with SoundCloud IDs
+        // Falls back to hashCode for non-numeric IDs, with safe abs handling for Int.MIN_VALUE
+        val numericId = rawId.toLongOrNull()
+        val generatedId = if (numericId != null) {
+            -(numericId + 1_000_000_000L)
+        } else {
+            val hash = rawId.hashCode().toLong()
+            -(if (hash == Int.MIN_VALUE.toLong()) Int.MAX_VALUE.toLong() else kotlin.math.abs(hash)) - 1_000_000_000L
+        }
+        val albumId = customAlbumId ?: albums?.firstOrNull()?.id?.toString()
+        val finalUrn = if (albumId != null) "yandex:track:$rawId:$albumId" else "yandex:track:$rawId"
         return SoundCloudTrack(
             id = generatedId,
-            urn = "yandex:track:$id",
+            urn = finalUrn,
             kind = "track",
             title = title ?: "Unknown Track",
             artworkUrl = getCoverUrl("200x200"),
-            permalinkUrl = "https://music.yandex.ru/track/$id",
+            permalinkUrl = "https://music.yandex.ru/track/$rawId",
             user = SoundCloudUser(
                 id = artistList.firstOrNull()?.id?.toLongOrNull() ?: 0L,
                 username = artistName,
@@ -157,8 +168,10 @@ data class YandexAlbum(
 ) {
     fun toSoundCloudPlaylist(): SoundCloudPlaylist {
         val artwork = coverUri?.let { "https://" + it.replace("%%", "200x200") }
+        // Offset album IDs by 10_000_000 to avoid collision with playlist kind IDs
+        val namespacedId = id + 10_000_000L
         return SoundCloudPlaylist(
-            id = id,
+            id = namespacedId,
             title = title ?: "Без названия",
             trackCount = trackCount,
             artworkUrl = artwork,
