@@ -179,6 +179,13 @@ import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.LayoutDirection
 import kotlin.math.absoluteValue
 import kotlin.math.pow
+import kotlin.math.cos
+import kotlin.math.sin
+import kotlin.math.sqrt
+import kotlin.math.min
+import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
+import androidx.compose.ui.input.nestedscroll.NestedScrollSource
+import androidx.compose.ui.input.nestedscroll.nestedScroll
 
 @Composable
 fun MusicScreen(viewModel: MusicViewModel) {
@@ -190,6 +197,7 @@ fun MusicScreen(viewModel: MusicViewModel) {
     val isLoading by viewModel.isLoading.collectAsState()
     val errorMessage by viewModel.errorMessage.collectAsState()
     val isPlaying by viewModel.isPlaying.collectAsState()
+    val isPlaybackBuffering by viewModel.isPlaybackBuffering.collectAsState()
     val repeatMode by viewModel.repeatMode.collectAsState()
     val shuffleEnabled by viewModel.shuffleEnabled.collectAsState()
     val currentTrackTitle by viewModel.currentTrackTitle.collectAsState()
@@ -598,6 +606,8 @@ fun MusicScreen(viewModel: MusicViewModel) {
                         favoriteTrack = favorite,
                         downloadState = favorite?.downloadState,
                         isPlaying = isPlaying,
+                        isBuffering = isPlaybackBuffering,
+                        isLoading = isLoading,
                         repeatMode = repeatMode,
                         shuffleEnabled = shuffleEnabled,
                         positionMs = playbackPositionMs,
@@ -2563,6 +2573,8 @@ private fun TrackDetailScreen(
     favoriteTrack: FavoriteTrack?,
     downloadState: DownloadState?,
     isPlaying: Boolean,
+    isBuffering: Boolean,
+    isLoading: Boolean,
     repeatMode: Int,
     shuffleEnabled: Boolean,
     positionMs: Long,
@@ -2594,6 +2606,7 @@ private fun TrackDetailScreen(
     var sliderProgress by remember { mutableStateOf<Float?>(null) }
     var showQueue by remember { mutableStateOf(false) }
     val coroutineScope = rememberCoroutineScope()
+    val showLoadingShape = (downloadState != DownloadState.DOWNLOADED) && (isBuffering || isLoading || (positionMs == 0L && !isPlaying))
     val blurRadius by animateDpAsState(
         targetValue = if (showQueue) 20.dp else 0.dp,
         animationSpec = tween(durationMillis = 300),
@@ -2623,32 +2636,33 @@ private fun TrackDetailScreen(
                     .fillMaxSize()
                     .blur(blurRadius)
             ) {
-                ExpressiveBackground()
-                // Rich dynamic gradient overlaying the expressive background
-                Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .background(
-                            Brush.verticalGradient(
-                                colors = listOf(
-                                    MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.4f),
-                                    MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.2f),
-                                    MaterialTheme.colorScheme.surface.copy(alpha = 0.6f)
+                // Background Box
+                Box(modifier = Modifier.fillMaxSize()) {
+                    ExpressiveBackground()
+                    // Rich dynamic gradient overlaying the expressive background
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .background(
+                                Brush.verticalGradient(
+                                    colors = listOf(
+                                        MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.4f),
+                                        MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.2f),
+                                        MaterialTheme.colorScheme.surface.copy(alpha = 0.6f)
+                                    )
                                 )
                             )
-                        )
-                )
-            }
+                    )
+                }
 
-            Column(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .statusBarsPadding()
-                    .navigationBarsPadding()
-                    .padding(horizontal = 24.dp, vertical = 16.dp)
-                    .blur(blurRadius),
-                horizontalAlignment = Alignment.CenterHorizontally
-            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .statusBarsPadding()
+                        .navigationBarsPadding()
+                        .padding(horizontal = 24.dp, vertical = 16.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
@@ -2715,7 +2729,13 @@ private fun TrackDetailScreen(
                             )
                         }
                 ) {
-                    TrackArtwork(track.artworkUrl, size = 320.dp, useMorphing = false)
+                    TrackArtwork(
+                        artworkUrl = track.artworkUrl,
+                        size = 320.dp,
+                        isPlaying = isPlaying,
+                        useMorphing = false,
+                        showLoadingShape = showLoadingShape
+                    )
                 }
                 
                 Spacer(modifier = Modifier.height(36.dp))
@@ -2791,8 +2811,35 @@ private fun TrackDetailScreen(
 
                 Spacer(modifier = Modifier.height(32.dp))
 
+                val playButtonWidth by animateDpAsState(
+                    targetValue = if (isPlaying) 128.dp else 84.dp,
+                    animationSpec = spring(
+                        dampingRatio = Spring.DampingRatioMediumBouncy,
+                        stiffness = Spring.StiffnessLow
+                    ),
+                    label = "playButtonWidth"
+                )
+
+                val buttonsSpacing by animateDpAsState(
+                    targetValue = if (isPlaying) 36.dp else 12.dp,
+                    animationSpec = spring(
+                        dampingRatio = Spring.DampingRatioHighBouncy,
+                        stiffness = Spring.StiffnessMediumLow
+                    ),
+                    label = "buttonsSpacing"
+                )
+
+                val controlButtonsSpacing by animateDpAsState(
+                    targetValue = if (isPlaying) 28.dp else 14.dp,
+                    animationSpec = spring(
+                        dampingRatio = Spring.DampingRatioHighBouncy,
+                        stiffness = Spring.StiffnessMediumLow
+                    ),
+                    label = "controlButtonsSpacing"
+                )
+
                 Row(
-                    horizontalArrangement = Arrangement.spacedBy(24.dp),
+                    horizontalArrangement = Arrangement.spacedBy(buttonsSpacing),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     FilledTonalIconButton(onClick = onPrevious, modifier = Modifier.size(64.dp)) {
@@ -2803,7 +2850,7 @@ private fun TrackDetailScreen(
                         onClick = onTogglePlay,
                         modifier = Modifier
                             .height(84.dp)
-                            .width(128.dp),
+                            .width(playButtonWidth),
                         iconSize = 42.dp
                     )
                     FilledTonalIconButton(onClick = onNext, modifier = Modifier.size(64.dp)) {
@@ -2814,7 +2861,7 @@ private fun TrackDetailScreen(
                 Spacer(modifier = Modifier.height(32.dp))
 
                 Row(
-                    horizontalArrangement = Arrangement.spacedBy(20.dp),
+                    horizontalArrangement = Arrangement.spacedBy(controlButtonsSpacing),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     ExpressiveControlIconButton(
@@ -2822,7 +2869,7 @@ private fun TrackDetailScreen(
                         onClick = onFavoriteClick,
                         icon = if (isFavorite) Icons.Filled.Favorite else Icons.Outlined.FavoriteBorder,
                         selectedColor = MaterialTheme.colorScheme.primary,
-                        unselectedColor = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.4f),
+                        unselectedColor = MaterialTheme.colorScheme.secondaryContainer,
                         modifier = Modifier.size(68.dp)
                     )
 
@@ -2831,7 +2878,7 @@ private fun TrackDetailScreen(
                         onClick = onRepeat,
                         icon = if (repeatMode == Player.REPEAT_MODE_ONE) Icons.Default.RepeatOne else Icons.Default.Repeat,
                         selectedColor = MaterialTheme.colorScheme.primary,
-                        unselectedColor = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.4f),
+                        unselectedColor = MaterialTheme.colorScheme.secondaryContainer,
                         modifier = Modifier.size(68.dp)
                     )
 
@@ -2840,12 +2887,13 @@ private fun TrackDetailScreen(
                         onClick = onShuffle,
                         icon = Icons.Default.Shuffle,
                         selectedColor = MaterialTheme.colorScheme.primary,
-                        unselectedColor = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.4f),
+                        unselectedColor = MaterialTheme.colorScheme.secondaryContainer,
                         modifier = Modifier.size(68.dp)
                     )
                 }
                 
                 Spacer(modifier = Modifier.height(12.dp))
+            }
             }
 
             AnimatedVisibility(
@@ -2884,69 +2932,109 @@ private fun QueueManagerPanel(
 
     BackHandler(onBack = onDismiss)
 
-    Card(
-        shape = RoundedCornerShape(0.dp),
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.65f)
-        ),
+    Box(
         modifier = Modifier
             .fillMaxSize()
-            .pointerInput(Unit) {}
+            .pointerInput(Unit) {
+                detectDragGestures(
+                    onDrag = { change, dragAmount ->
+                        if (dragAmount.y > 10f) {
+                            onDismiss()
+                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                        }
+                    }
+                )
+            }
+            .pointerInput(Unit) {
+                detectTapGestures(onTap = { onDismiss() })
+            }
     ) {
-        Column(
-            modifier = Modifier.fillMaxSize()
+        Card(
+            shape = RoundedCornerShape(topStart = 32.dp, topEnd = 32.dp),
+            colors = CardDefaults.cardColors(
+                containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.65f)
+            ),
+            modifier = Modifier
+                .fillMaxWidth()
+                .fillMaxHeight(0.9f)
+                .align(Alignment.BottomCenter)
+                .pointerInput(Unit) {}
         ) {
+            Column(
+                modifier = Modifier.fillMaxSize()
+            ) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 12.dp)
+                        .pointerInput(Unit) {
+                            detectDragGestures(
+                                onDrag = { change, dragAmount ->
+                                    if (dragAmount.y > 10f) {
+                                        onDismiss()
+                                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                    }
+                                }
+                            )
+                        },
+                    contentAlignment = Alignment.Center
+                ) {
+                    // Drag handle with adequate touch target (#40)
                     Box(
                         modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(vertical = 12.dp)
-                            .pointerInput(Unit) {
-                                detectDragGestures(
-                                    onDrag = { change, dragAmount ->
-                                        if (dragAmount.y > 10f) {
-                                            onDismiss()
-                                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                        }
+                            .size(40.dp, 5.dp)
+                            .clip(CircleShape)
+                            .background(MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f))
+                    )
+                }
+
+                    val lazyListState = rememberLazyListState()
+                    var listDragAccumulator by remember { mutableStateOf(0f) }
+                    val nestedScrollConnection = remember {
+                        object : NestedScrollConnection {
+                            override fun onPreScroll(
+                                available: Offset,
+                                source: NestedScrollSource
+                            ): Offset {
+                                val isAtTop = lazyListState.firstVisibleItemIndex == 0 && lazyListState.firstVisibleItemScrollOffset == 0
+                                if (isAtTop && available.y > 0f) {
+                                    listDragAccumulator += available.y
+                                    if (listDragAccumulator > 150f) {
+                                        onDismiss()
+                                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                        listDragAccumulator = 0f
                                     }
-                                )
-                            },
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            // Drag handle with adequate touch target (#40)
-                            Box(
-                                modifier = Modifier
-                                    .size(40.dp, 5.dp)
-                                    .clip(CircleShape)
-                                    .background(MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f))
-                            )
-                            Spacer(modifier = Modifier.height(12.dp))
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(horizontal = 16.dp),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Text(
-                                    text = "Очередь воспроизведения",
-                                    style = MaterialTheme.typography.titleLarge,
-                                    fontWeight = FontWeight.ExtraBold,
-                                    letterSpacing = (-0.5).sp
-                                )
-                                IconButton(onClick = onDismiss) {
-                                    Icon(Icons.Default.Close, contentDescription = "Close")
+                                    return Offset(0f, available.y)
+                                } else {
+                                    listDragAccumulator = 0f
                                 }
+                                return Offset.Zero
+                            }
+
+                            override fun onPostScroll(
+                                consumed: Offset,
+                                available: Offset,
+                                source: NestedScrollSource
+                            ): Offset {
+                                if (available.y > 0f) {
+                                    listDragAccumulator += available.y
+                                    if (listDragAccumulator > 150f) {
+                                        onDismiss()
+                                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                        listDragAccumulator = 0f
+                                    }
+                                    return Offset(0f, available.y)
+                                }
+                                return Offset.Zero
                             }
                         }
                     }
-
-                    val lazyListState = rememberLazyListState()
 
             LazyColumn(
                 state = lazyListState,
                 modifier = Modifier
                     .fillMaxSize()
+                    .nestedScroll(nestedScrollConnection)
                     .weight(1f),
                 contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp)
@@ -3117,6 +3205,7 @@ private fun QueueManagerPanel(
             }
         }
     }
+}
 @Composable
 private fun FolderArtwork(artworkUri: String?, size: Dp) {
     if (artworkUri.isNullOrBlank()) {
@@ -3160,6 +3249,77 @@ private fun FolderArtwork(artworkUri: String?, size: Dp) {
                 }
             }
         )
+    }
+}
+
+class LoadingExpressiveShape(
+    private val phase: Float,
+    private val rotation: Float
+) : Shape {
+    override fun createOutline(
+        size: Size,
+        layoutDirection: LayoutDirection,
+        density: Density
+    ): Outline {
+        val path = Path()
+        val width = size.width
+        val height = size.height
+        val centerX = width / 2f
+        val centerY = height / 2f
+        val maxRadius = minOf(width, height) / 2f
+
+        val steps = 120
+        val stage = (phase.toInt()) % 6
+        val fraction = phase - phase.toInt()
+
+        for (i in 0..steps) {
+            val theta = (i * 2f * Math.PI / steps).toFloat()
+            val rStage = getRadiusForShape(stage, theta, maxRadius)
+            val rNext = getRadiusForShape((stage + 1) % 6, theta, maxRadius)
+            // Scaled down by 0.78f to prevent clipping at bounds
+            val r = (rStage * (1f - fraction) + rNext * fraction) * 0.78f
+
+            val rotAngle = theta + rotation
+            val x = centerX + r * cos(rotAngle)
+            val y = centerY + r * sin(rotAngle)
+
+            if (i == 0) {
+                path.moveTo(x, y)
+            } else {
+                path.lineTo(x, y)
+            }
+        }
+        path.close()
+        return Outline.Generic(path)
+    }
+
+    private fun getRadiusForShape(shapeIndex: Int, angle: Float, baseRadius: Float): Float {
+        return when (shapeIndex) {
+            0 -> { // Pill (Ellipse / squashed oval)
+                val cosA = cos(angle)
+                val sinA = sin(angle)
+                val scaleFactor = baseRadius / sqrt(1.8f * cosA * cosA + 0.5f * sinA * sinA)
+                scaleFactor * 0.85f
+            }
+            1 -> { // Triangle
+                baseRadius * (1f + 0.3f * cos(3f * angle)) * 0.72f
+            }
+            2 -> { // Square
+                baseRadius * (1f + 0.15f * cos(4f * angle)) * 0.8f
+            }
+            3 -> { // 4-sided Cookie
+                baseRadius * (1f + 0.18f * cos(4f * angle) + 0.08f * cos(8f * angle)) * 0.78f
+            }
+            4 -> { // Pentagon
+                baseRadius * (1f + 0.12f * cos(5f * angle)) * 0.8f
+            }
+            else -> { // 5 -> Diamond
+                val cosA = cos(angle - (Math.PI / 4).toFloat())
+                val sinA = sin(angle - (Math.PI / 4).toFloat())
+                val scaleFactor = baseRadius / sqrt(0.5f * cosA * cosA + 1.8f * sinA * sinA)
+                scaleFactor * 0.82f
+            }
+        }
     }
 }
 
@@ -3219,9 +3379,28 @@ private fun TrackArtwork(
     size: Dp,
     isPlaying: Boolean = false,
     useMorphing: Boolean = true,
-    fallbackShape: Shape? = null
+    fallbackShape: Shape? = null,
+    showLoadingShape: Boolean = false
 ) {
-    val clipShape = if (useMorphing) {
+    val clipShape = if (showLoadingShape) {
+        val infiniteTransition = rememberInfiniteTransition(label = "loadingTransition")
+        val phase by infiniteTransition.animateFloat(
+            initialValue = 0f,
+            targetValue = 6f,
+            animationSpec = infiniteRepeatable(
+                animation = tween(durationMillis = 9000, easing = LinearEasing),
+                repeatMode = RepeatMode.Restart
+            ),
+            label = "loadingPhase"
+        )
+        val rotation = remember(phase) {
+            val twoPi = (2f * Math.PI).toFloat()
+            twoPi * (phase - kotlin.math.sin(twoPi * phase) / twoPi)
+        }
+        remember(phase, rotation) {
+            LoadingExpressiveShape(phase, rotation)
+        }
+    } else if (useMorphing) {
         val morphProgress by animateFloatAsState(
             targetValue = if (isPlaying) 1f else 0f,
             animationSpec = tween(durationMillis = 600, easing = FastOutSlowInEasing),
@@ -3336,7 +3515,7 @@ private fun PlayerBar(
     onOpen: () -> Unit
 ) {
     Surface(
-        color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.95f),
+        color = MaterialTheme.colorScheme.secondaryContainer,
         shape = RoundedCornerShape(36.dp),
         tonalElevation = 12.dp,
         modifier = Modifier
@@ -4056,7 +4235,7 @@ fun SegmentedControl(
             .fillMaxWidth()
             .height(54.dp),
         shape = RoundedCornerShape(27.dp),
-        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+        color = MaterialTheme.colorScheme.surfaceVariant,
         tonalElevation = 2.dp
     ) {
         BoxWithConstraints(modifier = Modifier.fillMaxSize().padding(4.dp)) {

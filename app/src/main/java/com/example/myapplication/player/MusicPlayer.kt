@@ -52,6 +52,9 @@ class MusicPlayer(context: Context) {
     private val _shuffleEnabled = MutableStateFlow(false)
     val shuffleEnabled = _shuffleEnabled.asStateFlow()
 
+    private val _isBuffering = MutableStateFlow(false)
+    val isBuffering = _isBuffering.asStateFlow()
+
     init {
         controllerFuture.addListener(
             {
@@ -210,6 +213,7 @@ class MusicPlayer(context: Context) {
             player.currentMediaItem?.mediaMetadata?.title?.toString()
         _currentTrackId.value = player.currentMediaItem?.mediaId?.toLongOrNull()
         _repeatMode.value = player.repeatMode
+        _isBuffering.value = player.playbackState == Player.STATE_BUFFERING
     }
 
     private val playerListener = object : Player.Listener {

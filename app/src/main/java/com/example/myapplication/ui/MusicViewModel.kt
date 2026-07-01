@@ -185,6 +185,7 @@ class MusicViewModel(
     val errorMessage = _errorMessage.asStateFlow()
 
     val isPlaying = musicPlayer.isPlaying
+    val isPlaybackBuffering = musicPlayer.isBuffering
     val currentTrackId = musicPlayer.currentTrackId
     val currentTrackTitle = musicPlayer.currentTrack
     val playbackPositionMs = musicPlayer.positionMs
@@ -2091,7 +2092,7 @@ class MusicViewModel(
 
         try {
             val streamUrl = if (isYandex) {
-                val yandexTrackId = track.urn?.substringAfter("yandex:track:") ?: ""
+                val yandexTrackId = track.urn?.substringAfter("yandex:track:")?.substringBefore(":") ?: ""
                 val token = settingsRepository.yandexTokenValue()
                 if (token.isNotBlank()) {
                     YandexMusicApi.resolveTrackStream(yandexTrackId, token)
@@ -2121,7 +2122,6 @@ class MusicViewModel(
 
             if (streamUrl == null) {
                 favoritesRepository.updateDownloadState(track.id, DownloadState.FAILED)
-                unlikeOnApiAndLocal(track)
                 if (isYandex) {
                     _errorMessage.value = "Укажите рабочий токен Яндекс Музыки в настройках."
                 } else if (clientId.isBlank()) {
@@ -2133,7 +2133,7 @@ class MusicViewModel(
             }
 
             if (isYandex) {
-                val yandexTrackId = track.urn?.substringAfter("yandex:track:") ?: ""
+                val yandexTrackId = track.urn?.substringAfter("yandex:track:")?.substringBefore(":") ?: ""
                 val localPath = withContext(Dispatchers.IO) {
                     offlineMusicStore.downloadProgressive(streamUrl, yandexTrackId) { progress ->
                         updateDownloadProgress(track.id, progress)
@@ -2144,8 +2144,8 @@ class MusicViewModel(
                     var expectedDuration = track.duration
                     if (expectedDuration <= 0L) {
                         try {
-                            val yandexTrackId = track.urn?.substringAfter("yandex:track:") ?: ""
-                            val response = yandexService.getTracksDetails(yandexTrackId)
+                            val expectedYandexTrackId = track.urn?.substringAfter("yandex:track:")?.substringBefore(":") ?: ""
+                            val response = yandexService.getTracksDetails(expectedYandexTrackId)
                             expectedDuration = response.result?.firstOrNull()?.durationMs ?: 0L
                         } catch (e: Exception) {
                             Log.e("MusicViewModel", "Failed to fetch expected duration during download", e)
@@ -2174,13 +2174,11 @@ class MusicViewModel(
                             java.io.File(localPath).delete()
                         }
                         favoritesRepository.updateDownloadState(track.id, DownloadState.FAILED)
-                        unlikeOnApiAndLocal(track)
                         _errorMessage.value = "Ошибка: Трек скачался не полностью."
                         return false
                     }
                 } else {
                     favoritesRepository.updateDownloadState(track.id, DownloadState.FAILED)
-                    unlikeOnApiAndLocal(track)
                     return false
                 }
             } else {
@@ -2205,7 +2203,6 @@ class MusicViewModel(
         } catch (e: Exception) {
             Log.e("MusicViewModel", "Error downloading track ${track.id}", e)
             favoritesRepository.updateDownloadState(track.id, DownloadState.FAILED)
-            unlikeOnApiAndLocal(track)
             _errorMessage.value = readableMessage(e, isYandex = isYandex)
             return false
         } finally {
