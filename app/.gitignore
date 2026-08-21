@@ -1,1 +1,2 @@
-/build
+# Module build output is also covered by the root .gitignore.
+/build/

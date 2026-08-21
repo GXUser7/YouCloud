@@ -30,6 +30,22 @@ class SettingsRepository(
     private val _yandexUid = MutableStateFlow(preferences.getLong(KEY_YANDEX_UID, 0L))
     val yandexUid = _yandexUid.asStateFlow()
 
+    // Yandex playlists can't be deleted from here — they belong to the account — so hiding is
+    // local: the ids listed here are filtered out of the library carousel.
+    val hiddenYandexPlaylists = MutableStateFlow(
+        preferences.getStringSet(KEY_HIDDEN_YANDEX_PLAYLISTS, emptySet()).orEmpty()
+    )
+
+    fun setYandexPlaylistHidden(id: String, hidden: Boolean) {
+        val updated = if (hidden) {
+            hiddenYandexPlaylists.value + id
+        } else {
+            hiddenYandexPlaylists.value - id
+        }
+        hiddenYandexPlaylists.value = updated
+        preferences.edit().putStringSet(KEY_HIDDEN_YANDEX_PLAYLISTS, updated).apply()
+    }
+
     val showDebugPercentage = MutableStateFlow(preferences.getBoolean(KEY_SHOW_DEBUG_PERCENTAGE, false))
 
     fun setShowDebugPercentage(enabled: Boolean) {
@@ -175,6 +191,7 @@ class SettingsRepository(
         const val KEY_EQ_ENABLED = "equalizer_enabled"
         const val KEY_EQ_PRESET = "equalizer_preset"
         const val KEY_HOME_SELECTED_TAB = "home_selected_tab"
+        const val KEY_HIDDEN_YANDEX_PLAYLISTS = "hidden_yandex_playlists"
         const val KEY_SHOW_DEBUG_PERCENTAGE = "show_debug_percentage"
     }
 }

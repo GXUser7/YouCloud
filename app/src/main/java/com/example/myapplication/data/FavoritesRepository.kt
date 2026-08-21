@@ -25,7 +25,19 @@ class FavoritesRepository(private val context: Context) {
     fun get(trackId: Long): FavoriteTrack? = _favorites.value.firstOrNull { it.id == trackId }
 
     fun add(track: SoundCloudTrack, streamUrl: String?) {
-        if (isFavorite(track.id)) return
+        val credits = track.artists?.takeIf { it.isNotEmpty() }
+        if (isFavorite(track.id)) {
+            // Already saved, but possibly from before multi-artist support or from a listing that
+            // only carried the uploader. Backfill the credits rather than leaving the stored entry
+            // permanently single-artist.
+            if (credits != null) {
+                _favorites.update { current ->
+                    current.map { if (it.id == track.id && it.artists.isNullOrEmpty()) it.copy(artists = credits) else it }
+                }
+                persist()
+            }
+            return
+        }
         val newTrack = FavoriteTrack(
             id = track.id,
             urn = track.urn ?: "",
@@ -37,7 +49,8 @@ class FavoritesRepository(private val context: Context) {
             streamUrl = streamUrl,
             downloadState = DownloadState.NONE,
             artistPermalinkUrl = track.user?.permalinkUrl,
-            artistId = track.user?.id
+            artistId = track.user?.id,
+            artists = credits
         )
         _favorites.update { current -> current + newTrack }
         persist()
@@ -47,6 +60,32 @@ class FavoritesRepository(private val context: Context) {
         if (isFavorite(favoriteTrack.id)) return
         _favorites.update { current -> current + favoriteTrack }
         persist()
+    }
+
+    /**
+     * Fills in the credited-artist list for saved tracks that predate [FavoriteTrack.artists],
+     * using whatever fresh copies of those tracks the caller happens to have. Downloads saved
+     * before multi-artist support hold only the first name and there is nothing on disk to
+     * recover the rest from, so they get repaired opportunistically as listings load them again.
+     */
+    fun syncCredits(tracks: List<SoundCloudTrack>) {
+        val creditsById = tracks.mapNotNull { track ->
+            track.artists?.takeIf { it.size > 1 }?.let { track.id to it }
+        }.toMap()
+        if (creditsById.isEmpty()) return
+        var changed = false
+        _favorites.update { current ->
+            current.map { saved ->
+                val credits = creditsById[saved.id]
+                if (credits != null && saved.artists.isNullOrEmpty()) {
+                    changed = true
+                    saved.copy(artists = credits)
+                } else {
+                    saved
+                }
+            }
+        }
+        if (changed) persist()
     }
 
     fun reorderTracks(newTracks: List<FavoriteTrack>) {
@@ -73,6 +112,20 @@ class FavoritesRepository(private val context: Context) {
         persist()
     }
 
+    fun updateLocalArtwork(trackId: Long, path: String?) {
+        _favorites.update { current ->
+            current.map { if (it.id == trackId) it.copy(localArtworkPath = path) else it }
+        }
+        persist()
+    }
+
+    /** Downloaded tracks that still have no cached cover — see [OfflineMusicStore.downloadArtwork]. */
+    fun downloadedWithoutArtwork(): List<FavoriteTrack> = _favorites.value.filter {
+        it.downloadState == DownloadState.DOWNLOADED &&
+            it.localArtworkPath == null &&
+            !it.artworkUrl.isNullOrBlank()
+    }
+
     fun updateDownloadedFolderArtworkUri(uri: String?) {
         _downloadedFolderArtworkUri.value = uri
         preferences.edit().putString(KEY_DOWNLOADED_FOLDER_ARTWORK_URI, uri).apply()
@@ -87,14 +140,26 @@ class FavoritesRepository(private val context: Context) {
         return path
     }
 
+    /**
+     * Same rebasing as [resolveLocalPath], for covers. Also drops the path when the file is gone,
+     * so a cover deleted behind our back falls back to the remote URL instead of showing nothing.
+     */
+    private fun resolveArtworkPath(path: String?): String? {
+        if (path == null) return null
+        val filename = path.substringAfterLast("/")
+        val rebased = java.io.File(java.io.File(context.filesDir, "offline_art"), filename)
+        return if (rebased.exists() && rebased.length() > 0L) rebased.absolutePath else null
+    }
+
     private fun load(): List<FavoriteTrack> {
         val json = preferences.getString(KEY_TRACKS, null) ?: return emptyList()
         val list = runCatching { gson.fromJson<List<FavoriteTrack>>(json, listType) }
             .getOrDefault(emptyList())
         return list.map { track ->
             val resolvedUrl = resolveLocalPath(track.streamUrl)
-            if (resolvedUrl != track.streamUrl) {
-                track.copy(streamUrl = resolvedUrl)
+            val resolvedArt = resolveArtworkPath(track.localArtworkPath)
+            if (resolvedUrl != track.streamUrl || resolvedArt != track.localArtworkPath) {
+                track.copy(streamUrl = resolvedUrl, localArtworkPath = resolvedArt)
             } else {
                 track
             }

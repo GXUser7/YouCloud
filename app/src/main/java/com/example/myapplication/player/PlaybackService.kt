@@ -9,16 +9,24 @@ import androidx.media3.common.C
 import androidx.media3.common.Player
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
+import androidx.media3.session.LibraryResult
+import androidx.media3.session.MediaLibraryService
 import androidx.media3.session.MediaSession
-import androidx.media3.session.MediaSessionService
 import android.app.PendingIntent
 import android.content.Intent
+import android.os.Bundle
 import com.example.myapplication.MainActivity
 import com.example.myapplication.data.OfflineMusicStore
+import com.google.common.collect.ImmutableList
+import com.google.common.util.concurrent.Futures
+import com.google.common.util.concurrent.ListenableFuture
 import java.io.IOException
 
-class PlaybackService : MediaSessionService() {
-    private var mediaSession: MediaSession? = null
+// MediaLibraryService rather than MediaSessionService: Android Auto needs a browsable content
+// tree, not just a transport session. MediaLibraryService extends MediaSessionService, so the
+// app's own MediaController keeps connecting exactly as before.
+class PlaybackService : MediaLibraryService() {
+    private var mediaSession: MediaLibraryService.MediaLibrarySession? = null
     private var equalizer: Equalizer? = null
     private lateinit var preferences: SharedPreferences
 
@@ -108,10 +116,118 @@ class PlaybackService : MediaSessionService() {
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
 
-        mediaSession = MediaSession.Builder(this, player)
+        mediaSession = MediaLibraryService.MediaLibrarySession.Builder(this, player, librarySessionCallback)
             .setSessionActivity(pendingIntent)
             .build()
     }
+
+    /**
+     * Serves the browse tree to Android Auto and resolves the items it hands back for playback.
+     * Browse requests answer immediately from disk — the car's media browser treats a slow reply
+     * as a broken app.
+     */
+    private val librarySessionCallback = object : MediaLibraryService.MediaLibrarySession.Callback {
+
+        override fun onGetLibraryRoot(
+            session: MediaLibraryService.MediaLibrarySession,
+            browser: MediaSession.ControllerInfo,
+            params: MediaLibraryService.LibraryParams?
+        ): ListenableFuture<LibraryResult<androidx.media3.common.MediaItem>> {
+            val extras = Bundle().apply {
+                // Categories as a grid, tracks as a list — the layout Auto users expect.
+                putInt("android.media.browse.CONTENT_STYLE_BROWSABLE_HINT", 2)
+                putInt("android.media.browse.CONTENT_STYLE_PLAYABLE_HINT", 1)
+            }
+            val rootParams = MediaLibraryService.LibraryParams.Builder().setExtras(extras).build()
+            return Futures.immediateFuture(LibraryResult.ofItem(AutoLibrary.rootItem(), rootParams))
+        }
+
+        override fun onGetChildren(
+            session: MediaLibraryService.MediaLibrarySession,
+            browser: MediaSession.ControllerInfo,
+            parentId: String,
+            page: Int,
+            pageSize: Int,
+            params: MediaLibraryService.LibraryParams?
+        ): ListenableFuture<LibraryResult<ImmutableList<androidx.media3.common.MediaItem>>> {
+            val children = AutoLibrary.children(this@PlaybackService, parentId)
+            // Remember the whole folder, not just this page, so a tap can be expanded into it.
+            lastBrowsedFolder = parentId to children.map { it.mediaId }
+
+            // Honour the requested page. Returning the entire library on every request would grow
+            // the binder payload with the collection and eventually fail outright on a big one.
+            // Longs throughout: Auto passes Int.MAX_VALUE as pageSize when it wants everything.
+            val slice = if (pageSize <= 0) {
+                children
+            } else {
+                val from = (page.toLong() * pageSize).coerceIn(0L, children.size.toLong()).toInt()
+                val to = (from.toLong() + pageSize).coerceAtMost(children.size.toLong()).toInt()
+                children.subList(from, to)
+            }
+            return Futures.immediateFuture(
+                LibraryResult.ofItemList(ImmutableList.copyOf(slice), params)
+            )
+        }
+
+        override fun onGetItem(
+            session: MediaLibraryService.MediaLibrarySession,
+            browser: MediaSession.ControllerInfo,
+            mediaId: String
+        ): ListenableFuture<LibraryResult<androidx.media3.common.MediaItem>> {
+            val track = AutoLibrary.findTrack(this@PlaybackService, mediaId)
+                ?: return Futures.immediateFuture(LibraryResult.ofError(LibraryResult.RESULT_ERROR_BAD_VALUE))
+            val item = AutoLibrary.resolve(
+                this@PlaybackService,
+                androidx.media3.common.MediaItem.Builder().setMediaId(track.id.toString()).build()
+            )
+            return Futures.immediateFuture(LibraryResult.ofItem(item, null))
+        }
+
+        override fun onAddMediaItems(
+            mediaSession: MediaSession,
+            controller: MediaSession.ControllerInfo,
+            mediaItems: MutableList<androidx.media3.common.MediaItem>
+        ): ListenableFuture<MutableList<androidx.media3.common.MediaItem>> =
+            Futures.immediateFuture(
+                mediaItems.map { AutoLibrary.resolve(this@PlaybackService, it) }.toMutableList()
+            )
+
+        override fun onSetMediaItems(
+            mediaSession: MediaSession,
+            controller: MediaSession.ControllerInfo,
+            mediaItems: MutableList<androidx.media3.common.MediaItem>,
+            startIndex: Int,
+            startPositionMs: Long
+        ): ListenableFuture<MediaSession.MediaItemsWithStartPosition> {
+            // Auto sends only the row that was tapped, which would strand the car on a one-track
+            // queue with nothing to skip to. Expand it back to the folder it came from; browsing is
+            // sequential, so the folder listed most recently is the one holding the tap.
+            val tapped = mediaItems.singleOrNull()
+            val folder = lastBrowsedFolder?.second
+            if (tapped != null && folder != null) {
+                val index = folder.indexOf(tapped.mediaId)
+                if (index >= 0) {
+                    val expanded = folder.map { id ->
+                        AutoLibrary.resolve(
+                            this@PlaybackService,
+                            androidx.media3.common.MediaItem.Builder().setMediaId(id).build()
+                        )
+                    }
+                    return Futures.immediateFuture(
+                        MediaSession.MediaItemsWithStartPosition(expanded, index, startPositionMs)
+                    )
+                }
+            }
+            val resolved = mediaItems.map { AutoLibrary.resolve(this@PlaybackService, it) }
+            val safeIndex = if (startIndex in resolved.indices) startIndex else 0
+            return Futures.immediateFuture(
+                MediaSession.MediaItemsWithStartPosition(resolved, safeIndex, startPositionMs)
+            )
+        }
+    }
+
+    /** Last folder handed to a browser, as (parent id, child media ids). See [onSetMediaItems]. */
+    private var lastBrowsedFolder: Pair<String, List<String>>? = null
 
     // Lazy-initialized shared instances (#13: avoid re-creating on each track resolve)
     private val lazyFavoritesRepository by lazy { com.example.myapplication.data.FavoritesRepository(this) }
@@ -156,39 +272,26 @@ class PlaybackService : MediaSessionService() {
         val clientId = preferences.getString("soundcloud_client_id", "") ?: ""
         val oauthToken = preferences.getString("soundcloud_oauth_token", "") ?: ""
 
-        if (clientId.isBlank()) {
-            Log.e("PlaybackService", "Client ID is blank, cannot resolve track: $trackId")
-            return null
-        }
-
         return kotlinx.coroutines.runBlocking {
-            kotlinx.coroutines.withTimeout(15_000L) {
+            kotlinx.coroutines.withTimeout(20_000L) {
             try {
-                val service = com.example.myapplication.data.SoundCloudApi.createService { oauthToken }
+                // The service refreshes and retries a rotated client_id on its own, reading the
+                // current one per request — so playback no longer dies just because the stored id
+                // went stale between the app launching and the track being resolved.
+                val service = com.example.myapplication.data.SoundCloudApi.createService(
+                    oauthTokenProvider = { oauthToken },
+                    clientIdProvider = { preferences.getString("soundcloud_client_id", "") ?: "" },
+                    onClientIdRefreshed = { fresh ->
+                        preferences.edit().putString("soundcloud_client_id", fresh).apply()
+                    }
+                )
                 val playbackResolver = com.example.myapplication.data.SoundCloudPlaybackResolver(service)
-                val track = service.getTrack(trackId, clientId)
-                playbackResolver.resolve(track, clientId)
+                val currentClientId = preferences.getString("soundcloud_client_id", "") ?: clientId
+                val track = service.getTrack(trackId, currentClientId)
+                playbackResolver.resolve(track, preferences.getString("soundcloud_client_id", "") ?: currentClientId)
             } catch (e: Exception) {
                 Log.e("PlaybackService", "Error resolving track online: $trackId", e)
-                if (e is retrofit2.HttpException && (e.code() == 401 || e.code() == 403)) {
-                    val newClientId = com.example.myapplication.data.SoundCloudApi.fetchSoundCloudClientId()
-                    if (newClientId != null) {
-                        preferences.edit().putString("soundcloud_client_id", newClientId).apply()
-                        try {
-                            val service = com.example.myapplication.data.SoundCloudApi.createService { oauthToken }
-                            val playbackResolver = com.example.myapplication.data.SoundCloudPlaybackResolver(service)
-                            val track = service.getTrack(trackId, newClientId)
-                            playbackResolver.resolve(track, newClientId)
-                        } catch (retryEx: Exception) {
-                            Log.e("PlaybackService", "Error resolving track on retry: $trackId", retryEx)
-                            null
-                        }
-                    } else {
-                        null
-                    }
-                } else {
-                    null
-                }
+                null
             }
             }
         }
@@ -277,7 +380,7 @@ class PlaybackService : MediaSessionService() {
         }
     }
 
-    override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession? =
+    override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaLibraryService.MediaLibrarySession? =
         mediaSession
 
     override fun onTaskRemoved(rootIntent: Intent?) {

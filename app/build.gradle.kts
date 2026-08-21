@@ -97,3 +97,21 @@ dependencies {
     debugImplementation(libs.androidx.compose.ui.test.manifest)
     debugImplementation(libs.androidx.compose.ui.tooling)
 }
+
+// Ships the release build as YouCloud.apk rather than app-release.apk.
+tasks.register("renameReleaseApk") {
+    val apkDir = layout.buildDirectory.dir("outputs/apk/release")
+    doLast {
+        val dir = apkDir.get().asFile
+        val built = File(dir, "app-release.apk")
+        val renamed = File(dir, "YouCloud.apk")
+        if (built.exists()) {
+            renamed.delete()
+            built.renameTo(renamed)
+        }
+    }
+}
+
+tasks.matching { it.name == "assembleRelease" }.configureEach {
+    finalizedBy("renameReleaseApk")
+}

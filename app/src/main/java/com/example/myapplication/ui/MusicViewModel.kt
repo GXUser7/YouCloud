@@ -5,6 +5,8 @@ import android.media.MediaMetadataRetriever
 import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.example.myapplication.data.ArtworkUrls
+import com.example.myapplication.data.PlayHistoryRequest
 import com.example.myapplication.data.DownloadState
 import com.example.myapplication.data.FavoriteTrack
 import com.example.myapplication.data.FavoritesRepository
@@ -24,7 +26,9 @@ import com.example.myapplication.data.PlaylistsRepository
 import com.example.myapplication.player.MusicPlayer
 import com.example.myapplication.player.MusicPlayer.QueueTrack
 import java.io.IOException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -47,6 +51,7 @@ import java.util.concurrent.ConcurrentHashMap
 enum class AppScreen {
     HOME,
     SEARCH,
+    PLAYLISTS,
     DOWNLOADS,
     SETTINGS,
     MIX_DETAIL,
@@ -82,7 +87,13 @@ class MusicViewModel(
     private val _isClientIdExpired = MutableStateFlow(false)
     val isClientIdExpired = _isClientIdExpired.asStateFlow()
 
-    private val service = SoundCloudApi.createService(settingsRepository::oauthTokenValue)
+    // The client_id is read per request and re-scraped in place on 401/403, so a rotation by
+    // SoundCloud heals inside the failing call instead of surfacing as an error to wait out.
+    private val service = SoundCloudApi.createService(
+        oauthTokenProvider = settingsRepository::oauthTokenValue,
+        clientIdProvider = { settingsRepository.clientId.value },
+        onClientIdRefreshed = settingsRepository::saveClientId
+    )
     private val yandexService = YandexMusicApi.createService(settingsRepository::yandexTokenValue)
     private val playbackResolver = SoundCloudPlaybackResolver(service)
     private val mixesRepository = SoundCloudMixesRepository(service, context)
@@ -132,7 +143,15 @@ class MusicViewModel(
 
     private val _silentLoginUrl = MutableStateFlow<String?>(null)
     val silentLoginUrl = _silentLoginUrl.asStateFlow()
-    private var lastSilentLoginTime = 0L
+
+    /** Set when automatic recovery is exhausted and only a real sign-in can help. */
+    private val _needsRelogin = MutableStateFlow(false)
+    val needsRelogin = _needsRelogin.asStateFlow()
+
+    private var authRecoveryJob: Job? = null
+    private var authRecoveryAttempts = 0
+    private var lastAuthRecoveryAt = 0L
+    private var silentLoginResult: CompletableDeferred<Boolean>? = null
 
     private val _yandexLoginUrl = MutableStateFlow<String?>(null)
     val yandexLoginUrl = _yandexLoginUrl.asStateFlow()
@@ -243,6 +262,7 @@ class MusicViewModel(
     private val _mixTracks = MutableStateFlow<List<SoundCloudTrack>>(emptyList())
     val mixTracks = _mixTracks.asStateFlow()
 
+
     private val _currentPlayingTrack = MutableStateFlow<SoundCloudTrack?>(null)
     val currentPlayingTrack = _currentPlayingTrack.asStateFlow()
 
@@ -287,6 +307,9 @@ class MusicViewModel(
     private val downloadQueue = kotlinx.coroutines.channels.Channel<DownloadRequest>(kotlinx.coroutines.channels.Channel.UNLIMITED)
 
     init {
+        backfillArtwork()
+        reportPlaysToSoundCloud()
+
         viewModelScope.launch {
             combine(
                 musicPlayer.currentTrackId,
@@ -441,7 +464,8 @@ class MusicViewModel(
                     )
 
                     playlistList.add(0, applyCustomYandexPlaylistArtwork(likedPlaylist))
-                    _yandexPlaylists.value = playlistList
+                    val hidden = settingsRepository.hiddenYandexPlaylists.value
+                    _yandexPlaylists.value = playlistList.filterNot { hidden.contains(it.id.toString()) }
                 }
             } catch (e: Exception) {
                 Log.e("MusicViewModel", "Failed to load Yandex playlists", e)
@@ -449,6 +473,14 @@ class MusicViewModel(
                 _yandexPlaylistsLoading.value = false
             }
         }
+    }
+
+    /** Yandex playlists belong to the account, so they're hidden locally rather than deleted. */
+    fun hideYandexPlaylist(id: Long) {
+        settingsRepository.setYandexPlaylistHidden(id.toString(), true)
+        _yandexPlaylists.value = _yandexPlaylists.value.filterNot { it.id == id }
+        _selectedYandexPlaylist.value = null
+        _screen.value = AppScreen.HOME
     }
 
     fun selectYandexPlaylist(playlist: SoundCloudPlaylist) {
@@ -872,6 +904,10 @@ class MusicViewModel(
                 }
 
                 _activeQueue.value = listOf(track)
+                // Shuffle draws from originalQueue, so a single-track play has to claim it too.
+                // Leaving it stale meant shuffling here reshuffled whichever list was loaded
+                // earlier — the artist's whole discography rather than what is actually playing.
+                originalQueue = listOf(track)
                 musicPlayer.playQueue(
                     tracks = listOf(
                         track.toQueueTrack(streamUrl)
@@ -905,6 +941,14 @@ class MusicViewModel(
     }
 
     fun closeSearch() {
+        _screen.value = AppScreen.HOME
+    }
+
+    fun openPlaylists() {
+        _screen.value = AppScreen.PLAYLISTS
+    }
+
+    fun closePlaylists() {
         _screen.value = AppScreen.HOME
     }
 
@@ -977,8 +1021,11 @@ class MusicViewModel(
                             username = artist.name ?: "Unknown Artist",
                             avatarUrl = artist.cover?.getCoverUrl("200x200"),
                             description = artist.description?.text,
-                            followersCount = artist.stats?.likes ?: 0,
-                            trackCount = response.result?.tracks.orEmpty().size,
+                            followersCount = artist.likesCount ?: artist.stats?.likes ?: 0,
+                            // `popularTracks` is a short highlight reel, not the discography —
+                            // using its size showed "10 треков" for artists with hundreds.
+                            trackCount = artist.counts?.tracks
+                                ?: response.result?.tracks.orEmpty().size,
                             permalinkUrl = artist.id?.let { "yandex:artist:$it" }
                         )
                         _currentArtistTracks.value = response.result?.tracks.orEmpty().map { it.toSoundCloudTrack() }
@@ -1121,32 +1168,41 @@ class MusicViewModel(
         _selectedYandexPlaylist.value = null
     }
 
-    fun triggerSilentRelogin() {
-        val now = System.currentTimeMillis()
-        if (now - lastSilentLoginTime < 60000L) return
-        lastSilentLoginTime = now
-        Log.d("MusicViewModel", "Triggering silent relogin in background WebView...")
+    /**
+     * Opens the hidden WebView on soundcloud.com and waits for it to hand back a working
+     * credential pair, or gives up after [SILENT_LOGIN_TIMEOUT_MS].
+     *
+     * Suspends until the outcome is known, so the caller can decide what to do next
+     * instead of firing and hoping.
+     */
+    private suspend fun trySilentRelogin(): Boolean {
+        val pending = CompletableDeferred<Boolean>()
+        silentLoginResult = pending
         _silentLoginUrl.value = "https://soundcloud.com/discover"
+        Log.d("MusicViewModel", "Silent relogin: opening background session")
+        val recovered = withTimeoutOrNull(SILENT_LOGIN_TIMEOUT_MS) { pending.await() } ?: false
+        _silentLoginUrl.value = null
+        silentLoginResult = null
+        Log.d("MusicViewModel", "Silent relogin finished, recovered=$recovered")
+        return recovered
     }
 
     fun onSilentCredentialsCaptured(clientId: String, oauthToken: String) {
-        Log.d("MusicViewModel", "Captured silent credentials: clientId=${clientId.take(4)}***, oauthToken=${oauthToken.take(4)}***")
+        val pending = silentLoginResult ?: return
+        if (pending.isCompleted) return
         viewModelScope.launch {
-            try {
-                val tempService = SoundCloudApi.createService { oauthToken }
-                val meResponse = tempService.getMe(clientId)
-                val userIdString = meResponse.id.toString()
-
+            val recovered = runCatching {
+                val service = SoundCloudApi.createService(oauthTokenProvider = { oauthToken })
+                val me = service.getMe(clientId)
                 settingsRepository.saveClientId(clientId)
                 settingsRepository.saveOauthToken(oauthToken)
-                settingsRepository.saveUserId(userIdString)
-
-                _silentLoginUrl.value = null
-                Log.d("MusicViewModel", "Silent relogin successful!")
-                refreshMixesAndStations()
-            } catch (e: Exception) {
-                Log.e("MusicViewModel", "Failed to login silently with captured credentials", e)
+                settingsRepository.saveUserId(me.id.toString())
+                true
+            }.getOrElse { error ->
+                Log.e("MusicViewModel", "Captured credentials did not verify", error)
+                false
             }
+            pending.complete(recovered)
         }
     }
 
@@ -1238,7 +1294,17 @@ class MusicViewModel(
                     }
                 } else if (userIdValue.isNotBlank() && settingsRepository.oauthTokenValue().isNotBlank()) {
                     try {
-                        service.unlikeTrack(userIdValue, track.id, settingsRepository.clientId.value)
+                        val response = service.unlikeTrack(
+                            userIdValue,
+                            track.id,
+                            settingsRepository.clientId.value
+                        )
+                        if (!response.isSuccessful) {
+                            Log.e("MusicViewModel", "Unlike rejected by SoundCloud: ${response.code()}")
+                            if (response.code() == 401 || response.code() == 403) {
+                                recoverFromAuthFailure()
+                            }
+                        }
                     } catch (e: Exception) {
                         Log.e("MusicViewModel", "Failed to unlike track on SoundCloud", e)
                     }
@@ -1265,7 +1331,17 @@ class MusicViewModel(
                 val soundCloudUserId = settingsRepository.userIdValue()
                 if (soundCloudUserId.isNotBlank() && settingsRepository.oauthTokenValue().isNotBlank()) {
                     try {
-                        service.likeTrack(soundCloudUserId, track.id, settingsRepository.clientId.value)
+                        val response = service.likeTrack(
+                            soundCloudUserId,
+                            track.id,
+                            settingsRepository.clientId.value
+                        )
+                        if (!response.isSuccessful) {
+                            Log.e("MusicViewModel", "Like rejected by SoundCloud: ${response.code()}")
+                            if (response.code() == 401 || response.code() == 403) {
+                                recoverFromAuthFailure()
+                            }
+                        }
                     } catch (e: Exception) {
                         Log.e("MusicViewModel", "Failed to like track on SoundCloud", e)
                     }
@@ -1383,9 +1459,88 @@ class MusicViewModel(
                         }
                         t.toQueueTrack(localUrl ?: resolvedUrls[t.id] ?: fallbackUrl)
                     }
-                    musicPlayer.playQueue(stubs, newIndex)
-                    musicPlayer.seekTo(currentPos)
+                    // Reorder around the playing item so toggling shuffle is silent. Only if the
+                    // player refuses (no controller, empty timeline) do we fall back to the old
+                    // rebuild, which restarts the track and has to seek back into place.
+                    if (!musicPlayer.reorderQueueKeepingCurrent(stubs, newIndex)) {
+                        musicPlayer.playQueue(stubs, newIndex)
+                        musicPlayer.seekTo(currentPos)
+                    }
                 }
+            }
+        }
+    }
+
+    /**
+     * Keeps a copy of the cover next to the audio. Best effort: a track that downloaded fine is
+     * still usable without its artwork, so a failure here only costs a log line.
+     */
+    private suspend fun cacheArtwork(track: SoundCloudTrack) {
+        val source = ArtworkUrls.highRes(track.artworkUrl) ?: return
+        val path = withContext(Dispatchers.IO) {
+            offlineMusicStore.downloadArtwork(source, track.id)
+        }
+        if (path != null) favoritesRepository.updateLocalArtwork(track.id, path)
+    }
+
+    /**
+     * Tells SoundCloud what actually got listened to.
+     *
+     * The app was read-only against the recommendation engine: it fetched mixes but never fed
+     * anything back, so the same selections kept coming round. Listening history is the signal
+     * that moves them, alongside likes.
+     *
+     * A play is only reported once the track has been playing for [PLAY_REPORT_AFTER_MS].
+     * `collectLatest` cancels that wait when the track changes, so skipping through a queue
+     * reports nothing — otherwise every skipped track would be fed back as something the user
+     * chose to hear.
+     */
+    private fun reportPlaysToSoundCloud() {
+        viewModelScope.launch {
+            musicPlayer.currentTrackId.collectLatest { trackId ->
+                if (trackId == null) return@collectLatest
+                delay(PLAY_REPORT_AFTER_MS)
+                if (musicPlayer.currentTrackId.value != trackId) return@collectLatest
+
+                val queued = _activeQueue.value.firstOrNull { it.id == trackId }
+                // Yandex tracks are nothing to do with SoundCloud's history.
+                if (queued?.urn?.startsWith("yandex:") == true) return@collectLatest
+
+                val urn = queued?.urn?.takeIf { it.startsWith("soundcloud:tracks:") }
+                    ?: "soundcloud:tracks:$trackId"
+                val clientId = settingsRepository.clientId.value
+                if (clientId.isBlank() || settingsRepository.oauthTokenValue().isBlank()) return@collectLatest
+
+                try {
+                    val response = service.addToPlayHistory(PlayHistoryRequest(trackUrn = urn), clientId)
+                    if (response.isSuccessful) {
+                        Log.d("MusicViewModel", "Reported play of $urn to SoundCloud")
+                    } else {
+                        Log.w("MusicViewModel", "Play history rejected: ${response.code()} for $urn")
+                        if (response.code() == 401 || response.code() == 403) recoverFromAuthFailure()
+                    }
+                } catch (e: Exception) {
+                    Log.w("MusicViewModel", "Could not report play of $urn", e)
+                }
+            }
+        }
+    }
+
+    /**
+     * Fetches covers for tracks downloaded before artwork was cached, once, in the background.
+     * Without this an existing library would stay blank in the car until every track was
+     * re-downloaded.
+     */
+    private fun backfillArtwork() {
+        viewModelScope.launch {
+            val pending = favoritesRepository.downloadedWithoutArtwork()
+            if (pending.isEmpty()) return@launch
+            for (fav in pending) {
+                val source = ArtworkUrls.highRes(fav.artworkUrl) ?: continue
+                val path = withContext(Dispatchers.IO) {
+                    offlineMusicStore.downloadArtwork(source, fav.id)
+                }
+                if (path != null) favoritesRepository.updateLocalArtwork(fav.id, path)
             }
         }
     }
@@ -1401,9 +1556,11 @@ class MusicViewModel(
                     } else {
                         offlineMusicStore.removeHls(streamUrl)
                     }
+                    offlineMusicStore.removeArtwork(track.id)
                 }
                 favoritesRepository.updateDownloadState(track.id, DownloadState.NONE)
                 favoritesRepository.updateStreamUrl(track.id, "")
+                favoritesRepository.updateLocalArtwork(track.id, null)
             } catch (e: Exception) {
                 _errorMessage.value = "Не удалось удалить локальную копию трека."
             }
@@ -1418,7 +1575,7 @@ class MusicViewModel(
         viewModelScope.launch {
             try {
                 // Fetch user ID using the captured credentials
-                val tempService = SoundCloudApi.createService { capturedOauthToken }
+                val tempService = SoundCloudApi.createService(oauthTokenProvider = { capturedOauthToken })
                 val meResponse = tempService.getMe(capturedClientId)
                 val userIdString = meResponse.id.toString()
 
@@ -1491,7 +1648,12 @@ class MusicViewModel(
             id = id,
             url = finalUrl,
             title = title ?: "Unknown Track",
-            artist = user?.username ?: "Unknown Artist",
+            // Notification and lockscreen credit line: every artist, not just the uploader.
+            artist = artists?.mapNotNull { it.username?.takeIf(String::isNotBlank) }
+                ?.takeIf { it.isNotEmpty() }
+                ?.joinToString(", ")
+                ?: user?.username
+                ?: "Unknown Artist",
             artworkUrl = artworkUrl
         )
     }
@@ -1506,7 +1668,7 @@ class MusicViewModel(
             id = id,
             url = finalUrl,
             title = title,
-            artist = artist,
+            artist = displayArtist,
             artworkUrl = artworkUrl
         )
     }
@@ -1522,7 +1684,8 @@ class MusicViewModel(
         streamUrl = streamUrl,
         downloadState = downloadState,
         artistPermalinkUrl = user?.permalinkUrl,
-        artistId = user?.id
+        artistId = user?.id,
+        artists = artists?.takeIf { it.isNotEmpty() }
     )
 
     // Playlist and Local Import Support
@@ -1590,31 +1753,103 @@ class MusicViewModel(
         }
     }
 
-    private var refreshingJob: Job? = null
+    private companion object {
+        const val AUTH_RECOVERY_COOLDOWN_MS = 30_000L
+        const val MAX_AUTH_RECOVERY_ATTEMPTS = 2
+        const val SILENT_LOGIN_TIMEOUT_MS = 25_000L
 
+        // Long enough that skipping through tracks reports nothing, short enough that a track
+        // left playing counts even if the listener moves on part way through.
+        const val PLAY_REPORT_AFTER_MS = 25_000L
+    }
+
+    /** Confirms a credential pair actually works before we treat the session as healthy. */
+    private suspend fun credentialsWork(clientId: String, oauthToken: String): Boolean =
+        runCatching {
+            SoundCloudApi.createService(oauthTokenProvider = { oauthToken }).getMe(clientId)
+            true
+        }.getOrDefault(false)
+
+    /** Manual "обновить автоматически" — clears the backoff and retries immediately. */
     fun tryAutoRefreshClientId() {
-        if (refreshingJob?.isActive == true) return
-        refreshingJob = viewModelScope.launch {
-            _isLoading.value = true
-            val newClientId = SoundCloudApi.fetchSoundCloudClientId()
-            if (newClientId != null) {
-                settingsRepository.saveClientId(newClientId)
-                _isClientIdExpired.value = false
-                _errorMessage.value = null
-                refreshMixesAndStations()
-            } else {
-                _isClientIdExpired.value = true
-                _errorMessage.value = "SoundCloud client_id устарел. Не удалось обновить его автоматически. Пожалуйста, укажите рабочий ID в настройках."
+        authRecoveryAttempts = 0
+        lastAuthRecoveryAt = 0L
+        _needsRelogin.value = false
+        recoverFromAuthFailure(force = true)
+    }
+
+    /**
+     * Single escalating recovery path for 401/403.
+     *
+     * The previous version re-fetched an anonymous client_id and then immediately called
+     * `refreshMixesAndStations()`. Because `loadMixes()` launches its own coroutine, the
+     * refresh job had already completed by the time the retried request failed again, so
+     * the in-flight guard never held and every failure started another round — an endless
+     * loop. Worse, a scraped anonymous client_id cannot fix an expired OAuth token, which
+     * is what a 401 on an authorised endpoint almost always means, so the loop could never
+     * converge.
+     *
+     * Now each step is verified before being accepted, attempts are capped, a cooldown
+     * separates rounds, and exhausting the ladder puts the app into an explicit
+     * "sign in again" state instead of spinning.
+     */
+    private fun recoverFromAuthFailure(force: Boolean = false) {
+        if (authRecoveryJob?.isActive == true) return
+
+        val now = System.currentTimeMillis()
+        if (!force) {
+            if (now - lastAuthRecoveryAt < AUTH_RECOVERY_COOLDOWN_MS) return
+            if (authRecoveryAttempts >= MAX_AUTH_RECOVERY_ATTEMPTS) {
+                _needsRelogin.value = true
+                return
             }
-            _isLoading.value = false
         }
+        lastAuthRecoveryAt = now
+        authRecoveryAttempts++
+
+        authRecoveryJob = viewModelScope.launch {
+            _isClientIdExpired.value = true
+            _isLoading.value = true
+            try {
+                val token = settingsRepository.oauthTokenValue()
+
+                // 1. Only helps when the client_id itself is what went stale.
+                val freshClientId = SoundCloudApi.fetchSoundCloudClientId()
+                if (freshClientId != null && credentialsWork(freshClientId, token)) {
+                    settingsRepository.saveClientId(freshClientId)
+                    onAuthRecovered()
+                    return@launch
+                }
+
+                // 2. Otherwise the OAuth token is dead. Reuse the still-valid
+                //    soundcloud.com web session to pick up a fresh one.
+                if (trySilentRelogin()) {
+                    onAuthRecovered()
+                    return@launch
+                }
+
+                // 3. Nothing automatic is left — ask, don't spin.
+                _needsRelogin.value = true
+                _errorMessage.value =
+                    "Сессия SoundCloud истекла. Войдите в аккаунт заново."
+            } finally {
+                _isLoading.value = false
+            }
+        }
+    }
+
+    private fun onAuthRecovered() {
+        authRecoveryAttempts = 0
+        _isClientIdExpired.value = false
+        _needsRelogin.value = false
+        _errorMessage.value = null
+        Log.d("MusicViewModel", "SoundCloud auth recovered")
+        refreshMixesAndStations()
     }
 
     private fun handleSoundCloudApiError(e: Throwable) {
         if (e is HttpException && (e.code() == 401 || e.code() == 403)) {
-            _isClientIdExpired.value = true
-            tryAutoRefreshClientId()
-            triggerSilentRelogin()
+            recoverFromAuthFailure()
         }
     }
 
@@ -1966,7 +2201,11 @@ class MusicViewModel(
 
 
 
-    fun playQueuedTrack(track: SoundCloudTrack, customQueue: List<SoundCloudTrack>? = null) {
+    fun playQueuedTrack(
+        track: SoundCloudTrack,
+        customQueue: List<SoundCloudTrack>? = null,
+        fromQueueManager: Boolean = false
+    ) {
         viewModelScope.launch {
             _errorMessage.value = null
             val isYandexTrack = track.urn?.startsWith("yandex:track:") == true
@@ -1978,10 +2217,13 @@ class MusicViewModel(
                 playTrack(track)
                 return@launch
             }
+            // This queue came straight from a listing, so it carries full credits — a good moment
+            // to repair saved tracks that were downloaded before every artist was persisted.
+            favoritesRepository.syncCredits(playableTracks)
             _isLoading.value = true
             try {
                 val startIndex = playableTracks.indexOfFirst { it.id == track.id }.coerceAtLeast(0)
-                val isFromQueueManager = customQueue != null
+                val isFromQueueManager = fromQueueManager
                 if (!isFromQueueManager) {
                     originalQueue = playableTracks
                 }
@@ -2162,6 +2404,7 @@ class MusicViewModel(
                         if (favoritesRepository.isFavorite(track.id)) {
                             favoritesRepository.updateStreamUrl(track.id, localPath)
                             favoritesRepository.updateDownloadState(track.id, DownloadState.DOWNLOADED)
+                            cacheArtwork(track)
                             return true
                         } else {
                             withContext(Dispatchers.IO) {
@@ -2192,6 +2435,7 @@ class MusicViewModel(
                     // Store URL only after successful download (#23)
                     favoritesRepository.updateStreamUrl(track.id, streamUrl)
                     favoritesRepository.updateDownloadState(track.id, DownloadState.DOWNLOADED)
+                    cacheArtwork(track)
                     return true
                 } else {
                     withContext(Dispatchers.IO) {

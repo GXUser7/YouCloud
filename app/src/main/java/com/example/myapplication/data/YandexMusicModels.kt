@@ -54,6 +54,14 @@ data class YandexTrack(
                 username = artistName,
                 permalinkUrl = artistList.firstOrNull()?.id?.let { "yandex:artist:$it" }
             ),
+            artists = artistList.mapNotNull { artist ->
+                val name = artist.name?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
+                SoundCloudUser(
+                    id = artist.id?.toLongOrNull() ?: 0L,
+                    username = name,
+                    permalinkUrl = artist.id?.let { "yandex:artist:$it" }
+                )
+            },
             duration = durationMs,
             streamable = true,
             policy = "ALLOW",
@@ -93,7 +101,19 @@ data class YandexArtistDetail(
     val name: String?,
     val cover: YandexCover?,
     val description: YandexDescription?,
-    val stats: YandexStats?
+    val stats: YandexStats?,
+    // brief-info puts the follower count on the artist itself as `likesCount`, and the real
+    // track/album totals in `counts`. The code used to read `stats.likes`, which this endpoint
+    // never returns — so subscribers and track counts were always zero.
+    @SerializedName("likesCount") val likesCount: Int? = null,
+    val counts: YandexArtistCounts? = null
+)
+
+data class YandexArtistCounts(
+    val tracks: Int = 0,
+    @SerializedName("directAlbums") val directAlbums: Int = 0,
+    @SerializedName("alsoAlbums") val alsoAlbums: Int = 0,
+    @SerializedName("alsoTracks") val alsoTracks: Int = 0
 )
 
 data class YandexCover(

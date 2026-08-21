@@ -2,4 +2,16 @@
 <resources>
 
     <style name="Theme.MyApplication" parent="android:Theme.Material.Light.NoActionBar" />
+
+    <!--
+      Palette handed to Android Auto. The car draws its own interface from the browse tree and does
+      not run any of our Compose code, so this is the only place the app's colours can reach it.
+      Recent Auto releases largely ignore it in favour of the vehicle's own theme, so treat it as a
+      hint rather than a guarantee. Values match the app's dark surface and peach accent.
+    -->
+    <style name="CarTheme" parent="android:Theme.Material">
+        <item name="android:colorPrimary">#3A2A20</item>
+        <item name="android:colorPrimaryDark">#241A14</item>
+        <item name="android:colorAccent">#F2C09B</item>
+    </style>
 </resources>

@@ -5,6 +5,12 @@ import retrofit2.http.Path
 import retrofit2.http.Query
 import retrofit2.http.Url
 
+/** Body of `POST /me/play-history`. Urns look like `soundcloud:tracks:123456`. */
+data class PlayHistoryRequest(
+    @com.google.gson.annotations.SerializedName("track_urn") val trackUrn: String,
+    @com.google.gson.annotations.SerializedName("context_urn") val contextUrn: String? = null
+)
+
 interface SoundCloudService {
     @GET("search/tracks")
     suspend fun searchTracks(
@@ -64,6 +70,27 @@ interface SoundCloudService {
         @retrofit2.http.Path("track_id") trackId: Long,
         @retrofit2.http.Query("client_id") clientId: String
     ): retrofit2.Response<Unit>
+
+    /**
+     * Adds a track to the account's listening history — the signal SoundCloud's recommendations
+     * are built from, alongside likes and follows. Without it the app only ever reads, so the
+     * mixes it is served never learn anything and keep returning the same tracks.
+     *
+     * `context_urn` is the playlist or system playlist the track was played from, when there is
+     * one; SoundCloud uses it to understand where listening happens.
+     */
+    @retrofit2.http.POST("me/play-history")
+    suspend fun addToPlayHistory(
+        @retrofit2.http.Body body: PlayHistoryRequest,
+        @retrofit2.http.Query("client_id") clientId: String,
+        @retrofit2.http.Query("app_version") appVersion: String = SoundCloudApi.APP_VERSION
+    ): retrofit2.Response<Unit>
+
+    @retrofit2.http.GET("me/play-history/tracks")
+    suspend fun getPlayHistory(
+        @retrofit2.http.Query("client_id") clientId: String,
+        @retrofit2.http.Query("limit") limit: Int = 25
+    ): retrofit2.Response<okhttp3.ResponseBody>
 
     @retrofit2.http.GET("me")
     suspend fun getMe(

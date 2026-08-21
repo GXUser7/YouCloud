@@ -1,16 +1,30 @@
+# Android Studio / IntelliJ
 *.iml
-.gradle
-/local.properties
-/.idea/caches
-/.idea/libraries
-/.idea/modules.xml
-/.idea/workspace.xml
-/.idea/navEditor.xml
-/.idea/assetWizardSettings.xml
-.DS_Store
-/build
-/captures
-.externalNativeBuild
-.cxx
+.idea/
+
+# Gradle
+.gradle/
+build/
+**/build/
+/gradle/gradle-daemon-jvm.properties
+
+# Local machine configuration
 local.properties
 
+# Android build output and native tooling
+captures/
+.externalNativeBuild/
+.cxx/
+.kotlin/
+*.apk
+*.aab
+output-metadata.json
+
+# OS and tooling noise
+.DS_Store
+Thumbs.db
+*.log
+*.hprof
+
+# Local screenshots and temporary exports
+/Screenshots/

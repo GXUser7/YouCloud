@@ -10,6 +10,13 @@ data class SoundCloudTrack(
     @SerializedName("artwork_url") val artworkUrl: String? = null,
     @SerializedName("permalink_url") val permalinkUrl: String? = null,
     @SerializedName("user") val user: SoundCloudUser? = null,
+    // Every credited artist, not just the uploader. SoundCloud only tells us who uploaded a
+    // track, so this stays empty there and `user` remains the answer; Yandex genuinely returns
+    // a list, and collapsing it to `.first()` was losing every feature and collaborator.
+    // Nullable on purpose: Gson bypasses Kotlin constructors, so a field missing from cached
+    // JSON stays null regardless of the default here. Declaring it non-null crashed on every
+    // track cached before this field existed.
+    val artists: List<SoundCloudUser>? = null,
     @SerializedName("user_id") val userId: Long? = null,
     @SerializedName("duration") val duration: Long = 0L,
     val streamable: Boolean? = null,

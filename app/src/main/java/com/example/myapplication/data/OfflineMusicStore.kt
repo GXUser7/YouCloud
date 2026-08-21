@@ -17,6 +17,7 @@ import java.io.File
 class OfflineMusicStore private constructor(context: Context) {
     private val databaseProvider = StandaloneDatabaseProvider(context)
     private val downloadDirectory = File(context.filesDir, "offline_music").apply { mkdirs() }
+    private val artworkDirectory = File(context.filesDir, "offline_art").apply { mkdirs() }
     private val hlsCacheDirectory = File(downloadDirectory, "hls_cache").apply { mkdirs() }
     private val cache = SimpleCache(hlsCacheDirectory, NoOpCacheEvictor(), databaseProvider)
 
@@ -98,6 +99,69 @@ class OfflineMusicStore private constructor(context: Context) {
         }
     }
 
+    /** Where the cached cover for [trackId] lives, whether or not it has been fetched yet. */
+    fun artworkFile(trackId: Long): File = File(artworkDirectory, "art_$trackId.jpg")
+
+    /**
+     * Saves a track's cover next to its audio so it survives going offline. Android Auto renders
+     * browse lists in its own process and fetches artwork itself, so a remote URL leaves the car
+     * with blank tiles the moment there is no connection — which is exactly where an offline
+     * library gets used.
+     *
+     * Downscaled to at most [MAX_ARTWORK_PX] on the long edge: the car and the track rows never
+     * show it larger, and full-size covers would waste a lot of space across a big library.
+     */
+    fun downloadArtwork(url: String, trackId: Long): String? {
+        val target = artworkFile(trackId)
+        if (target.exists() && target.length() > 0L) return target.absolutePath
+        return try {
+            val client = OkHttpClient()
+            val request = okhttp3.Request.Builder().url(url).build()
+            val bytes = client.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) return null
+                response.body?.bytes() ?: return null
+            }
+            val decoded = android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+                ?: return null
+            val longest = maxOf(decoded.width, decoded.height)
+            val scaled = if (longest > MAX_ARTWORK_PX) {
+                val ratio = MAX_ARTWORK_PX.toFloat() / longest
+                android.graphics.Bitmap.createScaledBitmap(
+                    decoded,
+                    (decoded.width * ratio).toInt().coerceAtLeast(1),
+                    (decoded.height * ratio).toInt().coerceAtLeast(1),
+                    true
+                )
+            } else {
+                decoded
+            }
+            val temp = File(artworkDirectory, "art_$trackId.jpg.tmp")
+            temp.outputStream().use { out ->
+                scaled.compress(android.graphics.Bitmap.CompressFormat.JPEG, 88, out)
+            }
+            if (scaled !== decoded) scaled.recycle()
+            decoded.recycle()
+            if (temp.length() <= 0L) {
+                temp.delete()
+                return null
+            }
+            target.delete()
+            if (temp.renameTo(target)) target.absolutePath else null
+        } catch (e: Exception) {
+            Log.e("OfflineMusicStore", "Failed to cache artwork for $trackId", e)
+            null
+        }
+    }
+
+    fun removeArtwork(trackId: Long) {
+        try {
+            val file = artworkFile(trackId)
+            if (file.exists()) file.delete()
+        } catch (e: Exception) {
+            Log.e("OfflineMusicStore", "Failed to remove artwork for $trackId", e)
+        }
+    }
+
     fun removeProgressive(localPath: String) {
         try {
             val file = File(localPath)
@@ -114,6 +178,8 @@ class OfflineMusicStore private constructor(context: Context) {
     }
 
     companion object {
+        private const val MAX_ARTWORK_PX = 640
+
         @Volatile
         private var instance: OfflineMusicStore? = null
 

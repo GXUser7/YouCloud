@@ -17,6 +17,26 @@
         android:supportsRtl="true"
         android:usesCleartextTraffic="true"
         android:theme="@style/Theme.MyApplication">
+
+        <!-- Tells Android Auto this app provides media; without it the app never appears in the car. -->
+        <meta-data
+            android:name="com.google.android.gms.car.application"
+            android:resource="@xml/automotive_app_desc" />
+
+        <!-- Colour hint for the car interface. See the CarTheme comment in themes.xml. -->
+        <meta-data
+            android:name="com.google.android.gms.car.application.theme"
+            android:resource="@style/CarTheme" />
+
+        <!-- Serves cached cover art to the Android Auto host process, read-only. Exported because
+             that process is a different app and cannot otherwise open the files; the provider
+             hands out nothing but the JPEGs we cached for downloaded tracks. -->
+        <provider
+            android:name=".data.ArtworkProvider"
+            android:authorities="com.example.myapplication.artwork"
+            android:exported="true"
+            android:grantUriPermissions="true" />
+
         <activity
             android:name=".MainActivity"
             android:exported="true"
@@ -29,11 +49,23 @@
             </intent-filter>
         </activity>
 
+        <!-- Serves cached cover art to the Android Auto host, which renders browse lists in its own
+             process and so cannot read our private files. Read-only, and it only ever opens JPEGs
+             from the artwork directory. -->
+        <provider
+            android:name=".data.ArtworkProvider"
+            android:authorities="com.example.myapplication.artwork"
+            android:exported="true"
+            android:grantUriPermissions="true" />
+
+        <!-- Exported so the Android Auto host process can bind to the browser service; the session
+             itself still decides who may connect. -->
         <service
             android:name=".player.PlaybackService"
-            android:exported="false"
+            android:exported="true"
             android:foregroundServiceType="mediaPlayback">
             <intent-filter>
+                <action android:name="androidx.media3.session.MediaLibraryService" />
                 <action android:name="androidx.media3.session.MediaSessionService" />
                 <action android:name="android.media.browse.MediaBrowserService" />
             </intent-filter>

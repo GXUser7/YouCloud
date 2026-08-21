@@ -94,6 +94,45 @@ class MusicPlayer(context: Context) {
         syncState()
     }
 
+    /**
+     * Rearranges the queue around whatever is playing right now, leaving the item under the
+     * playhead untouched. [playQueue] cannot do this: `setMediaItems` replaces the whole timeline,
+     * so the current track restarts from zero and the listener hears a gap even if the caller
+     * seeks back afterwards. Here only the items before and after the current one are swapped out,
+     * which ExoPlayer handles without interrupting decoding.
+     *
+     * Returns false when the reorder cannot be done safely — no controller yet, an empty timeline,
+     * or a new queue whose [newIndex] is not the track currently playing. The caller is expected
+     * to fall back to [playQueue] in that case.
+     */
+    fun reorderQueueKeepingCurrent(tracks: List<QueueTrack>, newIndex: Int): Boolean {
+        if (tracks.isEmpty()) return false
+        val player = controller ?: return false
+        val count = player.mediaItemCount
+        if (count == 0) return false
+        val currentIndex = player.currentMediaItemIndex
+        if (currentIndex !in 0 until count) return false
+
+        val safeIndex = newIndex.coerceIn(0, tracks.lastIndex)
+        // Bail out unless the caller really is keeping the playing track in place; otherwise the
+        // item we preserve would not be the one it thinks sits at safeIndex.
+        val playingId = player.currentMediaItem?.mediaId ?: return false
+        if (tracks[safeIndex].id.toString() != playingId) return false
+
+        // Strip the timeline down to just the playing item, then rebuild around it. Order matters:
+        // trailing items go first so the leading removal does not shift the indices we still need.
+        if (currentIndex + 1 < count) player.removeMediaItems(currentIndex + 1, count)
+        if (currentIndex > 0) player.removeMediaItems(0, currentIndex)
+
+        val before = tracks.subList(0, safeIndex).map(::toMediaItem)
+        val after = tracks.subList(safeIndex + 1, tracks.size).map(::toMediaItem)
+        if (before.isNotEmpty()) player.addMediaItems(0, before)
+        if (after.isNotEmpty()) player.addMediaItems(player.mediaItemCount, after)
+
+        syncState()
+        return true
+    }
+
     fun updateQueue(tracks: List<QueueTrack>) {
         val player = controller ?: return
         
