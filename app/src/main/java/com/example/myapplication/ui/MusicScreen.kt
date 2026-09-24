@@ -136,6 +136,7 @@ import com.example.myapplication.ui.theme.AppTheme
 import com.example.myapplication.ui.theme.SoundCloudBrandSource
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.LaunchedEffect
@@ -248,65 +249,6 @@ import androidx.compose.ui.input.nestedscroll.nestedScroll
  * realistic viewport, but can never be seen or touched.
  */
 @Composable
-private fun SilentLoginWebView(
-    url: String,
-    onCredentialsCaptured: (String, String) -> Unit
-) {
-    val latestCallback by rememberUpdatedState(onCredentialsCaptured)
-
-    Box(
-        modifier = Modifier
-            .offset(x = 4000.dp)
-            .size(width = 360.dp, height = 640.dp)
-    ) {
-        AndroidView(
-            factory = { ctx ->
-                WebView(ctx).apply {
-                    layoutParams = ViewGroup.LayoutParams(
-                        ViewGroup.LayoutParams.MATCH_PARENT,
-                        ViewGroup.LayoutParams.MATCH_PARENT
-                    )
-                    settings.apply {
-                        javaScriptEnabled = true
-                        domStorageEnabled = true
-                        userAgentString = "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 " +
-                            "(KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36"
-                    }
-                    val cookies = CookieManager.getInstance()
-                    cookies.setAcceptCookie(true)
-                    cookies.setAcceptThirdPartyCookies(this, true)
-
-                    webViewClient = object : WebViewClient() {
-                        override fun shouldInterceptRequest(
-                            view: WebView?,
-                            request: WebResourceRequest?
-                        ): WebResourceResponse? {
-                            val outgoing = request ?: return null
-                            val capturedClientId = outgoing.url.getQueryParameter("client_id")
-                            val authHeader = outgoing.requestHeaders["Authorization"]
-                                ?: outgoing.requestHeaders["authorization"]
-                            if (!capturedClientId.isNullOrBlank() &&
-                                !authHeader.isNullOrBlank() &&
-                                authHeader.startsWith("OAuth ", ignoreCase = true)
-                            ) {
-                                val token = authHeader.removePrefix("OAuth ").trim()
-                                if (token.isNotEmpty()) {
-                                    post { latestCallback(capturedClientId, token) }
-                                }
-                            }
-                            return super.shouldInterceptRequest(view, request)
-                        }
-                    }
-                    loadUrl(url)
-                }
-            },
-            onRelease = { it.destroy() },
-            modifier = Modifier.fillMaxSize()
-        )
-    }
-}
-
-@Composable
 fun MusicScreen(viewModel: MusicViewModel) {
     val haptic = LocalHapticFeedback.current
     val isLoggedOut by viewModel.isLoggedOut.collectAsState(initial = false)
@@ -343,7 +285,6 @@ fun MusicScreen(viewModel: MusicViewModel) {
     val selectedPlaylist by viewModel.selectedPlaylist.collectAsState()
     val isClientIdExpired by viewModel.isClientIdExpired.collectAsState()
     val needsRelogin by viewModel.needsRelogin.collectAsState()
-    val silentLoginUrl by viewModel.silentLoginUrl.collectAsState()
     val homeSelectedTab by viewModel.homeSelectedTab.collectAsState()
     var showTrackActionsDialog by remember { mutableStateOf(false) }
     val showDebugPercentage by viewModel.showDebugPercentage.collectAsState()
@@ -358,6 +299,17 @@ fun MusicScreen(viewModel: MusicViewModel) {
     val searchOpenedPlaylist by viewModel.searchOpenedPlaylist.collectAsState()
 
     val downloadedTracks = remember(favorites) { favorites.filter { it.downloadState == DownloadState.DOWNLOADED } }
+
+    // Checks the SoundCloud session whenever the app comes back, so a token that lapsed in the
+    // meantime is renewed before the next tap needs it.
+    val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
+            if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) viewModel.onAppForeground()
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
 
     BackHandler(enabled = selectedTrack != null && !isLoggedOut) {
         viewModel.closeTrack()
@@ -387,13 +339,6 @@ fun MusicScreen(viewModel: MusicViewModel) {
 
     Box(modifier = Modifier.fillMaxSize()) {
         ExpressiveBackground()
-
-        silentLoginUrl?.let { url ->
-            SilentLoginWebView(
-                url = url,
-                onCredentialsCaptured = viewModel::onSilentCredentialsCaptured
-            )
-        }
 
         yandexLoginUrl?.let { url ->
             YandexLoginDialog(

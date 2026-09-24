@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+      Night variant of the window theme. Compose paints the real background, but the window's own
+      shows whenever Compose hasn't drawn yet: at launch and whenever the activity is recreated.
+      With the light parent that was a flash of white over an otherwise dark app. The neutral
+      system tone is the one Material You derives its dark surfaces from.
+    -->
+    <style name="Theme.MyApplication" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@android:color/system_neutral1_900</item>
+    </style>
+</resources>

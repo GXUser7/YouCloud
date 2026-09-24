@@ -17,6 +17,7 @@ import com.example.myapplication.data.SoundCloudApi
 import com.example.myapplication.data.SoundCloudMix
 import com.example.myapplication.data.SoundCloudMixesRepository
 import com.example.myapplication.data.SoundCloudPlaybackResolver
+import com.example.myapplication.data.SoundCloudSessionRefresher
 import com.example.myapplication.data.SoundCloudTrack
 import com.example.myapplication.data.SoundCloudPlaylist
 import com.example.myapplication.data.SoundCloudMeResponse
@@ -89,12 +90,14 @@ class MusicViewModel(
     private val _isClientIdExpired = MutableStateFlow(false)
     val isClientIdExpired = _isClientIdExpired.asStateFlow()
 
-    // The client_id is read per request and re-scraped in place on 401/403, so a rotation by
-    // SoundCloud heals inside the failing call instead of surfacing as an error to wait out.
+    // The client_id is read per request and re-scraped in place on 401/403, and an expired
+    // token is renewed and the request resent, so both kinds of expiry heal inside the failing
+    // call instead of surfacing as an error to wait out.
     private val service = SoundCloudApi.createService(
         oauthTokenProvider = settingsRepository::oauthTokenValue,
         clientIdProvider = { settingsRepository.clientId.value },
-        onClientIdRefreshed = settingsRepository::saveClientId
+        onClientIdRefreshed = settingsRepository::saveClientId,
+        onSessionExpired = ::renewSoundCloudSession
     )
     private val yandexService = YandexMusicApi.createService(settingsRepository::yandexTokenValue)
     private val playbackResolver = SoundCloudPlaybackResolver(service)
@@ -152,9 +155,6 @@ class MusicViewModel(
         }
     }
 
-    private val _silentLoginUrl = MutableStateFlow<String?>(null)
-    val silentLoginUrl = _silentLoginUrl.asStateFlow()
-
     /** Set when automatic recovery is exhausted and only a real sign-in can help. */
     private val _needsRelogin = MutableStateFlow(false)
     val needsRelogin = _needsRelogin.asStateFlow()
@@ -162,7 +162,7 @@ class MusicViewModel(
     private var authRecoveryJob: Job? = null
     private var authRecoveryAttempts = 0
     private var lastAuthRecoveryAt = 0L
-    private var silentLoginResult: CompletableDeferred<Boolean>? = null
+    private var lastSessionCheckAt = 0L
 
     private val _yandexLoginUrl = MutableStateFlow<String?>(null)
     val yandexLoginUrl = _yandexLoginUrl.asStateFlow()
@@ -1339,40 +1339,39 @@ class MusicViewModel(
     }
 
     /**
-     * Opens the hidden WebView on soundcloud.com and waits for it to hand back a working
-     * credential pair, or gives up after [SILENT_LOGIN_TIMEOUT_MS].
-     *
-     * Suspends until the outcome is known, so the caller can decide what to do next
-     * instead of firing and hoping.
+     * Renews an expired SoundCloud session from the soundcloud.com web session and stores the
+     * result. Called by the HTTP layer the moment a request is rejected, which then resends that
+     * request, and by [recoverFromAuthFailure].
      */
-    private suspend fun trySilentRelogin(): Boolean {
-        val pending = CompletableDeferred<Boolean>()
-        silentLoginResult = pending
-        _silentLoginUrl.value = "https://soundcloud.com/discover"
-        Log.d("MusicViewModel", "Silent relogin: opening background session")
-        val recovered = withTimeoutOrNull(SILENT_LOGIN_TIMEOUT_MS) { pending.await() } ?: false
-        _silentLoginUrl.value = null
-        silentLoginResult = null
-        Log.d("MusicViewModel", "Silent relogin finished, recovered=$recovered")
-        return recovered
+    private suspend fun renewSoundCloudSession(staleToken: String): Boolean {
+        val renewed = SoundCloudSessionRefresher.refresh(
+            context = context,
+            staleToken = staleToken,
+            clientId = settingsRepository.clientId.value
+        ) ?: return false
+        settingsRepository.saveClientId(renewed.clientId)
+        settingsRepository.saveOauthToken(renewed.oauthToken)
+        settingsRepository.saveUserId(renewed.userId.toString())
+        authRecoveryAttempts = 0
+        _isClientIdExpired.value = false
+        _needsRelogin.value = false
+        return true
     }
 
-    fun onSilentCredentialsCaptured(clientId: String, oauthToken: String) {
-        val pending = silentLoginResult ?: return
-        if (pending.isCompleted) return
+    /**
+     * Checks the session when the app comes to the foreground, at most every
+     * [SESSION_CHECK_INTERVAL_MS]. A token that lapsed while the app was away is renewed here,
+     * by the HTTP layer, before anything the listener taps depends on it.
+     */
+    fun onAppForeground() {
+        val now = System.currentTimeMillis()
+        if (now - lastSessionCheckAt < SESSION_CHECK_INTERVAL_MS) return
+        val clientIdValue = settingsRepository.clientId.value
+        if (clientIdValue.isBlank() || settingsRepository.oauthTokenValue().isBlank()) return
+        lastSessionCheckAt = now
         viewModelScope.launch {
-            val recovered = runCatching {
-                val service = SoundCloudApi.createService(oauthTokenProvider = { oauthToken })
-                val me = service.getMe(clientId)
-                settingsRepository.saveClientId(clientId)
-                settingsRepository.saveOauthToken(oauthToken)
-                settingsRepository.saveUserId(me.id.toString())
-                true
-            }.getOrElse { error ->
-                Log.e("MusicViewModel", "Captured credentials did not verify", error)
-                false
-            }
-            pending.complete(recovered)
+            runCatching { service.getMe(clientIdValue) }
+                .onFailure { Log.w("MusicViewModel", "Foreground session check failed", it) }
         }
     }
 
@@ -1926,7 +1925,7 @@ class MusicViewModel(
     private companion object {
         const val AUTH_RECOVERY_COOLDOWN_MS = 30_000L
         const val MAX_AUTH_RECOVERY_ATTEMPTS = 2
-        const val SILENT_LOGIN_TIMEOUT_MS = 25_000L
+        const val SESSION_CHECK_INTERVAL_MS = 15 * 60_000L
 
         // Long enough that skipping through tracks reports nothing, short enough that a track
         // left playing counts even if the listener moves on part way through.
@@ -1995,7 +1994,7 @@ class MusicViewModel(
 
                 // 2. Otherwise the OAuth token is dead. Reuse the still-valid
                 //    soundcloud.com web session to pick up a fresh one.
-                if (trySilentRelogin()) {
+                if (renewSoundCloudSession(token)) {
                     onAuthRecovered()
                     return@launch
                 }
