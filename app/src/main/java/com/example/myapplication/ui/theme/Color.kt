@@ -94,8 +94,8 @@ val DarkSurfaceContainerHighest = Color(0xFF36343B)
 /*
  * Brand colors.
  *
- * SoundCloud orange and Yandex yellow are fixed brand assets, but dropping them into the
- * UI as raw hex fights whatever palette Material You derived from the wallpaper. M3 solves
+ * SoundCloud orange is a fixed brand asset, but dropping it into the UI as raw hex fights
+ * whatever palette Material You derived from the wallpaper. M3 solves
  * this with *color harmonization*: rotate the brand hue a small amount toward the scheme's
  * primary hue so the color keeps its identity but belongs to the palette.
  *
@@ -104,7 +104,6 @@ val DarkSurfaceContainerHighest = Color(0xFF36343B)
  */
 
 val SoundCloudBrandSource = Color(0xFFFF5500)
-val YandexBrandSource = Color(0xFFFFCC00)
 
 @Immutable
 data class BrandColorRoles(
@@ -116,8 +115,7 @@ data class BrandColorRoles(
 
 @Immutable
 data class BrandColors(
-    val soundCloud: BrandColorRoles,
-    val yandex: BrandColorRoles
+    val soundCloud: BrandColorRoles
 )
 
 private fun Color.toHsv(): FloatArray = FloatArray(3).also { AndroidColor.colorToHSV(toArgb(), it) }
