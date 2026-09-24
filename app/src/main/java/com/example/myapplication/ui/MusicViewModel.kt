@@ -27,6 +27,8 @@ import com.example.myapplication.player.MusicPlayer
 import com.example.myapplication.player.MusicPlayer.QueueTrack
 import java.io.IOException
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.delay
@@ -113,6 +115,14 @@ class MusicViewModel(
     private val _yandexError = MutableStateFlow<String?>(null)
     val yandexError = _yandexError.asStateFlow()
 
+    private val _yandexHasMore = MutableStateFlow(false)
+    val yandexHasMore = _yandexHasMore.asStateFlow()
+
+    private val _yandexLoadingMore = MutableStateFlow(false)
+    val yandexLoadingMore = _yandexLoadingMore.asStateFlow()
+
+    private var yandexSearchPage = 0
+
     private val _downloadProgress = MutableStateFlow<Map<Long, Float>>(emptyMap())
     val downloadProgress = _downloadProgress.asStateFlow()
 
@@ -132,10 +142,11 @@ class MusicViewModel(
         val q = _searchQuery.value
         if (q.length >= 3) {
             if (useYandex) {
-                _tracks.value = emptyList()
+                clearSoundCloudSearchResults()
                 onYandexSearchQueryChange(q)
             } else {
                 _yandexTracks.value = emptyList()
+                _yandexHasMore.value = false
                 onSearchQueryChange(q)
             }
         }
@@ -194,6 +205,32 @@ class MusicViewModel(
 
     private val _searchQuery = MutableStateFlow("")
     val searchQuery = _searchQuery.asStateFlow()
+
+    private val _searchAlbums = MutableStateFlow<List<SoundCloudPlaylist>>(emptyList())
+    val searchAlbums = _searchAlbums.asStateFlow()
+
+    private val _searchPlaylists = MutableStateFlow<List<SoundCloudPlaylist>>(emptyList())
+    val searchPlaylists = _searchPlaylists.asStateFlow()
+
+    private val _searchHasMore = MutableStateFlow(false)
+    val searchHasMore = _searchHasMore.asStateFlow()
+
+    private val _searchLoadingMore = MutableStateFlow(false)
+    val searchLoadingMore = _searchLoadingMore.asStateFlow()
+
+    // Raw offset into SoundCloud's results. Unplayable tracks are dropped after the fact, so the
+    // visible list length can't be used to ask for the next page.
+    private var searchTracksOffset = 0
+
+    /** An album or playlist opened from the search results, shown in place of the list. */
+    private val _searchOpenedPlaylist = MutableStateFlow<SoundCloudPlaylist?>(null)
+    val searchOpenedPlaylist = _searchOpenedPlaylist.asStateFlow()
+
+    private val _searchPlaylistLoading = MutableStateFlow(false)
+    val searchPlaylistLoading = _searchPlaylistLoading.asStateFlow()
+
+    private val _searchPlaylistError = MutableStateFlow<String?>(null)
+    val searchPlaylistError = _searchPlaylistError.asStateFlow()
 
     // TODO #19: Split into _searchLoading, _mixLoading etc. to avoid one operation's
     // loading state interfering with another. Requires updating MusicScreen consumers.
@@ -274,6 +311,8 @@ class MusicViewModel(
     private var likesSyncJob: Job? = null
 
     private var searchJob: Job? = null
+    private var searchMoreJob: Job? = null
+    private var searchPlaylistJob: Job? = null
     private var openMixJob: Job? = null
     private var playMixJob: Job? = null
     private val _activeQueue = MutableStateFlow<List<SoundCloudTrack>>(emptyList())
@@ -729,9 +768,11 @@ class MusicViewModel(
         _searchQuery.value = query
         _screen.value = AppScreen.SEARCH
         searchJob?.cancel()
+        searchMoreJob?.cancel()
+        closeSearchPlaylist()
 
         if (query.length < 3) {
-            _tracks.value = emptyList()
+            clearSoundCloudSearchResults()
             _errorMessage.value = null
             _isLoading.value = false
             return
@@ -741,30 +782,142 @@ class MusicViewModel(
             delay(350)
             if (settingsRepository.clientId.value.isBlank()) {
                 _errorMessage.value = "Укажите SoundCloud client_id в настройках"
-                _tracks.value = emptyList()
+                clearSoundCloudSearchResults()
                 return@launch
             }
             searchTracks(query)
         }
     }
 
+    private fun clearSoundCloudSearchResults() {
+        _tracks.value = emptyList()
+        _searchAlbums.value = emptyList()
+        _searchPlaylists.value = emptyList()
+        _searchHasMore.value = false
+        _searchLoadingMore.value = false
+        searchTracksOffset = 0
+    }
+
     private suspend fun searchTracks(query: String) {
         _isLoading.value = true
         _errorMessage.value = null
+        val clientId = settingsRepository.clientId.value
 
         try {
-            val results = service.searchTracks(
-                query = query,
-                clientId = settingsRepository.clientId.value
-            )
-            _tracks.value = results.collection.filter { isPlayableTrack(it) }
+            coroutineScope {
+                // Albums and playlists are extras: if either fails, the tracks still show.
+                val albums = async {
+                    runCatching { service.searchAlbums(query, clientId).collection }
+                        .onFailure { Log.w("MusicViewModel", "Album search failed", it) }
+                        .getOrDefault(emptyList())
+                }
+                val playlists = async {
+                    runCatching { service.searchPlaylists(query, clientId).collection }
+                        .onFailure { Log.w("MusicViewModel", "Playlist search failed", it) }
+                        .getOrDefault(emptyList())
+                }
+                val results = service.searchTracks(
+                    query = query,
+                    clientId = clientId,
+                    limit = SEARCH_PAGE_SIZE
+                )
+                _tracks.value = results.collection.filter { isPlayableTrack(it) }.distinctBy { it.id }
+                searchTracksOffset = results.collection.size
+                _searchHasMore.value = results.nextHref != null && results.collection.isNotEmpty()
+                _searchAlbums.value = albums.await().filter { it.trackCount > 0 }.distinctBy { it.id }
+                _searchPlaylists.value = playlists.await().filter { it.trackCount > 0 }.distinctBy { it.id }
+            }
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
-            _tracks.value = emptyList()
+            clearSoundCloudSearchResults()
             handleSoundCloudApiError(e)
             _errorMessage.value = readableMessage(e)
         } finally {
             _isLoading.value = false
         }
+    }
+
+    fun loadMoreSearchTracks() {
+        val query = _searchQuery.value
+        if (query.length < 3 || !_searchHasMore.value || _isLoading.value || _searchLoadingMore.value) return
+
+        searchMoreJob = viewModelScope.launch {
+            _searchLoadingMore.value = true
+            try {
+                val results = service.searchTracks(
+                    query = query,
+                    clientId = settingsRepository.clientId.value,
+                    limit = SEARCH_PAGE_SIZE,
+                    offset = searchTracksOffset
+                )
+                if (_searchQuery.value != query) return@launch
+                // Later pages repeat tracks from earlier ones now and then, and a duplicate key
+                // crashes the list.
+                _tracks.value = (_tracks.value + results.collection.filter { isPlayableTrack(it) })
+                    .distinctBy { it.id }
+                searchTracksOffset += results.collection.size
+                _searchHasMore.value = results.nextHref != null && results.collection.isNotEmpty()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                handleSoundCloudApiError(e)
+                _errorMessage.value = readableMessage(e)
+            } finally {
+                _searchLoadingMore.value = false
+            }
+        }
+    }
+
+    fun openSearchPlaylist(playlist: SoundCloudPlaylist) {
+        _searchOpenedPlaylist.value = playlist.copy(tracks = playlist.knownTracks.filter { isPlayableTrack(it) })
+        searchPlaylistJob?.cancel()
+        _searchPlaylistError.value = null
+        searchPlaylistJob = viewModelScope.launch {
+            _searchPlaylistLoading.value = true
+            try {
+                val tracks = loadSoundCloudPlaylistTracks(playlist)
+                if (_searchOpenedPlaylist.value?.id == playlist.id) {
+                    _searchOpenedPlaylist.value = playlist.copy(tracks = tracks)
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.e("MusicViewModel", "Failed to load SoundCloud playlist ${playlist.id}", e)
+                handleSoundCloudApiError(e)
+                _searchPlaylistError.value = readableMessage(e)
+            } finally {
+                _searchPlaylistLoading.value = false
+            }
+        }
+    }
+
+    fun closeSearchPlaylist() {
+        searchPlaylistJob?.cancel()
+        _searchOpenedPlaylist.value = null
+        _searchPlaylistLoading.value = false
+        _searchPlaylistError.value = null
+    }
+
+    /**
+     * Full, playable track list of a SoundCloud set. Listings only carry metadata for the first
+     * few tracks, so the id-only stubs are fetched by id; order follows the set, not the batch.
+     */
+    private suspend fun loadSoundCloudPlaylistTracks(playlist: SoundCloudPlaylist): List<SoundCloudTrack> {
+        val clientId = settingsRepository.clientId.value
+        val entries = if (playlist.knownTracks.size < playlist.trackCount) {
+            service.getPlaylist(playlist.id, clientId).knownTracks
+        } else {
+            playlist.knownTracks
+        }
+        val stubIds = entries.filter { it.title.isNullOrBlank() }.map { it.id }
+        val fetched = stubIds.chunked(50)
+            .flatMap { chunk -> service.getTracksByIds(chunk.joinToString(","), clientId) }
+            .associateBy { it.id }
+        return entries
+            .mapNotNull { entry -> if (entry.title.isNullOrBlank()) fetched[entry.id] else entry }
+            .filter { isPlayableTrack(it) }
+            .distinctBy { it.id }
     }
 
     fun playMixTrack(track: SoundCloudTrack) {
@@ -1135,6 +1288,23 @@ class MusicViewModel(
                     }
                 } catch (e: Exception) {
                     Log.e("MusicViewModel", "Failed to fetch Yandex album tracks", e)
+                } finally {
+                    _artistLoading.value = false
+                }
+            }
+        } else if (playlist.permalinkUrl?.startsWith("yandex:") != true) {
+            // Stream sets arrive with id-only stubs past the first few tracks, which showed up as
+            // "Unknown Track" rows that could not play.
+            viewModelScope.launch {
+                _artistLoading.value = true
+                try {
+                    val tracks = loadSoundCloudPlaylistTracks(playlist)
+                    if (_selectedArtistPlaylist.value?.id == playlist.id) {
+                        _selectedArtistPlaylist.value = playlist.copy(tracks = tracks)
+                    }
+                } catch (e: Exception) {
+                    Log.e("MusicViewModel", "Failed to fetch SoundCloud playlist tracks", e)
+                    handleSoundCloudApiError(e)
                 } finally {
                     _artistLoading.value = false
                 }
@@ -1761,6 +1931,8 @@ class MusicViewModel(
         // Long enough that skipping through tracks reports nothing, short enough that a track
         // left playing counts even if the listener moves on part way through.
         const val PLAY_REPORT_AFTER_MS = 25_000L
+
+        const val SEARCH_PAGE_SIZE = 30
     }
 
     /** Confirms a credential pair actually works before we treat the session as healthy. */
@@ -2174,6 +2346,9 @@ class MusicViewModel(
     fun onYandexSearchQueryChange(query: String) {
         _yandexSearchQuery.value = query
         yandexSearchJob?.cancel()
+        _yandexHasMore.value = false
+        _yandexLoadingMore.value = false
+        yandexSearchPage = 0
 
         if (query.trim().isEmpty()) {
             _yandexTracks.value = emptyList()
@@ -2188,8 +2363,11 @@ class MusicViewModel(
             _yandexError.value = null
             try {
                 val response = yandexService.searchTracks(query)
-                val yList = response.result?.tracks?.results.orEmpty()
-                _yandexTracks.value = yList.map { it.toSoundCloudTrack() }
+                val page = response.result?.tracks
+                _yandexTracks.value = page?.results.orEmpty().map { it.toSoundCloudTrack() }.distinctBy { it.id }
+                _yandexHasMore.value = page.hasMoreAfter(0)
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 Log.e("MusicViewModel", "Failed to search Yandex tracks", e)
                 _yandexError.value = "Ошибка поиска: ${readableMessage(e)}"
@@ -2197,6 +2375,38 @@ class MusicViewModel(
                 _yandexLoading.value = false
             }
         }
+    }
+
+    fun loadMoreYandexSearchTracks() {
+        val query = _yandexSearchQuery.value
+        if (query.isBlank() || !_yandexHasMore.value || _yandexLoading.value || _yandexLoadingMore.value) return
+
+        // Shares the search job so that typing a new query cancels a page still in flight.
+        yandexSearchJob = viewModelScope.launch {
+            _yandexLoadingMore.value = true
+            try {
+                val nextPage = yandexSearchPage + 1
+                val page = yandexService.searchTracks(query, page = nextPage).result?.tracks
+                _yandexTracks.value = (_yandexTracks.value + page?.results.orEmpty().map { it.toSoundCloudTrack() })
+                    .distinctBy { it.id }
+                yandexSearchPage = nextPage
+                _yandexHasMore.value = page.hasMoreAfter(nextPage)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.e("MusicViewModel", "Failed to load more Yandex tracks", e)
+                _yandexError.value = "Ошибка поиска: ${readableMessage(e)}"
+            } finally {
+                _yandexLoadingMore.value = false
+            }
+        }
+    }
+
+    private fun com.example.myapplication.data.YandexSearchTracks?.hasMoreAfter(page: Int): Boolean {
+        if (this == null || results.isNullOrEmpty()) return false
+        val totalCount = total ?: return true
+        val pageSize = perPage?.takeIf { it > 0 } ?: results.size
+        return (page + 1) * pageSize < totalCount
     }
 
 

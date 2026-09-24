@@ -172,6 +172,7 @@ import com.example.myapplication.data.SoundCloudTrack
 import com.example.myapplication.data.Playlist
 import com.example.myapplication.data.SoundCloudPlaylist
 import com.example.myapplication.data.SoundCloudUser
+import com.example.myapplication.data.ArtworkUrls
 import androidx.compose.material.icons.filled.Album
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.ui.window.Dialog
@@ -354,6 +355,8 @@ fun MusicScreen(viewModel: MusicViewModel) {
     val hasYandexToken = yandexToken.isNotEmpty()
     val yandexLoginUrl by viewModel.yandexLoginUrl.collectAsState()
 
+    val searchOpenedPlaylist by viewModel.searchOpenedPlaylist.collectAsState()
+
     val downloadedTracks = remember(favorites) { favorites.filter { it.downloadState == DownloadState.DOWNLOADED } }
 
     BackHandler(enabled = selectedTrack != null && !isLoggedOut) {
@@ -366,7 +369,11 @@ fun MusicScreen(viewModel: MusicViewModel) {
 
     BackHandler(enabled = selectedTrack == null && selectedMix == null && screen != AppScreen.HOME && !isLoggedOut) {
         when (screen) {
-            AppScreen.SEARCH -> viewModel.closeSearch()
+            AppScreen.SEARCH -> if (searchOpenedPlaylist != null) {
+                viewModel.closeSearchPlaylist()
+            } else {
+                viewModel.closeSearch()
+            }
             AppScreen.DOWNLOADS -> viewModel.closeDownloads()
             AppScreen.PLAYLISTS -> viewModel.closePlaylists()
             AppScreen.SETTINGS -> viewModel.closeSettings()
@@ -486,6 +493,14 @@ fun MusicScreen(viewModel: MusicViewModel) {
                         val yandexTracks by viewModel.yandexTracks.collectAsState()
                         val yandexLoading by viewModel.yandexLoading.collectAsState()
                         val yandexError by viewModel.yandexError.collectAsState()
+                        val yandexHasMore by viewModel.yandexHasMore.collectAsState()
+                        val yandexLoadingMore by viewModel.yandexLoadingMore.collectAsState()
+                        val searchAlbums by viewModel.searchAlbums.collectAsState()
+                        val searchPlaylists by viewModel.searchPlaylists.collectAsState()
+                        val searchHasMore by viewModel.searchHasMore.collectAsState()
+                        val searchLoadingMore by viewModel.searchLoadingMore.collectAsState()
+                        val searchPlaylistLoading by viewModel.searchPlaylistLoading.collectAsState()
+                        val searchPlaylistError by viewModel.searchPlaylistError.collectAsState()
                         SearchScreen(
                             query = searchQuery,
                             tracks = tracks,
@@ -519,6 +534,29 @@ fun MusicScreen(viewModel: MusicViewModel) {
                             onOpenSettings = {
                                 haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                                 viewModel.openSettings()
+                            },
+                            albums = searchAlbums,
+                            playlists = searchPlaylists,
+                            hasMore = if (searchInYandex) yandexHasMore else searchHasMore,
+                            isLoadingMore = if (searchInYandex) yandexLoadingMore else searchLoadingMore,
+                            onLoadMore = {
+                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                if (searchInYandex) viewModel.loadMoreYandexSearchTracks() else viewModel.loadMoreSearchTracks()
+                            },
+                            openedPlaylist = searchOpenedPlaylist,
+                            isPlaylistLoading = searchPlaylistLoading,
+                            playlistError = searchPlaylistError,
+                            onOpenPlaylist = { playlist ->
+                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                viewModel.openSearchPlaylist(playlist)
+                            },
+                            onClosePlaylist = {
+                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                viewModel.closeSearchPlaylist()
+                            },
+                            onPlayPlaylistTrack = { track, queue ->
+                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                viewModel.playQueuedTrack(track, queue)
                             }
                         )
                     }
@@ -2795,21 +2833,58 @@ private fun SearchScreen(
     yandexError: String?,
     onYandexQueryChange: (String) -> Unit,
     hasYandexToken: Boolean,
-    onOpenSettings: () -> Unit
+    onOpenSettings: () -> Unit,
+    albums: List<SoundCloudPlaylist> = emptyList(),
+    playlists: List<SoundCloudPlaylist> = emptyList(),
+    hasMore: Boolean = false,
+    isLoadingMore: Boolean = false,
+    onLoadMore: () -> Unit = {},
+    openedPlaylist: SoundCloudPlaylist? = null,
+    isPlaylistLoading: Boolean = false,
+    playlistError: String? = null,
+    onOpenPlaylist: (SoundCloudPlaylist) -> Unit = {},
+    onClosePlaylist: () -> Unit = {},
+    onPlayPlaylistTrack: (SoundCloudTrack, List<SoundCloudTrack>) -> Unit = { _, _ -> }
 ) {
     val focusRequester = remember { FocusRequester() }
     val haptic = LocalHapticFeedback.current
+    // Hoisted so that coming back from an album lands where the list was left.
+    val listState = rememberLazyListState()
+    val albumsRowState = rememberLazyListState()
+    val playlistsRowState = rememberLazyListState()
+    val isFieldShown by rememberUpdatedState(openedPlaylist == null)
     LaunchedEffect(Unit) {
         kotlinx.coroutines.delay(100)
-        focusRequester.requestFocus()
+        // The field isn't composed while an album is open, and focusing a detached requester throws.
+        if (isFieldShown) focusRequester.requestFocus()
+    }
+
+    if (openedPlaylist != null) {
+        SetDetailContent(
+            playlist = openedPlaylist,
+            subtitle = openedPlaylist.user?.username.orEmpty(),
+            isLoading = isPlaylistLoading,
+            error = playlistError,
+            favorites = favorites,
+            currentTrackId = currentTrackId,
+            isPlaying = isPlaying,
+            downloadProgress = downloadProgress,
+            onBack = onClosePlaylist,
+            onPlayTrack = { track -> onPlayPlaylistTrack(track, openedPlaylist.tracks) },
+            onFavoriteClick = onFavoriteClick
+        )
+        return
     }
 
     val activeQuery = if (searchInYandex) yandexQuery else query
     val activeTracks = if (searchInYandex) yandexTracks else tracks
     val activeLoading = if (searchInYandex) yandexLoading else isLoading
     val activeError = if (searchInYandex) yandexError else errorMessage
+    val activeAlbums = if (searchInYandex) emptyList() else albums
+    val activePlaylists = if (searchInYandex) emptyList() else playlists
 
     LazyColumn(
+        state = listState,
         modifier = Modifier
             .fillMaxSize()
             .statusBarsPadding()
@@ -2908,12 +2983,48 @@ private fun SearchScreen(
                 }
             }
         } else {
-            if (activeTracks.isEmpty() && !activeLoading) {
-                item {
-                    EmptyState(
-                        if (activeQuery.isBlank()) "Напиши, что хочешь услышать."
-                        else "Ничего не нашлось."
+            if (activeAlbums.isNotEmpty()) {
+                item(key = "search-albums-header") {
+                    SearchSectionTitle("Альбомы")
+                }
+                item(key = "search-albums") {
+                    SetTileRow(
+                        sets = activeAlbums,
+                        state = albumsRowState,
+                        keyPrefix = "search-album",
+                        onClick = onOpenPlaylist
                     )
+                }
+            }
+
+            if (activePlaylists.isNotEmpty()) {
+                item(key = "search-playlists-header") {
+                    SearchSectionTitle("Плейлисты и сборники")
+                }
+                item(key = "search-playlists") {
+                    SetTileRow(
+                        sets = activePlaylists,
+                        state = playlistsRowState,
+                        keyPrefix = "search-playlist",
+                        onClick = onOpenPlaylist
+                    )
+                }
+            }
+
+            if (activeTracks.isNotEmpty() && (activeAlbums.isNotEmpty() || activePlaylists.isNotEmpty())) {
+                item(key = "search-tracks-header") {
+                    SearchSectionTitle("Треки")
+                }
+            }
+
+            if (activeTracks.isEmpty() && !activeLoading) {
+                if (activeAlbums.isEmpty() && activePlaylists.isEmpty()) {
+                    item {
+                        EmptyState(
+                            if (activeQuery.isBlank()) "Напиши, что хочешь услышать."
+                            else "Ничего не нашлось."
+                        )
+                    }
                 }
             } else {
                 items(activeTracks, key = { "${if (searchInYandex) "yandex" else "sc"}-search-${it.id}" }) { track ->
@@ -2930,6 +3041,96 @@ private fun SearchScreen(
                         onFavoriteClick = { onFavoriteClick(track) }
                     )
                 }
+
+                if (hasMore && !activeLoading) {
+                    item(key = "search-load-more") {
+                        LoadMoreButton(
+                            isLoading = isLoadingMore,
+                            color = if (searchInYandex) AppTheme.brand.yandex.color else MaterialTheme.colorScheme.primary,
+                            onClick = onLoadMore
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SearchSectionTitle(text: String) {
+    Text(
+        text = text,
+        style = MaterialTheme.typography.titleLarge,
+        modifier = Modifier.padding(top = 8.dp)
+    )
+}
+
+@Composable
+private fun SetTileRow(
+    sets: List<SoundCloudPlaylist>,
+    state: androidx.compose.foundation.lazy.LazyListState,
+    keyPrefix: String,
+    onClick: (SoundCloudPlaylist) -> Unit
+) {
+    LazyRow(
+        state = state,
+        horizontalArrangement = Arrangement.spacedBy(14.dp),
+        contentPadding = PaddingValues(horizontal = 4.dp),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        items(sets, key = { "$keyPrefix-${it.id}" }) { set ->
+            PlaylistTile(
+                playlist = set,
+                subtitle = set.user?.username.orEmpty(),
+                caption = setCaption(set),
+                isYandex = false,
+                onClick = { onClick(set) }
+            )
+        }
+    }
+}
+
+/** "Альбом · 2017", "EP · 2020", "Плейлист · 42 трека". */
+private fun setCaption(set: SoundCloudPlaylist): String {
+    val kind = when (set.setType?.lowercase()) {
+        "album" -> "Альбом"
+        "ep" -> "EP"
+        "single" -> "Сингл"
+        "compilation" -> "Сборник"
+        else -> if (set.isAlbum == true) "Альбом" else "Плейлист"
+    }
+    val year = set.releaseDate?.take(4)?.takeIf { it.length == 4 && it.all(Char::isDigit) }
+    return if (year != null) "$kind · $year" else "$kind · ${plural(set.trackCount, "трек", "трека", "треков")}"
+}
+
+@Composable
+private fun LoadMoreButton(isLoading: Boolean, color: Color, onClick: () -> Unit) {
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = 4.dp)
+            .height(56.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        if (isLoading) {
+            CustomCircularWavyProgressIndicator(
+                progress = null,
+                color = color,
+                modifier = Modifier.size(40.dp)
+            )
+        } else {
+            FilledTonalButton(
+                onClick = onClick,
+                shape = MaterialTheme.shapes.extraLarge,
+                modifier = Modifier.fillMaxSize()
+            ) {
+                Icon(
+                    imageVector = Icons.Default.KeyboardArrowDown,
+                    contentDescription = null,
+                    modifier = Modifier.size(22.dp)
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Text("Показать ещё", style = MaterialTheme.typography.titleMedium)
             }
         }
     }
@@ -6570,55 +6771,18 @@ private fun ArtistDetailScreen(
     onLoadAllTracks: () -> Unit = {}
 ) {
     if (selectedPlaylist != null) {
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .statusBarsPadding()
-        ) {
-            AppTopBar(
-                modifier = Modifier.padding(horizontal = 16.dp),
-                leadingIcon = Icons.AutoMirrored.Filled.ArrowBack,
-                leadingDescription = "Назад",
-                onLeadingClick = onDeselectPlaylist,
-                // No title here: AlbumHeroCard right below already carries it.
-                title = {}
-            )
-
-            LazyColumn(
-                modifier = Modifier.fillMaxSize(),
-                contentPadding = PaddingValues(start = 16.dp, top = 4.dp, end = 16.dp, bottom = 120.dp),
-                verticalArrangement = Arrangement.spacedBy(14.dp)
-            ) {
-                item {
-                    AlbumHeroCard(
-                        artworkUrl = selectedPlaylist.artworkUrl,
-                        title = selectedPlaylist.title ?: "Без названия",
-                        subtitle = artist.username.orEmpty(),
-                        trackCount = selectedPlaylist.tracks.size,
-                        isYandex = selectedPlaylist.permalinkUrl?.contains("yandex") == true
-                    )
-                }
-
-                if (selectedPlaylist.tracks.isEmpty()) {
-                    item {
-                        EmptyState("Здесь пока нет треков.")
-                    }
-                } else {
-                    item {
-                        PagedTrackList(
-                            tracks = selectedPlaylist.tracks,
-                            favorites = favorites,
-                            currentTrackId = currentTrackId,
-                            isPlaying = isPlaying,
-                            downloadProgress = downloadProgress,
-                            onPlayTrack = onPlayTrack,
-                            onFavoriteClick = onFavoriteClick,
-                            perPage = 4
-                        )
-                    }
-                }
-            }
-        }
+        SetDetailContent(
+            playlist = selectedPlaylist,
+            subtitle = artist.username.orEmpty(),
+            isLoading = isLoading,
+            favorites = favorites,
+            currentTrackId = currentTrackId,
+            isPlaying = isPlaying,
+            downloadProgress = downloadProgress,
+            onBack = onDeselectPlaylist,
+            onPlayTrack = onPlayTrack,
+            onFavoriteClick = onFavoriteClick
+        )
     } else {
         Column(
             modifier = Modifier
@@ -6717,59 +6881,178 @@ private fun ArtistDetailScreen(
                                 modifier = Modifier.fillMaxWidth()
                             ) {
                                 items(playlists, key = { "artist-playlist-${it.id}" }) { playlist ->
-                                    val isYandex = playlist.permalinkUrl?.startsWith("yandex:album:") == true || artist.permalinkUrl?.startsWith("yandex") == true
-                                    Card(
-                                        onClick = { onPlaylistClick(playlist) },
-                                        modifier = Modifier.width(140.dp),
-                                        shape = MaterialTheme.shapes.extraLarge,
-                                        colors = CardDefaults.cardColors(
-                                            containerColor = MaterialTheme.colorScheme.surfaceContainerHigh
-                                        )
-                                    ) {
-                                        Column(modifier = Modifier.padding(8.dp)) {
-                                            Box(
-                                                modifier = Modifier
-                                                    .size(124.dp)
-                                                    .clip(MaterialTheme.shapes.large)
-                                            ) {
-                                                if (playlist.artworkUrl != null) {
-                                                    FolderArtwork(playlist.artworkUrl, 124.dp)
-                                                } else {
-                                                    Surface(
-                                                        color = if (isYandex) AppTheme.brand.yandex.container else MaterialTheme.colorScheme.secondaryContainer,
-                                                        shape = MaterialTheme.shapes.large,
-                                                        modifier = Modifier.fillMaxSize()
-                                                    ) {
-                                                        Box(contentAlignment = Alignment.Center) {
-                                                            Icon(
-                                                                Icons.Default.Album,
-                                                                contentDescription = null,
-                                                                tint = if (isYandex) AppTheme.brand.yandex.onContainer else MaterialTheme.colorScheme.onSecondaryContainer,
-                                                                modifier = Modifier.size(36.dp)
-                                                            )
-                                                        }
-                                                    }
-                                                }
-                                            }
-                                            Spacer(modifier = Modifier.height(8.dp))
-                                            Text(
-                                                text = playlist.title ?: "Альбом",
-                                                style = MaterialTheme.typography.titleMedium,
-                                                maxLines = 1,
-                                                overflow = TextOverflow.Ellipsis
-                                            )
-                                            Text(
-                                                text = "${playlist.trackCount} треков",
-                                                style = MaterialTheme.typography.bodyMedium,
-                                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                                            )
-                                        }
-                                    }
+                                    PlaylistTile(
+                                        playlist = playlist,
+                                        subtitle = "${playlist.trackCount} треков",
+                                        isYandex = playlist.permalinkUrl?.startsWith("yandex:album:") == true || artist.permalinkUrl?.startsWith("yandex") == true,
+                                        onClick = { onPlaylistClick(playlist) }
+                                    )
                                 }
                             }
                         }
                     }
                 }
+            }
+        }
+    }
+}
+
+/** Album or playlist opened from the artist page or from search: cover, then its tracks. */
+@Composable
+private fun SetDetailContent(
+    playlist: SoundCloudPlaylist,
+    subtitle: String,
+    isLoading: Boolean,
+    favorites: List<FavoriteTrack>,
+    currentTrackId: Long?,
+    isPlaying: Boolean,
+    downloadProgress: Map<Long, Float>,
+    onBack: () -> Unit,
+    onPlayTrack: (SoundCloudTrack) -> Unit,
+    onFavoriteClick: (SoundCloudTrack) -> Unit,
+    error: String? = null
+) {
+    val isYandex = playlist.permalinkUrl?.contains("yandex") == true
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .statusBarsPadding()
+    ) {
+        AppTopBar(
+            modifier = Modifier.padding(horizontal = 16.dp),
+            leadingIcon = Icons.AutoMirrored.Filled.ArrowBack,
+            leadingDescription = "Назад",
+            onLeadingClick = onBack,
+            // No title here: AlbumHeroCard right below already carries it.
+            title = {}
+        )
+
+        LazyColumn(
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(start = 16.dp, top = 4.dp, end = 16.dp, bottom = 120.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp)
+        ) {
+            item {
+                AlbumHeroCard(
+                    artworkUrl = ArtworkUrls.highRes(playlist.displayArtworkUrl),
+                    title = playlist.title ?: "Без названия",
+                    subtitle = subtitle,
+                    // Until the full list arrives only a few tracks are known; the set's own
+                    // count is closer to what's about to appear.
+                    trackCount = if (isLoading) maxOf(playlist.trackCount, playlist.knownTracks.size) else playlist.knownTracks.size,
+                    isYandex = isYandex
+                )
+            }
+
+            if (isLoading) {
+                item {
+                    CustomWavyProgressIndicator(
+                        progress = null,
+                        color = if (isYandex) AppTheme.brand.yandex.color else MaterialTheme.colorScheme.primary,
+                        trackColor = if (isYandex) AppTheme.brand.yandex.container else MaterialTheme.colorScheme.primaryContainer,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(6.dp)
+                    )
+                }
+            }
+
+            if (error != null) {
+                item { MessageCard(error) }
+            }
+
+            if (playlist.knownTracks.isEmpty()) {
+                if (!isLoading && error == null) {
+                    item {
+                        EmptyState("Здесь пока нет треков.")
+                    }
+                }
+            } else {
+                item {
+                    PagedTrackList(
+                        tracks = playlist.knownTracks,
+                        favorites = favorites,
+                        currentTrackId = currentTrackId,
+                        isPlaying = isPlaying,
+                        downloadProgress = downloadProgress,
+                        onPlayTrack = onPlayTrack,
+                        onFavoriteClick = onFavoriteClick,
+                        perPage = 4
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun PlaylistTile(
+    playlist: SoundCloudPlaylist,
+    subtitle: String,
+    isYandex: Boolean,
+    onClick: () -> Unit,
+    caption: String? = null
+) {
+    val artworkUrl = playlist.displayArtworkUrl
+    Card(
+        onClick = onClick,
+        modifier = Modifier.width(140.dp),
+        shape = MaterialTheme.shapes.extraLarge,
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceContainerHigh
+        )
+    ) {
+        Column(modifier = Modifier.padding(8.dp)) {
+            Box(
+                modifier = Modifier
+                    .size(124.dp)
+                    .clip(MaterialTheme.shapes.large)
+            ) {
+                if (artworkUrl != null) {
+                    FolderArtwork(artworkUrlForSize(artworkUrl, 124.dp), 124.dp)
+                } else {
+                    Surface(
+                        color = if (isYandex) AppTheme.brand.yandex.container else MaterialTheme.colorScheme.secondaryContainer,
+                        shape = MaterialTheme.shapes.large,
+                        modifier = Modifier.fillMaxSize()
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Icon(
+                                Icons.Default.Album,
+                                contentDescription = null,
+                                tint = if (isYandex) AppTheme.brand.yandex.onContainer else MaterialTheme.colorScheme.onSecondaryContainer,
+                                modifier = Modifier.size(36.dp)
+                            )
+                        }
+                    }
+                }
+            }
+            Spacer(modifier = Modifier.height(8.dp))
+            Text(
+                text = playlist.title ?: "Альбом",
+                style = MaterialTheme.typography.titleMedium,
+                // Two lines kept even for short titles, so the tiles in a row line up.
+                minLines = 2,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis
+            )
+            if (subtitle.isNotBlank()) {
+                Text(
+                    text = subtitle,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+            if (caption != null) {
+                Text(
+                    text = caption,
+                    style = MaterialTheme.typography.labelMedium,
+                    color = if (isYandex) AppTheme.brand.yandex.color else MaterialTheme.colorScheme.primary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
             }
         }
     }
