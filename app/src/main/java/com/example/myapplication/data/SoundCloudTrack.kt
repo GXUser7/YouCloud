@@ -77,11 +77,33 @@ data class SoundCloudLikeItem(
 data class SoundCloudPlaylist(
     val id: Long,
     val title: String? = null,
+    // SoundCloud sends every entry, but only the first few carry metadata; the rest are id-only
+    // stubs with no title until they are fetched by id.
     val tracks: List<SoundCloudTrack> = emptyList(),
     @SerializedName("track_count") val trackCount: Int = 0,
     @SerializedName("artwork_url") val artworkUrl: String? = null,
     @SerializedName("permalink_url") val permalinkUrl: String? = null,
-    val user: SoundCloudUser? = null
+    val user: SoundCloudUser? = null,
+    @SerializedName("is_album") val isAlbum: Boolean? = null,
+    // "album", "ep", "single", "compilation", or empty for a plain playlist.
+    @SerializedName("set_type") val setType: String? = null,
+    @SerializedName("release_date") val releaseDate: String? = null
+) {
+    /** SoundCloud leaves most sets without their own cover and shows the first track's instead. */
+    val displayArtworkUrl: String?
+        get() = artworkUrl ?: knownTracks.firstNotNullOfOrNull { it.artworkUrl }
+
+    /**
+     * [tracks], safe to read. Gson bypasses the constructor, so a set whose JSON omits the list
+     * comes out with null there despite the non-null type.
+     */
+    val knownTracks: List<SoundCloudTrack>
+        get() = tracks.orEmpty()
+}
+
+data class SoundCloudPlaylistsResponse(
+    val collection: List<SoundCloudPlaylist> = emptyList(),
+    @SerializedName("next_href") val nextHref: String? = null
 )
 
 data class SoundCloudStreamUserResponse(

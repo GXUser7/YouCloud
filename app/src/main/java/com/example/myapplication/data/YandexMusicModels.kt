@@ -11,7 +11,9 @@ data class YandexSearchResult(
 )
 
 data class YandexSearchTracks(
-    val results: List<YandexTrack>? = emptyList()
+    val results: List<YandexTrack>? = emptyList(),
+    val total: Int? = null,
+    val perPage: Int? = null
 )
 
 data class YandexTrack(

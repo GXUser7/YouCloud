@@ -20,6 +20,29 @@ interface SoundCloudService {
         @Query("offset") offset: Int = 0
     ): SoundCloudTracksResponse
 
+    @GET("search/albums")
+    suspend fun searchAlbums(
+        @Query("q") query: String,
+        @Query("client_id") clientId: String,
+        @Query("limit") limit: Int = 20,
+        @Query("offset") offset: Int = 0
+    ): SoundCloudPlaylistsResponse
+
+    // Plain `search/playlists` mixes albums back in; this one keeps the two rows from repeating.
+    @GET("search/playlists_without_albums")
+    suspend fun searchPlaylists(
+        @Query("q") query: String,
+        @Query("client_id") clientId: String,
+        @Query("limit") limit: Int = 20,
+        @Query("offset") offset: Int = 0
+    ): SoundCloudPlaylistsResponse
+
+    @GET("playlists/{id}")
+    suspend fun getPlaylist(
+        @Path("id") id: Long,
+        @Query("client_id") clientId: String
+    ): SoundCloudPlaylist
+
     @GET("mixed-selections")
     suspend fun getMixedSelections(
         @Query("client_id") clientId: String,
@@ -38,11 +61,12 @@ interface SoundCloudService {
         @Query("app_locale") appLocale: String
     ): SoundCloudSystemPlaylist
 
+    // The endpoint answers with a bare JSON array, not a `collection` wrapper.
     @GET("tracks")
     suspend fun getTracksByIds(
         @Query("ids") ids: String,
         @Query("client_id") clientId: String
-    ): TracksByIdsResponse
+    ): List<SoundCloudTrack>
 
     @GET("tracks/{id}")
     suspend fun getTrack(

@@ -92,8 +92,7 @@ private val LightColorScheme = lightColorScheme(
 
 private val LocalBrandColors = staticCompositionLocalOf {
     BrandColors(
-        soundCloud = brandColorRoles(SoundCloudBrandSource, LightPrimary, darkTheme = false),
-        yandex = brandColorRoles(YandexBrandSource, LightPrimary, darkTheme = false)
+        soundCloud = brandColorRoles(SoundCloudBrandSource, LightPrimary, darkTheme = false)
     )
 }
 
@@ -126,13 +125,13 @@ fun MyApplicationTheme(
         else -> LightColorScheme
     }
 
-    // Brand accents are harmonized against whichever primary the scheme ended up with,
-    // so SoundCloud orange and Yandex yellow sit inside the Material You palette instead
-    // of fighting it.
+    // The SoundCloud accent is harmonized against whichever primary the scheme ended up
+    // with, so its orange sits inside the Material You palette instead of fighting it.
+    // Yandex Music no longer has an accent of its own: its screens use the scheme's roles
+    // like everything else.
     val brandColors = remember(colorScheme.primary, darkTheme) {
         BrandColors(
-            soundCloud = brandColorRoles(SoundCloudBrandSource, colorScheme.primary, darkTheme),
-            yandex = brandColorRoles(YandexBrandSource, colorScheme.primary, darkTheme)
+            soundCloud = brandColorRoles(SoundCloudBrandSource, colorScheme.primary, darkTheme)
         )
     }
 

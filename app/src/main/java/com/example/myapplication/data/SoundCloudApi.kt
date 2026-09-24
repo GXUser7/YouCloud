@@ -29,11 +29,16 @@ object SoundCloudApi {
      * @param clientIdProvider read at request time rather than baked into each call, so a refresh
      *   takes effect immediately instead of on the next screen load.
      * @param onClientIdRefreshed called with a freshly scraped id so the caller can persist it.
+     * @param onSessionExpired called when SoundCloud rejects the OAuth token, with the token it
+     *   rejected. It should renew the session and store the new token so [oauthTokenProvider]
+     *   returns it; when it reports success, the rejected request is sent again rather than
+     *   failed, so whatever was waiting on it carries on.
      */
     fun createService(
         oauthTokenProvider: () -> String,
         clientIdProvider: () -> String = { "" },
-        onClientIdRefreshed: (String) -> Unit = {}
+        onClientIdRefreshed: (String) -> Unit = {},
+        onSessionExpired: (suspend (staleToken: String) -> Boolean)? = null
     ): SoundCloudService {
         val client = OkHttpClient.Builder()
             .connectTimeout(20, TimeUnit.SECONDS)
@@ -41,7 +46,8 @@ object SoundCloudApi {
             .addInterceptor { chain ->
                 val original = chain.request()
                 val usedClientId = clientIdProvider().trim()
-                var response = chain.proceed(decorate(original, oauthTokenProvider(), usedClientId))
+                val usedToken = oauthTokenProvider().trim()
+                var response = chain.proceed(decorate(original, usedToken, usedClientId))
 
                 // A rotated client_id looks exactly like this. Swap in a fresh one and retry once,
                 // so the failure never reaches the UI as "wait for the id to update".
@@ -57,6 +63,25 @@ object SoundCloudApi {
                         response.close()
                         Log.d("SoundCloudApi", "Retrying ${original.url.encodedPath} with refreshed client_id")
                         response = chain.proceed(decorate(original, oauthTokenProvider(), fresh))
+                    }
+                }
+
+                // An expired token. Renew it and send the same request again, so a tap made just
+                // as the token lapsed still lands instead of surfacing an error. If another
+                // request already renewed it while this one was out, just retry with that.
+                if (response.code == 401 &&
+                    onSessionExpired != null &&
+                    usedToken.isNotEmpty() &&
+                    original.url.host.endsWith("soundcloud.com")
+                ) {
+                    val renewed = oauthTokenProvider().trim() != usedToken ||
+                        runBlocking { onSessionExpired(usedToken) }
+                    if (renewed) {
+                        response.close()
+                        Log.d("SoundCloudApi", "Retrying ${original.url.encodedPath} with a renewed session")
+                        response = chain.proceed(
+                            decorate(original, oauthTokenProvider(), clientIdProvider().trim())
+                        )
                     }
                 }
                 response

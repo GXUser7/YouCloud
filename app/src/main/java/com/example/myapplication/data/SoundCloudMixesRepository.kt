@@ -149,7 +149,7 @@ class SoundCloudMixesRepository(
                 service.getTracksByIds(
                     ids = chunk.joinToString(","),
                     clientId = clientId
-                ).collection
+                )
             }.getOrElse {
                 chunk.mapNotNull { trackId ->
                     runCatching { service.getTrack(trackId, clientId) }.getOrNull()

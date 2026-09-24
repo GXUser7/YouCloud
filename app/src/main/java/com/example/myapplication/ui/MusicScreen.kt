@@ -1,3 +1,5 @@
+@file:OptIn(ExperimentalMaterial3ExpressiveApi::class, ExperimentalMaterial3Api::class)
+
 package com.example.myapplication.ui
 
 import android.content.Intent
@@ -136,6 +138,7 @@ import com.example.myapplication.ui.theme.AppTheme
 import com.example.myapplication.ui.theme.SoundCloudBrandSource
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.LaunchedEffect
@@ -172,6 +175,7 @@ import com.example.myapplication.data.SoundCloudTrack
 import com.example.myapplication.data.Playlist
 import com.example.myapplication.data.SoundCloudPlaylist
 import com.example.myapplication.data.SoundCloudUser
+import com.example.myapplication.data.ArtworkUrls
 import androidx.compose.material.icons.filled.Album
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.ui.window.Dialog
@@ -234,6 +238,19 @@ import kotlin.math.min
 import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
 import androidx.compose.ui.input.nestedscroll.NestedScrollSource
 import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.layout.Layout
+import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.material3.SliderDefaults
+import androidx.compose.ui.unit.DpSize
+import androidx.compose.material.icons.filled.KeyboardArrowUp
+import androidx.compose.material3.LocalContentColor
+import androidx.compose.foundation.layout.RowScope
+import androidx.compose.ui.unit.Constraints
+import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
+import androidx.compose.material3.LinearWavyProgressIndicator
+import androidx.compose.foundation.layout.BoxScope
 
 /**
  * Offscreen WebView that refreshes SoundCloud credentials without interrupting the user.
@@ -246,65 +263,6 @@ import androidx.compose.ui.input.nestedscroll.nestedScroll
  * Parked far off-screen rather than sized to zero: it still lays out and runs scripts at a
  * realistic viewport, but can never be seen or touched.
  */
-@Composable
-private fun SilentLoginWebView(
-    url: String,
-    onCredentialsCaptured: (String, String) -> Unit
-) {
-    val latestCallback by rememberUpdatedState(onCredentialsCaptured)
-
-    Box(
-        modifier = Modifier
-            .offset(x = 4000.dp)
-            .size(width = 360.dp, height = 640.dp)
-    ) {
-        AndroidView(
-            factory = { ctx ->
-                WebView(ctx).apply {
-                    layoutParams = ViewGroup.LayoutParams(
-                        ViewGroup.LayoutParams.MATCH_PARENT,
-                        ViewGroup.LayoutParams.MATCH_PARENT
-                    )
-                    settings.apply {
-                        javaScriptEnabled = true
-                        domStorageEnabled = true
-                        userAgentString = "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 " +
-                            "(KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36"
-                    }
-                    val cookies = CookieManager.getInstance()
-                    cookies.setAcceptCookie(true)
-                    cookies.setAcceptThirdPartyCookies(this, true)
-
-                    webViewClient = object : WebViewClient() {
-                        override fun shouldInterceptRequest(
-                            view: WebView?,
-                            request: WebResourceRequest?
-                        ): WebResourceResponse? {
-                            val outgoing = request ?: return null
-                            val capturedClientId = outgoing.url.getQueryParameter("client_id")
-                            val authHeader = outgoing.requestHeaders["Authorization"]
-                                ?: outgoing.requestHeaders["authorization"]
-                            if (!capturedClientId.isNullOrBlank() &&
-                                !authHeader.isNullOrBlank() &&
-                                authHeader.startsWith("OAuth ", ignoreCase = true)
-                            ) {
-                                val token = authHeader.removePrefix("OAuth ").trim()
-                                if (token.isNotEmpty()) {
-                                    post { latestCallback(capturedClientId, token) }
-                                }
-                            }
-                            return super.shouldInterceptRequest(view, request)
-                        }
-                    }
-                    loadUrl(url)
-                }
-            },
-            onRelease = { it.destroy() },
-            modifier = Modifier.fillMaxSize()
-        )
-    }
-}
-
 @Composable
 fun MusicScreen(viewModel: MusicViewModel) {
     val haptic = LocalHapticFeedback.current
@@ -342,7 +300,6 @@ fun MusicScreen(viewModel: MusicViewModel) {
     val selectedPlaylist by viewModel.selectedPlaylist.collectAsState()
     val isClientIdExpired by viewModel.isClientIdExpired.collectAsState()
     val needsRelogin by viewModel.needsRelogin.collectAsState()
-    val silentLoginUrl by viewModel.silentLoginUrl.collectAsState()
     val homeSelectedTab by viewModel.homeSelectedTab.collectAsState()
     var showTrackActionsDialog by remember { mutableStateOf(false) }
     val showDebugPercentage by viewModel.showDebugPercentage.collectAsState()
@@ -354,7 +311,20 @@ fun MusicScreen(viewModel: MusicViewModel) {
     val hasYandexToken = yandexToken.isNotEmpty()
     val yandexLoginUrl by viewModel.yandexLoginUrl.collectAsState()
 
+    val searchOpenedPlaylist by viewModel.searchOpenedPlaylist.collectAsState()
+
     val downloadedTracks = remember(favorites) { favorites.filter { it.downloadState == DownloadState.DOWNLOADED } }
+
+    // Checks the SoundCloud session whenever the app comes back, so a token that lapsed in the
+    // meantime is renewed before the next tap needs it.
+    val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
+            if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) viewModel.onAppForeground()
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
 
     BackHandler(enabled = selectedTrack != null && !isLoggedOut) {
         viewModel.closeTrack()
@@ -366,7 +336,11 @@ fun MusicScreen(viewModel: MusicViewModel) {
 
     BackHandler(enabled = selectedTrack == null && selectedMix == null && screen != AppScreen.HOME && !isLoggedOut) {
         when (screen) {
-            AppScreen.SEARCH -> viewModel.closeSearch()
+            AppScreen.SEARCH -> if (searchOpenedPlaylist != null) {
+                viewModel.closeSearchPlaylist()
+            } else {
+                viewModel.closeSearch()
+            }
             AppScreen.DOWNLOADS -> viewModel.closeDownloads()
             AppScreen.PLAYLISTS -> viewModel.closePlaylists()
             AppScreen.SETTINGS -> viewModel.closeSettings()
@@ -380,13 +354,6 @@ fun MusicScreen(viewModel: MusicViewModel) {
 
     Box(modifier = Modifier.fillMaxSize()) {
         ExpressiveBackground()
-
-        silentLoginUrl?.let { url ->
-            SilentLoginWebView(
-                url = url,
-                onCredentialsCaptured = viewModel::onSilentCredentialsCaptured
-            )
-        }
 
         yandexLoginUrl?.let { url ->
             YandexLoginDialog(
@@ -486,6 +453,14 @@ fun MusicScreen(viewModel: MusicViewModel) {
                         val yandexTracks by viewModel.yandexTracks.collectAsState()
                         val yandexLoading by viewModel.yandexLoading.collectAsState()
                         val yandexError by viewModel.yandexError.collectAsState()
+                        val yandexHasMore by viewModel.yandexHasMore.collectAsState()
+                        val yandexLoadingMore by viewModel.yandexLoadingMore.collectAsState()
+                        val searchAlbums by viewModel.searchAlbums.collectAsState()
+                        val searchPlaylists by viewModel.searchPlaylists.collectAsState()
+                        val searchHasMore by viewModel.searchHasMore.collectAsState()
+                        val searchLoadingMore by viewModel.searchLoadingMore.collectAsState()
+                        val searchPlaylistLoading by viewModel.searchPlaylistLoading.collectAsState()
+                        val searchPlaylistError by viewModel.searchPlaylistError.collectAsState()
                         SearchScreen(
                             query = searchQuery,
                             tracks = tracks,
@@ -519,6 +494,29 @@ fun MusicScreen(viewModel: MusicViewModel) {
                             onOpenSettings = {
                                 haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                                 viewModel.openSettings()
+                            },
+                            albums = searchAlbums,
+                            playlists = searchPlaylists,
+                            hasMore = if (searchInYandex) yandexHasMore else searchHasMore,
+                            isLoadingMore = if (searchInYandex) yandexLoadingMore else searchLoadingMore,
+                            onLoadMore = {
+                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                if (searchInYandex) viewModel.loadMoreYandexSearchTracks() else viewModel.loadMoreSearchTracks()
+                            },
+                            openedPlaylist = searchOpenedPlaylist,
+                            isPlaylistLoading = searchPlaylistLoading,
+                            playlistError = searchPlaylistError,
+                            onOpenPlaylist = { playlist ->
+                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                viewModel.openSearchPlaylist(playlist)
+                            },
+                            onClosePlaylist = {
+                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                viewModel.closeSearchPlaylist()
+                            },
+                            onPlayPlaylistTrack = { track, queue ->
+                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                viewModel.playQueuedTrack(track, queue)
                             }
                         )
                     }
@@ -935,25 +933,14 @@ private fun HomeScreen(
                 onOpenSearch()
             },
             title = {
-                AnimatedContent(
-                    targetState = when (categoryPager.currentPage) {
-                        0 -> "Миксы"
-                        1 -> "Станции"
-                        2 -> "Медиатека"
-                        else -> "Моя музыка"
-                    },
-                    transitionSpec = {
-                        (slideInVertically { height -> height / 2 } + fadeIn()) togetherWith
-                            (slideOutVertically { height -> -height / 2 } + fadeOut())
-                    },
-                    label = "categoryTitle"
-                ) { title ->
-                    Text(
-                        text = title,
-                        style = MaterialTheme.typography.headlineLarge,
-                        maxLines = 1
-                    )
-                }
+                // The category now lives in the tabs below, so the bar greets instead of
+                // repeating it.
+                Text(
+                    text = remember { greetingForNow() },
+                    style = MaterialTheme.typography.headlineLarge,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
             }
         ) {
 
@@ -979,6 +966,20 @@ private fun HomeScreen(
                 }
             }
         }
+
+        // The four categories still stack vertically — swipe up or down between them — and the
+        // tabs make that axis visible and tappable.
+        val tabScope = rememberCoroutineScope()
+        SegmentedControl(
+            items = listOf("Миксы", "Станции", "Медиатека", "Моя музыка"),
+            selectedIndex = categoryPager.currentPage,
+            onSelectedIndexChanged = { index ->
+                tabScope.launch { categoryPager.animateScrollToPage(index) }
+            },
+            height = 44.dp,
+            textStyle = MaterialTheme.typography.labelLarge,
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp)
+        )
 
         VerticalPager(
             state = categoryPager,
@@ -1185,8 +1186,10 @@ private fun PagedTrackList(
     modifier: Modifier = Modifier
 ) {
     if (tracks.isEmpty()) return
-    val rowHeight = 96.dp
-    val rowGap = 8.dp
+    // Rows sit flush, each page one rounded container; every row but the first carries a
+    // one-dp divider.
+    val rowHeight = TrackRowHeight + 1.dp
+    val rowGap = 0.dp
     val pageCount = (tracks.size + perPage - 1) / perPage
     val pagerState = rememberPagerState { pageCount }
     val favoritesMap = remember(favorites) { favorites.associateBy { it.id } }
@@ -1216,7 +1219,8 @@ private fun PagedTrackList(
                         progress = downloadProgress[track.id],
                         isPlaying = isPlaying,
                         onClick = { onPlayTrack(track) },
-                        onFavoriteClick = { onFavoriteClick(track) }
+                        onFavoriteClick = { onFavoriteClick(track) },
+                        position = groupPosition(index - from, to - from)
                     )
                 }
             }
@@ -1250,198 +1254,49 @@ private fun compactCount(value: Int): String {
 }
 
 /**
- * The artist's portrait as the subject, with the numbers that matter sitting on the same card
- * underneath. Replaces a 120dp circular avatar floating in the middle of an otherwise empty
- * header.
+ * The artist's portrait as the subject, with the colour-block panel over its lower edge
+ * carrying the name and the numbers that matter.
  */
 @Composable
 private fun ArtistHeroCard(
     artist: SoundCloudUser,
-    albumCount: Int
+    albumCount: Int,
+    onPlay: (() -> Unit)?
 ) {
-    Surface(
-        modifier = Modifier.fillMaxWidth(),
-        shape = AppShapes.extraExtraLarge,
-        color = MaterialTheme.colorScheme.surfaceContainerHigh
-    ) {
-        Column {
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .aspectRatio(1.35f)
-                    .background(MaterialTheme.colorScheme.surfaceVariant)
-            ) {
-                if (!artist.avatarUrl.isNullOrBlank()) {
-                    AsyncImage(
-                        model = artworkUrlForSize(artist.avatarUrl, 400.dp),
-                        contentDescription = null,
-                        modifier = Modifier.fillMaxSize(),
-                        contentScale = ContentScale.Crop
-                    )
-                } else {
-                    Box(
-                        modifier = Modifier.fillMaxSize(),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Image,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.size(56.dp)
-                        )
-                    }
-                }
-
-                // Fades the photo into the card so the join never reads as a hard seam.
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(96.dp)
-                        .align(Alignment.BottomCenter)
-                        .background(
-                            Brush.verticalGradient(
-                                colors = listOf(
-                                    Color.Transparent,
-                                    MaterialTheme.colorScheme.surfaceContainerHigh
-                                )
-                            )
-                        )
+    val followers = artist.followersCount ?: 0
+    val trackTotal = artist.trackCount ?: 0
+    val stats = buildList {
+        if (followers > 0) add(compactCount(followers) + " подписчиков")
+        if (trackTotal > 0) add(plural(trackTotal, "трек", "трека", "треков"))
+        if (albumCount > 0) add(plural(albumCount, "альбом", "альбома", "альбомов"))
+    }.joinToString(" · ")
+    CollectionHero(
+        title = artist.username.orEmpty(),
+        kicker = if (artist.permalinkUrl?.startsWith("yandex") == true) "Артист · Яндекс Музыка" else "Артист",
+        subtitle = stats,
+        artworkAspectRatio = 1.1f,
+        artwork = {
+            if (!artist.avatarUrl.isNullOrBlank()) {
+                AsyncImage(
+                    model = artworkUrlForSize(artist.avatarUrl, 400.dp),
+                    contentDescription = null,
+                    modifier = Modifier.fillMaxSize(),
+                    contentScale = ContentScale.Crop
                 )
+            } else {
+                IconCover(icon = Icons.Default.Image)
             }
-
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 8.dp)
-                    .padding(bottom = 18.dp),
-                horizontalArrangement = Arrangement.SpaceEvenly
-            ) {
-                val followers = artist.followersCount ?: 0
-                val trackTotal = artist.trackCount ?: 0
-                if (followers > 0) {
-                    ArtistStat(value = compactCount(followers), label = "подписчиков")
-                }
-                if (trackTotal > 0) {
-                    ArtistStat(value = compactCount(trackTotal), label = "треков")
-                }
-                if (albumCount > 0) {
-                    ArtistStat(
-                        value = albumCount.toString(),
-                        label = plural(albumCount, "альбом", "альбома", "альбомов")
-                            .substringAfter(' ')
-                    )
-                }
-            }
-        }
-    }
-}
-
-/**
- * Cover, title, artist and count as one block, on the same card language the rest of the app
- * uses. The old header centred a bare 200dp square over the page with the title floating
- * underneath it, which looked unfinished next to every other screen.
- */
-@Composable
-private fun AlbumHeroCard(
-    artworkUrl: String?,
-    title: String,
-    subtitle: String,
-    trackCount: Int,
-    isYandex: Boolean
-) {
-    Surface(
-        modifier = Modifier.fillMaxWidth(),
-        shape = AppShapes.extraExtraLarge,
-        color = MaterialTheme.colorScheme.surfaceContainerHigh
-    ) {
-        Column(
-            modifier = Modifier.padding(18.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(16.dp)
-        ) {
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth(0.72f)
-                    .aspectRatio(1f)
-                    .clip(AppShapes.extraLargeIncreased)
-            ) {
-                if (artworkUrl != null) {
-                    AsyncImage(
-                        model = artworkUrl,
-                        contentDescription = null,
-                        modifier = Modifier.fillMaxSize(),
-                        contentScale = ContentScale.Crop
-                    )
-                } else {
-                    Surface(
-                        color = if (isYandex) {
-                            AppTheme.brand.yandex.container
-                        } else {
-                            MaterialTheme.colorScheme.primaryContainer
-                        },
-                        modifier = Modifier.fillMaxSize()
-                    ) {
-                        Box(contentAlignment = Alignment.Center) {
-                            Icon(
-                                Icons.Default.Album,
-                                contentDescription = null,
-                                tint = if (isYandex) {
-                                    AppTheme.brand.yandex.onContainer
-                                } else {
-                                    MaterialTheme.colorScheme.onPrimaryContainer
-                                },
-                                modifier = Modifier.size(64.dp)
-                            )
-                        }
-                    }
-                }
-            }
-
-            Column(
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(4.dp)
-            ) {
-                Text(
-                    text = title,
-                    style = MaterialTheme.typography.headlineSmall,
-                    textAlign = TextAlign.Center,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis
-                )
-                if (subtitle.isNotBlank()) {
-                    Text(
-                        text = subtitle,
-                        style = MaterialTheme.typography.titleSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        textAlign = TextAlign.Center,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                }
-                Text(
-                    text = plural(trackCount, "трек", "трека", "треков"),
-                    style = MaterialTheme.typography.labelLarge,
-                    color = MaterialTheme.colorScheme.primary
+        },
+        actions = onPlay?.let { play ->
+            {
+                PanelPrimaryButton(
+                    text = "Слушать",
+                    icon = Icons.Default.PlayArrow,
+                    onClick = play
                 )
             }
         }
-    }
-}
-
-@Composable
-private fun ArtistStat(value: String, label: String) {
-    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-        Text(
-            text = value,
-            style = MaterialTheme.typography.titleLarge,
-            color = MaterialTheme.colorScheme.primary
-        )
-        Text(
-            text = label,
-            style = MaterialTheme.typography.labelMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
-    }
+    )
 }
 
 /** Artist bios run long; four clipped lines with no way to read the rest is a dead end. */
@@ -1474,6 +1329,14 @@ private fun ExpandableDescription(text: String) {
             )
         }
     }
+}
+
+/** Home bar title: a greeting for the time of day. */
+private fun greetingForNow(): String = when (java.time.LocalTime.now().hour) {
+    in 5..11 -> "Доброе утро"
+    in 12..16 -> "Добрый день"
+    in 17..22 -> "Добрый вечер"
+    else -> "Доброй ночи"
 }
 
 /** Russian needs three forms, and "1 треков" in the corner of the home screen looks broken. */
@@ -1742,55 +1605,33 @@ private fun LibraryCarousel(
 
 @Composable
 private fun LibraryCarouselCard(tile: LibraryTile, distance: Float) {
-    val focus = 1f - distance
-    val coverScale = lerp(0.92f, 1f, focus)
-    val coverAlpha = lerp(0.45f, 1f, focus)
-    val captionAlpha = (focus * 2.4f - 1.4f).coerceIn(0f, 1f)
-
-    val interactionSource = remember { MutableInteractionSource() }
-    val pressed by interactionSource.collectIsPressedAsState()
-    val pressScale by animateFloatAsState(
-        targetValue = if (pressed) 0.96f else 1f,
-        animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy),
-        label = "libraryPress"
-    )
-
-    Column(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalAlignment = Alignment.CenterHorizontally
+    ColorBlockCarouselCard(
+        distance = distance,
+        title = tile.title,
+        subtitle = tile.subtitle,
+        kicker = null,
+        onClick = tile.onClick
     ) {
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .aspectRatio(1f)
-                .graphicsLayer {
-                    scaleX = coverScale * pressScale
-                    scaleY = coverScale * pressScale
-                    alpha = coverAlpha
-                }
-                .clip(AppShapes.extraExtraLarge)
-                .background(
-                    if (tile.accent) {
-                        MaterialTheme.colorScheme.primaryContainer
-                    } else {
-                        MaterialTheme.colorScheme.surfaceContainerHigh
-                    }
-                )
-                .clickable(
-                    interactionSource = interactionSource,
-                    indication = null,
-                    onClick = tile.onClick
-                ),
-            contentAlignment = Alignment.Center
-        ) {
-            if (!tile.artworkUrl.isNullOrBlank()) {
-                AsyncImage(
-                    model = tile.artworkUrl,
-                    contentDescription = null,
-                    modifier = Modifier.fillMaxSize(),
-                    contentScale = ContentScale.Crop
-                )
-            } else if (tile.icon != null) {
+        if (!tile.artworkUrl.isNullOrBlank()) {
+            AsyncImage(
+                model = tile.artworkUrl,
+                contentDescription = null,
+                modifier = Modifier.fillMaxSize(),
+                contentScale = ContentScale.Crop
+            )
+        } else if (tile.icon != null) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(
+                        if (tile.accent) {
+                            MaterialTheme.colorScheme.primaryContainer
+                        } else {
+                            MaterialTheme.colorScheme.surfaceContainerHighest
+                        }
+                    ),
+                contentAlignment = Alignment.Center
+            ) {
                 Icon(
                     tile.icon,
                     contentDescription = null,
@@ -1802,34 +1643,6 @@ private fun LibraryCarouselCard(tile: LibraryTile, distance: Float) {
                     modifier = Modifier.size(84.dp)
                 )
             }
-        }
-
-        Spacer(modifier = Modifier.height(22.dp))
-
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(104.dp)
-                .padding(horizontal = 8.dp)
-                .graphicsLayer { alpha = captionAlpha },
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            Text(
-                text = tile.title,
-                style = MaterialTheme.typography.headlineSmall,
-                color = MaterialTheme.colorScheme.onSurface,
-                textAlign = TextAlign.Center,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis
-            )
-            Text(
-                text = tile.subtitle,
-                style = MaterialTheme.typography.bodyLarge,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                textAlign = TextAlign.Center,
-                maxLines = 1
-            )
         }
     }
 }
@@ -1843,112 +1656,132 @@ private fun MixCarouselCard(
     isMixPlaying: Boolean,
     onClick: () -> Unit
 ) {
+    // Mixes ship their artist list in `description`. Stations put "Artist station" there,
+    // which is not a caption — the station's artist is its title, shown above.
+    val artistLine = if (isStation) null else mix.description?.takeIf { it.isNotBlank() }
+
+    ColorBlockCarouselCard(
+        distance = distance,
+        title = if (isStation) mix.title else localizedMixTitle(mix.title),
+        subtitle = artistLine,
+        kicker = if (isStation) "Станция" else null,
+        onClick = onClick
+    ) {
+        AsyncImage(
+            model = artworkUrlForSize(mix.artworkUrl, 500.dp),
+            contentDescription = null,
+            modifier = Modifier.fillMaxSize(),
+            contentScale = ContentScale.Crop
+        )
+
+        if (isMixPlaying) {
+            NowPlayingBadge(
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(14.dp)
+            )
+        }
+
+        if (isLoading) {
+            AppContainedLoadingIndicator(
+                modifier = Modifier
+                    .align(Alignment.Center)
+                    .size(72.dp)
+            )
+        }
+    }
+}
+
+/**
+ * A home carousel card: the cover and a caption panel as two joined halves. The panel lights
+ * up in the primary colour as the card comes into focus, so the card in front reads as a
+ * colour block and its neighbours stay quiet.
+ */
+@Composable
+private fun ColorBlockCarouselCard(
+    distance: Float,
+    title: String,
+    subtitle: String?,
+    kicker: String?,
+    onClick: () -> Unit,
+    cover: @Composable BoxScope.() -> Unit
+) {
     val focus = 1f - distance
-    // Side cards fall back in scale and fade out; their captions disappear well before they
-    // reach the edge so the strip stays quiet instead of competing with the focused cover.
-    val coverScale = lerp(0.92f, 1f, focus)
-    val coverAlpha = lerp(0.45f, 1f, focus)
-    val captionAlpha = (focus * 2.4f - 1.4f).coerceIn(0f, 1f)
+    // Side cards fall back in scale and fade, so the strip stays quiet instead of competing
+    // with the focused cover.
+    val cardScale = lerp(0.92f, 1f, focus)
+    val cardAlpha = lerp(0.45f, 1f, focus)
 
     val interactionSource = remember { MutableInteractionSource() }
     val pressed by interactionSource.collectIsPressedAsState()
     val pressScale by animateFloatAsState(
         targetValue = if (pressed) 0.96f else 1f,
         animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy),
-        label = "coverPress"
+        label = "cardPress"
     )
 
-    // Mixes ship their artist list in `description`. Stations put "Artist station" there,
-    // which is not a caption — the station's artist is its title, shown above.
-    val artistLine = if (isStation) null else mix.description?.takeIf { it.isNotBlank() }
+    val panelColor = androidx.compose.ui.graphics.lerp(
+        MaterialTheme.colorScheme.surfaceContainerHigh,
+        MaterialTheme.colorScheme.primary,
+        focus
+    )
+    val panelContent = androidx.compose.ui.graphics.lerp(
+        MaterialTheme.colorScheme.onSurface,
+        MaterialTheme.colorScheme.onPrimary,
+        focus
+    )
 
     Column(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalAlignment = Alignment.CenterHorizontally
+        modifier = Modifier
+            .fillMaxWidth()
+            .graphicsLayer {
+                scaleX = cardScale * pressScale
+                scaleY = cardScale * pressScale
+                alpha = cardAlpha
+            }
+            .clickable(
+                interactionSource = interactionSource,
+                indication = null,
+                onClick = onClick
+            )
     ) {
         Box(
             modifier = Modifier
                 .fillMaxWidth()
                 .aspectRatio(1f)
-                .graphicsLayer {
-                    scaleX = coverScale * pressScale
-                    scaleY = coverScale * pressScale
-                    alpha = coverAlpha
-                }
-                .clip(AppShapes.extraExtraLarge)
-                .clickable(
-                    interactionSource = interactionSource,
-                    indication = null,
-                    onClick = onClick
-                ),
-            contentAlignment = Alignment.Center
-        ) {
-            BoxWithConstraints {
-                TrackArtwork(
-                    artworkUrl = mix.artworkUrl,
-                    size = maxWidth,
-                    isPlaying = isMixPlaying,
-                    useMorphing = isMixPlaying,
-                    fallbackShape = AppShapes.extraExtraLarge
-                )
-            }
-
-            if (isMixPlaying) {
-                NowPlayingBadge(
-                    modifier = Modifier
-                        .align(Alignment.TopEnd)
-                        .padding(14.dp)
-                )
-            }
-
-            if (isLoading) {
-                CircularProgressIndicator(
-                    modifier = Modifier.size(44.dp),
-                    strokeWidth = 4.dp,
-                    color = MaterialTheme.colorScheme.onPrimary
-                )
-            }
-        }
-
-        Spacer(modifier = Modifier.height(22.dp))
-
-        // Fixed height on purpose. Let this box size to its content and the page indicator
-        // below it sits at a different y for a one-line artist list than for a two-line one,
-        // so it hops every time you swipe between mixes.
+                .clip(RoundedCornerShape(topStart = 44.dp, topEnd = 44.dp, bottomStart = 12.dp, bottomEnd = 12.dp))
+                .background(MaterialTheme.colorScheme.surfaceContainerHigh),
+            contentAlignment = Alignment.Center,
+            content = cover
+        )
+        Spacer(modifier = Modifier.height(4.dp))
+        // Fixed height on purpose: sized to content, the page indicator below would sit at a
+        // different y for a one-line caption than for a two-line one and hop on every swipe.
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(104.dp)
-                .padding(horizontal = 8.dp)
-                .graphicsLayer { alpha = captionAlpha },
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(8.dp)
+                .height(112.dp)
+                .clip(RoundedCornerShape(topStart = 12.dp, topEnd = 12.dp, bottomStart = 44.dp, bottomEnd = 44.dp))
+                .background(panelColor)
+                .padding(horizontal = 22.dp, vertical = 16.dp),
+            verticalArrangement = Arrangement.Center
         ) {
+            if (kicker != null) {
+                Kicker(text = kicker, color = panelContent.copy(alpha = 0.75f))
+                Spacer(modifier = Modifier.height(2.dp))
+            }
             Text(
-                text = if (isStation) mix.title else localizedMixTitle(mix.title),
+                text = title,
                 style = MaterialTheme.typography.headlineSmall,
-                color = MaterialTheme.colorScheme.onSurface,
-                textAlign = TextAlign.Center,
-                maxLines = 2,
+                color = panelContent,
+                maxLines = if (subtitle == null) 2 else 1,
                 overflow = TextOverflow.Ellipsis
             )
-
-            if (isStation) {
+            if (!subtitle.isNullOrBlank()) {
                 Text(
-                    text = "Станция",
-                    style = MaterialTheme.typography.labelLarge,
-                    color = MaterialTheme.colorScheme.primary,
-                    textAlign = TextAlign.Center,
-                    maxLines = 1
-                )
-            }
-
-            if (!artistLine.isNullOrBlank()) {
-                Text(
-                    text = artistLine,
-                    style = MaterialTheme.typography.bodyLarge,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    textAlign = TextAlign.Center,
+                    text = subtitle,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = panelContent.copy(alpha = 0.8f),
                     maxLines = 2,
                     overflow = TextOverflow.Ellipsis
                 )
@@ -2047,18 +1880,11 @@ private fun CarouselPageIndicator(
 
 @Composable
 private fun CarouselSkeleton() {
-    Column(
+    Box(
         modifier = Modifier.fillMaxSize(),
-        verticalArrangement = Arrangement.Center,
-        horizontalAlignment = Alignment.CenterHorizontally
+        contentAlignment = Alignment.Center
     ) {
-        Box(
-            modifier = Modifier
-                .fillMaxWidth(0.72f)
-                .aspectRatio(1f)
-                .clip(AppShapes.extraExtraLarge)
-                .background(MaterialTheme.colorScheme.surfaceContainerHighest)
-        )
+        AppLoadingIndicator(modifier = Modifier.size(96.dp))
     }
 }
 
@@ -2319,13 +2145,12 @@ private fun SettingsScreen(
                                     (soundcloudLikesSyncStatus.downloadedCount + soundcloudLikesSyncStatus.failedCount).toFloat() / soundcloudLikesSyncStatus.totalTracks
                                 } else 0f
 
-                                CustomWavyProgressIndicator(
+                                AppLinearProgress(
                                     progress = progress,
                                     color = AppTheme.brand.soundCloud.color,
                                     trackColor = AppTheme.brand.soundCloud.container,
                                     modifier = Modifier
                                         .fillMaxWidth()
-                                        .height(8.dp)
                                 )
 
                                 Text(
@@ -2393,13 +2218,13 @@ private fun SettingsScreen(
                                 Box(
                                     modifier = Modifier
                                         .size(42.dp)
-                                        .background(AppTheme.brand.yandex.container, CircleShape),
+                                        .background(MaterialTheme.colorScheme.primaryContainer, CircleShape),
                                     contentAlignment = Alignment.Center
                                 ) {
                                     Icon(
                                         imageVector = Icons.Default.CloudSync,
                                         contentDescription = null,
-                                        tint = AppTheme.brand.yandex.onContainer,
+                                        tint = MaterialTheme.colorScheme.onPrimaryContainer,
                                         modifier = Modifier.size(22.dp)
                                     )
                                 }
@@ -2429,7 +2254,7 @@ private fun SettingsScreen(
                                     text = statusText,
                                     style = MaterialTheme.typography.bodyMedium,
                                     fontWeight = FontWeight.Medium,
-                                    color = if (yandexLikesSyncStatus.state == SyncState.FAILED) MaterialTheme.colorScheme.error else AppTheme.brand.yandex.color
+                                    color = if (yandexLikesSyncStatus.state == SyncState.FAILED) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
                                 )
 
                                 if (yandexLikesSyncStatus.state == SyncState.DOWNLOADING) {
@@ -2445,13 +2270,10 @@ private fun SettingsScreen(
                                         (yandexLikesSyncStatus.downloadedCount + yandexLikesSyncStatus.failedCount).toFloat() / yandexLikesSyncStatus.totalTracks
                                     } else 0f
 
-                                    CustomWavyProgressIndicator(
+                                    AppLinearProgress(
                                         progress = progress,
-                                        color = AppTheme.brand.yandex.color,
-                                        trackColor = AppTheme.brand.yandex.container,
                                         modifier = Modifier
                                             .fillMaxWidth()
-                                            .height(8.dp)
                                     )
 
                                     Text(
@@ -2484,8 +2306,8 @@ private fun SettingsScreen(
                                         modifier = Modifier.weight(1f),
                                         shape = MaterialTheme.shapes.large,
                                         colors = androidx.compose.material3.ButtonDefaults.buttonColors(
-                                            containerColor = AppTheme.brand.yandex.color,
-                                            contentColor = AppTheme.brand.yandex.onColor
+                                            containerColor = MaterialTheme.colorScheme.primary,
+                                            contentColor = MaterialTheme.colorScheme.onPrimary
                                         )
                                     ) {
                                         Text(
@@ -2581,13 +2403,13 @@ private fun SettingsScreen(
                             Box(
                                 modifier = Modifier
                                     .size(42.dp)
-                                    .background(AppTheme.brand.yandex.container, CircleShape),
+                                    .background(MaterialTheme.colorScheme.primaryContainer, CircleShape),
                                 contentAlignment = Alignment.Center
                             ) {
                                 Icon(
                                     imageVector = Icons.Default.Person,
                                     contentDescription = null,
-                                    tint = AppTheme.brand.yandex.onContainer,
+                                    tint = MaterialTheme.colorScheme.onPrimaryContainer,
                                     modifier = Modifier.size(22.dp)
                                 )
                             }
@@ -2618,8 +2440,8 @@ private fun SettingsScreen(
                                     onClick = onYandexLoginClick,
                                     shape = MaterialTheme.shapes.medium,
                                     colors = androidx.compose.material3.ButtonDefaults.buttonColors(
-                                        containerColor = AppTheme.brand.yandex.color,
-                                        contentColor = AppTheme.brand.yandex.onColor
+                                        containerColor = MaterialTheme.colorScheme.primary,
+                                        contentColor = MaterialTheme.colorScheme.onPrimary
                                     )
                                 ) {
                                     Text("Войти")
@@ -2795,21 +2617,62 @@ private fun SearchScreen(
     yandexError: String?,
     onYandexQueryChange: (String) -> Unit,
     hasYandexToken: Boolean,
-    onOpenSettings: () -> Unit
+    onOpenSettings: () -> Unit,
+    albums: List<SoundCloudPlaylist> = emptyList(),
+    playlists: List<SoundCloudPlaylist> = emptyList(),
+    hasMore: Boolean = false,
+    isLoadingMore: Boolean = false,
+    onLoadMore: () -> Unit = {},
+    openedPlaylist: SoundCloudPlaylist? = null,
+    isPlaylistLoading: Boolean = false,
+    playlistError: String? = null,
+    onOpenPlaylist: (SoundCloudPlaylist) -> Unit = {},
+    onClosePlaylist: () -> Unit = {},
+    onPlayPlaylistTrack: (SoundCloudTrack, List<SoundCloudTrack>) -> Unit = { _, _ -> }
 ) {
     val focusRequester = remember { FocusRequester() }
     val haptic = LocalHapticFeedback.current
+    // Hoisted so that coming back from an album lands where the list was left.
+    val listState = rememberLazyListState()
+    val albumsRowState = rememberLazyListState()
+    val playlistsRowState = rememberLazyListState()
+    val isFieldShown by rememberUpdatedState(openedPlaylist == null)
     LaunchedEffect(Unit) {
         kotlinx.coroutines.delay(100)
-        focusRequester.requestFocus()
+        // The field isn't composed while an album is open, and focusing a detached requester throws.
+        if (isFieldShown) focusRequester.requestFocus()
+    }
+
+    if (openedPlaylist != null) {
+        SetDetailContent(
+            playlist = openedPlaylist,
+            subtitle = openedPlaylist.user?.username.orEmpty(),
+            isLoading = isPlaylistLoading,
+            error = playlistError,
+            favorites = favorites,
+            currentTrackId = currentTrackId,
+            isPlaying = isPlaying,
+            downloadProgress = downloadProgress,
+            onBack = onClosePlaylist,
+            onPlayTrack = { track -> onPlayPlaylistTrack(track, openedPlaylist.tracks) },
+            onFavoriteClick = onFavoriteClick
+        )
+        return
     }
 
     val activeQuery = if (searchInYandex) yandexQuery else query
     val activeTracks = if (searchInYandex) yandexTracks else tracks
     val activeLoading = if (searchInYandex) yandexLoading else isLoading
     val activeError = if (searchInYandex) yandexError else errorMessage
+    val activeAlbums = if (searchInYandex) emptyList() else albums
+    val activePlaylists = if (searchInYandex) emptyList() else playlists
+    val topResult = remember(activeQuery, activeAlbums, activePlaylists) {
+        pickTopResult(activeQuery, activeAlbums, activePlaylists)
+    }
+    val favoritesMap = remember(favorites) { favorites.associateBy { it.id } }
 
     LazyColumn(
+        state = listState,
         modifier = Modifier
             .fillMaxSize()
             .statusBarsPadding()
@@ -2818,14 +2681,14 @@ private fun SearchScreen(
             .imePadding(),
         // top = 0: the bar has to start at the same y as the home bar, or entering search
         // shifts the title and back button downward and the transition reads as a jump.
-        contentPadding = PaddingValues(start = 16.dp, top = 0.dp, end = 16.dp, bottom = 120.dp),
-        verticalArrangement = Arrangement.spacedBy(14.dp)
+        // Rows of a group sit flush, so spacing between blocks is set per item instead.
+        contentPadding = PaddingValues(start = 16.dp, top = 0.dp, end = 16.dp, bottom = 120.dp)
     ) {
-        item {
+        item(key = "search-top-bar") {
             TopBar(title = "Поиск", onBack = onBack)
         }
 
-        item {
+        item(key = "search-field") {
             SearchField(
                 query = activeQuery,
                 onQueryChange = { newQuery ->
@@ -2835,104 +2698,228 @@ private fun SearchScreen(
                         onQueryChange(newQuery)
                     }
                 },
-                focusRequester = focusRequester
+                focusRequester = focusRequester,
+                modifier = Modifier.padding(top = 8.dp)
             )
         }
 
-        item {
+        item(key = "search-source") {
             SegmentedControl(
                 items = listOf("SoundCloud", "Яндекс Музыка"),
                 selectedIndex = if (searchInYandex) 1 else 0,
                 onSelectedIndexChanged = { index ->
                     haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                     onSearchSourceChanged(index == 1)
-                }
+                },
+                modifier = Modifier.padding(top = 12.dp)
             )
         }
 
         if (activeLoading) {
-            item {
-                CustomWavyProgressIndicator(
-                    progress = null,
-                    color = if (searchInYandex) AppTheme.brand.yandex.color else MaterialTheme.colorScheme.primary,
-                    trackColor = if (searchInYandex) AppTheme.brand.yandex.container else MaterialTheme.colorScheme.primaryContainer,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(6.dp)
-                )
+            item(key = "search-loading") {
+                LoadingBlock(modifier = Modifier.padding(top = 16.dp), height = 120.dp)
             }
         }
 
         if (activeError != null) {
-            item { MessageCard(activeError) }
+            item(key = "search-error") {
+                Box(modifier = Modifier.padding(top = 16.dp)) { MessageCard(activeError) }
+            }
         }
 
         if (searchInYandex && !hasYandexToken) {
-            item {
-                Card(
+            item(key = "search-yandex-login") {
+                Surface(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(vertical = 16.dp),
-                    shape = MaterialTheme.shapes.extraLarge,
-                    colors = CardDefaults.cardColors(
-                        containerColor = MaterialTheme.colorScheme.surfaceContainerHigh
-                    )
+                        .padding(top = 20.dp),
+                    shape = RoundedCornerShape(32.dp),
+                    color = MaterialTheme.colorScheme.primary,
+                    contentColor = MaterialTheme.colorScheme.onPrimary
                 ) {
                     Column(
                         modifier = Modifier.padding(24.dp),
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.spacedBy(16.dp)
+                        verticalArrangement = Arrangement.spacedBy(14.dp)
                     ) {
-                        Icon(
-                            imageVector = Icons.Default.MusicNote,
-                            contentDescription = null,
-                            tint = AppTheme.brand.yandex.color,
-                            modifier = Modifier.size(48.dp)
-                        )
+                        OnPanelChip(text = "Яндекс Музыка")
                         Text(
-                            text = "Войдите в Яндекс Музыку в настройках, чтобы искать треки.",
-                            style = MaterialTheme.typography.titleMedium,
-                            textAlign = TextAlign.Center
+                            text = "Войдите в Яндекс Музыку, чтобы искать треки.",
+                            style = MaterialTheme.typography.titleLarge
                         )
-                        Button(
-                            onClick = onOpenSettings,
-                            shape = MaterialTheme.shapes.large,
-                            colors = androidx.compose.material3.ButtonDefaults.buttonColors(
-                                containerColor = AppTheme.brand.yandex.color,
-                                contentColor = AppTheme.brand.yandex.onColor
-                            )
-                        ) {
-                            Text("Перейти в настройки")
-                        }
+                        PanelPrimaryButton(
+                            text = "Перейти в настройки",
+                            icon = Icons.Default.Settings,
+                            onClick = onOpenSettings
+                        )
                     }
                 }
             }
-        } else {
-            if (activeTracks.isEmpty() && !activeLoading) {
-                item {
+            return@LazyColumn
+        }
+
+        if (topResult != null) {
+            item(key = "search-top-result") {
+                Column(modifier = Modifier.padding(top = 24.dp)) {
+                    Kicker(text = "Лучший результат")
+                    Spacer(modifier = Modifier.height(10.dp))
+                    TopResultCard(
+                        kicker = setCaption(topResult),
+                        title = topResult.title ?: "Без названия",
+                        subtitle = listOfNotNull(
+                            topResult.user?.username,
+                            plural(topResult.trackCount, "трек", "трека", "треков")
+                        ).joinToString(" · "),
+                        artworkUrl = topResult.displayArtworkUrl,
+                        onClick = { onOpenPlaylist(topResult) }
+                    )
+                }
+            }
+        }
+
+        if (activeAlbums.isNotEmpty()) {
+            item(key = "search-albums-header") {
+                SectionTitle("Альбомы", modifier = Modifier.padding(top = 24.dp, bottom = 8.dp))
+            }
+            item(key = "search-albums") {
+                AlbumCarousel(
+                    albums = activeAlbums.map { album ->
+                        CarouselAlbum(
+                            key = album.id,
+                            title = album.title ?: "Без названия",
+                            subtitle = album.user?.username.orEmpty(),
+                            caption = setCaption(album),
+                            artworkUrl = album.displayArtworkUrl,
+                            onClick = { onOpenPlaylist(album) }
+                        )
+                    }
+                )
+            }
+        }
+
+        if (activePlaylists.isNotEmpty()) {
+            item(key = "search-playlists-header") {
+                SectionTitle(
+                    "Плейлисты и сборники",
+                    modifier = Modifier.padding(top = 24.dp, bottom = 8.dp)
+                )
+            }
+            // Two to a row, up to three rows; the rest are a scroll of the search further on.
+            activePlaylists.take(6).chunked(2).forEachIndexed { rowIndex, pair ->
+                item(key = "search-playlists-row-$rowIndex") {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(bottom = 10.dp),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        pair.forEach { playlist ->
+                            CompactCollectionCard(
+                                title = playlist.title ?: "Без названия",
+                                caption = plural(playlist.trackCount, "трек", "трека", "треков"),
+                                artworkUrl = playlist.displayArtworkUrl,
+                                onClick = { onOpenPlaylist(playlist) },
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
+                        if (pair.size == 1) Spacer(modifier = Modifier.weight(1f))
+                    }
+                }
+            }
+        }
+
+        if (activeTracks.isNotEmpty()) {
+            if (activeAlbums.isNotEmpty() || activePlaylists.isNotEmpty() || topResult != null) {
+                item(key = "search-tracks-header") {
+                    SectionTitle("Треки", modifier = Modifier.padding(top = 18.dp, bottom = 8.dp))
+                }
+            } else {
+                item(key = "search-tracks-gap") { Spacer(modifier = Modifier.height(20.dp)) }
+            }
+            val showLoadMore = hasMore && !activeLoading
+            val rowCount = activeTracks.size + if (showLoadMore) 1 else 0
+            itemsIndexed(
+                activeTracks,
+                key = { _, track -> "${if (searchInYandex) "yandex" else "sc"}-search-${track.id}" }
+            ) { index, track ->
+                val favorite = favoritesMap[track.id]
+                TrackCard(
+                    track = track,
+                    isFavorite = favorite != null,
+                    isSelected = track.id == currentTrackId,
+                    downloadState = favorite?.downloadState,
+                    progress = downloadProgress[track.id],
+                    isPlaying = isPlaying,
+                    onClick = { onPlayTrack(track) },
+                    onFavoriteClick = { onFavoriteClick(track) },
+                    position = groupPosition(index, rowCount)
+                )
+            }
+            if (showLoadMore) {
+                item(key = "search-load-more") {
+                    LoadMoreRow(
+                        isLoading = isLoadingMore,
+                        onClick = onLoadMore,
+                        position = groupPosition(rowCount - 1, rowCount)
+                    )
+                }
+            }
+        } else if (!activeLoading && activeAlbums.isEmpty() && activePlaylists.isEmpty()) {
+            item(key = "search-empty") {
+                Box(modifier = Modifier.padding(top = 20.dp)) {
                     EmptyState(
                         if (activeQuery.isBlank()) "Напиши, что хочешь услышать."
                         else "Ничего не нашлось."
                     )
                 }
-            } else {
-                items(activeTracks, key = { "${if (searchInYandex) "yandex" else "sc"}-search-${it.id}" }) { track ->
-                    val favorite = favorites.firstOrNull { it.id == track.id }
-                    val progress = downloadProgress[track.id]
-                    TrackCard(
-                        track = track,
-                        isFavorite = favorite != null,
-                        isSelected = track.id == currentTrackId,
-                        downloadState = favorite?.downloadState,
-                        progress = progress,
-                        isPlaying = isPlaying,
-                        onClick = { onPlayTrack(track) },
-                        onFavoriteClick = { onFavoriteClick(track) }
-                    )
-                }
             }
         }
     }
+}
+
+/**
+ * The set to single out above the results. SoundCloud's own ranking can't be trusted for this:
+ * for "persona 5 music" its first album is a lullaby compilation that merely mentions "5 hours"
+ * and "music". So sets are scored on how much of the query their title carries, with a bonus
+ * for containing its opening words as a phrase, and only a convincing match gets the spot.
+ */
+private fun pickTopResult(
+    query: String,
+    albums: List<SoundCloudPlaylist>,
+    playlists: List<SoundCloudPlaylist>
+): SoundCloudPlaylist? {
+    val tokens = query.lowercase().split(Regex("\\s+")).filter { it.isNotBlank() }
+    if (tokens.isEmpty()) return null
+    val phrase = tokens.take(2).joinToString(" ")
+
+    fun score(set: SoundCloudPlaylist): Double {
+        val title = set.title?.lowercase() ?: return 0.0
+        val words = title.split(Regex("[^\\p{L}\\p{N}]+")).toSet()
+        val matched = tokens.count { it in words }.toDouble() / tokens.size
+        val phraseBonus = if (tokens.size >= 2 && title.contains(phrase)) 0.5 else 0.0
+        return matched + phraseBonus
+    }
+
+    fun best(sets: List<SoundCloudPlaylist>): SoundCloudPlaylist? =
+        sets.take(8)
+            .map { it to score(it) }
+            .filter { it.second >= 1.0 }
+            .maxWithOrNull(compareBy<Pair<SoundCloudPlaylist, Double>> { it.second }.thenBy { it.first.trackCount })
+            ?.first
+
+    return best(albums) ?: best(playlists)
+}
+
+/** "Альбом · 2017", "EP · 2020", "Плейлист · 42 трека". */
+private fun setCaption(set: SoundCloudPlaylist): String {
+    val kind = when (set.setType?.lowercase()) {
+        "album" -> "Альбом"
+        "ep" -> "EP"
+        "single" -> "Сингл"
+        "compilation" -> "Сборник"
+        else -> if (set.isAlbum == true) "Альбом" else "Плейлист"
+    }
+    val year = set.releaseDate?.take(4)?.takeIf { it.length == 4 && it.all(Char::isDigit) }
+    return if (year != null) "$kind · $year" else "$kind · ${plural(set.trackCount, "трек", "трека", "треков")}"
 }
 
 @Composable
@@ -2983,38 +2970,72 @@ private fun DownloadsScreen(
                 .fillMaxWidth()
                 .padding(horizontal = 16.dp, vertical = 8.dp)
         ) {
-            TopBar(title = "Скачанные", onBack = onBack)
+            // No title here: the hero right below already carries it.
+            TopBar(title = "", onBack = onBack)
         }
 
         LazyColumn(
             modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(start = 16.dp, top = 4.dp, end = 16.dp, bottom = 120.dp),
-            verticalArrangement = Arrangement.spacedBy(14.dp)
+            contentPadding = PaddingValues(start = 16.dp, top = 4.dp, end = 16.dp, bottom = 120.dp)
         ) {
-            item {
-                FolderHero(
-                    count = tracks.size,
-                    artworkUri = folderArtworkUri,
-                    onChangeArtwork = { imagePicker.launch(arrayOf("image/*")) },
-                    onImportLocalTrack = { audioPicker.launch(arrayOf("audio/*")) }
+            item(key = "downloads-hero") {
+                CollectionHero(
+                    title = "Скачанное",
+                    kicker = "На устройстве",
+                    subtitle = plural(tracks.size, "трек", "трека", "треков") + " доступны офлайн",
+                    onArtworkClick = { imagePicker.launch(arrayOf("image/*")) },
+                    artwork = {
+                        if (!folderArtworkUri.isNullOrBlank()) {
+                            AsyncImage(
+                                model = folderArtworkUri,
+                                contentDescription = null,
+                                modifier = Modifier.fillMaxSize(),
+                                contentScale = ContentScale.Crop
+                            )
+                        } else {
+                            IconCover(icon = Icons.Default.Download)
+                        }
+                    },
+                    actions = {
+                        if (tracks.isNotEmpty()) {
+                            PanelPrimaryButton(
+                                text = "Слушать",
+                                icon = Icons.Default.PlayArrow,
+                                onClick = { onPlayTrack(tracks.first()) }
+                            )
+                        }
+                        PanelIconButton(
+                            icon = Icons.Default.Image,
+                            contentDescription = "Сменить обложку",
+                            onClick = { imagePicker.launch(arrayOf("image/*")) }
+                        )
+                        PanelIconButton(
+                            icon = Icons.Default.Add,
+                            contentDescription = "Импортировать треки с устройства",
+                            onClick = { audioPicker.launch(arrayOf("audio/*")) }
+                        )
+                    }
                 )
             }
 
+            item(key = "downloads-gap") { Spacer(modifier = Modifier.height(20.dp)) }
+
             if (tracks.isEmpty()) {
-                item { EmptyState("Здесь появятся треки, которые ты сохранишь на устройство.") }
+                item(key = "downloads-empty") {
+                    EmptyState("Здесь появятся треки, которые ты сохранишь на устройство.")
+                }
             } else {
-                items(tracks, key = { "downloaded-${it.id}" }) { track ->
-                    val progress = downloadProgress[track.id]
-                    val debugPct = downloadedPercentages[track.id]
+                itemsIndexed(tracks, key = { _, track -> "downloaded-${track.id}" }) { index, track ->
                     DownloadedTrackCard(
                         track = track,
                         isSelected = track.id == currentTrackId,
-                        progress = progress,
+                        progress = downloadProgress[track.id],
                         isPlaying = isPlaying,
                         onClick = { onPlayTrack(track) },
                         onDeleteDownload = { onDeleteDownload(track) },
                         showDebugPercentage = showDebugPercentage,
-                        debugPercentage = debugPct
+                        debugPercentage = downloadedPercentages[track.id],
+                        position = groupPosition(index, tracks.size)
                     )
                 }
             }
@@ -3293,147 +3314,44 @@ private fun SearchLaunchCard(onClick: () -> Unit) {
 }
 
 @Composable
-private fun SearchField(query: String, onQueryChange: (String) -> Unit, focusRequester: FocusRequester) {
+private fun SearchField(
+    query: String,
+    onQueryChange: (String) -> Unit,
+    focusRequester: FocusRequester,
+    modifier: Modifier = Modifier
+) {
     OutlinedTextField(
         value = query,
         onValueChange = onQueryChange,
-        modifier = Modifier
+        modifier = modifier
             .fillMaxWidth()
+            .heightIn(min = 60.dp)
             .focusRequester(focusRequester),
         singleLine = true,
-        shape = MaterialTheme.shapes.extraLarge,
-        placeholder = { Text("Найти трек") },
-        leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
+        shape = RoundedCornerShape(30.dp),
+        textStyle = MaterialTheme.typography.titleMedium,
+        placeholder = { Text("Трек, альбом или артист") },
+        leadingIcon = {
+            Icon(
+                Icons.Default.Search,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.primary
+            )
+        },
+        trailingIcon = {
+            if (query.isNotEmpty()) {
+                IconButton(onClick = { onQueryChange("") }) {
+                    Icon(Icons.Default.Close, contentDescription = "Очистить")
+                }
+            }
+        },
         colors = OutlinedTextFieldDefaults.colors(
-            focusedContainerColor = MaterialTheme.colorScheme.surfaceContainerLow,
+            focusedContainerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
             unfocusedContainerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
-            focusedBorderColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.55f),
+            focusedBorderColor = MaterialTheme.colorScheme.primary,
             unfocusedBorderColor = Color.Transparent
         )
     )
-}
-
-@Composable
-private fun DownloadedFolderCard(count: Int, artworkUri: String?, onClick: () -> Unit) {
-    val haptic = LocalHapticFeedback.current
-    val scale by animateFloatAsState(
-        targetValue = 1f,
-        animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy)
-    )
-
-    Card(
-        onClick = {
-            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-            onClick()
-        },
-        modifier = Modifier
-            .fillMaxWidth()
-            .graphicsLayer {
-                scaleX = scale
-                scaleY = scale
-            },
-        shape = AppShapes.extraLargeIncreased,
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceContainerHigh
-        ),
-        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
-    ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(14.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            FolderArtwork(artworkUri, 82.dp)
-            Spacer(modifier = Modifier.width(16.dp))
-            Column {
-                Text(
-                    text = "Скачанные",
-                    style = MaterialTheme.typography.titleLarge,
-                )
-                Text(
-                    text = "$count треков на устройстве",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.8f)
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun FolderHero(
-    count: Int,
-    artworkUri: String?,
-    onChangeArtwork: () -> Unit,
-    onImportLocalTrack: (() -> Unit)? = null
-) {
-    val haptic = LocalHapticFeedback.current
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        shape = AppShapes.extraExtraLarge,
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceContainerHigh
-        ),
-        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
-    ) {
-        Column(
-            modifier = Modifier.padding(24.dp).fillMaxWidth(),
-            verticalArrangement = Arrangement.spacedBy(20.dp),
-            horizontalAlignment = Alignment.CenterHorizontally
-        ) {
-            FolderArtwork(artworkUri, 220.dp)
-
-            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                Text(
-                    text = "Скачанные",
-                    style = MaterialTheme.typography.headlineLarge,
-                )
-                Text(
-                    text = "$count треков доступны оффлайн",
-                    style = MaterialTheme.typography.titleMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
-                Button(
-                    onClick = {
-                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                        onChangeArtwork()
-                    },
-                    shape = AppShapes.largeIncreased,
-                    modifier = Modifier.weight(1f).height(52.dp),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = MaterialTheme.colorScheme.secondaryContainer,
-                        contentColor = MaterialTheme.colorScheme.onSecondaryContainer
-                    )
-                ) {
-                    Icon(Icons.Default.Image, contentDescription = null)
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text("Обложка", maxLines = 1, overflow = TextOverflow.Ellipsis)
-                }
-
-                if (onImportLocalTrack != null) {
-                    Button(
-                        onClick = {
-                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                            onImportLocalTrack()
-                        },
-                        shape = AppShapes.largeIncreased,
-                        modifier = Modifier.weight(1f).height(52.dp)
-                    ) {
-                        Icon(Icons.Default.Add, contentDescription = null)
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text("Импорт", maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    }
-                }
-            }
-        }
-    }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -3672,11 +3590,7 @@ private fun MixCard(
             }
 
             if (isLoading) {
-                CircularProgressIndicator(
-                    modifier = Modifier.size(36.dp),
-                    strokeWidth = 3.dp,
-                    color = MaterialTheme.colorScheme.primary
-                )
+                AppLoadingIndicator(modifier = Modifier.size(48.dp))
             }
         }
 
@@ -3714,41 +3628,60 @@ private fun MixDetailScreen(
                 leadingIcon = Icons.AutoMirrored.Filled.ArrowBack,
                 leadingDescription = "Назад",
                 onLeadingClick = onBack,
-                title = {
-                    Text(
-                        text = localizedMixTitle(mix.title),
-                        style = MaterialTheme.typography.headlineLarge,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                }
+                // No title here: the colour block right below carries it.
+                title = {}
             )
 
-            // Centred, and noticeably larger than a row's 68dp thumbnail. Laid out as
-            // cover-left + two lines of text it was structurally a TrackCard, so it read as
-            // just another item in the list instead of as the screen's header.
-            Column(
+            // Cover and title as one compact colour block, so the list below gets the height.
+            val isStation = mix.permalink.contains("station") || mix.id.contains("station")
+            Surface(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 24.dp),
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(10.dp)
+                    .padding(horizontal = 16.dp),
+                shape = RoundedCornerShape(32.dp),
+                color = MaterialTheme.colorScheme.primary,
+                contentColor = MaterialTheme.colorScheme.onPrimary
             ) {
-                TrackArtwork(
-                    artworkUrl = mix.artworkUrl,
-                    size = 132.dp,
-                    useMorphing = false,
-                    fallbackShape = AppShapes.extraLargeIncreased
-                )
-                if (!mix.description.isNullOrBlank()) {
-                    Text(
-                        text = mix.description,
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        textAlign = TextAlign.Center,
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis
-                    )
+                Row(
+                    modifier = Modifier.padding(16.dp),
+                    horizontalArrangement = Arrangement.spacedBy(16.dp)
+                ) {
+                    CoverImage(url = mix.artworkUrl, size = 120.dp, shape = RoundedCornerShape(24.dp))
+                    Column(modifier = Modifier.weight(1f).height(120.dp)) {
+                        Kicker(
+                            text = if (isStation) "Станция" else "Микс",
+                            color = MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.78f)
+                        )
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            text = if (isStation) mix.title else localizedMixTitle(mix.title),
+                            style = MaterialTheme.typography.titleLarge,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        // Stations put "Artist station" in the description, which is not a
+                        // caption worth showing.
+                        val description = mix.description?.takeIf { it.isNotBlank() && !isStation }
+                        if (description != null) {
+                            Text(
+                                text = description,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.8f),
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                        Spacer(modifier = Modifier.weight(1f))
+                        if (tracks.isNotEmpty()) {
+                            PanelIconButton(
+                                icon = Icons.Default.PlayArrow,
+                                contentDescription = "Слушать",
+                                onClick = { onPlayTrack(tracks.first()) },
+                                size = 44.dp,
+                                modifier = Modifier.align(Alignment.End)
+                            )
+                        }
+                    }
                 }
             }
 
@@ -3782,10 +3715,7 @@ private fun MixDetailScreen(
                     modifier = Modifier.fillMaxSize(),
                     contentAlignment = Alignment.Center
                 ) {
-                    CircularProgressIndicator(
-                        modifier = Modifier.size(44.dp),
-                        strokeWidth = 4.dp
-                    )
+                    AppLoadingIndicator(modifier = Modifier.size(72.dp))
                 }
                 return@Column
             }
@@ -3798,11 +3728,11 @@ private fun MixDetailScreen(
                     .fillMaxWidth()
                     .weight(1f)
             ) {
-                // A TrackCard is 68dp of artwork plus 14dp padding top and bottom. Guessing
-                // low here is what let an extra row onto the page, and a Column with no room
-                // left squeezes its children rather than dropping them.
-                val rowHeight = 96.dp
-                val rowGap = 8.dp
+                // Rows sit flush in one container per page, each one row plus its divider.
+                // Guessing low here is what let an extra row onto the page, and a Column with
+                // no room left squeezes its children rather than dropping them.
+                val rowHeight = TrackRowHeight + 1.dp
+                val rowGap = 0.dp
                 val perPage = ((maxHeight + rowGap) / (rowHeight + rowGap)).toInt().coerceIn(1, 8)
                 val pageCount = (tracks.size + perPage - 1) / perPage
                 val pagerState = rememberPagerState { pageCount }
@@ -3834,7 +3764,8 @@ private fun MixDetailScreen(
                                     progress = downloadProgress[track.id],
                                     isPlaying = isPlaying,
                                     onClick = { onPlayTrack(track) },
-                                    onFavoriteClick = { onFavoriteClick(track) }
+                                    onFavoriteClick = { onFavoriteClick(track) },
+                                    position = groupPosition(index - from, to - from)
                                 )
                             }
                         }
@@ -3857,6 +3788,115 @@ private fun MixDetailScreen(
     }
 }
 
+/**
+ * One row of a grouped track list. Rows sit flush against each other and [position] rounds
+ * the outer corners of the first and last, so a run of them reads as one container with
+ * hairlines between the rows — the list style of the colour-block redesign.
+ */
+@Composable
+private fun TrackRowFrame(
+    position: GroupPosition,
+    isSelected: Boolean,
+    onClick: () -> Unit,
+    content: @Composable RowScope.() -> Unit
+) {
+    val haptic = LocalHapticFeedback.current
+    Surface(
+        onClick = {
+            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+            onClick()
+        },
+        modifier = Modifier.fillMaxWidth(),
+        shape = position.shape(),
+        color = if (isSelected) {
+            MaterialTheme.colorScheme.secondaryContainer
+        } else {
+            MaterialTheme.colorScheme.surfaceContainerHigh
+        },
+        contentColor = if (isSelected) {
+            MaterialTheme.colorScheme.onSecondaryContainer
+        } else {
+            MaterialTheme.colorScheme.onSurface
+        }
+    ) {
+        Column {
+            if (position.hasDividerAbove) GroupDivider()
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(TrackRowHeight)
+                    .padding(start = 12.dp, end = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(14.dp),
+                content = content
+            )
+        }
+    }
+}
+
+/** Height of a track row's content; a row with a divider above is one dp taller. */
+private val TrackRowHeight = 72.dp
+
+/** Cover thumbnail for a row; the playing row shows moving equaliser bars over it. */
+@Composable
+private fun TrackRowArtwork(artworkUrl: String?, isCurrent: Boolean, isPlaying: Boolean) {
+    Box(contentAlignment = Alignment.Center) {
+        CoverImage(url = artworkUrl, size = 52.dp, shape = RoundedCornerShape(14.dp))
+        if (isCurrent) {
+            Box(
+                modifier = Modifier
+                    .size(52.dp)
+                    .clip(RoundedCornerShape(14.dp))
+                    .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.82f)),
+                contentAlignment = Alignment.Center
+            ) {
+                EqualizerBars(
+                    animate = isPlaying,
+                    color = MaterialTheme.colorScheme.onPrimary
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun EqualizerBars(animate: Boolean, color: Color, modifier: Modifier = Modifier) {
+    val transition = rememberInfiniteTransition(label = "rowBars")
+    Row(
+        modifier = modifier,
+        horizontalArrangement = Arrangement.spacedBy(3.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        repeat(4) { index ->
+            val height by transition.animateFloat(
+                initialValue = 0.3f,
+                targetValue = 1f,
+                animationSpec = infiniteRepeatable(
+                    animation = tween(durationMillis = 420 + index * 130, easing = FastOutSlowInEasing),
+                    repeatMode = RepeatMode.Reverse
+                ),
+                label = "rowBar$index"
+            )
+            Box(
+                modifier = Modifier
+                    .width(3.dp)
+                    .height(18.dp * (if (animate) height else 0.45f))
+                    .clip(CircleShape)
+                    .background(color)
+            )
+        }
+    }
+}
+
+private fun SoundCloudTrack.artistLine(): String =
+    // Was just the uploader, so a collaboration listed one name here while the player showed
+    // several.
+    artists?.takeIf { it.isNotEmpty() }
+        ?.mapNotNull { it.username }
+        ?.joinToString(", ")
+        ?: user?.username
+        ?: "Unknown Artist"
+
 @Composable
 private fun TrackCard(
     track: SoundCloudTrack,
@@ -3866,115 +3906,49 @@ private fun TrackCard(
     progress: Float? = null,
     isPlaying: Boolean = false,
     onClick: () -> Unit,
-    onFavoriteClick: () -> Unit
+    onFavoriteClick: () -> Unit,
+    position: GroupPosition = GroupPosition.Single
 ) {
-    val haptic = LocalHapticFeedback.current
-    val scale by animateFloatAsState(
-        targetValue = if (isSelected) 1.02f else 1f,
-        animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy),
-        label = "scale"
-    )
-
-    Card(
-        onClick = {
-            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-            onClick()
-        },
-        modifier = Modifier
-            .fillMaxWidth()
-            .graphicsLayer {
-                scaleX = scale
-                scaleY = scale
-            },
-        shape = AppShapes.extraLargeIncreased,
-        colors = CardDefaults.cardColors(
-            containerColor = if (isSelected) {
-                MaterialTheme.colorScheme.primaryContainer
-            } else {
-                MaterialTheme.colorScheme.surfaceContainerHigh
-            },
-            contentColor = if (isSelected) {
-                MaterialTheme.colorScheme.onPrimaryContainer
-            } else {
-                MaterialTheme.colorScheme.onSurface
-            }
-        ),
-        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
-    ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(14.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            TrackArtwork(track.artworkUrl, size = 68.dp, isPlaying = isSelected && isPlaying)
-            Spacer(modifier = Modifier.width(16.dp))
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = track.title ?: "Unknown Track",
-                    style = MaterialTheme.typography.titleMedium,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-                Text(
-                    // Was just the uploader, so a collaboration listed one name here while the
-                    // player showed several.
-                    text = track.artists?.takeIf { it.isNotEmpty() }
-                        ?.mapNotNull { it.username }
-                        ?.joinToString(", ")
-                        ?: track.user?.username
-                        ?: "Unknown Artist",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = if (isSelected) {
-                        MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.85f)
-                    } else {
-                        MaterialTheme.colorScheme.onSurfaceVariant
-                    },
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-                
-                if (downloadState == DownloadState.DOWNLOADING) {
-                    Spacer(modifier = Modifier.height(4.dp))
-                    CustomWavyProgressIndicator(
-                        progress = progress,
-                        color = if (isSelected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.primary,
-                        trackColor = (if (isSelected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.primary).copy(alpha = 0.2f),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(6.dp)
-                    )
-                }
-            }
-            
-            val favoriteScale by animateFloatAsState(
-                targetValue = if (isFavorite) 1.2f else 1f,
-                animationSpec = spring(dampingRatio = Spring.DampingRatioHighBouncy)
+    TrackRowFrame(position = position, isSelected = isSelected, onClick = onClick) {
+        TrackRowArtwork(track.artworkUrl, isCurrent = isSelected, isPlaying = isPlaying)
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = track.title ?: "Unknown Track",
+                style = MaterialTheme.typography.titleMedium,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
             )
-
-            IconButton(
-                onClick = onFavoriteClick,
-                modifier = Modifier
-                    .padding(start = 4.dp)
-                    .graphicsLayer {
-                        scaleX = favoriteScale
-                        scaleY = favoriteScale
-                    }
-            ) {
-                Icon(
-                    imageVector = if (isFavorite) Icons.Filled.Favorite else Icons.Outlined.FavoriteBorder,
-                    contentDescription = null,
-                    tint = if (isSelected) {
-                        MaterialTheme.colorScheme.onPrimaryContainer
-                    } else {
-                        // One icon family across the app: unset just means a quieter accent,
-                        // not a different (grey) colour.
-                        MaterialTheme.colorScheme.primary.copy(
-                            alpha = if (isFavorite) 1f else 0.55f
-                        )
-                    }
-                )
+            val duration = track.duration.takeIf { it > 0L }?.let { " · " + formatDuration(it) }.orEmpty()
+            Text(
+                text = track.artistLine() + duration,
+                style = MaterialTheme.typography.bodyMedium,
+                color = LocalContentColor.current.copy(alpha = 0.72f),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            if (downloadState == DownloadState.DOWNLOADING) {
+                Spacer(modifier = Modifier.height(4.dp))
+                AppLinearProgress(progress = progress, modifier = Modifier.fillMaxWidth())
             }
+        }
+
+        val favoriteScale by animateFloatAsState(
+            targetValue = if (isFavorite) 1.15f else 1f,
+            animationSpec = spring(dampingRatio = Spring.DampingRatioHighBouncy),
+            label = "favoriteScale"
+        )
+        IconButton(
+            onClick = onFavoriteClick,
+            modifier = Modifier.graphicsLayer {
+                scaleX = favoriteScale
+                scaleY = favoriteScale
+            }
+        ) {
+            Icon(
+                imageVector = if (isFavorite) Icons.Filled.Favorite else Icons.Outlined.FavoriteBorder,
+                contentDescription = if (isFavorite) "Убрать из любимых" else "В любимые",
+                tint = MaterialTheme.colorScheme.primary.copy(alpha = if (isFavorite) 1f else 0.6f)
+            )
         }
     }
 }
@@ -3988,95 +3962,63 @@ private fun DownloadedTrackCard(
     onClick: () -> Unit,
     onDeleteDownload: () -> Unit,
     showDebugPercentage: Boolean = false,
-    debugPercentage: Int? = null
+    debugPercentage: Int? = null,
+    position: GroupPosition = GroupPosition.Single
 ) {
-    val haptic = LocalHapticFeedback.current
-    Card(
-        onClick = {
-            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-            onClick()
-        },
-        modifier = Modifier.fillMaxWidth(),
-        shape = MaterialTheme.shapes.extraLarge,
-        colors = CardDefaults.cardColors(
-            containerColor = if (isSelected) {
-                MaterialTheme.colorScheme.primaryContainer
-            } else {
-                MaterialTheme.colorScheme.surfaceContainerHigh
-            },
-            contentColor = if (isSelected) {
-                MaterialTheme.colorScheme.onPrimaryContainer
-            } else {
-                MaterialTheme.colorScheme.onSurface
-            }
-        ),
-        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
-    ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(12.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            // Cached cover when the track is downloaded, so the row still shows artwork offline.
-            TrackArtwork(track.displayArtworkUrl, 64.dp, isPlaying = isSelected && isPlaying)
-            Spacer(modifier = Modifier.width(14.dp))
-            Column(modifier = Modifier.weight(1f)) {
+    TrackRowFrame(position = position, isSelected = isSelected, onClick = onClick) {
+        // Cached cover when the track is downloaded, so the row still shows artwork offline.
+        TrackRowArtwork(track.displayArtworkUrl, isCurrent = isSelected, isPlaying = isPlaying)
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = track.title,
+                style = MaterialTheme.typography.titleMedium,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
                 Text(
-                    text = track.title,
-                    style = MaterialTheme.typography.titleMedium,
+                    text = track.displayArtist,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = LocalContentColor.current.copy(alpha = 0.72f),
                     maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f, fill = false)
                 )
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(4.dp)
-                ) {
+                if (showDebugPercentage && debugPercentage != null) {
                     Text(
-                        text = track.displayArtist,
+                        text = "• $debugPercentage%",
                         style = MaterialTheme.typography.bodyMedium,
-                        color = if (isSelected) {
-                            MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.8f)
+                        color = if (debugPercentage < 90) {
+                            MaterialTheme.colorScheme.error
                         } else {
-                            MaterialTheme.colorScheme.onSurfaceVariant
-                        },
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.weight(1f, fill = false)
-                    )
-                    if (showDebugPercentage && debugPercentage != null) {
-                        Text(
-                            text = "• $debugPercentage%",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = if (debugPercentage < 90) {
-                                MaterialTheme.colorScheme.error
-                            } else if (isSelected) {
-                                MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.8f)
-                            } else {
-                                MaterialTheme.colorScheme.onSurfaceVariant
-                            }
-                        )
-                    }
-                }
-            }
-            if (track.downloadState == DownloadState.DOWNLOADING) {
-                CustomCircularWavyProgressIndicator(
-                    progress = progress,
-                    color = if (isSelected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.size(36.dp)
-                )
-            } else {
-                IconButton(onClick = onDeleteDownload) {
-                    Icon(
-                        Icons.Default.Delete,
-                        contentDescription = null,
-                        tint = if (isSelected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurface
+                            LocalContentColor.current.copy(alpha = 0.72f)
+                        }
                     )
                 }
             }
         }
+        if (track.downloadState == DownloadState.DOWNLOADING) {
+            AppCircularProgress(
+                progress = progress,
+                modifier = Modifier
+                    .padding(end = 8.dp)
+                    .size(36.dp)
+            )
+        } else {
+            IconButton(onClick = onDeleteDownload) {
+                Icon(
+                    Icons.Default.Delete,
+                    contentDescription = "Удалить",
+                    tint = LocalContentColor.current.copy(alpha = 0.8f)
+                )
+            }
+        }
     }
 }
+
 @Composable
 private fun TrackDetailScreen(
     track: SoundCloudTrack,
@@ -4116,382 +4058,626 @@ private fun TrackDetailScreen(
         }
     }
     val haptic = LocalHapticFeedback.current
-    var lastVibratedRatio by remember(track.id) { mutableStateOf(0f) }
-    var sliderProgress by remember { mutableStateOf<Float?>(null) }
     var showQueue by remember { mutableStateOf(false) }
-    val coroutineScope = rememberCoroutineScope()
-    val showLoadingShape = (downloadState != DownloadState.DOWNLOADED) && (isBuffering || isLoading || (positionMs == 0L && !isPlaying))
+    val showLoading = (downloadState != DownloadState.DOWNLOADED) &&
+        (isBuffering || isLoading || (positionMs == 0L && !isPlaying))
     val blurRadius by animateDpAsState(
         targetValue = if (showQueue) 10.dp else 0.dp,
         animationSpec = tween(durationMillis = 300),
         label = "blurRadius"
     )
 
-    Surface(
-        modifier = Modifier.fillMaxSize(),
-        color = androidx.compose.ui.graphics.Color.Transparent
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            // Drawn over the app's own screens, so the player owns its whole backdrop.
+            .background(MaterialTheme.colorScheme.background)
+            .pointerInput(showQueue) {
+                detectDragGestures(
+                    onDrag = { _, dragAmount ->
+                        if (dragAmount.y < -40f && !showQueue) {
+                            showQueue = true
+                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                        }
+                    }
+                )
+            }
     ) {
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .pointerInput(showQueue) {
-                    detectDragGestures(
-                        onDrag = { change, dragAmount ->
-                            if (dragAmount.y < -40f && !showQueue) {
-                                showQueue = true
-                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                            }
+                .blur(blurRadius)
+        ) {
+            PlayerLayout(
+                artwork = {
+                    PlayerArtwork(
+                        track = track,
+                        isPlaying = isPlaying,
+                        showLoading = showLoading,
+                        vibrator = vibrator,
+                        onLongPress = onLongPressCover
+                    )
+                },
+                panel = {
+                    PlayerPanel(
+                        track = track,
+                        activeQueue = activeQueue,
+                        isFavorite = isFavorite,
+                        downloadState = downloadState,
+                        isPlaying = isPlaying,
+                        repeatMode = repeatMode,
+                        shuffleEnabled = shuffleEnabled,
+                        positionMs = positionMs,
+                        durationMs = durationMs,
+                        vibrator = vibrator,
+                        onTogglePlay = onTogglePlay,
+                        onSeek = onSeek,
+                        onFavoriteClick = onFavoriteClick,
+                        onPrevious = onPrevious,
+                        onNext = onNext,
+                        onRepeat = onRepeat,
+                        onShuffle = onShuffle,
+                        onArtistClick = onArtistClick,
+                        onOpenQueue = {
+                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                            showQueue = true
                         }
                     )
                 }
-        ) {
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .blur(blurRadius)
-            ) {
-                // Background Box
-                Box(modifier = Modifier.fillMaxSize()) {
-                    ExpressiveBackground(animated = !showQueue)
-                    // Rich dynamic gradient overlaying the expressive background
-                    Box(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .background(
-                                Brush.verticalGradient(
-                                    colors = listOf(
-                                        MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.4f),
-                                        MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.2f),
-                                        MaterialTheme.colorScheme.surface.copy(alpha = 0.6f)
-                                    )
-                                )
-                            )
-                    )
-                }
+            )
 
-                Column(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .statusBarsPadding()
-                        .navigationBarsPadding()
-                        .padding(horizontal = 24.dp, vertical = 16.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally
-                ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    HomeIconButton(
-                        icon = Icons.AutoMirrored.Filled.ArrowBack,
-                        contentDescription = "Назад",
-                        onClick = onBack
-                    )
-                    Row(
-                        horizontalArrangement = Arrangement.spacedBy(10.dp),
-                        verticalAlignment = Alignment.CenterVertically
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .statusBarsPadding()
+                    .padding(horizontal = 16.dp, vertical = 12.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                OverArtworkButton(
+                    icon = Icons.Default.KeyboardArrowDown,
+                    contentDescription = "Свернуть плеер",
+                    onClick = onBack
+                )
+                // The indicator is always the equaliser, whatever the download state — tapping
+                // it reveals the state and the destructive action, instead of a separate delete
+                // button appearing out of nowhere.
+                val state = downloadState ?: DownloadState.NONE
+                var showTrackMenu by remember { mutableStateOf(false) }
+                Box {
+                    NowPlayingBadge(onClick = { showTrackMenu = true })
+                    DropdownMenu(
+                        expanded = showTrackMenu,
+                        onDismissRequest = { showTrackMenu = false }
                     ) {
-                        // The indicator is always the equaliser now, whatever the download
-                        // state — tapping it reveals the state and the destructive action,
-                        // instead of a separate delete button appearing out of nowhere.
-                        val state = downloadState ?: DownloadState.NONE
-                        var showTrackMenu by remember { mutableStateOf(false) }
-                        Box {
-                            NowPlayingBadge(onClick = { showTrackMenu = true })
-                            DropdownMenu(
-                                expanded = showTrackMenu,
-                                onDismissRequest = { showTrackMenu = false }
-                            ) {
-                                DropdownMenuItem(
-                                    text = {
-                                        Text(
-                                            text = when (state) {
-                                                DownloadState.DOWNLOADED -> "Скачано на устройство"
-                                                DownloadState.DOWNLOADING -> "Скачивается"
-                                                DownloadState.FAILED -> "Ошибка загрузки"
-                                                DownloadState.NONE -> "Играет из сети"
-                                            },
-                                            style = MaterialTheme.typography.labelLarge,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                                        )
+                        DropdownMenuItem(
+                            text = {
+                                Text(
+                                    text = when (state) {
+                                        DownloadState.DOWNLOADED -> "Скачано на устройство"
+                                        DownloadState.DOWNLOADING -> "Скачивается"
+                                        DownloadState.FAILED -> "Ошибка загрузки"
+                                        DownloadState.NONE -> "Играет из сети"
                                     },
-                                    enabled = false,
-                                    onClick = {}
+                                    style = MaterialTheme.typography.labelLarge,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
-                                if (favoriteTrack?.downloadState == DownloadState.DOWNLOADED) {
-                                    HorizontalDivider(
-                                        color = MaterialTheme.colorScheme.outlineVariant
+                            },
+                            enabled = false,
+                            onClick = {}
+                        )
+                        if (favoriteTrack?.downloadState == DownloadState.DOWNLOADED) {
+                            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                            DropdownMenuItem(
+                                text = { Text("Удалить с устройства") },
+                                leadingIcon = {
+                                    Icon(
+                                        Icons.Default.Delete,
+                                        contentDescription = null,
+                                        tint = MaterialTheme.colorScheme.primary
                                     )
-                                    DropdownMenuItem(
-                                        text = { Text("Удалить с устройства") },
-                                        leadingIcon = {
-                                            Icon(
-                                                Icons.Default.Delete,
-                                                contentDescription = null,
-                                                tint = MaterialTheme.colorScheme.primary
-                                            )
-                                        },
-                                        onClick = {
-                                            showTrackMenu = false
-                                            onDeleteDownload(favoriteTrack)
-                                        }
-                                    )
+                                },
+                                onClick = {
+                                    showTrackMenu = false
+                                    onDeleteDownload(favoriteTrack)
                                 }
-                            }
+                            )
                         }
                     }
                 }
+            }
+        }
 
-                Spacer(modifier = Modifier.height(48.dp))
-                
-                val artworkScale by animateFloatAsState(
-                    targetValue = if (isPlaying) 1f else 0.85f,
-                    animationSpec = spring(stiffness = Spring.StiffnessLow),
-                    label = "artworkScale"
-                )
-                val artworkPressedScale = remember { Animatable(1f) }
-                
-                Box(
-                    modifier = Modifier
-                        .graphicsLayer {
-                            scaleX = artworkScale * artworkPressedScale.value
-                            scaleY = artworkScale * artworkPressedScale.value
-                        }
-                        .pointerInput(track.permalinkUrl) {
-                            detectTapGestures(
-                                onLongPress = {
-                                    // 1. Heavy vibration click
-                                    try {
-                                        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
-                                            vibrator?.vibrate(android.os.VibrationEffect.createPredefined(android.os.VibrationEffect.EFFECT_HEAVY_CLICK))
-                                        } else {
-                                            @Suppress("DEPRECATION")
-                                            vibrator?.vibrate(80)
-                                        }
-                                    } catch (e: Exception) {
-                                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                    }
+        AnimatedVisibility(
+            visible = showQueue,
+            enter = slideInVertically(initialOffsetY = { it }) + fadeIn(),
+            exit = slideOutVertically(targetOffsetY = { it }) + fadeOut(),
+            modifier = Modifier.fillMaxSize()
+        ) {
+            QueueManagerPanel(
+                activeQueue = activeQueue,
+                currentTrack = track,
+                isPlaying = isPlaying,
+                onDismiss = { showQueue = false },
+                onReorder = onReorderQueue,
+                onPlayTrack = onPlayTrackFromQueue
+            )
+        }
+    }
+}
 
-                                    // 2. Visual spring pulse animation
-                                    coroutineScope.launch {
-                                        artworkPressedScale.animateTo(1.12f, animationSpec = tween(150))
-                                        artworkPressedScale.animateTo(1f, animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy))
+/**
+ * Cover on top, panel at the bottom. The panel is measured first and keeps its natural height;
+ * the cover takes whatever is left plus the overlap the panel's rounded top sits on, so tall
+ * phones get a bigger cover and short ones never push the controls off screen.
+ */
+@Composable
+private fun PlayerLayout(
+    artwork: @Composable () -> Unit,
+    panel: @Composable () -> Unit
+) {
+    val overlap = 44.dp
+    Layout(
+        modifier = Modifier.fillMaxSize(),
+        content = {
+            Box { artwork() }
+            Box { panel() }
+        }
+    ) { measurables, constraints ->
+        val width = constraints.maxWidth
+        val height = constraints.maxHeight
+        val panelPlaceable = measurables[1].measure(
+            Constraints(minWidth = width, maxWidth = width, maxHeight = height)
+        )
+        val artHeight = (height - panelPlaceable.height + overlap.roundToPx()).coerceAtLeast(0)
+        val artPlaceable = measurables[0].measure(Constraints.fixed(width, artHeight))
+        layout(width, height) {
+            artPlaceable.place(0, 0)
+            panelPlaceable.place(0, height - panelPlaceable.height)
+        }
+    }
+}
 
-                                        // 3. Trigger bottom sheet dialog callback
-                                        onLongPressCover()
-                                    }
-                                }
+@Composable
+private fun PlayerArtwork(
+    track: SoundCloudTrack,
+    isPlaying: Boolean,
+    showLoading: Boolean,
+    vibrator: android.os.Vibrator?,
+    onLongPress: () -> Unit
+) {
+    val haptic = LocalHapticFeedback.current
+    val coroutineScope = rememberCoroutineScope()
+    val pressScale = remember { Animatable(1f) }
+    val playScale by animateFloatAsState(
+        targetValue = if (isPlaying) 1f else 1.04f,
+        animationSpec = spring(stiffness = Spring.StiffnessLow),
+        label = "artworkPlayScale"
+    )
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .clipToBounds()
+            .background(MaterialTheme.colorScheme.surfaceContainerHigh)
+            .pointerInput(track.permalinkUrl) {
+                detectTapGestures(
+                    onLongPress = {
+                        // Long-pressing the cover opens the track's actions, with a heavy click
+                        // and a spring pulse so the gesture reads as deliberate.
+                        try {
+                            vibrator?.vibrate(
+                                android.os.VibrationEffect.createPredefined(
+                                    android.os.VibrationEffect.EFFECT_HEAVY_CLICK
+                                )
                             )
+                        } catch (e: Exception) {
+                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                         }
-                ) {
-                    TrackArtwork(
-                        artworkUrl = track.artworkUrl,
-                        size = 320.dp,
-                        isPlaying = isPlaying,
-                        useMorphing = false,
-                        showLoadingShape = showLoadingShape
+                        coroutineScope.launch {
+                            pressScale.animateTo(1.06f, animationSpec = tween(150))
+                            pressScale.animateTo(
+                                1f,
+                                animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy)
+                            )
+                            onLongPress()
+                        }
+                    }
+                )
+            },
+        contentAlignment = Alignment.Center
+    ) {
+        AsyncImage(
+            model = artworkUrlForSize(track.artworkUrl, 500.dp),
+            contentDescription = null,
+            modifier = Modifier
+                .fillMaxSize()
+                .graphicsLayer {
+                    scaleX = playScale * pressScale.value
+                    scaleY = playScale * pressScale.value
+                },
+            contentScale = ContentScale.Crop
+        )
+
+        // Keeps the status bar and the buttons over the cover legible on bright artwork.
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(140.dp)
+                .align(Alignment.TopCenter)
+                .background(
+                    Brush.verticalGradient(
+                        listOf(Color.Black.copy(alpha = 0.38f), Color.Transparent)
+                    )
+                )
+        )
+
+        AnimatedVisibility(
+            visible = showLoading,
+            enter = fadeIn() + scaleIn(),
+            exit = fadeOut() + scaleOut()
+        ) {
+            AppContainedLoadingIndicator(modifier = Modifier.size(84.dp))
+        }
+    }
+}
+
+@Composable
+private fun OverArtworkButton(
+    icon: ImageVector,
+    contentDescription: String,
+    onClick: () -> Unit
+) {
+    Surface(
+        onClick = onClick,
+        modifier = Modifier.size(48.dp),
+        shape = RoundedCornerShape(16.dp),
+        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.62f),
+        contentColor = MaterialTheme.colorScheme.onSurface
+    ) {
+        Box(contentAlignment = Alignment.Center) {
+            Icon(icon, contentDescription = contentDescription, modifier = Modifier.size(26.dp))
+        }
+    }
+}
+
+/** The colour block: title, artists, seek bar, transport and what plays next. */
+@Composable
+private fun PlayerPanel(
+    track: SoundCloudTrack,
+    activeQueue: List<SoundCloudTrack>,
+    isFavorite: Boolean,
+    downloadState: DownloadState?,
+    isPlaying: Boolean,
+    repeatMode: Int,
+    shuffleEnabled: Boolean,
+    positionMs: Long,
+    durationMs: Long,
+    vibrator: android.os.Vibrator?,
+    onTogglePlay: () -> Unit,
+    onSeek: (Long) -> Unit,
+    onFavoriteClick: () -> Unit,
+    onPrevious: () -> Unit,
+    onNext: () -> Unit,
+    onRepeat: () -> Unit,
+    onShuffle: () -> Unit,
+    onArtistClick: (SoundCloudUser) -> Unit,
+    onOpenQueue: () -> Unit
+) {
+    val haptic = LocalHapticFeedback.current
+    val onPanel = MaterialTheme.colorScheme.onPrimary
+
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(topStart = 44.dp, topEnd = 44.dp),
+        color = MaterialTheme.colorScheme.primary,
+        contentColor = onPanel
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .navigationBarsPadding()
+                .padding(start = 24.dp, top = 24.dp, end = 24.dp, bottom = 16.dp)
+        ) {
+            val isYandex = track.urn?.startsWith("yandex:") == true
+            OnPanelChip(
+                text = buildString {
+                    append(if (isYandex) "Яндекс Музыка" else "SoundCloud")
+                    if (downloadState == DownloadState.DOWNLOADED) append(" · на устройстве")
+                }
+            )
+            Spacer(modifier = Modifier.height(12.dp))
+            Text(
+                text = track.title ?: "Unknown Track",
+                style = MaterialTheme.typography.headlineMedium,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis
+            )
+            Spacer(modifier = Modifier.height(10.dp))
+
+            // Every credited artist gets its own tappable chip: a collaboration used to show a
+            // single name with no way to reach anyone else on the track.
+            val credited = remember(track) {
+                track.artists?.takeIf { it.isNotEmpty() } ?: listOfNotNull(track.user)
+            }
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                if (credited.isEmpty()) {
+                    Text(
+                        text = "Unknown Artist",
+                        style = MaterialTheme.typography.titleSmall,
+                        color = onPanel.copy(alpha = 0.8f)
                     )
                 }
-                
-                Spacer(modifier = Modifier.height(36.dp))
-
-                Text(
-                    text = track.title ?: "Unknown Track",
-                    style = MaterialTheme.typography.headlineMedium,
-                    textAlign = TextAlign.Center,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis,
-                )
-                Spacer(modifier = Modifier.height(8.dp))
-                // Every credited artist gets its own tappable chip. Previously this was one
-                // line built from `track.user`, so a collaboration showed a single name and
-                // there was no way to reach anyone else on the track.
-                val credited = remember(track) {
-                    track.artists?.takeIf { it.isNotEmpty() }
-                        ?: listOfNotNull(track.user)
-                }
-                FlowRow(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    if (credited.isEmpty()) {
+                credited.forEach { artist ->
+                    Surface(
+                        onClick = {
+                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                            onArtistClick(artist)
+                        },
+                        shape = CircleShape,
+                        color = onPanel.copy(alpha = 0.12f),
+                        contentColor = onPanel
+                    ) {
                         Text(
-                            text = "Unknown Artist",
-                            style = MaterialTheme.typography.titleLarge,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f)
+                            text = artist.username ?: "Unknown Artist",
+                            style = MaterialTheme.typography.titleSmall,
+                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 7.dp),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
                         )
                     }
-                    credited.forEach { artist ->
-                        Surface(
-                            onClick = {
-                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                onArtistClick(artist)
-                            },
-                            shape = CircleShape,
-                            color = MaterialTheme.colorScheme.surfaceContainerHigh,
-                            contentColor = MaterialTheme.colorScheme.onSurface
-                        ) {
-                            Text(
-                                text = artist.username ?: "Unknown Artist",
-                                style = MaterialTheme.typography.titleSmall,
-                                modifier = Modifier.padding(horizontal = 16.dp, vertical = 9.dp),
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                        }
-                    }
                 }
-
-                Spacer(modifier = Modifier.weight(1f))
-
-                 Slider(
-                    value = sliderProgress ?: if (durationMs > 0) {
-                        positionMs.coerceIn(0L, durationMs).toFloat() / durationMs.toFloat()
-                    } else {
-                        0f
-                    },
-                    onValueChange = { ratio ->
-                        sliderProgress = ratio
-                        if (kotlin.math.abs(ratio - lastVibratedRatio) >= 0.02f) {
-                            try {
-                                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
-                                    vibrator?.vibrate(android.os.VibrationEffect.createPredefined(android.os.VibrationEffect.EFFECT_TICK))
-                                } else {
-                                    @Suppress("DEPRECATION")
-                                    vibrator?.vibrate(10)
-                                }
-                            } catch (e: Exception) {
-                                // fallback
-                            }
-                            lastVibratedRatio = ratio
-                        }
-                    },
-                    onValueChangeFinished = {
-                        sliderProgress?.let { ratio ->
-                            onSeek((ratio * durationMs).toLong())
-                        }
-                        sliderProgress = null
-                    },
-                    modifier = Modifier.padding(vertical = 8.dp)
-                )
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween
-                ) {
-                    Text(
-                        formatDuration(positionMs),
-                        style = MaterialTheme.typography.labelLarge
-                    )
-                    Text(
-                        formatDuration(durationMs),
-                        style = MaterialTheme.typography.labelLarge,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-
-                Spacer(modifier = Modifier.height(32.dp))
-
-                val playButtonWidth by animateDpAsState(
-                    targetValue = if (isPlaying) 128.dp else 84.dp,
-                    animationSpec = spring(
-                        dampingRatio = Spring.DampingRatioMediumBouncy,
-                        stiffness = Spring.StiffnessLow
-                    ),
-                    label = "playButtonWidth"
-                )
-
-                val buttonsSpacing by animateDpAsState(
-                    targetValue = if (isPlaying) 36.dp else 12.dp,
-                    animationSpec = spring(
-                        dampingRatio = Spring.DampingRatioHighBouncy,
-                        stiffness = Spring.StiffnessMediumLow
-                    ),
-                    label = "buttonsSpacing"
-                )
-
-                val controlButtonsSpacing by animateDpAsState(
-                    targetValue = if (isPlaying) 28.dp else 14.dp,
-                    animationSpec = spring(
-                        dampingRatio = Spring.DampingRatioHighBouncy,
-                        stiffness = Spring.StiffnessMediumLow
-                    ),
-                    label = "controlButtonsSpacing"
-                )
-
-                Row(
-                    horizontalArrangement = Arrangement.spacedBy(buttonsSpacing),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    FilledTonalIconButton(onClick = onPrevious, modifier = Modifier.size(64.dp)) {
-                        Icon(Icons.Rounded.SkipPrevious, contentDescription = "Previous track", modifier = Modifier.size(32.dp))
-                    }
-                    ExpressivePlayButton(
-                        isPlaying = isPlaying,
-                        onClick = onTogglePlay,
-                        modifier = Modifier
-                            .height(84.dp)
-                            .width(playButtonWidth),
-                        iconSize = 42.dp
-                    )
-                    FilledTonalIconButton(onClick = onNext, modifier = Modifier.size(64.dp)) {
-                        Icon(Icons.Rounded.SkipNext, contentDescription = "Next track", modifier = Modifier.size(32.dp))
-                    }
-                }
-
-                Spacer(modifier = Modifier.height(32.dp))
-
-                Row(
-                    horizontalArrangement = Arrangement.spacedBy(controlButtonsSpacing),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    ExpressiveControlIconButton(
-                        selected = isFavorite,
-                        onClick = onFavoriteClick,
-                        icon = if (isFavorite) Icons.Rounded.Favorite else Icons.Rounded.FavoriteBorder,
-                        selectedColor = MaterialTheme.colorScheme.primary,
-                        unselectedColor = MaterialTheme.colorScheme.secondaryContainer,
-                        modifier = Modifier.size(68.dp)
-                    )
-
-                    ExpressiveControlIconButton(
-                        selected = repeatMode != Player.REPEAT_MODE_OFF,
-                        onClick = onRepeat,
-                        icon = if (repeatMode == Player.REPEAT_MODE_ONE) Icons.Rounded.RepeatOne else Icons.Rounded.Repeat,
-                        selectedColor = MaterialTheme.colorScheme.primary,
-                        unselectedColor = MaterialTheme.colorScheme.secondaryContainer,
-                        modifier = Modifier.size(68.dp)
-                    )
-
-                    ExpressiveControlIconButton(
-                        selected = shuffleEnabled,
-                        onClick = onShuffle,
-                        icon = Icons.Rounded.Shuffle,
-                        selectedColor = MaterialTheme.colorScheme.primary,
-                        unselectedColor = MaterialTheme.colorScheme.secondaryContainer,
-                        modifier = Modifier.size(68.dp)
-                    )
-                }
-                
-                Spacer(modifier = Modifier.height(12.dp))
-            }
             }
 
-            AnimatedVisibility(
-                visible = showQueue,
-                enter = slideInVertically(initialOffsetY = { it }) + fadeIn(),
-                exit = slideOutVertically(targetOffsetY = { it }) + fadeOut(),
-                modifier = Modifier.fillMaxSize()
+            Spacer(modifier = Modifier.height(14.dp))
+            PlayerSeekBar(
+                trackId = track.id,
+                positionMs = positionMs,
+                durationMs = durationMs,
+                vibrator = vibrator,
+                onSeek = onSeek
+            )
+
+            Spacer(modifier = Modifier.height(10.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                QueueManagerPanel(
-                    activeQueue = activeQueue,
-                    currentTrack = track,
-                    isPlaying = isPlaying,
-                    onDismiss = { showQueue = false },
-                    onReorder = onReorderQueue,
-                    onPlayTrack = onPlayTrackFromQueue
+                PanelIconButton(
+                    icon = if (isFavorite) Icons.Rounded.Favorite else Icons.Rounded.FavoriteBorder,
+                    contentDescription = if (isFavorite) "Убрать из любимых" else "В любимые",
+                    onClick = {
+                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                        onFavoriteClick()
+                    },
+                    selected = isFavorite,
+                    size = 48.dp
+                )
+                PanelIconButton(
+                    icon = Icons.Rounded.SkipPrevious,
+                    contentDescription = "Предыдущий трек",
+                    onClick = onPrevious,
+                    size = 68.dp,
+                    iconSize = 32.dp
+                )
+                PanelPlayButton(isPlaying = isPlaying, onClick = onTogglePlay)
+                PanelIconButton(
+                    icon = Icons.Rounded.SkipNext,
+                    contentDescription = "Следующий трек",
+                    onClick = onNext,
+                    size = 68.dp,
+                    iconSize = 32.dp
+                )
+                PanelIconButton(
+                    icon = Icons.Rounded.Shuffle,
+                    contentDescription = if (shuffleEnabled) "Перемешивание включено" else "Перемешать",
+                    onClick = {
+                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                        onShuffle()
+                    },
+                    selected = shuffleEnabled,
+                    size = 48.dp
                 )
             }
+
+            Spacer(modifier = Modifier.height(18.dp))
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                val currentIndex = activeQueue.indexOfFirst { it.id == track.id }
+                val nextTrack = if (currentIndex >= 0) activeQueue.getOrNull(currentIndex + 1) else null
+                QueuePeek(
+                    nextTrack = nextTrack,
+                    queueSize = activeQueue.size,
+                    onClick = onOpenQueue,
+                    modifier = Modifier.weight(1f)
+                )
+                PanelIconButton(
+                    icon = if (repeatMode == Player.REPEAT_MODE_ONE) Icons.Rounded.RepeatOne else Icons.Rounded.Repeat,
+                    contentDescription = when (repeatMode) {
+                        Player.REPEAT_MODE_ONE -> "Повтор трека"
+                        Player.REPEAT_MODE_ALL -> "Повтор очереди"
+                        else -> "Повтор выключен"
+                    },
+                    onClick = {
+                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                        onRepeat()
+                    },
+                    selected = repeatMode != Player.REPEAT_MODE_OFF,
+                    size = 64.dp
+                )
+            }
+        }
+    }
+}
+
+/** Thick expressive seek bar with a tick every 2% of a manual drag. */
+@Composable
+private fun PlayerSeekBar(
+    trackId: Long,
+    positionMs: Long,
+    durationMs: Long,
+    vibrator: android.os.Vibrator?,
+    onSeek: (Long) -> Unit
+) {
+    val onPanel = MaterialTheme.colorScheme.onPrimary
+    var sliderProgress by remember { mutableStateOf<Float?>(null) }
+    var lastVibratedRatio by remember(trackId) { mutableStateOf(0f) }
+    val interactionSource = remember { MutableInteractionSource() }
+    val colors = SliderDefaults.colors(
+        thumbColor = onPanel,
+        activeTrackColor = onPanel,
+        inactiveTrackColor = onPanel.copy(alpha = 0.18f),
+        activeTickColor = onPanel,
+        inactiveTickColor = onPanel
+    )
+    val shownRatio = sliderProgress ?: if (durationMs > 0) {
+        positionMs.coerceIn(0L, durationMs).toFloat() / durationMs.toFloat()
+    } else {
+        0f
+    }
+
+    Slider(
+        value = shownRatio,
+        onValueChange = { ratio ->
+            sliderProgress = ratio
+            if (kotlin.math.abs(ratio - lastVibratedRatio) >= 0.02f) {
+                try {
+                    vibrator?.vibrate(
+                        android.os.VibrationEffect.createPredefined(android.os.VibrationEffect.EFFECT_TICK)
+                    )
+                } catch (e: Exception) {
+                    // No vibrator, no tick.
+                }
+                lastVibratedRatio = ratio
+            }
+        },
+        onValueChangeFinished = {
+            sliderProgress?.let { ratio -> onSeek((ratio * durationMs).toLong()) }
+            sliderProgress = null
+        },
+        colors = colors,
+        interactionSource = interactionSource,
+        thumb = { state ->
+            SliderDefaults.Thumb(
+                interactionSource = interactionSource,
+                sliderState = state,
+                colors = colors,
+                thumbSize = DpSize(5.dp, 44.dp)
+            )
+        },
+        track = { state ->
+            SliderDefaults.Track(
+                sliderState = state,
+                trackCornerSize = 8.dp,
+                modifier = Modifier.height(16.dp),
+                colors = colors,
+                thumbTrackGapSize = 6.dp
+            )
+        },
+        modifier = Modifier.fillMaxWidth()
+    )
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween
+    ) {
+        val shownPosition = sliderProgress?.let { (it * durationMs).toLong() } ?: positionMs
+        Text(
+            formatDuration(shownPosition),
+            style = MaterialTheme.typography.labelLarge,
+            color = onPanel.copy(alpha = 0.85f)
+        )
+        Text(
+            formatDuration(durationMs),
+            style = MaterialTheme.typography.labelLarge,
+            color = onPanel.copy(alpha = 0.85f)
+        )
+    }
+}
+
+/** Big play/pause on the panel: squarer while playing, rounder while paused. */
+@Composable
+private fun PanelPlayButton(isPlaying: Boolean, onClick: () -> Unit) {
+    val haptic = LocalHapticFeedback.current
+    val corner by animateDpAsState(
+        targetValue = if (isPlaying) 30.dp else 48.dp,
+        animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessLow),
+        label = "panelPlayCorner"
+    )
+    Surface(
+        onClick = {
+            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+            onClick()
+        },
+        modifier = Modifier.size(96.dp),
+        shape = RoundedCornerShape(corner),
+        color = MaterialTheme.colorScheme.onPrimary,
+        contentColor = MaterialTheme.colorScheme.primary
+    ) {
+        Box(contentAlignment = Alignment.Center) {
+            Icon(
+                imageVector = if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
+                contentDescription = if (isPlaying) "Пауза" else "Играть",
+                modifier = Modifier.size(44.dp)
+            )
+        }
+    }
+}
+
+/** "Далее": the next track in the queue; tapping it opens the queue. */
+@Composable
+private fun QueuePeek(
+    nextTrack: SoundCloudTrack?,
+    queueSize: Int,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val onPanel = MaterialTheme.colorScheme.onPrimary
+    Surface(
+        onClick = onClick,
+        modifier = modifier.height(64.dp),
+        shape = RoundedCornerShape(24.dp),
+        color = onPanel.copy(alpha = 0.10f),
+        contentColor = onPanel
+    ) {
+        Row(
+            modifier = Modifier.padding(start = 10.dp, end = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            if (nextTrack != null) {
+                CoverImage(url = nextTrack.artworkUrl, size = 44.dp, shape = RoundedCornerShape(14.dp))
+            } else {
+                Box(
+                    modifier = Modifier
+                        .size(44.dp)
+                        .clip(RoundedCornerShape(14.dp))
+                        .background(onPanel.copy(alpha = 0.12f)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(Icons.AutoMirrored.Filled.QueueMusic, contentDescription = null)
+                }
+            }
+            Column(modifier = Modifier.weight(1f)) {
+                Kicker(
+                    text = if (nextTrack != null) "Далее" else "Очередь",
+                    color = onPanel.copy(alpha = 0.72f)
+                )
+                Text(
+                    text = nextTrack?.title ?: plural(queueSize, "трек", "трека", "треков"),
+                    style = MaterialTheme.typography.titleSmall,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+            Icon(Icons.Default.KeyboardArrowUp, contentDescription = "Открыть очередь")
         }
     }
 }
@@ -4888,77 +5074,6 @@ private fun FolderArtwork(artworkUri: String?, size: Dp) {
     }
 }
 
-class LoadingExpressiveShape(
-    private val phase: Float,
-    private val rotation: Float
-) : Shape {
-    override fun createOutline(
-        size: Size,
-        layoutDirection: LayoutDirection,
-        density: Density
-    ): Outline {
-        val path = Path()
-        val width = size.width
-        val height = size.height
-        val centerX = width / 2f
-        val centerY = height / 2f
-        val maxRadius = minOf(width, height) / 2f
-
-        val steps = 120
-        val stage = (phase.toInt()) % 6
-        val fraction = phase - phase.toInt()
-
-        for (i in 0..steps) {
-            val theta = (i * 2f * Math.PI / steps).toFloat()
-            val rStage = getRadiusForShape(stage, theta, maxRadius)
-            val rNext = getRadiusForShape((stage + 1) % 6, theta, maxRadius)
-            // Scaled down by 0.78f to prevent clipping at bounds
-            val r = (rStage * (1f - fraction) + rNext * fraction) * 0.78f
-
-            val rotAngle = theta + rotation
-            val x = centerX + r * cos(rotAngle)
-            val y = centerY + r * sin(rotAngle)
-
-            if (i == 0) {
-                path.moveTo(x, y)
-            } else {
-                path.lineTo(x, y)
-            }
-        }
-        path.close()
-        return Outline.Generic(path)
-    }
-
-    private fun getRadiusForShape(shapeIndex: Int, angle: Float, baseRadius: Float): Float {
-        return when (shapeIndex) {
-            0 -> { // Pill (Ellipse / squashed oval)
-                val cosA = cos(angle)
-                val sinA = sin(angle)
-                val scaleFactor = baseRadius / sqrt(1.8f * cosA * cosA + 0.5f * sinA * sinA)
-                scaleFactor * 0.85f
-            }
-            1 -> { // Triangle
-                baseRadius * (1f + 0.3f * cos(3f * angle)) * 0.72f
-            }
-            2 -> { // Square
-                baseRadius * (1f + 0.15f * cos(4f * angle)) * 0.8f
-            }
-            3 -> { // 4-sided Cookie
-                baseRadius * (1f + 0.18f * cos(4f * angle) + 0.08f * cos(8f * angle)) * 0.78f
-            }
-            4 -> { // Pentagon
-                baseRadius * (1f + 0.12f * cos(5f * angle)) * 0.8f
-            }
-            else -> { // 5 -> Diamond
-                val cosA = cos(angle - (Math.PI / 4).toFloat())
-                val sinA = sin(angle - (Math.PI / 4).toFloat())
-                val scaleFactor = baseRadius / sqrt(0.5f * cosA * cosA + 1.8f * sinA * sinA)
-                scaleFactor * 0.82f
-            }
-        }
-    }
-}
-
 class MorphingArtworkShape(
     private val progress: Float,
     private val rotationPhase: Float = 0f
@@ -5013,62 +5128,15 @@ class MorphingArtworkShape(
     }
 }
 
-/**
- * SoundCloud serves several artwork sizes. Asking for t500x500 everywhere meant a 50dp queue
- * thumbnail downloaded and decoded a 500x500 JPEG, which is pure cost on every row that scrolls
- * into view. Thresholds are generous — these are dp against a ~3x screen.
- */
-private val SizedPathPattern = Regex("\\d{2,4}x\\d{2,4}")
-
-private fun artworkUrlForSize(url: String?, size: Dp): String? {
-    if (url == null) return null
-    if (url.contains("avatars.yandex.net") || url.contains("music-content")) {
-        // Yandex encodes the dimensions in the path itself, so the SoundCloud "large" swap
-        // never matched and every Yandex cover stayed at the 200x200 the mapper asked for.
-        val yandexSize = when {
-            size <= 64.dp -> "200x200"
-            size <= 120.dp -> "400x400"
-            size <= 260.dp -> "800x800"
-            else -> "1000x1000"
-        }
-        return SizedPathPattern.replace(url, yandexSize)
-    }
-    val variant = when {
-        size <= 64.dp -> "t200x200"
-        size <= 120.dp -> "t300x300"
-        else -> "t500x500"
-    }
-    return url.replace("large", variant)
-}
-
 @Composable
 private fun TrackArtwork(
     artworkUrl: String?,
     size: Dp,
     isPlaying: Boolean = false,
     useMorphing: Boolean = true,
-    fallbackShape: Shape? = null,
-    showLoadingShape: Boolean = false
+    fallbackShape: Shape? = null
 ) {
-    val clipShape = if (showLoadingShape) {
-        val infiniteTransition = rememberInfiniteTransition(label = "loadingTransition")
-        val phase by infiniteTransition.animateFloat(
-            initialValue = 0f,
-            targetValue = 6f,
-            animationSpec = infiniteRepeatable(
-                animation = tween(durationMillis = 9000, easing = LinearEasing),
-                repeatMode = RepeatMode.Restart
-            ),
-            label = "loadingPhase"
-        )
-        val rotation = remember(phase) {
-            val twoPi = (2f * Math.PI).toFloat()
-            twoPi * (phase - kotlin.math.sin(twoPi * phase) / twoPi)
-        }
-        remember(phase, rotation) {
-            LoadingExpressiveShape(phase, rotation)
-        }
-    } else if (useMorphing) {
+    val clipShape = if (useMorphing) {
         val morphProgress by animateFloatAsState(
             targetValue = if (isPlaying) 1f else 0f,
             animationSpec = tween(durationMillis = 600, easing = FastOutSlowInEasing),
@@ -5133,10 +5201,7 @@ private fun DownloadBadge(state: DownloadState) {
             horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             if (state == DownloadState.DOWNLOADING) {
-                CircularProgressIndicator(
-                    modifier = Modifier.size(14.dp),
-                    strokeWidth = 2.dp
-                )
+                AppLoadingIndicator(modifier = Modifier.size(20.dp))
             }
             Text(
                 text = when (state) {
@@ -5183,6 +5248,10 @@ private fun MessageCard(message: String) {
     }
 }
 
+/**
+ * The player's colour-block panel, collapsed: same primary colour, so opening it reads as the
+ * bar growing into the full player.
+ */
 @Composable
 private fun PlayerBar(
     title: String,
@@ -5193,84 +5262,76 @@ private fun PlayerBar(
     onTogglePlay: () -> Unit,
     onOpen: () -> Unit
 ) {
-    // `tonalElevation` only tints when the container is the `surface` role, so it was a
-    // no-op against secondaryContainer. Depth now comes from a real shadow instead.
+    val haptic = LocalHapticFeedback.current
+    val onPanel = MaterialTheme.colorScheme.onPrimary
     Surface(
         onClick = onOpen,
-        color = MaterialTheme.colorScheme.surfaceContainerHighest,
-        contentColor = MaterialTheme.colorScheme.onSurface,
-        shape = AppShapes.extraLargeIncreased,
+        color = MaterialTheme.colorScheme.primary,
+        contentColor = onPanel,
+        shape = RoundedCornerShape(32.dp),
         shadowElevation = 8.dp,
-        modifier = Modifier
-            .fillMaxWidth()
-            .animateContentSize()
+        modifier = Modifier.fillMaxWidth()
     ) {
-        Column {
-            Row(
-                modifier = Modifier
-                    .padding(10.dp)
-                    .fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically
+        Row(
+            modifier = Modifier
+                .padding(10.dp)
+                .fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            CoverImage(url = artworkUrl, size = 52.dp, shape = RoundedCornerShape(18.dp))
+
+            Spacer(modifier = Modifier.width(14.dp))
+
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = title,
+                    style = MaterialTheme.typography.titleMedium,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Text(
+                    text = artist.ifBlank { if (isPlaying) "Сейчас играет" else "На паузе" },
+                    style = MaterialTheme.typography.labelMedium,
+                    color = onPanel.copy(alpha = 0.78f),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                // Waves while playing, lies flat while paused.
+                LinearWavyProgressIndicator(
+                    progress = { progress.coerceIn(0f, 1f) },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 4.dp),
+                    color = onPanel,
+                    trackColor = onPanel.copy(alpha = 0.22f),
+                    amplitude = { if (isPlaying) 1f else 0f }
+                )
+            }
+
+            Spacer(modifier = Modifier.width(12.dp))
+
+            val corner by animateDpAsState(
+                targetValue = if (isPlaying) 16.dp else 26.dp,
+                animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessLow),
+                label = "miniPlayCorner"
+            )
+            Surface(
+                onClick = {
+                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                    onTogglePlay()
+                },
+                modifier = Modifier.size(52.dp),
+                shape = RoundedCornerShape(corner),
+                color = onPanel,
+                contentColor = MaterialTheme.colorScheme.primary
             ) {
-                // The artwork does the identifying work here — a title alone made the bar
-                // read as a generic control strip rather than "this track is playing".
-                // Morphing shapes only fill ~82% of their box, which at 52dp left the
-                // thumbnail small and floating. A plain rounded square fills the slot.
-                TrackArtwork(
-                    artworkUrl = artworkUrl,
-                    size = 52.dp,
-                    useMorphing = false,
-                    fallbackShape = MaterialTheme.shapes.medium
-                )
-
-                Spacer(modifier = Modifier.width(14.dp))
-
-                // Progress lives in the text column, between artwork and button, so the
-                // bar reads as belonging to this track rather than underlining the pill.
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = title,
-                        style = MaterialTheme.typography.titleMedium,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
+                Box(contentAlignment = Alignment.Center) {
+                    Icon(
+                        imageVector = if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
+                        contentDescription = if (isPlaying) "Пауза" else "Играть",
+                        modifier = Modifier.size(28.dp)
                     )
-                    Text(
-                        text = artist.ifBlank { if (isPlaying) "Сейчас играет" else "На паузе" },
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-
-                    Spacer(modifier = Modifier.height(7.dp))
-
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(3.dp)
-                            .clip(CircleShape)
-                            .background(
-                                MaterialTheme.colorScheme.onSurface.copy(alpha = 0.20f)
-                            )
-                    ) {
-                        Box(
-                            modifier = Modifier
-                                .fillMaxHeight()
-                                .fillMaxWidth(progress.coerceIn(0f, 1f))
-                                .clip(CircleShape)
-                                .background(MaterialTheme.colorScheme.primary)
-                        )
-                    }
                 }
-
-                Spacer(modifier = Modifier.width(12.dp))
-
-                ExpressivePlayButton(
-                    isPlaying = isPlaying,
-                    onClick = onTogglePlay,
-                    modifier = Modifier.size(52.dp),
-                    iconSize = 26.dp
-                )
             }
         }
     }
@@ -5281,129 +5342,6 @@ private fun formatDuration(milliseconds: Long): String {
     val minutes = totalSeconds / 60
     val seconds = totalSeconds % 60
     return "%d:%02d".format(minutes, seconds)
-}
-
-@Composable
-fun ExpressiveControlIconButton(
-    selected: Boolean,
-    onClick: () -> Unit,
-    icon: androidx.compose.ui.graphics.vector.ImageVector,
-    selectedColor: Color,
-    unselectedColor: Color,
-    modifier: Modifier = Modifier
-) {
-    val haptic = LocalHapticFeedback.current
-    val cornerSize by animateDpAsState(
-        targetValue = if (selected) 16.dp else 50.dp,
-        animationSpec = spring(
-            dampingRatio = Spring.DampingRatioMediumBouncy,
-            stiffness = Spring.StiffnessLow
-        ),
-        label = "cornerSize"
-    )
-
-    val scale by animateFloatAsState(
-        targetValue = if (selected) 1.1f else 1f,
-        animationSpec = spring(
-            dampingRatio = Spring.DampingRatioMediumBouncy,
-            stiffness = Spring.StiffnessLow
-        ),
-        label = "scale"
-    )
-
-    val containerColor by animateColorAsState(
-        targetValue = if (selected) selectedColor else unselectedColor,
-        animationSpec = tween(400),
-        label = "containerColor"
-    )
-
-    val contentColor by animateColorAsState(
-        targetValue = if (selected) contentColorFor(selectedColor) else MaterialTheme.colorScheme.onSecondaryContainer,
-        animationSpec = tween(400),
-        label = "contentColor"
-    )
-
-    Surface(
-        onClick = {
-            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-            onClick()
-        },
-        color = containerColor,
-        shape = RoundedCornerShape(cornerSize),
-        modifier = modifier.graphicsLayer {
-            scaleX = scale
-            scaleY = scale
-        }
-    ) {
-        Box(contentAlignment = Alignment.Center) {
-            Icon(
-                imageVector = icon,
-                contentDescription = null,
-                tint = contentColor,
-                modifier = Modifier.size(26.dp)
-            )
-        }
-    }
-}
-@Composable
-fun ExpressivePlayButton(
-    isPlaying: Boolean,
-    onClick: () -> Unit,
-    modifier: Modifier = Modifier,
-    iconSize: Dp = 24.dp
-) {
-    val haptic = LocalHapticFeedback.current
-    val cornerSize by animateDpAsState(
-        targetValue = if (isPlaying) 20.dp else 50.dp,
-        animationSpec = spring(
-            dampingRatio = Spring.DampingRatioMediumBouncy,
-            stiffness = Spring.StiffnessLow
-        ),
-        label = "cornerSize"
-    )
-
-    val scale by animateFloatAsState(
-        targetValue = if (isPlaying) 1.05f else 1f,
-        animationSpec = spring(
-            dampingRatio = Spring.DampingRatioMediumBouncy,
-            stiffness = Spring.StiffnessLow
-        ),
-        label = "scale"
-    )
-
-    val containerColor by animateColorAsState(
-        targetValue = if (isPlaying) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.secondaryContainer,
-        animationSpec = tween(450),
-        label = "containerColor"
-    )
-
-    val iconColor by animateColorAsState(
-        targetValue = if (isPlaying) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSecondaryContainer,
-        animationSpec = tween(450),
-        label = "iconColor"
-    )
-
-    Surface(
-        onClick = {
-            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-            onClick()
-        },
-        color = containerColor,
-        shape = RoundedCornerShape(cornerSize),
-        modifier = modifier.graphicsLayer {
-            scaleX = scale
-            scaleY = scale
-        }
-    ) {
-        Box(contentAlignment = Alignment.Center) {
-            Icon(
-                imageVector = if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
-                contentDescription = null,
-                tint = iconColor,
-                modifier = Modifier.size(iconSize)
-            )
-        }
-    }
 }
 
 @Composable
@@ -5969,7 +5907,7 @@ fun SoundCloudLoginScreen(
                         // This overlay sits on the WebView's own white page, not on a theme
                         // surface, so it uses the unharmonized brand color — the harmonized
                         // one is tuned for contrast against the scheme, not against white.
-                        CircularProgressIndicator(color = SoundCloudBrandSource)
+                        AppLoadingIndicator(color = SoundCloudBrandSource)
                     }
                 }
             }
@@ -5984,7 +5922,7 @@ fun SoundCloudLoginScreen(
                 contentAlignment = Alignment.Center
             ) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    CircularProgressIndicator(color = AppTheme.brand.soundCloud.color)
+                    AppLoadingIndicator(color = AppTheme.brand.soundCloud.color)
                     Spacer(modifier = Modifier.height(16.dp))
                     Text(
                         text = "Авторизация в SoundCloud...",
@@ -6010,13 +5948,15 @@ fun SegmentedControl(
     items: List<String>,
     selectedIndex: Int,
     onSelectedIndexChanged: (Int) -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    height: Dp = 56.dp,
+    textStyle: androidx.compose.ui.text.TextStyle = MaterialTheme.typography.titleMedium
 ) {
     val haptic = LocalHapticFeedback.current
     Surface(
         modifier = modifier
             .fillMaxWidth()
-            .height(56.dp),
+            .height(height),
         shape = CircleShape,
         color = MaterialTheme.colorScheme.surfaceContainerHigh
     ) {
@@ -6069,7 +6009,7 @@ fun SegmentedControl(
                     ) {
                         Text(
                             text = text,
-                            style = MaterialTheme.typography.titleMedium,
+                            style = textStyle,
                             color = textColor,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
@@ -6202,110 +6142,67 @@ private fun PlaylistDetailScreen(
 
         LazyColumn(
             modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(start = 16.dp, top = 4.dp, end = 16.dp, bottom = 120.dp),
-            verticalArrangement = Arrangement.spacedBy(14.dp)
+            contentPadding = PaddingValues(start = 16.dp, top = 4.dp, end = 16.dp, bottom = 120.dp)
         ) {
-            item {
-                Column(
-                    modifier = Modifier.fillMaxWidth().padding(vertical = 16.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.spacedBy(16.dp)
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .size(220.dp)
-                            .clip(AppShapes.extraLargeIncreased)
-                            .clickable {
-                                imagePicker.launch(arrayOf("image/*"))
-                            }
-                    ) {
+            item(key = "playlist-hero") {
+                val hasDownloaded = playlist.tracks.any { it.downloadState == DownloadState.DOWNLOADED }
+                CollectionHero(
+                    title = playlist.name,
+                    kicker = "Плейлист",
+                    subtitle = plural(playlist.tracks.size, "трек", "трека", "треков"),
+                    onArtworkClick = { imagePicker.launch(arrayOf("image/*")) },
+                    artwork = {
                         if (playlist.artworkUrl != null) {
-                            FolderArtwork(playlist.artworkUrl, 220.dp)
+                            AsyncImage(
+                                model = playlist.artworkUrl,
+                                contentDescription = null,
+                                modifier = Modifier.fillMaxSize(),
+                                contentScale = ContentScale.Crop
+                            )
                         } else {
-                            Surface(
-                                color = MaterialTheme.colorScheme.secondaryContainer,
-                                shape = AppShapes.extraLargeIncreased,
-                                modifier = Modifier.fillMaxSize()
-                            ) {
-                                Box(contentAlignment = Alignment.Center) {
-                                    Icon(
-                                        Icons.AutoMirrored.Filled.QueueMusic,
-                                        contentDescription = null,
-                                        tint = MaterialTheme.colorScheme.onSecondaryContainer,
-                                        modifier = Modifier.size(72.dp)
-                                    )
-                                }
-                            }
+                            IconCover(icon = Icons.AutoMirrored.Filled.QueueMusic)
                         }
-
-                        // Premium edit overlay
-                        Box(
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .background(MaterialTheme.colorScheme.scrim.copy(alpha = 0.25f))
-                                .padding(12.dp),
-                            contentAlignment = Alignment.BottomEnd
-                        ) {
-                            Surface(
-                                color = MaterialTheme.colorScheme.scrim.copy(alpha = 0.6f),
-                                shape = CircleShape,
-                                modifier = Modifier.size(36.dp)
-                            ) {
-                                Box(contentAlignment = Alignment.Center) {
-                                    Icon(
-                                        Icons.Default.Image,
-                                        contentDescription = null,
-                                        tint = Color.White,
-                                        modifier = Modifier.size(18.dp)
-                                    )
-                                }
-                            }
+                    },
+                    actions = {
+                        if (playlist.tracks.isNotEmpty()) {
+                            PanelPrimaryButton(
+                                text = "Слушать",
+                                icon = Icons.Default.PlayArrow,
+                                onClick = { onPlayTrack(playlist.tracks.first()) }
+                            )
                         }
-                    }
-
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        Text(
-                            text = playlist.name,
-                            style = MaterialTheme.typography.headlineLarge,
-                                )
-                        Text(
-                            text = "${playlist.tracks.size} треков",
-                            style = MaterialTheme.typography.titleMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        PanelIconButton(
+                            icon = Icons.Default.Image,
+                            contentDescription = "Сменить обложку",
+                            onClick = { imagePicker.launch(arrayOf("image/*")) }
                         )
-                        
-                        val hasDownloaded = playlist.tracks.any { it.downloadState == DownloadState.DOWNLOADED }
                         if (hasDownloaded) {
-                            Spacer(modifier = Modifier.height(8.dp))
-                            Button(
-                                onClick = onMoveDownloadedToDownloads,
-                                shape = MaterialTheme.shapes.large,
-                                colors = androidx.compose.material3.ButtonDefaults.buttonColors(
-                                    containerColor = MaterialTheme.colorScheme.primaryContainer,
-                                    contentColor = MaterialTheme.colorScheme.onPrimaryContainer
-                                )
-                            ) {
-                                Text("Переместить скачанные в Скачанное")
-                            }
+                            PanelIconButton(
+                                icon = Icons.Default.Download,
+                                contentDescription = "Переместить скачанные в Скачанное",
+                                onClick = onMoveDownloadedToDownloads
+                            )
                         }
                     }
-                }
+                )
             }
 
+            item(key = "playlist-gap") { Spacer(modifier = Modifier.height(20.dp)) }
+
             if (playlist.tracks.isEmpty()) {
-                item {
+                item(key = "playlist-empty") {
                     EmptyState("Здесь пока нет треков. Зажмите обложку трека в плеере, чтобы добавить его.")
                 }
             } else {
-                items(playlist.tracks, key = { "playlist-${playlist.id}-${it.id}" }) { track ->
-                    val progress = downloadProgress[track.id]
+                itemsIndexed(playlist.tracks, key = { _, track -> "playlist-${playlist.id}-${track.id}" }) { index, track ->
                     DownloadedTrackCard(
                         track = track,
                         isSelected = track.id == currentTrackId,
-                        progress = progress,
+                        progress = downloadProgress[track.id],
                         isPlaying = isPlaying,
                         onClick = { onPlayTrack(track) },
-                        onDeleteDownload = { onRemoveTrack(track) }
+                        onDeleteDownload = { onRemoveTrack(track) },
+                        position = groupPosition(index, playlist.tracks.size)
                     )
                 }
             }
@@ -6353,8 +6250,8 @@ private fun YandexPlaylistCard(
             if (playlist.artworkUrl != null) {
                 FolderArtwork(playlist.artworkUrl, 82.dp)
             } else {
-                val containerColor = if (isLikedPlaylist) MaterialTheme.colorScheme.tertiary.copy(alpha = 0.15f) else MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)
-                val tintColor = if (isLikedPlaylist) MaterialTheme.colorScheme.tertiary else MaterialTheme.colorScheme.primary
+                val containerColor = MaterialTheme.colorScheme.primaryContainer
+                val tintColor = MaterialTheme.colorScheme.onPrimaryContainer
                 val icon = if (isLikedPlaylist) Icons.Default.Favorite else Icons.AutoMirrored.Filled.QueueMusic
                 Surface(
                     color = containerColor,
@@ -6434,105 +6331,61 @@ private fun YandexPlaylistDetailScreen(
 
         LazyColumn(
             modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(start = 16.dp, top = 4.dp, end = 16.dp, bottom = 120.dp),
-            verticalArrangement = Arrangement.spacedBy(14.dp)
+            contentPadding = PaddingValues(start = 16.dp, top = 4.dp, end = 16.dp, bottom = 120.dp)
         ) {
-            item {
-                Column(
-                    modifier = Modifier.fillMaxWidth().padding(vertical = 16.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.spacedBy(16.dp)
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .size(220.dp)
-                            .clip(AppShapes.extraLargeIncreased)
-                            .clickable {
-                                imagePicker.launch(arrayOf("image/*"))
-                            }
-                    ) {
-                        val isLikedPlaylist = playlist.id == -100L
+            item(key = "yandex-playlist-hero") {
+                val isLikedPlaylist = playlist.id == -100L
+                CollectionHero(
+                    title = playlist.title ?: "Без названия",
+                    kicker = "Яндекс Музыка",
+                    subtitle = plural(playlist.trackCount, "трек", "трека", "треков"),
+                    onArtworkClick = { imagePicker.launch(arrayOf("image/*")) },
+                    artwork = {
                         if (playlist.artworkUrl != null) {
-                            FolderArtwork(playlist.artworkUrl, 220.dp)
+                            AsyncImage(
+                                model = playlist.artworkUrl,
+                                contentDescription = null,
+                                modifier = Modifier.fillMaxSize(),
+                                contentScale = ContentScale.Crop
+                            )
                         } else {
-                            val containerColor = if (isLikedPlaylist) MaterialTheme.colorScheme.tertiary.copy(alpha = 0.15f) else MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)
-                            val tintColor = if (isLikedPlaylist) MaterialTheme.colorScheme.tertiary else MaterialTheme.colorScheme.primary
-                            val icon = if (isLikedPlaylist) Icons.Default.Favorite else Icons.AutoMirrored.Filled.QueueMusic
-                            Surface(
-                                color = containerColor,
-                                shape = AppShapes.extraLargeIncreased,
-                                modifier = Modifier.fillMaxSize()
-                            ) {
-                                Box(contentAlignment = Alignment.Center) {
-                                    Icon(
-                                        icon,
-                                        contentDescription = null,
-                                        tint = tintColor,
-                                        modifier = Modifier.size(72.dp)
-                                    )
-                                }
-                            }
+                            IconCover(
+                                icon = if (isLikedPlaylist) Icons.Default.Favorite else Icons.AutoMirrored.Filled.QueueMusic
+                            )
                         }
-
-                        Box(
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .background(MaterialTheme.colorScheme.scrim.copy(alpha = 0.25f))
-                                .padding(12.dp),
-                            contentAlignment = Alignment.BottomEnd
-                        ) {
-                            Surface(
-                                color = MaterialTheme.colorScheme.scrim.copy(alpha = 0.6f),
-                                shape = CircleShape,
-                                modifier = Modifier.size(36.dp)
-                            ) {
-                                Box(contentAlignment = Alignment.Center) {
-                                    Icon(
-                                        Icons.Default.Image,
-                                        contentDescription = null,
-                                        tint = Color.White,
-                                        modifier = Modifier.size(18.dp)
-                                    )
-                                }
-                            }
+                    },
+                    actions = {
+                        if (playlist.tracks.isNotEmpty()) {
+                            PanelPrimaryButton(
+                                text = "Слушать",
+                                icon = Icons.Default.PlayArrow,
+                                onClick = { onPlayTrack(playlist.tracks.first()) }
+                            )
                         }
-                    }
-
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        val isLikedPlaylist = playlist.id == -100L
-                        Text(
-                            text = playlist.title ?: "Без названия",
-                            style = MaterialTheme.typography.headlineLarge,
-                                )
-                        Text(
-                            text = "${playlist.trackCount} треков",
-                            style = MaterialTheme.typography.titleMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        PanelIconButton(
+                            icon = Icons.Default.Image,
+                            contentDescription = "Сменить обложку",
+                            onClick = { imagePicker.launch(arrayOf("image/*")) }
                         )
                     }
-                }
+                )
             }
 
+            item(key = "yandex-playlist-gap") { Spacer(modifier = Modifier.height(20.dp)) }
+
             if (isLoading) {
-                item {
-                    Box(
-                        modifier = Modifier.fillMaxWidth().height(150.dp),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        CustomCircularWavyProgressIndicator(
-                            progress = null,
-                            color = if (playlist.id == -100L) MaterialTheme.colorScheme.tertiary else MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.size(48.dp)
-                        )
-                    }
-                }
+                item(key = "yandex-playlist-loading") { LoadingBlock() }
             } else if (playlist.tracks.isEmpty()) {
-                item {
+                item(key = "yandex-playlist-empty") {
                     EmptyState("Здесь пока нет треков.")
                 }
             } else {
-                items(playlist.tracks, key = { "yandex-playlist-detail-${playlist.id}-${it.id}" }) { track ->
-                    val favorite = favorites.firstOrNull { it.id == track.id }
+                val favoritesMap = favorites.associateBy { it.id }
+                itemsIndexed(
+                    playlist.tracks,
+                    key = { _, track -> "yandex-playlist-detail-${playlist.id}-${track.id}" }
+                ) { index, track ->
+                    val favorite = favoritesMap[track.id]
                     TrackCard(
                         track = track,
                         isFavorite = favorite != null,
@@ -6541,7 +6394,8 @@ private fun YandexPlaylistDetailScreen(
                         progress = downloadProgress[track.id],
                         isPlaying = isPlaying,
                         onClick = { onPlayTrack(track) },
-                        onFavoriteClick = { onFavoriteClick(track) }
+                        onFavoriteClick = { onFavoriteClick(track) },
+                        position = groupPosition(index, playlist.tracks.size)
                     )
                 }
             }
@@ -6570,55 +6424,18 @@ private fun ArtistDetailScreen(
     onLoadAllTracks: () -> Unit = {}
 ) {
     if (selectedPlaylist != null) {
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .statusBarsPadding()
-        ) {
-            AppTopBar(
-                modifier = Modifier.padding(horizontal = 16.dp),
-                leadingIcon = Icons.AutoMirrored.Filled.ArrowBack,
-                leadingDescription = "Назад",
-                onLeadingClick = onDeselectPlaylist,
-                // No title here: AlbumHeroCard right below already carries it.
-                title = {}
-            )
-
-            LazyColumn(
-                modifier = Modifier.fillMaxSize(),
-                contentPadding = PaddingValues(start = 16.dp, top = 4.dp, end = 16.dp, bottom = 120.dp),
-                verticalArrangement = Arrangement.spacedBy(14.dp)
-            ) {
-                item {
-                    AlbumHeroCard(
-                        artworkUrl = selectedPlaylist.artworkUrl,
-                        title = selectedPlaylist.title ?: "Без названия",
-                        subtitle = artist.username.orEmpty(),
-                        trackCount = selectedPlaylist.tracks.size,
-                        isYandex = selectedPlaylist.permalinkUrl?.contains("yandex") == true
-                    )
-                }
-
-                if (selectedPlaylist.tracks.isEmpty()) {
-                    item {
-                        EmptyState("Здесь пока нет треков.")
-                    }
-                } else {
-                    item {
-                        PagedTrackList(
-                            tracks = selectedPlaylist.tracks,
-                            favorites = favorites,
-                            currentTrackId = currentTrackId,
-                            isPlaying = isPlaying,
-                            downloadProgress = downloadProgress,
-                            onPlayTrack = onPlayTrack,
-                            onFavoriteClick = onFavoriteClick,
-                            perPage = 4
-                        )
-                    }
-                }
-            }
-        }
+        SetDetailContent(
+            playlist = selectedPlaylist,
+            subtitle = artist.username.orEmpty(),
+            isLoading = isLoading,
+            favorites = favorites,
+            currentTrackId = currentTrackId,
+            isPlaying = isPlaying,
+            downloadProgress = downloadProgress,
+            onBack = onDeselectPlaylist,
+            onPlayTrack = onPlayTrack,
+            onFavoriteClick = onFavoriteClick
+        )
     } else {
         Column(
             modifier = Modifier
@@ -6647,47 +6464,30 @@ private fun ArtistDetailScreen(
                 contentPadding = PaddingValues(start = 16.dp, top = 8.dp, end = 16.dp, bottom = 120.dp),
                 verticalArrangement = Arrangement.spacedBy(16.dp)
             ) {
-                item {
+                item(key = "artist-hero") {
                     ArtistHeroCard(
                         artist = artist,
-                        albumCount = playlists.size
+                        albumCount = playlists.size,
+                        onPlay = tracks.firstOrNull()?.let { first -> { onPlayTrack(first) } }
                     )
                 }
 
                 if (!artist.description.isNullOrBlank()) {
-                    item {
+                    item(key = "artist-description") {
                         ExpandableDescription(text = artist.description)
                     }
                 }
 
                 if (isLoading) {
-                    item {
-                        Box(
-                            modifier = Modifier.fillMaxWidth().height(150.dp),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            CustomCircularWavyProgressIndicator(
-                                progress = null,
-                                color = if (artist.permalinkUrl?.startsWith("yandex") == true) AppTheme.brand.yandex.color else MaterialTheme.colorScheme.primary,
-                                modifier = Modifier.size(48.dp)
-                            )
-                        }
-                    }
+                    item(key = "artist-loading") { LoadingBlock() }
                 } else if (error != null) {
-                    item {
-                        MessageCard(error)
-                    }
+                    item(key = "artist-error") { MessageCard(error) }
                 } else {
                     if (tracks.isNotEmpty()) {
-                        item {
-                            Text(
-                                text = "Популярные треки",
-                                style = MaterialTheme.typography.titleLarge,
-                                modifier = Modifier.padding(top = 8.dp)
-                            )
+                        item(key = "artist-tracks-title") {
+                            SectionTitle("Популярные треки", modifier = Modifier.padding(top = 8.dp))
                         }
-
-                        item {
+                        item(key = "artist-tracks") {
                             PagedTrackList(
                                 tracks = tracks,
                                 favorites = favorites,
@@ -6702,73 +6502,136 @@ private fun ArtistDetailScreen(
                     }
 
                     if (playlists.isNotEmpty()) {
-                        item {
-                            Text(
-                                text = "Альбомы и плейлисты",
-                                style = MaterialTheme.typography.titleLarge,
-                                modifier = Modifier.padding(top = 16.dp, bottom = 8.dp)
+                        item(key = "artist-sets-title") {
+                            SectionTitle("Альбомы и плейлисты", modifier = Modifier.padding(top = 8.dp))
+                        }
+                        item(key = "artist-sets") {
+                            val isYandexArtist = artist.permalinkUrl?.startsWith("yandex") == true
+                            AlbumCarousel(
+                                albums = playlists.map { playlist ->
+                                    val isAlbum = isYandexArtist ||
+                                        playlist.permalinkUrl?.startsWith("yandex:album:") == true
+                                    CarouselAlbum(
+                                        key = playlist.id,
+                                        title = playlist.title ?: "Альбом",
+                                        subtitle = "",
+                                        caption = if (isAlbum) {
+                                            "Альбом · " + plural(playlist.trackCount, "трек", "трека", "треков")
+                                        } else {
+                                            setCaption(playlist)
+                                        },
+                                        artworkUrl = playlist.displayArtworkUrl,
+                                        onClick = { onPlaylistClick(playlist) }
+                                    )
+                                }
                             )
                         }
-
-                        item {
-                            androidx.compose.foundation.lazy.LazyRow(
-                                horizontalArrangement = Arrangement.spacedBy(14.dp),
-                                contentPadding = PaddingValues(horizontal = 4.dp),
-                                modifier = Modifier.fillMaxWidth()
-                            ) {
-                                items(playlists, key = { "artist-playlist-${it.id}" }) { playlist ->
-                                    val isYandex = playlist.permalinkUrl?.startsWith("yandex:album:") == true || artist.permalinkUrl?.startsWith("yandex") == true
-                                    Card(
-                                        onClick = { onPlaylistClick(playlist) },
-                                        modifier = Modifier.width(140.dp),
-                                        shape = MaterialTheme.shapes.extraLarge,
-                                        colors = CardDefaults.cardColors(
-                                            containerColor = MaterialTheme.colorScheme.surfaceContainerHigh
-                                        )
-                                    ) {
-                                        Column(modifier = Modifier.padding(8.dp)) {
-                                            Box(
-                                                modifier = Modifier
-                                                    .size(124.dp)
-                                                    .clip(MaterialTheme.shapes.large)
-                                            ) {
-                                                if (playlist.artworkUrl != null) {
-                                                    FolderArtwork(playlist.artworkUrl, 124.dp)
-                                                } else {
-                                                    Surface(
-                                                        color = if (isYandex) AppTheme.brand.yandex.container else MaterialTheme.colorScheme.secondaryContainer,
-                                                        shape = MaterialTheme.shapes.large,
-                                                        modifier = Modifier.fillMaxSize()
-                                                    ) {
-                                                        Box(contentAlignment = Alignment.Center) {
-                                                            Icon(
-                                                                Icons.Default.Album,
-                                                                contentDescription = null,
-                                                                tint = if (isYandex) AppTheme.brand.yandex.onContainer else MaterialTheme.colorScheme.onSecondaryContainer,
-                                                                modifier = Modifier.size(36.dp)
-                                                            )
-                                                        }
-                                                    }
-                                                }
-                                            }
-                                            Spacer(modifier = Modifier.height(8.dp))
-                                            Text(
-                                                text = playlist.title ?: "Альбом",
-                                                style = MaterialTheme.typography.titleMedium,
-                                                maxLines = 1,
-                                                overflow = TextOverflow.Ellipsis
-                                            )
-                                            Text(
-                                                text = "${playlist.trackCount} треков",
-                                                style = MaterialTheme.typography.bodyMedium,
-                                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                                            )
-                                        }
-                                    }
-                                }
-                            }
-                        }
                     }
+                }
+            }
+        }
+    }
+}
+
+/** Album or playlist opened from the artist page or from search: cover, then its tracks. */
+@Composable
+private fun SetDetailContent(
+    playlist: SoundCloudPlaylist,
+    subtitle: String,
+    isLoading: Boolean,
+    favorites: List<FavoriteTrack>,
+    currentTrackId: Long?,
+    isPlaying: Boolean,
+    downloadProgress: Map<Long, Float>,
+    onBack: () -> Unit,
+    onPlayTrack: (SoundCloudTrack) -> Unit,
+    onFavoriteClick: (SoundCloudTrack) -> Unit,
+    error: String? = null
+) {
+    val isYandex = playlist.permalinkUrl?.contains("yandex") == true
+    val tracks = playlist.knownTracks
+    // Until the full list arrives only a few tracks are known; the set's own count is closer
+    // to what's about to appear.
+    val trackCount = if (isLoading) maxOf(playlist.trackCount, tracks.size) else tracks.size
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .statusBarsPadding()
+    ) {
+        AppTopBar(
+            modifier = Modifier.padding(horizontal = 16.dp),
+            leadingIcon = Icons.AutoMirrored.Filled.ArrowBack,
+            leadingDescription = "Назад",
+            onLeadingClick = onBack,
+            // No title here: the hero right below already carries it.
+            title = {}
+        )
+
+        LazyColumn(
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(start = 16.dp, top = 4.dp, end = 16.dp, bottom = 120.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp)
+        ) {
+            item(key = "set-hero") {
+                val artworkUrl = ArtworkUrls.highRes(playlist.displayArtworkUrl)
+                CollectionHero(
+                    title = playlist.title ?: "Без названия",
+                    kicker = if (isYandex) "Альбом" else setCaption(playlist),
+                    subtitle = listOf(subtitle, plural(trackCount, "трек", "трека", "треков"))
+                        .filter { it.isNotBlank() }
+                        .joinToString(" · "),
+                    artwork = {
+                        if (artworkUrl != null) {
+                            AsyncImage(
+                                model = artworkUrl,
+                                contentDescription = null,
+                                modifier = Modifier.fillMaxSize(),
+                                contentScale = ContentScale.Crop
+                            )
+                        } else {
+                            IconCover(icon = Icons.Default.Album)
+                        }
+                    },
+                    actions = if (tracks.isNotEmpty()) {
+                        {
+                            PanelPrimaryButton(
+                                text = "Слушать",
+                                icon = Icons.Default.PlayArrow,
+                                onClick = { onPlayTrack(tracks.first()) }
+                            )
+                        }
+                    } else {
+                        null
+                    }
+                )
+            }
+
+            if (isLoading) {
+                item(key = "set-loading") { LoadingBlock(height = 120.dp) }
+            }
+
+            if (error != null) {
+                item(key = "set-error") { MessageCard(error) }
+            }
+
+            if (tracks.isEmpty()) {
+                if (!isLoading && error == null) {
+                    item(key = "set-empty") {
+                        EmptyState("Здесь пока нет треков.")
+                    }
+                }
+            } else {
+                item(key = "set-tracks") {
+                    PagedTrackList(
+                        tracks = tracks,
+                        favorites = favorites,
+                        currentTrackId = currentTrackId,
+                        isPlaying = isPlaying,
+                        downloadProgress = downloadProgress,
+                        onPlayTrack = onPlayTrack,
+                        onFavoriteClick = onFavoriteClick,
+                        perPage = 5
+                    )
                 }
             }
         }
@@ -7094,130 +6957,6 @@ fun TrackActionsDialog(
 }
 
 @Composable
-fun CustomWavyProgressIndicator(
-    progress: Float?,
-    modifier: Modifier = Modifier,
-    color: Color = MaterialTheme.colorScheme.primary,
-    trackColor: Color = color.copy(alpha = 0.2f)
-) {
-    val infiniteTransition = rememberInfiniteTransition(label = "wavy")
-    val phaseShift by infiniteTransition.animateFloat(
-        initialValue = 0f,
-        targetValue = 2f * Math.PI.toFloat(),
-        animationSpec = infiniteRepeatable(
-            animation = tween(1200, easing = LinearEasing),
-            repeatMode = RepeatMode.Restart
-        ),
-        label = "phaseShift"
-    )
-
-    Canvas(modifier = modifier.height(10.dp)) {
-        val width = size.width
-        val height = size.height
-        val centerY = height / 2f
-        val ampPx = 3.dp.toPx()
-        val waveLenPx = 20.dp.toPx()
-
-        drawLine(
-            color = trackColor,
-            start = Offset(0f, centerY),
-            end = Offset(width, centerY),
-            strokeWidth = 4.dp.toPx(),
-            cap = StrokeCap.Round
-        )
-
-        val prog = progress ?: 0.3f
-        val progressWidth = width * prog.coerceIn(0f, 1f)
-
-        if (progressWidth > 0f) {
-            val path = Path()
-            val startX = 0f
-            val startY = centerY + ampPx * kotlin.math.sin(-phaseShift)
-            path.moveTo(startX, startY)
-
-            val stepPx = 2.dp.toPx()
-            var x = stepPx
-            while (x <= progressWidth) {
-                val angle = (x / waveLenPx) * (2f * Math.PI.toFloat()) - phaseShift
-                val y = centerY + ampPx * kotlin.math.sin(angle)
-                path.lineTo(x, y)
-                x += stepPx
-            }
-
-            drawPath(
-                path = path,
-                color = color,
-                style = Stroke(width = 4.dp.toPx(), cap = StrokeCap.Round)
-            )
-        }
-    }
-}
-
-@Composable
-fun CustomCircularWavyProgressIndicator(
-    progress: Float?,
-    modifier: Modifier = Modifier,
-    color: Color = MaterialTheme.colorScheme.primary,
-    trackColor: Color = color.copy(alpha = 0.2f)
-) {
-    val infiniteTransition = rememberInfiniteTransition(label = "circularWavy")
-    val phaseShift by infiniteTransition.animateFloat(
-        initialValue = 0f,
-        targetValue = 2f * Math.PI.toFloat(),
-        animationSpec = infiniteRepeatable(
-            animation = tween(1500, easing = LinearEasing),
-            repeatMode = RepeatMode.Restart
-        ),
-        label = "phaseShift"
-    )
-
-    Canvas(modifier = modifier.size(40.dp)) {
-        val center = Offset(size.width / 2f, size.height / 2f)
-        val baseRadius = (minOf(size.width, size.height) / 2f) - 4.dp.toPx()
-        val ampPx = 2.dp.toPx()
-        val waveCount = 8
-
-        drawCircle(
-            color = trackColor,
-            radius = baseRadius,
-            center = center,
-            style = Stroke(width = 3.dp.toPx())
-        )
-
-        val prog = progress ?: 1f
-        val sweepAngle = 360f * prog.coerceIn(0f, 1f)
-
-        if (sweepAngle > 0f) {
-            val path = Path()
-            val steps = (sweepAngle * 2).toInt().coerceAtLeast(10)
-            
-            for (i in 0..steps) {
-                val angleDeg = i / 2f
-                val angleRad = Math.toRadians(angleDeg.toDouble()).toFloat()
-                
-                val currentAmp = ampPx * kotlin.math.sin(angleRad * waveCount - phaseShift)
-                val r = baseRadius + currentAmp
-                
-                val x = center.x + r * kotlin.math.cos(angleRad)
-                val y = center.y + r * kotlin.math.sin(angleRad)
-                
-                if (i == 0) {
-                    path.moveTo(x, y)
-                } else {
-                    path.lineTo(x, y)
-                }
-            }
-
-            drawPath(
-                path = path,
-                color = color,
-                style = Stroke(width = 4.dp.toPx(), cap = StrokeCap.Round)
-            )
-        }
-    }
-}
-
-@Composable
 fun YandexLoginDialog(
     loginUrl: String,
     onTokenCaptured: (String) -> Unit,
@@ -7308,7 +7047,7 @@ fun YandexLoginDialog(
                                 .background(MaterialTheme.colorScheme.background),
                             contentAlignment = Alignment.Center
                         ) {
-                            CircularProgressIndicator()
+                            AppLoadingIndicator()
                         }
                     }
                 }

@@ -64,7 +64,3 @@ data class SoundCloudSystemPlaylist(
     val title: String?,
     val tracks: List<SoundCloudTrack>? = null
 )
-
-data class TracksByIdsResponse(
-    val collection: List<SoundCloudTrack> = emptyList()
-)

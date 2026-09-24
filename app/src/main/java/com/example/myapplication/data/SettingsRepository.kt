@@ -24,6 +24,24 @@ class SettingsRepository(
     private val _userId = MutableStateFlow(readUserId())
     val userId = _userId.asStateFlow()
 
+    // The playback service renews an expired SoundCloud session on its own, writing straight to
+    // these preferences. Mirror such writes, or the screen would keep using the dead token until
+    // the next launch. Held in a field: preferences keep only a weak reference to listeners.
+    private val credentialsListener =
+        android.content.SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
+            when (key) {
+                KEY_CLIENT_ID -> preferences.getString(KEY_CLIENT_ID, null)
+                    ?.takeIf { it.isNotBlank() }
+                    ?.let { _clientId.value = it }
+                KEY_OAUTH_TOKEN -> _oauthToken.value = readOauthToken()
+                KEY_USER_ID -> _userId.value = readUserId()
+            }
+        }
+
+    init {
+        preferences.registerOnSharedPreferenceChangeListener(credentialsListener)
+    }
+
     private val _yandexToken = MutableStateFlow(preferences.getString(KEY_YANDEX_TOKEN, "") ?: "")
     val yandexToken = _yandexToken.asStateFlow()
 

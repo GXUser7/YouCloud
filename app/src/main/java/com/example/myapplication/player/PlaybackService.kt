@@ -279,10 +279,27 @@ class PlaybackService : MediaLibraryService() {
                 // current one per request — so playback no longer dies just because the stored id
                 // went stale between the app launching and the track being resolved.
                 val service = com.example.myapplication.data.SoundCloudApi.createService(
-                    oauthTokenProvider = { oauthToken },
+                    oauthTokenProvider = { preferences.getString("soundcloud_oauth_token", "") ?: oauthToken },
                     clientIdProvider = { preferences.getString("soundcloud_client_id", "") ?: "" },
                     onClientIdRefreshed = { fresh ->
                         preferences.edit().putString("soundcloud_client_id", fresh).apply()
+                    },
+                    // Playback from Android Auto or the notification runs without the app's
+                    // screen, so it has to renew an expired session by itself.
+                    onSessionExpired = { staleToken ->
+                        val renewed = com.example.myapplication.data.SoundCloudSessionRefresher.refresh(
+                            context = this@PlaybackService,
+                            staleToken = staleToken,
+                            clientId = preferences.getString("soundcloud_client_id", "") ?: ""
+                        )
+                        if (renewed != null) {
+                            preferences.edit()
+                                .putString("soundcloud_client_id", renewed.clientId)
+                                .putString("soundcloud_oauth_token", renewed.oauthToken)
+                                .putString("soundcloud_user_id", renewed.userId.toString())
+                                .commit()
+                        }
+                        renewed != null
                     }
                 )
                 val playbackResolver = com.example.myapplication.data.SoundCloudPlaybackResolver(service)
