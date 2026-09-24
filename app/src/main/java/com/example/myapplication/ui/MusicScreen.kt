@@ -1693,9 +1693,9 @@ private fun MixCarouselCard(
 }
 
 /**
- * A home carousel card: the cover and a caption panel as two joined halves. The panel lights
- * up in the primary colour as the card comes into focus, so the card in front reads as a
- * colour block and its neighbours stay quiet.
+ * A home carousel card: the cover and a caption panel as two joined halves. The panel takes
+ * on the accent tone as the card comes into focus, so the card in front reads as a colour
+ * block and its neighbours stay quiet.
  */
 @Composable
 private fun ColorBlockCarouselCard(
@@ -1722,12 +1722,12 @@ private fun ColorBlockCarouselCard(
 
     val panelColor = androidx.compose.ui.graphics.lerp(
         MaterialTheme.colorScheme.surfaceContainerHigh,
-        MaterialTheme.colorScheme.primary,
+        PanelColors.container,
         focus
     )
     val panelContent = androidx.compose.ui.graphics.lerp(
         MaterialTheme.colorScheme.onSurface,
-        MaterialTheme.colorScheme.onPrimary,
+        PanelColors.content,
         focus
     )
 
@@ -2734,8 +2734,8 @@ private fun SearchScreen(
                         .fillMaxWidth()
                         .padding(top = 20.dp),
                     shape = RoundedCornerShape(32.dp),
-                    color = MaterialTheme.colorScheme.primary,
-                    contentColor = MaterialTheme.colorScheme.onPrimary
+                    color = PanelColors.container,
+                    contentColor = PanelColors.content
                 ) {
                     Column(
                         modifier = Modifier.padding(24.dp),
@@ -3639,8 +3639,8 @@ private fun MixDetailScreen(
                     .fillMaxWidth()
                     .padding(horizontal = 16.dp),
                 shape = RoundedCornerShape(32.dp),
-                color = MaterialTheme.colorScheme.primary,
-                contentColor = MaterialTheme.colorScheme.onPrimary
+                color = PanelColors.container,
+                contentColor = PanelColors.content
             ) {
                 Row(
                     modifier = Modifier.padding(16.dp),
@@ -3650,7 +3650,7 @@ private fun MixDetailScreen(
                     Column(modifier = Modifier.weight(1f).height(120.dp)) {
                         Kicker(
                             text = if (isStation) "Станция" else "Микс",
-                            color = MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.78f)
+                            color = PanelColors.content.copy(alpha = 0.78f)
                         )
                         Spacer(modifier = Modifier.height(4.dp))
                         Text(
@@ -3666,7 +3666,7 @@ private fun MixDetailScreen(
                             Text(
                                 text = description,
                                 style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.8f),
+                                color = PanelColors.content.copy(alpha = 0.8f),
                                 maxLines = 2,
                                 overflow = TextOverflow.Ellipsis
                             )
@@ -4365,12 +4365,12 @@ private fun PlayerPanel(
     onOpenQueue: () -> Unit
 ) {
     val haptic = LocalHapticFeedback.current
-    val onPanel = MaterialTheme.colorScheme.onPrimary
+    val onPanel = PanelColors.content
 
     Surface(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(topStart = 44.dp, topEnd = 44.dp),
-        color = MaterialTheme.colorScheme.primary,
+        color = PanelColors.container,
         contentColor = onPanel
     ) {
         Column(
@@ -4527,16 +4527,16 @@ private fun PlayerSeekBar(
     vibrator: android.os.Vibrator?,
     onSeek: (Long) -> Unit
 ) {
-    val onPanel = MaterialTheme.colorScheme.onPrimary
+    val onPanel = PanelColors.content
     var sliderProgress by remember { mutableStateOf<Float?>(null) }
     var lastVibratedRatio by remember(trackId) { mutableStateOf(0f) }
     val interactionSource = remember { MutableInteractionSource() }
     val colors = SliderDefaults.colors(
-        thumbColor = onPanel,
-        activeTrackColor = onPanel,
+        thumbColor = PanelColors.accent,
+        activeTrackColor = PanelColors.accent,
         inactiveTrackColor = onPanel.copy(alpha = 0.18f),
-        activeTickColor = onPanel,
-        inactiveTickColor = onPanel
+        activeTickColor = PanelColors.onAccent,
+        inactiveTickColor = PanelColors.accent
     )
     val shownRatio = sliderProgress ?: if (durationMs > 0) {
         positionMs.coerceIn(0L, durationMs).toFloat() / durationMs.toFloat()
@@ -4618,8 +4618,8 @@ private fun PanelPlayButton(isPlaying: Boolean, onClick: () -> Unit) {
         },
         modifier = Modifier.size(96.dp),
         shape = RoundedCornerShape(corner),
-        color = MaterialTheme.colorScheme.onPrimary,
-        contentColor = MaterialTheme.colorScheme.primary
+        color = PanelColors.accent,
+        contentColor = PanelColors.onAccent
     ) {
         Box(contentAlignment = Alignment.Center) {
             Icon(
@@ -4639,7 +4639,7 @@ private fun QueuePeek(
     onClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    val onPanel = MaterialTheme.colorScheme.onPrimary
+    val onPanel = PanelColors.content
     Surface(
         onClick = onClick,
         modifier = modifier.height(64.dp),
@@ -5249,8 +5249,8 @@ private fun MessageCard(message: String) {
 }
 
 /**
- * The player's colour-block panel, collapsed: same primary colour, so opening it reads as the
- * bar growing into the full player.
+ * The player's colour-block panel, collapsed: same colours, so opening it reads as the bar
+ * growing into the full player.
  */
 @Composable
 private fun PlayerBar(
@@ -5263,10 +5263,10 @@ private fun PlayerBar(
     onOpen: () -> Unit
 ) {
     val haptic = LocalHapticFeedback.current
-    val onPanel = MaterialTheme.colorScheme.onPrimary
+    val onPanel = PanelColors.content
     Surface(
         onClick = onOpen,
-        color = MaterialTheme.colorScheme.primary,
+        color = PanelColors.container,
         contentColor = onPanel,
         shape = RoundedCornerShape(32.dp),
         shadowElevation = 8.dp,
@@ -5302,7 +5302,7 @@ private fun PlayerBar(
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(top = 4.dp),
-                    color = onPanel,
+                    color = PanelColors.accent,
                     trackColor = onPanel.copy(alpha = 0.22f),
                     amplitude = { if (isPlaying) 1f else 0f }
                 )
@@ -5322,8 +5322,8 @@ private fun PlayerBar(
                 },
                 modifier = Modifier.size(52.dp),
                 shape = RoundedCornerShape(corner),
-                color = onPanel,
-                contentColor = MaterialTheme.colorScheme.primary
+                color = PanelColors.accent,
+                contentColor = PanelColors.onAccent
             ) {
                 Box(contentAlignment = Alignment.Center) {
                     Icon(

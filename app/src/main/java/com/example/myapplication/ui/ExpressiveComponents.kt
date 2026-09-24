@@ -3,6 +3,12 @@
 package com.example.myapplication.ui
 
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.togetherWith
@@ -28,8 +34,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Album
 import androidx.compose.material.icons.filled.KeyboardArrowDown
-import androidx.compose.material3.ContainedLoadingIndicator
 import androidx.compose.material3.CircularWavyProgressIndicator
+import androidx.compose.material3.ContainedLoadingIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.Icon
@@ -42,11 +48,14 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.carousel.HorizontalMultiBrowseCarousel
 import androidx.compose.material3.carousel.rememberCarouselState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.ReadOnlyComposable
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shape
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.Layout
@@ -63,7 +72,7 @@ import kotlin.math.roundToInt
  * The shared vocabulary of the colour-block redesign.
  *
  * Every collection screen (downloads, playlists, albums, mixes, artists) opens with the same
- * hero: a big cover with a panel in the scheme's primary colour laid over its lower edge,
+ * hero: a big cover with a panel in the scheme's accent tone laid over its lower edge,
  * carrying the title in heavy type. The player uses the same idea at full height, and the mini
  * player is that panel collapsed. Lists below sit in one rounded container per group.
  *
@@ -284,9 +293,26 @@ internal fun Kicker(
 // region Colour-block hero
 
 /**
- * The opening block of every collection screen: a large cover, with a panel in the primary
- * colour laid over its bottom edge that carries the kicker, the title in heavy type, a
- * subtitle and the actions.
+ * Colours of the colour-block panels. They are large surfaces, so they take the primary
+ * *container* role: in a dark scheme that is a deep tone of the accent with light text on it.
+ * Plain `primary` is the scheme's light accent in a dark theme, and as a panel it lit up half
+ * the screen. The accent itself is kept for the one control on a panel that should pop.
+ */
+internal object PanelColors {
+    val container: Color
+        @Composable @ReadOnlyComposable get() = MaterialTheme.colorScheme.primaryContainer
+    val content: Color
+        @Composable @ReadOnlyComposable get() = MaterialTheme.colorScheme.onPrimaryContainer
+    val accent: Color
+        @Composable @ReadOnlyComposable get() = MaterialTheme.colorScheme.primary
+    val onAccent: Color
+        @Composable @ReadOnlyComposable get() = MaterialTheme.colorScheme.onPrimary
+}
+
+/**
+ * The opening block of every collection screen: a large cover, with a colour-block panel laid
+ * over its bottom edge that carries the kicker, the title in heavy type, a subtitle and the
+ * actions.
  */
 @Composable
 internal fun CollectionHero(
@@ -315,8 +341,8 @@ internal fun CollectionHero(
             )
             Surface(
                 shape = RoundedCornerShape(36.dp),
-                color = MaterialTheme.colorScheme.primary,
-                contentColor = MaterialTheme.colorScheme.onPrimary
+                color = PanelColors.container,
+                contentColor = PanelColors.content
             ) {
                 Column(modifier = Modifier.padding(start = 22.dp, top = 20.dp, end = 22.dp, bottom = 22.dp)) {
                     if (kicker != null) {
@@ -334,7 +360,7 @@ internal fun CollectionHero(
                         Text(
                             text = subtitle,
                             style = MaterialTheme.typography.bodyLarge,
-                            color = MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.8f),
+                            color = PanelColors.content.copy(alpha = 0.8f),
                             maxLines = 2,
                             overflow = TextOverflow.Ellipsis
                         )
@@ -364,24 +390,24 @@ internal fun CollectionHero(
     }
 }
 
-/** Small tinted label on the primary panel. */
+/** Small tinted label on a colour-block panel. */
 @Composable
 internal fun OnPanelChip(text: String, modifier: Modifier = Modifier) {
     Surface(
         modifier = modifier,
         shape = RoundedCornerShape(12.dp),
-        color = MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.12f),
-        contentColor = MaterialTheme.colorScheme.onPrimary
+        color = PanelColors.content.copy(alpha = 0.12f),
+        contentColor = PanelColors.content
     ) {
         Kicker(
             text = text,
-            color = MaterialTheme.colorScheme.onPrimary,
+            color = PanelColors.content,
             modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
         )
     }
 }
 
-/** The main action on a primary panel: dark pill with the primary colour punched through. */
+/** The main action on a panel, in the scheme's accent so it is the one thing that pops. */
 @Composable
 internal fun PanelPrimaryButton(
     text: String,
@@ -393,8 +419,8 @@ internal fun PanelPrimaryButton(
         onClick = onClick,
         modifier = modifier.height(56.dp),
         shape = RoundedCornerShape(20.dp),
-        color = MaterialTheme.colorScheme.onPrimary,
-        contentColor = MaterialTheme.colorScheme.primary
+        color = PanelColors.accent,
+        contentColor = PanelColors.onAccent
     ) {
         Row(
             modifier = Modifier.padding(horizontal = 22.dp),
@@ -407,7 +433,11 @@ internal fun PanelPrimaryButton(
     }
 }
 
-/** A secondary icon action on a primary panel. */
+/**
+ * An icon action on a colour-block panel. Toggles (like, shuffle, repeat) switch on loudly:
+ * the accent fill, a squarer shape and a small spring, the way the player's controls always
+ * did, so their state reads at a glance.
+ */
 @Composable
 internal fun PanelIconButton(
     icon: ImageVector,
@@ -418,12 +448,37 @@ internal fun PanelIconButton(
     size: Dp = 56.dp,
     iconSize: Dp = 24.dp
 ) {
+    val container by animateColorAsState(
+        targetValue = if (selected) PanelColors.accent else PanelColors.content.copy(alpha = 0.12f),
+        animationSpec = tween(300),
+        label = "panelButtonContainer"
+    )
+    val content by animateColorAsState(
+        targetValue = if (selected) PanelColors.onAccent else PanelColors.content,
+        animationSpec = tween(300),
+        label = "panelButtonContent"
+    )
+    val corner by animateDpAsState(
+        targetValue = if (selected) size * 0.3f else size / 2,
+        animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessLow),
+        label = "panelButtonCorner"
+    )
+    val scale by animateFloatAsState(
+        targetValue = if (selected) 1.06f else 1f,
+        animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessLow),
+        label = "panelButtonScale"
+    )
     Surface(
         onClick = onClick,
-        modifier = modifier.size(size),
-        shape = if (selected) RoundedCornerShape(size * 0.32f) else CircleShape,
-        color = MaterialTheme.colorScheme.onPrimary.copy(alpha = if (selected) 0.22f else 0.12f),
-        contentColor = MaterialTheme.colorScheme.onPrimary
+        modifier = modifier
+            .size(size)
+            .graphicsLayer {
+                scaleX = scale
+                scaleY = scale
+            },
+        shape = RoundedCornerShape(corner),
+        color = container,
+        contentColor = content
     ) {
         Box(contentAlignment = Alignment.Center) {
             Icon(icon, contentDescription = contentDescription, modifier = Modifier.size(iconSize))
@@ -469,8 +524,8 @@ internal fun TopResultCard(
         onClick = onClick,
         modifier = modifier.fillMaxWidth(),
         shape = RoundedCornerShape(32.dp),
-        color = MaterialTheme.colorScheme.primary,
-        contentColor = MaterialTheme.colorScheme.onPrimary
+        color = PanelColors.container,
+        contentColor = PanelColors.content
     ) {
         Row(
             modifier = Modifier.padding(16.dp),
@@ -482,7 +537,7 @@ internal fun TopResultCard(
                 shape = RoundedCornerShape(24.dp)
             )
             Column(modifier = Modifier.weight(1f).height(120.dp)) {
-                Kicker(text = kicker, color = MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.78f))
+                Kicker(text = kicker, color = PanelColors.content.copy(alpha = 0.78f))
                 Spacer(modifier = Modifier.height(4.dp))
                 Text(
                     text = title,
@@ -494,7 +549,7 @@ internal fun TopResultCard(
                 Text(
                     text = subtitle,
                     style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.8f),
+                    color = PanelColors.content.copy(alpha = 0.8f),
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
@@ -504,13 +559,13 @@ internal fun TopResultCard(
                         .align(Alignment.End)
                         .size(44.dp)
                         .clip(RoundedCornerShape(16.dp))
-                        .background(MaterialTheme.colorScheme.onPrimary),
+                        .background(PanelColors.accent),
                     contentAlignment = Alignment.Center
                 ) {
                     Icon(
                         Icons.AutoMirrored.Filled.KeyboardArrowRight,
                         contentDescription = null,
-                        tint = MaterialTheme.colorScheme.primary,
+                        tint = PanelColors.onAccent,
                         modifier = Modifier.size(26.dp)
                     )
                 }
