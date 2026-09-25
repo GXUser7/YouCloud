@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The one directory a downloaded update is written to, and nothing else. A FileProvider is a hole
+  through the sandbox; the installer only needs the file it was just handed, while the rest of
+  filesDir holds downloaded music and the account tokens.
+-->
+<paths>
+    <files-path
+        name="updates"
+        path="updates/" />
+</paths>

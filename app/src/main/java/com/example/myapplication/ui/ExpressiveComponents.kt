@@ -66,6 +66,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
+import com.example.myapplication.ui.theme.AppTheme
 import kotlin.math.roundToInt
 
 /*
@@ -293,20 +294,20 @@ internal fun Kicker(
 // region Colour-block hero
 
 /**
- * Colours of the colour-block panels. They are large surfaces, so they take the primary
- * *container* role: in a dark scheme that is a deep tone of the accent with light text on it.
- * Plain `primary` is the scheme's light accent in a dark theme, and as a panel it lit up half
- * the screen. The accent itself is kept for the one control on a panel that should pop.
+ * Colours of the colour-block panels, from [AppTheme.panel]. They are large surfaces, so in a
+ * dark theme they sit on the same deep tone the launcher's widgets use rather than on
+ * `primaryContainer`, which lit up half the screen. The accent itself is kept for the one
+ * control on a panel that should pop.
  */
 internal object PanelColors {
     val container: Color
-        @Composable @ReadOnlyComposable get() = MaterialTheme.colorScheme.primaryContainer
+        @Composable @ReadOnlyComposable get() = AppTheme.panel.container
     val content: Color
-        @Composable @ReadOnlyComposable get() = MaterialTheme.colorScheme.onPrimaryContainer
+        @Composable @ReadOnlyComposable get() = AppTheme.panel.content
     val accent: Color
-        @Composable @ReadOnlyComposable get() = MaterialTheme.colorScheme.primary
+        @Composable @ReadOnlyComposable get() = AppTheme.panel.accent
     val onAccent: Color
-        @Composable @ReadOnlyComposable get() = MaterialTheme.colorScheme.onPrimary
+        @Composable @ReadOnlyComposable get() = AppTheme.panel.onAccent
 }
 
 /**
@@ -489,16 +490,17 @@ internal fun PanelIconButton(
 /** Placeholder cover for collections that have no artwork of their own. */
 @Composable
 internal fun IconCover(icon: ImageVector, modifier: Modifier = Modifier, iconSize: Dp = 96.dp) {
+    // Panel tone with the accent glyph: how the launcher draws its themed icons.
     Box(
         modifier = modifier
             .fillMaxSize()
-            .background(MaterialTheme.colorScheme.primaryContainer),
+            .background(PanelColors.container),
         contentAlignment = Alignment.Center
     ) {
         Icon(
             icon,
             contentDescription = null,
-            tint = MaterialTheme.colorScheme.onPrimaryContainer,
+            tint = PanelColors.accent,
             modifier = Modifier.size(iconSize)
         )
     }

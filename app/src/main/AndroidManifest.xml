@@ -6,6 +6,8 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
     <uses-permission android:name="android.permission.VIBRATE" />
+    <!-- Hands a downloaded update to the system installer; the user still confirms it there. -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
     <application
         android:allowBackup="true"
@@ -57,6 +59,18 @@
             android:authorities="com.example.myapplication.artwork"
             android:exported="true"
             android:grantUriPermissions="true" />
+
+        <!-- Gives the package installer read access to a downloaded update, and to nothing else:
+             scoped to one directory in @xml/update_paths, and not exported. -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.updates"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/update_paths" />
+        </provider>
 
         <!-- Exported so the Android Auto host process can bind to the browser service; the session
              itself still decides who may connect. -->

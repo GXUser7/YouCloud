@@ -251,6 +251,13 @@ import androidx.compose.ui.unit.Constraints
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.LinearWavyProgressIndicator
 import androidx.compose.foundation.layout.BoxScope
+import androidx.compose.material.icons.filled.DownloadDone
+import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.Palette
+import androidx.compose.material.icons.filled.ScreenRotation
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
+import com.example.myapplication.data.sourceKey
+import androidx.compose.material.icons.filled.Radio
 
 /**
  * Offscreen WebView that refreshes SoundCloud credentials without interrupting the user.
@@ -305,6 +312,8 @@ fun MusicScreen(viewModel: MusicViewModel) {
     val showDebugPercentage by viewModel.showDebugPercentage.collectAsState()
     val downloadedPercentages by viewModel.downloadedPercentages.collectAsState()
     val isAllArtistTracksLoaded by viewModel.isAllArtistTracksLoaded.collectAsState()
+    val backgroundMotion by viewModel.settingsRepo.backgroundMotion.collectAsState()
+    val playerCoverColors by viewModel.settingsRepo.playerCoverColors.collectAsState()
 
     val yandexPlaylists by viewModel.yandexPlaylists.collectAsState()
     val yandexToken by viewModel.yandexToken.collectAsState()
@@ -353,7 +362,8 @@ fun MusicScreen(viewModel: MusicViewModel) {
     }
 
     Box(modifier = Modifier.fillMaxSize()) {
-        ExpressiveBackground()
+        // The full player is opaque; nothing behind it needs a frame, or the accelerometer.
+        ExpressiveBackground(motionEnabled = backgroundMotion, animated = selectedTrack == null)
 
         yandexLoginUrl?.let { url ->
             YandexLoginDialog(
@@ -367,9 +377,22 @@ fun MusicScreen(viewModel: MusicViewModel) {
             )
         }
 
+        val albumLibrary = remember(playlists) {
+            AlbumLibrary(
+                likedBySource = playlists.mapNotNull { p -> p.sourceKey?.let { it to p } }.toMap(),
+                onToggleLike = { album, artistName ->
+                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                    viewModel.toggleAlbumLike(album, artistName)
+                },
+                onDownload = { playlist ->
+                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                    viewModel.downloadPlaylist(playlist.id)
+                }
+            )
+        }
         if (isLoggedOut) {
             SoundCloudLoginScreen(viewModel = viewModel)
-        } else {
+        } else androidx.compose.runtime.CompositionLocalProvider(LocalAlbumLibrary provides albumLibrary) {
             AnimatedContent(
                 targetState = screen,
                 transitionSpec = {
@@ -427,7 +450,8 @@ fun MusicScreen(viewModel: MusicViewModel) {
                             haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                             viewModel.openMix(mix)
                         },
-                        onReloadMixes = viewModel::loadMixes
+                        onReloadMixes = viewModel::loadMixes,
+                        updates = viewModel.updates
                     )
 
                     AppScreen.PLAYLISTS -> PlaylistsScreen(
@@ -573,7 +597,8 @@ fun MusicScreen(viewModel: MusicViewModel) {
                             onYandexLogoutClick = {
                                 haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                                 viewModel.logoutYandex()
-                            }
+                            },
+                            updates = viewModel.updates
                         )
                     }
 
@@ -607,6 +632,14 @@ fun MusicScreen(viewModel: MusicViewModel) {
                                     haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                                     viewModel.deletePlaylist(playlist.id)
                                     viewModel.closePlaylist()
+                                },
+                                onShuffle = {
+                                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                    viewModel.playPlaylistShuffled(playlist)
+                                },
+                                onDownloadAll = {
+                                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                    viewModel.downloadPlaylist(playlist.id)
                                 }
                             )
                         }
@@ -690,6 +723,10 @@ fun MusicScreen(viewModel: MusicViewModel) {
                                 onLoadAllTracks = {
                                     val isYandex = artist.permalinkUrl?.startsWith("yandex") == true || artist.id.toString().startsWith("yandex:")
                                     viewModel.loadAllArtistTracks(artist.id.toString(), isYandex)
+                                },
+                                onShuffle = {
+                                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                    viewModel.playShuffled(currentArtistTracks)
                                 }
                             )
                         }
@@ -712,6 +749,12 @@ fun MusicScreen(viewModel: MusicViewModel) {
                         favorites = favorites,
                         downloadProgress = downloadProgress,
                         isPlaying = isPlaying,
+                        isActive = playingMixId == mix.id,
+                        onShuffle = {
+                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                            viewModel.playShuffled(mixTracks, fromMix = true)
+                        },
+                        onTogglePlay = viewModel::togglePlayPause,
                         onBack = {
                             haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                             viewModel.closeMix()
@@ -728,14 +771,20 @@ fun MusicScreen(viewModel: MusicViewModel) {
                 }
             }
 
+            // On home the floating toolbar owns the bottom edge; the mini player sits on top of it.
+            val miniPlayerLift by animateDpAsState(
+                targetValue = if (screen == AppScreen.HOME && selectedMix == null) HomeToolbarClearance else 0.dp,
+                animationSpec = spring(dampingRatio = Spring.DampingRatioLowBouncy, stiffness = Spring.StiffnessMediumLow),
+                label = "miniPlayerLift"
+            )
             AnimatedVisibility(
                 visible = currentTrackTitle != null && selectedTrack == null,
                 enter = slideInVertically(initialOffsetY = { it }) + fadeIn(),
                 exit = slideOutVertically(targetOffsetY = { it }) + fadeOut(),
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
-                    .padding(16.dp)
                     .navigationBarsPadding()
+                    .padding(start = 16.dp, top = 16.dp, end = 16.dp, bottom = 16.dp + miniPlayerLift)
             ) {
                 PlayerBar(
                     title = currentTrackTitle.orEmpty(),
@@ -766,6 +815,7 @@ fun MusicScreen(viewModel: MusicViewModel) {
             ) {
                 selectedTrack?.let { track ->
                     val favorite = favorites.firstOrNull { it.id == track.id }
+                    CoverTheme(enabled = playerCoverColors, artworkUrl = track.artworkUrl) {
                     TrackDetailScreen(
                         track = track,
                         activeQueue = activeQueue,
@@ -828,6 +878,7 @@ fun MusicScreen(viewModel: MusicViewModel) {
                             )
                         }
                     )
+                    }
                 }
             }
         }
@@ -865,6 +916,17 @@ fun MusicScreen(viewModel: MusicViewModel) {
     }
 }
 
+/** The four places home switches between, in the order the floating toolbar shows them. */
+private enum class HomeCategory(val title: String, val icon: ImageVector) {
+    Mixes("Миксы", Icons.AutoMirrored.Filled.QueueMusic),
+    Stations("Станции", Icons.Default.Radio),
+    Library("Медиатека", Icons.Default.LibraryMusic),
+    MyMusic("Моя музыка", Icons.Default.Download)
+}
+
+/** What home's floating toolbar takes off the bottom edge, including its gap to the mini player. */
+private val HomeToolbarClearance = 64.dp + 12.dp
+
 @Composable
 private fun HomeScreen(
     mixSection: MixSection?,
@@ -894,179 +956,229 @@ private fun HomeScreen(
     onOpenDownloads: () -> Unit,
     onOpenSettings: () -> Unit,
     onOpenMix: (SoundCloudMix) -> Unit,
-    onReloadMixes: () -> Unit
+    onReloadMixes: () -> Unit,
+    updates: com.example.myapplication.data.UpdateRepository
 ) {
     val haptic = LocalHapticFeedback.current
+    val categories = HomeCategory.entries
 
-    // Page 0 = mixes, page 1 = stations. A vertical swipe switches category, which is exactly
-    // why playlists and downloads had to leave the home screen: the vertical axis is spoken for.
-    val categoryPager = rememberPagerState(initialPage = selectedTab.coerceIn(0, 3)) { 4 }
+    // Categories still stack vertically — a swipe up or down moves between them, as it always
+    // did — and the floating toolbar at the bottom is the same axis as buttons.
+    val categoryPager = rememberPagerState(initialPage = selectedTab.coerceIn(0, categories.lastIndex)) { categories.size }
+    val scope = rememberCoroutineScope()
     var showCreatePlaylistDialog by remember { mutableStateOf(false) }
     var playlistNameInput by remember { mutableStateOf("") }
 
-    LaunchedEffect(selectedTab) {
-        if (selectedTab in 0..3 && categoryPager.currentPage != selectedTab) {
-            categoryPager.animateScrollToPage(selectedTab)
-        }
-    }
-    LaunchedEffect(categoryPager.currentPage) {
-        if (categoryPager.currentPage != selectedTab) {
-            onTabSelected(categoryPager.currentPage)
+    // Only a page the pager has come to rest on is remembered. Reporting every page it passes
+    // made a jump from "Моя музыка" to "Миксы" save "Медиатека" on the way, and the saved tab then
+    // pulled the pager back there mid-flight.
+    LaunchedEffect(categoryPager.settledPage) {
+        if (categoryPager.settledPage != selectedTab) {
+            onTabSelected(categoryPager.settledPage)
         }
     }
 
-    val sections = listOf(mixSection, stationSection)
+    val mixes = mixSection?.mixes.orEmpty()
+    val stations = stationSection?.mixes.orEmpty()
+    val subtitles = mapOf(
+        HomeCategory.Mixes to if (mixes.isEmpty()) {
+            "Подборки для тебя"
+        } else {
+            plural(mixes.size, "подборка", "подборки", "подборок") + " для тебя"
+        },
+        HomeCategory.Stations to if (stations.isEmpty()) {
+            "Станции по артистам"
+        } else {
+            plural(stations.size, "станция", "станции", "станций")
+        },
+        HomeCategory.Library to if (yandexPlaylists.isEmpty()) {
+            "Плейлисты Яндекс Музыки"
+        } else {
+            plural(yandexPlaylists.size, "плейлист", "плейлиста", "плейлистов") + " Яндекс Музыки"
+        },
+        HomeCategory.MyMusic to plural(downloadedCount, "трек", "трека", "треков") + " на устройстве"
+    )
     val hasWarning = clientId.isBlank() || needsRelogin || isClientIdExpired
 
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .statusBarsPadding()
-            .navigationBarsPadding()
-    ) {
-        AppTopBar(
-            modifier = Modifier.padding(horizontal = 16.dp),
-            leadingIcon = Icons.Default.Search,
-            leadingDescription = "Поиск",
-            onLeadingClick = {
-                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                onOpenSearch()
-            },
-            title = {
-                // The category now lives in the tabs below, so the bar greets instead of
-                // repeating it.
-                Text(
-                    text = remember { greetingForNow() },
-                    style = MaterialTheme.typography.headlineLarge,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-            }
-        ) {
-
-            HomeIconButton(
-                icon = Icons.Default.Settings,
-                contentDescription = "Настройки",
-                onClick = {
-                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                    onOpenSettings()
-                }
-            )
-        }
-
-        if (hasWarning) {
-            Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
-                when {
-                    clientId.isBlank() -> ClientIdWarningCard(onOpenSettings = onOpenSettings)
-                    needsRelogin -> ReloginRequiredCard(onRelogin = onRelogin)
-                    else -> ClientIdExpiredWarningCard(
-                        onOpenSettings = onOpenSettings,
-                        onAutoRefresh = onAutoRefreshClientId
-                    )
-                }
-            }
-        }
-
-        // The four categories still stack vertically — swipe up or down between them — and the
-        // tabs make that axis visible and tappable.
-        val tabScope = rememberCoroutineScope()
-        SegmentedControl(
-            items = listOf("Миксы", "Станции", "Медиатека", "Моя музыка"),
-            selectedIndex = categoryPager.currentPage,
-            onSelectedIndexChanged = { index ->
-                tabScope.launch { categoryPager.animateScrollToPage(index) }
-            },
-            height = 44.dp,
-            textStyle = MaterialTheme.typography.labelLarge,
-            modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp)
-        )
-
-        VerticalPager(
-            state = categoryPager,
+    Box(modifier = Modifier.fillMaxSize()) {
+        Column(
             modifier = Modifier
-                .fillMaxWidth()
-                .weight(1f)
-        ) { page ->
-            if (page == 2) {
-                // Yandex lives on its own page; downloads and hand-made playlists get another
-                // one below it, so the two libraries never mix in a single strip.
-                LibraryCarousel(
-                    tiles = yandexPlaylists.map { playlist ->
-                        LibraryTile(
-                            key = "yandex-${playlist.id}",
-                            title = playlist.title ?: "Без названия",
-                            subtitle = plural(playlist.trackCount, "трек", "трека", "треков"),
-                            artworkUrl = playlist.artworkUrl,
-                            icon = if (playlist.id == -100L) {
-                                Icons.Rounded.Favorite
-                            } else {
-                                Icons.Default.Album
-                            },
-                            onClick = { onOpenYandexPlaylist(playlist) }
-                        )
+                .fillMaxSize()
+                .statusBarsPadding()
+                .navigationBarsPadding()
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(start = 20.dp, top = 12.dp, end = 16.dp),
+                verticalAlignment = Alignment.Top
+            ) {
+                AnimatedContent(
+                    targetState = categories[categoryPager.currentPage],
+                    transitionSpec = {
+                        val forward = targetState.ordinal > initialState.ordinal
+                        (slideInVertically { h -> if (forward) h / 2 else -h / 2 } + fadeIn()) togetherWith
+                            (slideOutVertically { h -> if (forward) -h / 2 else h / 2 } + fadeOut())
                     },
-                    emptyText = "Подключи Яндекс Музыку в настройках, чтобы увидеть свои плейлисты."
-                )
-            } else if (page == 3) {
-                LibraryCarousel(
-                    tiles = buildList {
-                        add(
-                            LibraryTile(
-                                key = "downloads",
-                                title = "Скачанное",
-                                subtitle = plural(downloadedCount, "трек", "трека", "треков"),
-                                // The user's own cover for the downloads folder — passing null
-                                // here is why it never showed.
-                                artworkUrl = downloadedFolderArtworkUri,
-                                icon = Icons.Default.Download,
-                                onClick = onOpenDownloads
-                            )
+                    modifier = Modifier.weight(1f),
+                    label = "homeTitle"
+                ) { category ->
+                    Column {
+                        Text(
+                            text = category.title,
+                            style = MaterialTheme.typography.displaySmall,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
                         )
-                        playlists.forEach { playlist ->
+                        Text(
+                            text = subtitles[category].orEmpty(),
+                            style = MaterialTheme.typography.labelLarge,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                }
+                Spacer(modifier = Modifier.width(14.dp))
+                HomeIconButton(
+                    icon = Icons.Default.Settings,
+                    contentDescription = "Настройки",
+                    onClick = {
+                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                        onOpenSettings()
+                    }
+                )
+            }
+
+            if (hasWarning) {
+                Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
+                    when {
+                        clientId.isBlank() -> ClientIdWarningCard(onOpenSettings = onOpenSettings)
+                        needsRelogin -> ReloginRequiredCard(onRelogin = onRelogin)
+                        else -> ClientIdExpiredWarningCard(
+                            onOpenSettings = onOpenSettings,
+                            onAutoRefresh = onAutoRefreshClientId
+                        )
+                    }
+                }
+            }
+
+            UpdateBanner(
+                updates = updates,
+                modifier = Modifier.padding(start = 16.dp, top = 8.dp, end = 16.dp)
+            )
+
+            VerticalPager(
+                state = categoryPager,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(1f)
+            ) { page ->
+                when (categories[page]) {
+                    HomeCategory.Mixes, HomeCategory.Stations -> {
+                        val isStations = categories[page] == HomeCategory.Stations
+                        MixCarousel(
+                            mixes = if (isStations) stations else mixes,
+                            isStations = isStations,
+                            isLoading = mixesLoading,
+                            hasOauthToken = hasOauthToken,
+                            errorMessage = if (isStations) null else mixesError,
+                            loadingMixId = loadingMixId,
+                            playingMixId = playingMixId,
+                            isPlaying = isPlaying,
+                            onOpenMix = onOpenMix,
+                            onReload = onReloadMixes,
+                            onOpenSettings = onOpenSettings
+                        )
+                    }
+
+                    HomeCategory.Library -> {
+                        if (yandexPlaylists.isEmpty()) {
+                            CarouselEmptyText("Подключи Яндекс Музыку в настройках, чтобы увидеть свои плейлисты.")
+                        } else {
+                            HomeHeroCarousel(
+                                items = yandexPlaylists.map { playlist ->
+                                    HeroItem(
+                                        key = "yandex-${playlist.id}",
+                                        title = playlist.title ?: "Без названия",
+                                        subtitle = plural(playlist.trackCount, "трек", "трека", "треков"),
+                                        artworkUrl = playlist.artworkUrl,
+                                        icon = if (playlist.id == -100L) Icons.Rounded.Favorite else Icons.Default.Album,
+                                        onClick = { onOpenYandexPlaylist(playlist) }
+                                    )
+                                }
+                            )
+                        }
+                    }
+
+                    HomeCategory.MyMusic -> HomeHeroCarousel(
+                        items = buildList {
                             add(
-                                LibraryTile(
-                                    key = "local-${playlist.id}",
-                                    title = playlist.name,
-                                    subtitle = plural(playlist.tracks.size, "трек", "трека", "треков"),
-                                    artworkUrl = playlist.artworkUrl,
-                                    icon = Icons.AutoMirrored.Filled.QueueMusic,
-                                    onClick = { onOpenPlaylist(playlist) }
+                                HeroItem(
+                                    key = "downloads",
+                                    title = "Скачанное",
+                                    subtitle = plural(downloadedCount, "трек", "трека", "треков"),
+                                    artworkUrl = downloadedFolderArtworkUri,
+                                    icon = Icons.Default.Download,
+                                    onClick = onOpenDownloads
+                                )
+                            )
+                            // Liked albums sit right next to "Скачанное", newest first; hand-made
+                            // playlists follow.
+                            playlists.sortedByDescending { it.isLikedAlbum }.forEach { playlist ->
+                                val count = plural(playlist.tracks.size, "трек", "трека", "треков")
+                                add(
+                                    HeroItem(
+                                        key = "local-${playlist.id}",
+                                        title = playlist.name,
+                                        subtitle = if (playlist.isLikedAlbum) {
+                                            listOfNotNull(playlist.artist?.takeIf { it.isNotBlank() }, count)
+                                                .joinToString(" · ")
+                                        } else {
+                                            count
+                                        },
+                                        artworkUrl = playlist.artworkUrl,
+                                        icon = if (playlist.isLikedAlbum) Icons.Default.Album else Icons.AutoMirrored.Filled.QueueMusic,
+                                        onClick = { onOpenPlaylist(playlist) }
+                                    )
+                                )
+                            }
+                            add(
+                                HeroItem(
+                                    key = "create",
+                                    title = "Создать плейлист",
+                                    subtitle = "Своя подборка",
+                                    artworkUrl = null,
+                                    icon = Icons.Default.Add,
+                                    onClick = { showCreatePlaylistDialog = true }
                                 )
                             )
                         }
-                        add(
-                            LibraryTile(
-                                key = "create",
-                                title = "Создать плейлист",
-                                subtitle = "Своя подборка",
-                                artworkUrl = null,
-                                icon = Icons.Default.Add,
-                                accent = true,
-                                onClick = { showCreatePlaylistDialog = true }
-                            )
-                        )
-                    },
-                    emptyText = ""
-                )
-            } else {
-                MixCarousel(
-                    mixes = sections.getOrNull(page)?.mixes.orEmpty(),
-                    isStations = page == 1,
-                    isLoading = mixesLoading,
-                    hasOauthToken = hasOauthToken,
-                    errorMessage = if (page == 0) mixesError else null,
-                    loadingMixId = loadingMixId,
-                    playingMixId = playingMixId,
-                    isPlaying = isPlaying,
-                    onOpenMix = onOpenMix,
-                    onReload = onReloadMixes,
-                    onOpenSettings = onOpenSettings
-                )
+                    )
+                }
             }
+
+            Spacer(
+                modifier = Modifier.height(
+                    16.dp + HomeToolbarClearance + if (playerVisible) 72.dp + 12.dp else 0.dp
+                )
+            )
         }
 
-        Spacer(
-            modifier = Modifier.height(if (playerVisible) 108.dp else 12.dp)
+        HomeToolbar(
+            selected = categoryPager.currentPage,
+            onSelect = { index ->
+                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                scope.launch { categoryPager.animateScrollToPage(index) }
+            },
+            onSearch = {
+                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                onOpenSearch()
+            },
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .navigationBarsPadding()
+                .padding(16.dp)
         )
     }
 
@@ -1101,6 +1213,106 @@ private fun HomeScreen(
                 }
             }
         )
+    }
+}
+
+/**
+ * Material 3 Expressive's floating toolbar: the categories on the panel tone, the chosen one
+ * opening into a labelled accent pill, and search beside it as its own floating button.
+ */
+@Composable
+private fun HomeToolbar(
+    selected: Int,
+    onSelect: (Int) -> Unit,
+    onSearch: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Row(
+        modifier = modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.SpaceBetween
+    ) {
+        Surface(
+            modifier = Modifier
+                .weight(1f, fill = false)
+                .padding(end = 8.dp)
+                .height(64.dp),
+            shape = CircleShape,
+            color = PanelColors.container,
+            contentColor = PanelColors.content,
+            shadowElevation = 6.dp
+        ) {
+            Row(
+                modifier = Modifier.padding(8.dp),
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                HomeCategory.entries.forEachIndexed { index, category ->
+                    HomeToolbarItem(
+                        category = category,
+                        selected = index == selected,
+                        onClick = { onSelect(index) }
+                    )
+                }
+            }
+        }
+        Surface(
+            onClick = onSearch,
+            modifier = Modifier.size(64.dp),
+            shape = RoundedCornerShape(20.dp),
+            color = androidx.compose.ui.graphics.lerp(PanelColors.container, PanelColors.content, 0.08f),
+            contentColor = PanelColors.accent,
+            shadowElevation = 6.dp
+        ) {
+            Box(contentAlignment = Alignment.Center) {
+                Icon(Icons.Default.Search, contentDescription = "Поиск", modifier = Modifier.size(28.dp))
+            }
+        }
+    }
+}
+
+@Composable
+private fun HomeToolbarItem(category: HomeCategory, selected: Boolean, onClick: () -> Unit) {
+    val container by animateColorAsState(
+        targetValue = if (selected) PanelColors.accent else Color.Transparent,
+        animationSpec = tween(250),
+        label = "toolbarItemContainer"
+    )
+    val content by animateColorAsState(
+        targetValue = if (selected) PanelColors.onAccent else PanelColors.content,
+        animationSpec = tween(250),
+        label = "toolbarItemContent"
+    )
+    Surface(
+        onClick = onClick,
+        modifier = Modifier
+            .height(48.dp)
+            .animateContentSize(
+                animationSpec = spring(
+                    dampingRatio = Spring.DampingRatioMediumBouncy,
+                    stiffness = Spring.StiffnessMediumLow
+                )
+            ),
+        shape = CircleShape,
+        color = container,
+        contentColor = content
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 12.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(category.icon, contentDescription = category.title, modifier = Modifier.size(24.dp))
+            if (selected) {
+                Spacer(modifier = Modifier.width(6.dp))
+                Text(
+                    text = category.title,
+                    style = MaterialTheme.typography.labelLarge,
+                    maxLines = 1,
+                    softWrap = false,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+        }
     }
 }
 
@@ -1141,8 +1353,9 @@ private fun AppTopBar(
 }
 
 /**
- * Rounded square with an accent glyph. Separation from the backdrop comes from the container
- * tone alone — the washes behind it are held low enough for that to hold (see ExpressiveBackground).
+ * Rounded square with an accent glyph on the panel tone — the launcher's themed-icon look.
+ * Separation from the backdrop comes from the container tone alone — the washes behind it are
+ * held low enough for that to hold (see ExpressiveBackground).
  */
 @Composable
 private fun HomeIconButton(
@@ -1154,14 +1367,14 @@ private fun HomeIconButton(
         onClick = onClick,
         modifier = Modifier.size(48.dp),
         shape = RoundedCornerShape(16.dp),
-        color = MaterialTheme.colorScheme.surfaceContainerHighest,
-        contentColor = MaterialTheme.colorScheme.primary
+        color = PanelColors.container,
+        contentColor = PanelColors.accent
     ) {
         Box(contentAlignment = Alignment.Center) {
             Icon(
                 icon,
                 contentDescription = contentDescription,
-                tint = MaterialTheme.colorScheme.primary,
+                tint = PanelColors.accent,
                 modifier = Modifier.size(24.dp)
             )
         }
@@ -1254,89 +1467,46 @@ private fun compactCount(value: Int): String {
 }
 
 /**
- * The artist's portrait as the subject, with the colour-block panel over its lower edge
- * carrying the name and the numbers that matter.
+ * "Об артисте": the bio as a card at the end of the page, three lines until tapped. Up in the
+ * header it read as part of the numbers, and any "more" control next to it looked tacked on.
  */
-@Composable
-private fun ArtistHeroCard(
-    artist: SoundCloudUser,
-    albumCount: Int,
-    onPlay: (() -> Unit)?
-) {
-    val followers = artist.followersCount ?: 0
-    val trackTotal = artist.trackCount ?: 0
-    val stats = buildList {
-        if (followers > 0) add(compactCount(followers) + " подписчиков")
-        if (trackTotal > 0) add(plural(trackTotal, "трек", "трека", "треков"))
-        if (albumCount > 0) add(plural(albumCount, "альбом", "альбома", "альбомов"))
-    }.joinToString(" · ")
-    CollectionHero(
-        title = artist.username.orEmpty(),
-        kicker = if (artist.permalinkUrl?.startsWith("yandex") == true) "Артист · Яндекс Музыка" else "Артист",
-        subtitle = stats,
-        artworkAspectRatio = 1.1f,
-        artwork = {
-            if (!artist.avatarUrl.isNullOrBlank()) {
-                AsyncImage(
-                    model = artworkUrlForSize(artist.avatarUrl, 400.dp),
-                    contentDescription = null,
-                    modifier = Modifier.fillMaxSize(),
-                    contentScale = ContentScale.Crop
-                )
-            } else {
-                IconCover(icon = Icons.Default.Image)
-            }
-        },
-        actions = onPlay?.let { play ->
-            {
-                PanelPrimaryButton(
-                    text = "Слушать",
-                    icon = Icons.Default.PlayArrow,
-                    onClick = play
-                )
-            }
-        }
-    )
-}
-
-/** Artist bios run long; four clipped lines with no way to read the rest is a dead end. */
 @Composable
 private fun ExpandableDescription(text: String) {
     var expanded by remember { mutableStateOf(false) }
+    val chevronTurn by animateFloatAsState(
+        targetValue = if (expanded) 90f else 0f,
+        animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy),
+        label = "bioChevron"
+    )
     Surface(
         onClick = { expanded = !expanded },
         modifier = Modifier.fillMaxWidth(),
         shape = AppShapes.largeIncreased,
         color = MaterialTheme.colorScheme.surfaceContainerHigh
     ) {
-        Column(
+        Row(
             modifier = Modifier
-                .padding(16.dp)
-                .animateContentSize()
+                .padding(start = 18.dp, top = 16.dp, end = 12.dp, bottom = 16.dp)
+                .animateContentSize(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             Text(
                 text = text,
                 style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurface,
-                maxLines = if (expanded) Int.MAX_VALUE else 4,
-                overflow = TextOverflow.Ellipsis
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = if (expanded) Int.MAX_VALUE else 3,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f)
             )
-            Spacer(modifier = Modifier.height(8.dp))
-            Text(
-                text = if (expanded) "Свернуть" else "Читать полностью",
-                style = MaterialTheme.typography.labelLarge,
-                color = MaterialTheme.colorScheme.primary
+            Icon(
+                imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                contentDescription = if (expanded) "Свернуть" else "Читать полностью",
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.graphicsLayer { rotationZ = chevronTurn }
             )
         }
     }
-}
-
-/** Home bar title: a greeting for the time of day. */
-private fun greetingForNow(): String = when (java.time.LocalTime.now().hour) {
-    in 5..11 -> "Доброе утро"
-    in 12..16 -> "Добрый день"
-    in 17..22 -> "Добрый вечер"
-    else -> "Доброй ночи"
 }
 
 /** Russian needs three forms, and "1 треков" in the corner of the home screen looks broken. */
@@ -1452,11 +1622,18 @@ private fun LibraryLaunchCard(
     }
 }
 
-/**
- * One full-bleed cover at a time, with the neighbouring covers peeking in at the edges.
- * Everything off-centre is deliberately pushed back (smaller, dimmer, text hidden) so the
- * focused mix is the only thing that reads as content.
- */
+/** One cover in a home carousel: a mix, a station, a playlist, or an action tile. */
+private data class HeroItem(
+    val key: Any,
+    val title: String,
+    val subtitle: String?,
+    val artworkUrl: String?,
+    val icon: ImageVector? = null,
+    val isPlaying: Boolean = false,
+    val isLoading: Boolean = false,
+    val onClick: () -> Unit
+)
+
 @Composable
 private fun MixCarousel(
     mixes: List<SoundCloudMix>,
@@ -1497,297 +1674,212 @@ private fun MixCarousel(
         return
     }
 
-    val pagerState = rememberPagerState { mixes.size }
-
-    Column(
-        modifier = Modifier.fillMaxSize(),
-        verticalArrangement = Arrangement.Center
-    ) {
-        HorizontalPager(
-            state = pagerState,
-            // Peek width is (contentPadding - pageSpacing), then the neighbour's own scale
-            // pulls it further inward — so the gap has to stay small or the side covers vanish
-            // entirely, which is what happened when this was 30/12.
-            contentPadding = PaddingValues(horizontal = 34.dp),
-            pageSpacing = 4.dp,
-            modifier = Modifier.fillMaxWidth()
-        ) { page ->
-            val mix = mixes[page]
-            val distance = (
-                (pagerState.currentPage - page) + pagerState.currentPageOffsetFraction
-                ).absoluteValue.coerceIn(0f, 1f)
-
-            MixCarouselCard(
-                mix = mix,
-                isStation = isStations,
-                distance = distance,
+    HomeHeroCarousel(
+        items = mixes.map { mix ->
+            HeroItem(
+                key = mix.id,
+                title = if (isStations) mix.title else localizedMixTitle(mix.title),
+                // Mixes ship their artist list in `description`. Stations put "Artist station"
+                // there, which is not a caption — the station's artist is its title.
+                subtitle = if (isStations) "Станция" else mix.description?.takeIf { it.isNotBlank() },
+                artworkUrl = artworkUrlForSize(mix.artworkUrl, 500.dp),
+                isPlaying = playingMixId == mix.id && isPlaying,
                 isLoading = loadingMixId == mix.id,
-                isMixPlaying = playingMixId == mix.id && isPlaying,
                 onClick = { onOpenMix(mix) }
             )
         }
-
-        Spacer(modifier = Modifier.height(20.dp))
-
-        CarouselPageIndicator(
-            count = mixes.size,
-            currentPage = pagerState.currentPage,
-            modifier = Modifier.align(Alignment.CenterHorizontally)
-        )
-    }
-}
-
-private data class LibraryTile(
-    val key: String,
-    val title: String,
-    val subtitle: String,
-    val artworkUrl: String?,
-    val icon: ImageVector?,
-    val accent: Boolean = false,
-    val onClick: () -> Unit
-)
-
-/**
- * The library as a third page of the same carousel rather than two buttons wedged above the
- * player bar: liked tracks and Yandex playlists first, then your own, then downloads, and a
- * create tile at the end.
- */
-@Composable
-private fun LibraryCarousel(
-    tiles: List<LibraryTile>,
-    emptyText: String
-) {
-    if (tiles.isEmpty()) {
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(horizontal = 40.dp),
-            contentAlignment = Alignment.Center
-        ) {
-            Text(
-                text = emptyText,
-                style = MaterialTheme.typography.bodyLarge,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                textAlign = TextAlign.Center
-            )
-        }
-        return
-    }
-
-    val pagerState = rememberPagerState { tiles.size }
-
-    Column(
-        modifier = Modifier.fillMaxSize(),
-        verticalArrangement = Arrangement.Center
-    ) {
-        HorizontalPager(
-            state = pagerState,
-            contentPadding = PaddingValues(horizontal = 34.dp),
-            pageSpacing = 4.dp,
-            modifier = Modifier.fillMaxWidth()
-        ) { page ->
-            val tile = tiles[page]
-            val distance = (
-                (pagerState.currentPage - page) + pagerState.currentPageOffsetFraction
-                ).absoluteValue.coerceIn(0f, 1f)
-            LibraryCarouselCard(tile = tile, distance = distance)
-        }
-
-        Spacer(modifier = Modifier.height(20.dp))
-
-        CarouselPageIndicator(
-            count = tiles.size,
-            currentPage = pagerState.currentPage,
-            modifier = Modifier.align(Alignment.CenterHorizontally)
-        )
-    }
-}
-
-@Composable
-private fun LibraryCarouselCard(tile: LibraryTile, distance: Float) {
-    ColorBlockCarouselCard(
-        distance = distance,
-        title = tile.title,
-        subtitle = tile.subtitle,
-        kicker = null,
-        onClick = tile.onClick
-    ) {
-        if (!tile.artworkUrl.isNullOrBlank()) {
-            AsyncImage(
-                model = tile.artworkUrl,
-                contentDescription = null,
-                modifier = Modifier.fillMaxSize(),
-                contentScale = ContentScale.Crop
-            )
-        } else if (tile.icon != null) {
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .background(
-                        if (tile.accent) {
-                            MaterialTheme.colorScheme.primaryContainer
-                        } else {
-                            MaterialTheme.colorScheme.surfaceContainerHighest
-                        }
-                    ),
-                contentAlignment = Alignment.Center
-            ) {
-                Icon(
-                    tile.icon,
-                    contentDescription = null,
-                    tint = if (tile.accent) {
-                        MaterialTheme.colorScheme.onPrimaryContainer
-                    } else {
-                        MaterialTheme.colorScheme.primary
-                    },
-                    modifier = Modifier.size(84.dp)
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun MixCarouselCard(
-    mix: SoundCloudMix,
-    isStation: Boolean,
-    distance: Float,
-    isLoading: Boolean,
-    isMixPlaying: Boolean,
-    onClick: () -> Unit
-) {
-    // Mixes ship their artist list in `description`. Stations put "Artist station" there,
-    // which is not a caption — the station's artist is its title, shown above.
-    val artistLine = if (isStation) null else mix.description?.takeIf { it.isNotBlank() }
-
-    ColorBlockCarouselCard(
-        distance = distance,
-        title = if (isStation) mix.title else localizedMixTitle(mix.title),
-        subtitle = artistLine,
-        kicker = if (isStation) "Станция" else null,
-        onClick = onClick
-    ) {
-        AsyncImage(
-            model = artworkUrlForSize(mix.artworkUrl, 500.dp),
-            contentDescription = null,
-            modifier = Modifier.fillMaxSize(),
-            contentScale = ContentScale.Crop
-        )
-
-        if (isMixPlaying) {
-            NowPlayingBadge(
-                modifier = Modifier
-                    .align(Alignment.TopEnd)
-                    .padding(14.dp)
-            )
-        }
-
-        if (isLoading) {
-            AppContainedLoadingIndicator(
-                modifier = Modifier
-                    .align(Alignment.Center)
-                    .size(72.dp)
-            )
-        }
-    }
-}
-
-/**
- * A home carousel card: the cover and a caption panel as two joined halves. The panel takes
- * on the accent tone as the card comes into focus, so the card in front reads as a colour
- * block and its neighbours stay quiet.
- */
-@Composable
-private fun ColorBlockCarouselCard(
-    distance: Float,
-    title: String,
-    subtitle: String?,
-    kicker: String?,
-    onClick: () -> Unit,
-    cover: @Composable BoxScope.() -> Unit
-) {
-    val focus = 1f - distance
-    // Side cards fall back in scale and fade, so the strip stays quiet instead of competing
-    // with the focused cover.
-    val cardScale = lerp(0.92f, 1f, focus)
-    val cardAlpha = lerp(0.45f, 1f, focus)
-
-    val interactionSource = remember { MutableInteractionSource() }
-    val pressed by interactionSource.collectIsPressedAsState()
-    val pressScale by animateFloatAsState(
-        targetValue = if (pressed) 0.96f else 1f,
-        animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy),
-        label = "cardPress"
     )
+}
 
-    val panelColor = androidx.compose.ui.graphics.lerp(
-        MaterialTheme.colorScheme.surfaceContainerHigh,
-        PanelColors.container,
-        focus
-    )
-    val panelContent = androidx.compose.ui.graphics.lerp(
-        MaterialTheme.colorScheme.onSurface,
-        PanelColors.content,
-        focus
-    )
-
-    Column(
+@Composable
+private fun CarouselEmptyText(text: String) {
+    Box(
         modifier = Modifier
-            .fillMaxWidth()
-            .graphicsLayer {
-                scaleX = cardScale * pressScale
-                scaleY = cardScale * pressScale
-                alpha = cardAlpha
-            }
-            .clickable(
-                interactionSource = interactionSource,
-                indication = null,
-                onClick = onClick
-            )
+            .fillMaxSize()
+            .padding(horizontal = 40.dp),
+        contentAlignment = Alignment.Center
     ) {
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .aspectRatio(1f)
-                .clip(RoundedCornerShape(topStart = 44.dp, topEnd = 44.dp, bottomStart = 12.dp, bottomEnd = 12.dp))
-                .background(MaterialTheme.colorScheme.surfaceContainerHigh),
-            contentAlignment = Alignment.Center,
-            content = cover
+        Text(
+            text = text,
+            style = MaterialTheme.typography.bodyLarge,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            textAlign = TextAlign.Center
         )
-        Spacer(modifier = Modifier.height(4.dp))
-        // Fixed height on purpose: sized to content, the page indicator below would sit at a
-        // different y for a one-line caption than for a two-line one and hop on every swipe.
+    }
+}
+
+/**
+ * A centred hero carousel: the cover in focus always sits in the middle — the first one too — and
+ * its neighbours squeeze into narrow strips on both sides as they leave, rather than sliding away
+ * whole. Each cover is masked and re-centred inside its strip, never squashed.
+ *
+ * Built on a pager rather than Material's HorizontalCenteredHeroCarousel, which shifts its first
+ * and last items to the edges, so the focused cover is not centred there. The geometry closes by
+ * itself: pages are [coverWidth] wide and centred by the content padding, so a neighbour's page
+ * starts exactly [HeroStrip] plus the margin from the screen edge, and the mask only has to
+ * narrow from the full cover to that strip as the page moves out.
+ */
+@Composable
+private fun HomeHeroCarousel(items: List<HeroItem>) {
+    if (items.isEmpty()) return
+    val haptic = LocalHapticFeedback.current
+    val scope = rememberCoroutineScope()
+    val pagerState = rememberPagerState { items.size }
+
+    BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+        val captionHeight = 88.dp
+        val margin = 16.dp
+        val coverWidth = maxWidth - (margin + HeroStrip + HeroGap) * 2
+        val sidePadding = (maxWidth - coverWidth) / 2
+        // Close to square: a little taller than wide at most, and never taller than the room left.
+        val carouselHeight = (maxHeight - captionHeight - 24.dp).coerceIn(160.dp, coverWidth * 1.08f)
+        val density = LocalDensity.current
+        val coverPx = with(density) { coverWidth.toPx() }
+        val stripPx = with(density) { HeroStrip.toPx() }
+        val radiusPx = with(density) { 32.dp.toPx() }
+
         Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(112.dp)
-                .clip(RoundedCornerShape(topStart = 12.dp, topEnd = 12.dp, bottomStart = 44.dp, bottomEnd = 44.dp))
-                .background(panelColor)
-                .padding(horizontal = 22.dp, vertical = 16.dp),
+            modifier = Modifier.fillMaxSize(),
             verticalArrangement = Arrangement.Center
         ) {
-            if (kicker != null) {
-                Kicker(text = kicker, color = panelContent.copy(alpha = 0.75f))
-                Spacer(modifier = Modifier.height(2.dp))
+            HorizontalPager(
+                state = pagerState,
+                pageSize = androidx.compose.foundation.pager.PageSize.Fixed(coverWidth),
+                contentPadding = PaddingValues(horizontal = sidePadding),
+                pageSpacing = HeroGap,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(carouselHeight)
+            ) { page ->
+                val item = items[page]
+                // Signed distance from the focused slot: positive to the right.
+                fun distance() = page - (pagerState.currentPage + pagerState.currentPageOffsetFraction)
+                fun visibleWidth() = lerp(coverPx, stripPx, distance().absoluteValue.coerceIn(0f, 1f))
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .graphicsLayer {
+                            val d = distance()
+                            val w = visibleWidth()
+                            // The mask keeps the side that faces the focused cover.
+                            val left = if (d > 0f) 0f else coverPx - w
+                            clip = true
+                            shape = HeroStripShape(left, w, radiusPx)
+                            // The cover in front floats above the backdrop; strips sit on it.
+                            shadowElevation = (1f - d.absoluteValue.coerceIn(0f, 1f)) * 14.dp.toPx()
+                        }
+                        .clickable {
+                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                            // A strip brings its cover to the front; the cover in front opens.
+                            if (page == pagerState.currentPage) {
+                                item.onClick()
+                            } else {
+                                scope.launch { pagerState.animateScrollToPage(page) }
+                            }
+                        }
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .graphicsLayer {
+                                // Re-centres the picture inside whatever the mask leaves visible.
+                                translationX = -kotlin.math.sign(distance()) * (coverPx - visibleWidth()) / 2f
+                            }
+                            .background(MaterialTheme.colorScheme.surfaceContainerHigh),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        if (!item.artworkUrl.isNullOrBlank()) {
+                            AsyncImage(
+                                model = item.artworkUrl,
+                                contentDescription = item.title,
+                                modifier = Modifier.fillMaxSize(),
+                                contentScale = ContentScale.Crop
+                            )
+                        } else if (item.icon != null) {
+                            // A glyph cut down to a strip reads as a glitch, so it fades out first.
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .graphicsLayer {
+                                        alpha = (1f - distance().absoluteValue * 1.8f).coerceIn(0f, 1f)
+                                    }
+                            ) {
+                                IconCover(icon = item.icon, iconSize = 84.dp)
+                            }
+                        }
+                        if (item.isPlaying) {
+                            NowPlayingBadge(
+                                modifier = Modifier
+                                    .align(Alignment.TopEnd)
+                                    .padding(14.dp)
+                            )
+                        }
+                        if (item.isLoading) {
+                            AppContainedLoadingIndicator(modifier = Modifier.size(72.dp))
+                        }
+                    }
+                }
             }
-            Text(
-                text = title,
-                style = MaterialTheme.typography.headlineSmall,
-                color = panelContent,
-                maxLines = if (subtitle == null) 2 else 1,
-                overflow = TextOverflow.Ellipsis
-            )
-            if (!subtitle.isNullOrBlank()) {
-                Text(
-                    text = subtitle,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = panelContent.copy(alpha = 0.8f),
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis
-                )
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            val current = items.getOrNull(pagerState.currentPage) ?: items.first()
+            AnimatedContent(
+                targetState = current,
+                transitionSpec = { fadeIn(tween(220)) togetherWith fadeOut(tween(120)) },
+                contentKey = { it.key },
+                label = "heroCaption"
+            ) { item ->
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(captionHeight)
+                        .padding(horizontal = 28.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Text(
+                        text = item.title,
+                        style = MaterialTheme.typography.headlineSmall,
+                        textAlign = TextAlign.Center,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    if (!item.subtitle.isNullOrBlank()) {
+                        Text(
+                            text = item.subtitle,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            textAlign = TextAlign.Center,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                }
             }
         }
     }
+}
+
+/** Width a neighbouring cover narrows to, and the gap between covers. */
+private val HeroStrip = 36.dp
+private val HeroGap = 8.dp
+
+/** A rounded rectangle over [width] of the page from [left]: the part of a cover left visible. */
+private class HeroStripShape(
+    private val left: Float,
+    private val width: Float,
+    private val radius: Float
+) : Shape {
+    override fun createOutline(size: Size, layoutDirection: LayoutDirection, density: Density): Outline =
+        Outline.Rounded(
+            androidx.compose.ui.geometry.RoundRect(
+                left = left,
+                top = 0f,
+                right = left + width,
+                bottom = size.height,
+                cornerRadius = androidx.compose.ui.geometry.CornerRadius(radius.coerceAtMost(width / 2f))
+            )
+        )
 }
 
 /** Animated equaliser bars — the playing cue that replaced morphing the cover itself. */
@@ -1820,8 +1912,9 @@ private fun NowPlayingBadge(
             modifier
         },
         shape = CircleShape,
-        color = MaterialTheme.colorScheme.primary,
-        contentColor = MaterialTheme.colorScheme.onPrimary
+        // The panel accent, so in a cover-coloured player it is the cover's accent too.
+        color = PanelColors.accent,
+        contentColor = PanelColors.onAccent
     ) {
         Row(
             modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
@@ -1834,7 +1927,7 @@ private fun NowPlayingBadge(
                         .width(3.dp)
                         .height(16.dp * height.value)
                         .clip(CircleShape)
-                        .background(MaterialTheme.colorScheme.onPrimary)
+                        .background(PanelColors.onAccent)
                 )
             }
         }
@@ -2047,7 +2140,8 @@ private fun SettingsScreen(
     onRelogin: () -> Unit,
     onClearCache: () -> Unit,
     onYandexLoginClick: () -> Unit,
-    onYandexLogoutClick: () -> Unit
+    onYandexLogoutClick: () -> Unit,
+    updates: com.example.myapplication.data.UpdateRepository
 ) {
     val yandexToken by settingsRepository.yandexToken.collectAsState()
     val hasYandexToken = yandexToken.isNotEmpty()
@@ -2062,6 +2156,83 @@ private fun SettingsScreen(
     ) {
         item {
             TopBar(title = "Настройки", onBack = onBack)
+        }
+
+        // Section 0: Look
+        item {
+            val backgroundMotion by settingsRepository.backgroundMotion.collectAsState()
+            val playerCoverColors by settingsRepository.playerCoverColors.collectAsState()
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(
+                    text = "ОФОРМЛЕНИЕ",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.padding(start = 12.dp)
+                )
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = MaterialTheme.shapes.extraLarge,
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.surfaceContainer
+                    )
+                ) {
+                    Column(modifier = Modifier.padding(vertical = 4.dp)) {
+                        SettingsSwitchRow(
+                            icon = Icons.Default.ScreenRotation,
+                            title = "Живой фон",
+                            subtitle = "Объёмные фигуры на фоне наклоняются и трясутся вместе с телефоном (акселерометр)",
+                            checked = backgroundMotion,
+                            onCheckedChange = settingsRepository::setBackgroundMotion
+                        )
+                        HorizontalDivider(
+                            color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.25f),
+                            modifier = Modifier.padding(horizontal = 18.dp)
+                        )
+                        SettingsSwitchRow(
+                            icon = Icons.Default.Palette,
+                            title = "Цвета плеера из обложки",
+                            subtitle = "Только плеер перекрашивается в оттенок обложки трека, остальное — по обоям",
+                            checked = playerCoverColors,
+                            onCheckedChange = settingsRepository::setPlayerCoverColors
+                        )
+                    }
+                }
+            }
+        }
+
+        // Section 0.5: Updates
+        item {
+            val autoCheck by settingsRepository.updateAutoCheck.collectAsState()
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(
+                    text = "ОБНОВЛЕНИЯ",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.padding(start = 12.dp)
+                )
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = MaterialTheme.shapes.extraLarge,
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.surfaceContainer
+                    )
+                ) {
+                    Column(modifier = Modifier.padding(vertical = 4.dp)) {
+                        UpdateSettingsRow(updates = updates)
+                        HorizontalDivider(
+                            color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.25f),
+                            modifier = Modifier.padding(horizontal = 18.dp)
+                        )
+                        SettingsSwitchRow(
+                            icon = Icons.Default.Refresh,
+                            title = "Проверять автоматически",
+                            subtitle = "Спрашивать GitHub о новой версии раз в 12 часов",
+                            checked = autoCheck,
+                            onCheckedChange = settingsRepository::setUpdateAutoCheck
+                        )
+                    }
+                }
+            }
         }
 
         // Section 1: Sync
@@ -2595,6 +2766,48 @@ private fun SettingsScreen(
     }
 }
 
+/** A settings row with a tinted icon puck, a title, a quiet caption and a switch. */
+@Composable
+private fun SettingsSwitchRow(
+    icon: ImageVector,
+    title: String,
+    subtitle: String,
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable { onCheckedChange(!checked) }
+            .padding(horizontal = 18.dp, vertical = 14.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(14.dp)
+    ) {
+        Box(
+            modifier = Modifier
+                .size(42.dp)
+                .background(MaterialTheme.colorScheme.primaryContainer, CircleShape),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(
+                imageVector = icon,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                modifier = Modifier.size(22.dp)
+            )
+        }
+        Column(modifier = Modifier.weight(1f)) {
+            Text(text = title, style = MaterialTheme.typography.titleMedium)
+            Text(
+                text = subtitle,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        Switch(checked = checked, onCheckedChange = onCheckedChange)
+    }
+}
+
 @Composable
 private fun SearchScreen(
     query: String,
@@ -3044,238 +3257,6 @@ private fun DownloadsScreen(
 }
 
 @Composable
-private fun ExpressiveBackground(animated: Boolean = true) {
-    val infiniteTransition = rememberInfiniteTransition(label = "expressive_bg")
-
-    val rotationPhase1 by infiniteTransition.animateFloat(
-        initialValue = 0f,
-        targetValue = 360f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 180000, easing = LinearEasing),
-            repeatMode = RepeatMode.Restart
-        ),
-        label = "rotation1"
-    )
-    val rotationPhase2 by infiniteTransition.animateFloat(
-        initialValue = 0f,
-        targetValue = -360f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 240000, easing = LinearEasing),
-            repeatMode = RepeatMode.Restart
-        ),
-        label = "rotation2"
-    )
-    val rotationPhase3 by infiniteTransition.animateFloat(
-        initialValue = 0f,
-        targetValue = 360f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 280000, easing = LinearEasing),
-            repeatMode = RepeatMode.Restart
-        ),
-        label = "rotation3"
-    )
-    val rotationPhase4 by infiniteTransition.animateFloat(
-        initialValue = 0f,
-        targetValue = -360f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 320000, easing = LinearEasing),
-            repeatMode = RepeatMode.Restart
-        ),
-        label = "rotation4"
-    )
-    val rotationPhase5 by infiniteTransition.animateFloat(
-        initialValue = 0f,
-        targetValue = 360f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 360000, easing = LinearEasing),
-            repeatMode = RepeatMode.Restart
-        ),
-        label = "rotation5"
-    )
-
-    // These must be *tints* drawn over the backdrop. Painting them with a surface-container
-    // role made them darker than `background` in dark theme, which is what turned the
-    // shapes into black silhouettes. Accent roles are always lighter/more chromatic than
-    // the backdrop in both themes, so the motif reads as a glow rather than a cutout.
-    // Content surfaces are opaque now, so these can sit stronger than they used to.
-    // Colour here comes from wide radial washes rather than flat fills. A flat tint sitting
-    // near the card plane reads as a competing panel — which is what went wrong before —
-    // whereas a wash that falls off to nothing can carry real saturation and still never
-    // present an edge that rivals a card. The rotating polygons stay on top as faint
-    // texture, so the motion survives without the tonal fight.
-    val primaryTone = MaterialTheme.colorScheme.primary
-    val secondaryTone = MaterialTheme.colorScheme.secondary
-    val tertiaryTone = MaterialTheme.colorScheme.tertiary
-
-    val colorPrimary = primaryTone.copy(alpha = 0.030f)
-    val colorTertiary = tertiaryTone.copy(alpha = 0.026f)
-    val colorSecondary = secondaryTone.copy(alpha = 0.022f)
-
-    // Reading these only when animating is deliberate: skipping the state read stops the
-    // Canvas being invalidated every frame. That matters under the queue sheet, where this
-    // whole layer is blurred — an animated backdrop meant re-blurring a full screen at 120Hz.
-    val phase1 = if (animated) rotationPhase1 else 0f
-    val phase2 = if (animated) rotationPhase2 else 0f
-    val phase3 = if (animated) rotationPhase3 else 0f
-    val phase4 = if (animated) rotationPhase4 else 0f
-    val phase5 = if (animated) rotationPhase5 else 0f
-
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(MaterialTheme.colorScheme.background)
-    ) {
-        Canvas(modifier = Modifier.fillMaxSize()) {
-            val width = size.width
-            val height = size.height
-            val steps = 72  // Reduced from 120 for performance (#15)
-
-            // Accent washes first, so the polygons layer over them.
-            // Centres sit well outside the viewport on purpose. With a centre parked in a
-            // corner the screen catches the wash at nearly full strength, which pushed the
-            // backdrop *above* the card plane and made controls read as holes; from out here
-            // only the falloff crosses the glass, so the tint stays under the content.
-            val washes = listOf(
-                Triple(primaryTone, Offset(width * -0.28f, height * -0.10f), 0.075f),
-                Triple(tertiaryTone, Offset(width * 1.28f, height * 0.20f), 0.070f),
-                Triple(secondaryTone, Offset(width * -0.24f, height * 0.74f), 0.065f),
-                Triple(primaryTone, Offset(width * 1.24f, height * 1.08f), 0.070f)
-            )
-            washes.forEach { wash ->
-                val tone = wash.first
-                val center = wash.second
-                val strength = wash.third
-                val radius = width * 1.08f
-                drawCircle(
-                    brush = Brush.radialGradient(
-                        colors = listOf(tone.copy(alpha = strength), Color.Transparent),
-                        center = center,
-                        radius = radius
-                    ),
-                    radius = radius,
-                    center = center
-                )
-            }
-
-            // 1. Center: 8-petaled flower shape (primary)
-            drawContext.canvas.save()
-            drawContext.canvas.translate(width * 0.5f, height * 0.5f)
-            drawContext.canvas.rotate(phase1)
-            val flowerPath = Path()
-            val r1 = minOf(width, height) * 0.28f
-            for (i in 0..steps) {
-                val theta = (i * 2f * Math.PI / steps).toFloat()
-                val rFactor = 0.85f + 0.15f * kotlin.math.cos(8f * theta)
-                val r = r1 * rFactor
-                val x = r * kotlin.math.cos(theta)
-                val y = r * kotlin.math.sin(theta)
-                if (i == 0) {
-                    flowerPath.moveTo(x, y)
-                } else {
-                    flowerPath.lineTo(x, y)
-                }
-            }
-            flowerPath.close()
-            drawPath(path = flowerPath, color = colorPrimary)
-            drawContext.canvas.restore()
-
-            // 2. Top-Left: Squircle shape (tertiary) - slightly larger than medium
-            drawContext.canvas.save()
-            drawContext.canvas.translate(width * 0.12f, height * 0.14f)
-            drawContext.canvas.rotate(phase2)
-            val squirclePath = Path()
-            val r2 = minOf(width, height) * 0.28f
-            for (i in 0..steps) {
-                val theta = (i * 2f * Math.PI / steps).toFloat()
-                val cosT = kotlin.math.cos(theta)
-                val sinT = kotlin.math.sin(theta)
-                val cosT4 = cosT.absoluteValue.pow(4.5f)
-                val sinT4 = sinT.absoluteValue.pow(4.5f)
-                val r = r2 * (1f / (cosT4 + sinT4).pow(1f / 4.5f)) * 0.85f
-                val x = r * cosT
-                val y = r * sinT
-                if (i == 0) {
-                    squirclePath.moveTo(x, y)
-                } else {
-                    squirclePath.lineTo(x, y)
-                }
-            }
-            squirclePath.close()
-            drawPath(path = squirclePath, color = colorTertiary)
-            drawContext.canvas.restore()
-
-            // 3. Top-Right: 5-petaled star shape (secondary) - medium
-            drawContext.canvas.save()
-            drawContext.canvas.translate(width * 0.88f, height * 0.14f)
-            drawContext.canvas.rotate(phase3)
-            val starPath = Path()
-            val r3 = minOf(width, height) * 0.23f
-            for (i in 0..steps) {
-                val theta = (i * 2f * Math.PI / steps).toFloat()
-                val rFactor = 0.8f + 0.2f * kotlin.math.cos(5f * theta)
-                val r = r3 * rFactor
-                val x = r * kotlin.math.cos(theta)
-                val y = r * kotlin.math.sin(theta)
-                if (i == 0) {
-                    starPath.moveTo(x, y)
-                } else {
-                    starPath.lineTo(x, y)
-                }
-            }
-            starPath.close()
-            drawPath(path = starPath, color = colorSecondary)
-            drawContext.canvas.restore()
-
-            // 4. Bottom-Left: 6-pointed star/flower shape (tertiary) - smaller than medium, not small
-            drawContext.canvas.save()
-            drawContext.canvas.translate(width * 0.15f, height * 0.86f)
-            drawContext.canvas.rotate(phase4)
-            val path4 = Path()
-            val r4 = minOf(width, height) * 0.19f
-            for (i in 0..steps) {
-                val theta = (i * 2f * Math.PI / steps).toFloat()
-                val rFactor = 0.8f + 0.2f * kotlin.math.cos(6f * theta)
-                val x = r4 * rFactor * kotlin.math.cos(theta)
-                val y = r4 * rFactor * kotlin.math.sin(theta)
-                if (i == 0) {
-                    path4.moveTo(x, y)
-                } else {
-                    path4.lineTo(x, y)
-                }
-            }
-            path4.close()
-            drawPath(path = path4, color = colorTertiary)
-            drawContext.canvas.restore()
-
-            // 5. Bottom-Right: Squircle shape (secondary) - huge
-            drawContext.canvas.save()
-            drawContext.canvas.translate(width * 0.85f, height * 0.86f)
-            drawContext.canvas.rotate(phase5)
-            val path5 = Path()
-            val r5 = minOf(width, height) * 0.45f
-            for (i in 0..steps) {
-                val theta = (i * 2f * Math.PI / steps).toFloat()
-                val cosT = kotlin.math.cos(theta)
-                val sinT = kotlin.math.sin(theta)
-                val cosT4 = cosT.absoluteValue.pow(3f)
-                val sinT4 = sinT.absoluteValue.pow(3f)
-                val r = r5 * (1f / (cosT4 + sinT4).pow(1f / 3f)) * 0.85f
-                val x = r * cosT
-                val y = r * sinT
-                if (i == 0) {
-                    path5.moveTo(x, y)
-                } else {
-                    path5.lineTo(x, y)
-                }
-            }
-            path5.close()
-            drawPath(path = path5, color = colorSecondary)
-            drawContext.canvas.restore()
-        }
-    }
-}
-
-@Composable
 private fun SearchLaunchCard(onClick: () -> Unit) {
     val haptic = LocalHapticFeedback.current
     var isPressed by remember { mutableStateOf(false) }
@@ -3600,6 +3581,380 @@ private fun MixCard(
     }
 }
 
+/**
+ * Liked albums as seen from any album screen, wherever it was opened from (artist page, search).
+ * Provided once at the root so those screens don't each thread three more parameters through.
+ */
+private class AlbumLibrary(
+    val likedBySource: Map<String, Playlist>,
+    val onToggleLike: (album: SoundCloudPlaylist, artistName: String?) -> Unit,
+    val onDownload: (Playlist) -> Unit
+)
+
+private val LocalAlbumLibrary = androidx.compose.runtime.staticCompositionLocalOf<AlbumLibrary?> { null }
+
+/**
+ * "Скачать все треки" for a saved playlist or liked album. The tracks land on the device for this
+ * playlist only; "Скачанное" does not change. While they download the button turns into a wavy
+ * ring filling with the share already saved; once everything is saved it stays lit.
+ */
+@Composable
+private fun PlaylistDownloadButton(playlist: Playlist, onDownload: () -> Unit) {
+    val total = playlist.tracks.count { !it.urn.startsWith("local:") }
+    if (total == 0) return
+    val saved = playlist.tracks.count { it.downloadState == DownloadState.DOWNLOADED && !it.urn.startsWith("local:") }
+    val downloading = playlist.tracks.any { it.downloadState == DownloadState.DOWNLOADING }
+    when {
+        downloading -> Surface(
+            modifier = Modifier.size(56.dp),
+            shape = CircleShape,
+            color = PanelColors.content.copy(alpha = 0.12f),
+            contentColor = PanelColors.accent
+        ) {
+            Box(contentAlignment = Alignment.Center) {
+                AppCircularProgress(
+                    progress = saved.toFloat() / total,
+                    modifier = Modifier.size(40.dp),
+                    color = PanelColors.accent
+                )
+            }
+        }
+
+        saved == total -> PanelIconButton(
+            icon = Icons.Default.DownloadDone,
+            contentDescription = "Все треки на устройстве",
+            onClick = {},
+            selected = true
+        )
+
+        else -> PanelIconButton(
+            icon = Icons.Default.Download,
+            contentDescription = "Скачать все треки",
+            onClick = onDownload
+        )
+    }
+}
+
+/**
+ * The bar over a screen that opens on a big picture: just the back button while the picture is in
+ * view, then the backdrop tone and the title once it has scrolled away.
+ */
+@Composable
+private fun CollapsingTopBar(title: String, collapsed: Boolean, onBack: () -> Unit) {
+    val barColor by animateColorAsState(
+        targetValue = if (collapsed) MaterialTheme.colorScheme.background else Color.Transparent,
+        animationSpec = tween(220),
+        label = "collapsingBar"
+    )
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(barColor)
+            .statusBarsPadding()
+            .height(72.dp)
+            .padding(horizontal = 16.dp),
+        contentAlignment = Alignment.CenterStart
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Surface(
+                onClick = onBack,
+                modifier = Modifier.size(48.dp),
+                shape = RoundedCornerShape(16.dp),
+                color = if (collapsed) PanelColors.container else MaterialTheme.colorScheme.background.copy(alpha = 0.55f),
+                contentColor = if (collapsed) PanelColors.accent else MaterialTheme.colorScheme.onSurface
+            ) {
+                Box(contentAlignment = Alignment.Center) {
+                    Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Назад")
+                }
+            }
+            Spacer(modifier = Modifier.width(14.dp))
+            AnimatedVisibility(
+                visible = collapsed,
+                enter = fadeIn() + slideInVertically { it / 2 },
+                exit = fadeOut() + slideOutVertically { it / 2 }
+            ) {
+                Text(
+                    text = title,
+                    style = MaterialTheme.typography.titleLarge,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+        }
+    }
+}
+
+/** Scroll past this much of a big picture and its screen's bar takes over. */
+@Composable
+private fun rememberCollapsed(listState: androidx.compose.foundation.lazy.LazyListState, threshold: Dp): Boolean {
+    val thresholdPx = with(LocalDensity.current) { threshold.roundToPx() }
+    val collapsed by remember(listState, thresholdPx) {
+        androidx.compose.runtime.derivedStateOf {
+            listState.firstVisibleItemIndex > 0 || listState.firstVisibleItemScrollOffset > thresholdPx
+        }
+    }
+    return collapsed
+}
+
+/**
+ * "Слушать" and "Перемешать" as one connected Material 3 Expressive button group: the outer
+ * corners fully round, the inner ones tight, the primary action in the accent.
+ */
+@Composable
+private fun PlayShuffleGroup(onPlay: () -> Unit, onShuffle: () -> Unit) {
+    Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+        Surface(
+            onClick = onPlay,
+            modifier = Modifier.height(56.dp),
+            shape = RoundedCornerShape(topStart = 28.dp, bottomStart = 28.dp, topEnd = 8.dp, bottomEnd = 8.dp),
+            color = PanelColors.accent,
+            contentColor = PanelColors.onAccent
+        ) {
+            Row(
+                modifier = Modifier.padding(start = 20.dp, end = 26.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Icon(Icons.Default.PlayArrow, contentDescription = null, modifier = Modifier.size(24.dp))
+                Text("Слушать", style = MaterialTheme.typography.titleMedium)
+            }
+        }
+        Surface(
+            onClick = onShuffle,
+            modifier = Modifier.size(width = 64.dp, height = 56.dp),
+            shape = RoundedCornerShape(topStart = 8.dp, bottomStart = 8.dp, topEnd = 28.dp, bottomEnd = 28.dp),
+            color = PanelColors.container,
+            contentColor = PanelColors.accent
+        ) {
+            Box(contentAlignment = Alignment.Center) {
+                Icon(Icons.Rounded.Shuffle, contentDescription = "Перемешать", modifier = Modifier.size(24.dp))
+            }
+        }
+    }
+}
+
+/**
+ * The top of an artist page: the portrait across the whole width, sinking into the backdrop, and
+ * the name in large heavy type over its lower edge with the numbers and the actions.
+ */
+@Composable
+private fun ArtistPortraitHeader(
+    artist: SoundCloudUser,
+    albumCount: Int,
+    onPlay: (() -> Unit)?,
+    onShuffle: (() -> Unit)?
+) {
+    val followers = artist.followersCount ?: 0
+    val trackTotal = artist.trackCount ?: 0
+    val stats = buildList {
+        if (followers > 0) add(compactCount(followers) + " подписчиков")
+        if (trackTotal > 0) add(plural(trackTotal, "трек", "трека", "треков"))
+        if (albumCount > 0) add(plural(albumCount, "альбом", "альбома", "альбомов"))
+    }.joinToString(" · ")
+    val backdrop = MaterialTheme.colorScheme.background
+
+    Box(modifier = Modifier.fillMaxWidth()) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(ArtistPortraitHeight)
+                .background(MaterialTheme.colorScheme.surfaceContainerHigh)
+        ) {
+            if (!artist.avatarUrl.isNullOrBlank()) {
+                AsyncImage(
+                    model = artworkUrlForSize(artist.avatarUrl, 500.dp),
+                    contentDescription = null,
+                    modifier = Modifier.fillMaxSize(),
+                    contentScale = ContentScale.Crop
+                )
+            } else {
+                IconCover(icon = Icons.Default.Person, iconSize = 120.dp)
+            }
+            // Dark at the top for the status bar and the back button, then the portrait sinks into
+            // the backdrop so the name below it sits on something calm.
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(
+                        Brush.verticalGradient(
+                            0f to Color.Black.copy(alpha = 0.35f),
+                            0.18f to Color.Transparent,
+                            0.45f to Color.Transparent,
+                            0.78f to backdrop.copy(alpha = 0.82f),
+                            1f to backdrop
+                        )
+                    )
+            )
+        }
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(start = 20.dp, top = ArtistPortraitHeight - 120.dp, end = 20.dp)
+        ) {
+            Kicker(
+                text = if (artist.permalinkUrl?.startsWith("yandex") == true) "Артист · Яндекс Музыка" else "Артист",
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(
+                text = artist.username.orEmpty(),
+                style = MaterialTheme.typography.displaySmall.copy(fontSize = 40.sp, lineHeight = 46.sp),
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis
+            )
+            if (stats.isNotBlank()) {
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    text = stats,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            if (onPlay != null && onShuffle != null) {
+                Spacer(modifier = Modifier.height(18.dp))
+                PlayShuffleGroup(onPlay = onPlay, onShuffle = onShuffle)
+            }
+            Spacer(modifier = Modifier.height(12.dp))
+        }
+    }
+}
+
+private val ArtistPortraitHeight = 420.dp
+
+/**
+ * The mix or station cover as the backdrop of the screen's top, the title over its lower edge and
+ * the big play button beside it, where the cover meets the list.
+ */
+@Composable
+private fun MixCoverHeader(
+    mix: SoundCloudMix,
+    title: String,
+    isStation: Boolean,
+    trackCount: Int,
+    isActive: Boolean,
+    isPlaying: Boolean,
+    onPlay: (() -> Unit)?,
+    onShuffle: (() -> Unit)?
+) {
+    val backdrop = MaterialTheme.colorScheme.background
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(MixCoverHeight)
+    ) {
+        AsyncImage(
+            model = ArtworkUrls.highRes(mix.artworkUrl) ?: mix.artworkUrl,
+            contentDescription = null,
+            modifier = Modifier
+                .fillMaxSize()
+                .background(MaterialTheme.colorScheme.surfaceContainerHigh),
+            contentScale = ContentScale.Crop
+        )
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(
+                    Brush.verticalGradient(
+                        0f to Color.Black.copy(alpha = 0.35f),
+                        0.2f to Color.Transparent,
+                        0.42f to backdrop.copy(alpha = 0.2f),
+                        0.74f to backdrop.copy(alpha = 0.86f),
+                        1f to backdrop
+                    )
+                )
+        )
+        Row(
+            modifier = Modifier
+                .align(Alignment.BottomStart)
+                .fillMaxWidth()
+                .padding(start = 20.dp, end = 16.dp, bottom = 8.dp),
+            verticalAlignment = Alignment.Bottom
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Kicker(text = if (isStation) "Станция" else "Микс", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(
+                    text = title,
+                    style = MaterialTheme.typography.displaySmall,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
+                // Stations put "Artist station" in the description; their title already says it.
+                val subtitle = if (isStation) {
+                    if (trackCount > 0) plural(trackCount, "трек", "трека", "треков") else null
+                } else {
+                    mix.description?.takeIf { it.isNotBlank() }
+                }
+                if (subtitle != null) {
+                    Text(
+                        text = subtitle,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+            }
+            if (onPlay != null && onShuffle != null) {
+                Spacer(modifier = Modifier.width(12.dp))
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Surface(
+                        onClick = onShuffle,
+                        modifier = Modifier.size(48.dp),
+                        shape = CircleShape,
+                        color = PanelColors.container,
+                        contentColor = PanelColors.accent
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Icon(Icons.Rounded.Shuffle, contentDescription = "Перемешать", modifier = Modifier.size(24.dp))
+                        }
+                    }
+                    MixPlayButton(isActive = isActive, isPlaying = isPlaying, onClick = onPlay)
+                }
+            }
+        }
+    }
+}
+
+private val MixCoverHeight = 420.dp
+
+/**
+ * The big play button of a mix. Until the mix is playing it is the call to action, in the accent.
+ * Once it is the active queue it behaves like the player's toggle: lit and squarer while playing,
+ * round and tonal while paused.
+ */
+@Composable
+private fun MixPlayButton(isActive: Boolean, isPlaying: Boolean, onClick: () -> Unit) {
+    val haptic = LocalHapticFeedback.current
+    val playing = isActive && isPlaying
+    val corner by animateDpAsState(
+        targetValue = if (playing) 24.dp else 32.dp,
+        animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessLow),
+        label = "mixPlayCorner"
+    )
+    val (toggleContainer, toggleContent) = playToggleColors(isPlaying)
+    Surface(
+        onClick = {
+            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+            onClick()
+        },
+        modifier = Modifier.size(80.dp),
+        shape = RoundedCornerShape(corner),
+        color = if (isActive) toggleContainer else PanelColors.accent,
+        contentColor = if (isActive) toggleContent else PanelColors.onAccent
+    ) {
+        Box(contentAlignment = Alignment.Center) {
+            Icon(
+                imageVector = if (playing) Icons.Default.Pause else Icons.Default.PlayArrow,
+                contentDescription = if (playing) "Пауза" else "Слушать",
+                modifier = Modifier.size(38.dp)
+            )
+        }
+    }
+}
+
 @Composable
 private fun MixDetailScreen(
     mix: SoundCloudMix,
@@ -3608,183 +3963,93 @@ private fun MixDetailScreen(
     favorites: List<FavoriteTrack>,
     downloadProgress: Map<Long, Float> = emptyMap(),
     isPlaying: Boolean = false,
+    isActive: Boolean = false,
     onBack: () -> Unit,
     onPlayTrack: (SoundCloudTrack) -> Unit,
-    onFavoriteClick: (SoundCloudTrack) -> Unit
+    onFavoriteClick: (SoundCloudTrack) -> Unit,
+    onShuffle: () -> Unit,
+    onTogglePlay: () -> Unit
 ) {
     // Map for O(1) favorite lookup (#37)
     val favoritesMap = remember(favorites) { favorites.associateBy { it.id } }
     val playerVisible = currentTrackId != null
+    val isStation = mix.permalink.contains("station") || mix.id.contains("station")
+    val title = if (isStation) mix.title else localizedMixTitle(mix.title)
+    val listState = rememberLazyListState()
+    val collapsed = rememberCollapsed(listState, MixCoverHeight - 140.dp)
 
-    Box(modifier = Modifier.fillMaxSize()) {
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .statusBarsPadding()
-                .navigationBarsPadding()
+    // The cover is this screen's picture; the moving shapes behind a flat list only made it busy.
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(MaterialTheme.colorScheme.background)
+    ) {
+        LazyColumn(
+            state = listState,
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(bottom = if (playerVisible) 120.dp else 32.dp)
         ) {
-            AppTopBar(
-                modifier = Modifier.padding(horizontal = 16.dp),
-                leadingIcon = Icons.AutoMirrored.Filled.ArrowBack,
-                leadingDescription = "Назад",
-                onLeadingClick = onBack,
-                // No title here: the colour block right below carries it.
-                title = {}
-            )
+            item(key = "mix-hero") {
+                MixCoverHeader(
+                    mix = mix,
+                    title = title,
+                    isStation = isStation,
+                    trackCount = tracks.size,
+                    isActive = isActive,
+                    isPlaying = isPlaying,
+                    onPlay = if (tracks.isEmpty()) null else {
+                        { if (isActive) onTogglePlay() else onPlayTrack(tracks.first()) }
+                    },
+                    onShuffle = if (tracks.isEmpty()) null else onShuffle
+                )
+            }
 
-            // Cover and title as one compact colour block, so the list below gets the height.
-            val isStation = mix.permalink.contains("station") || mix.id.contains("station")
-            Surface(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp),
-                shape = RoundedCornerShape(32.dp),
-                color = PanelColors.container,
-                contentColor = PanelColors.content
-            ) {
+            // A rule between the cover and the list, so the two never blur together.
+            item(key = "mix-count") {
                 Row(
-                    modifier = Modifier.padding(16.dp),
-                    horizontalArrangement = Arrangement.spacedBy(16.dp)
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(start = 20.dp, top = 12.dp, end = 20.dp, bottom = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
-                    CoverImage(url = mix.artworkUrl, size = 120.dp, shape = RoundedCornerShape(24.dp))
-                    Column(modifier = Modifier.weight(1f).height(120.dp)) {
-                        Kicker(
-                            text = if (isStation) "Станция" else "Микс",
-                            color = PanelColors.content.copy(alpha = 0.78f)
-                        )
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Text(
-                            text = if (isStation) mix.title else localizedMixTitle(mix.title),
-                            style = MaterialTheme.typography.titleLarge,
-                            maxLines = 2,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                        // Stations put "Artist station" in the description, which is not a
-                        // caption worth showing.
-                        val description = mix.description?.takeIf { it.isNotBlank() && !isStation }
-                        if (description != null) {
-                            Text(
-                                text = description,
-                                style = MaterialTheme.typography.bodySmall,
-                                color = PanelColors.content.copy(alpha = 0.8f),
-                                maxLines = 2,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                        }
-                        Spacer(modifier = Modifier.weight(1f))
-                        if (tracks.isNotEmpty()) {
-                            PanelIconButton(
-                                icon = Icons.Default.PlayArrow,
-                                contentDescription = "Слушать",
-                                onClick = { onPlayTrack(tracks.first()) },
-                                size = 44.dp,
-                                modifier = Modifier.align(Alignment.End)
-                            )
-                        }
-                    }
+                    Text(
+                        text = if (tracks.isEmpty()) "Загружаем треки" else plural(tracks.size, "трек", "трека", "треков"),
+                        style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(1.dp)
+                            .background(MaterialTheme.colorScheme.outlineVariant)
+                    )
                 }
             }
-
-            Spacer(modifier = Modifier.height(18.dp))
-
-            // An explicit rule between header and list, so the two can never blur together.
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
-                Text(
-                    text = plural(tracks.size, "трек", "трека", "треков"),
-                    style = MaterialTheme.typography.labelLarge,
-                    color = MaterialTheme.colorScheme.primary
-                )
-                Box(
-                    modifier = Modifier
-                        .weight(1f)
-                        .height(1.dp)
-                        .background(MaterialTheme.colorScheme.outlineVariant)
-                )
-            }
-
-            Spacer(modifier = Modifier.height(12.dp))
 
             if (tracks.isEmpty()) {
-                Box(
-                    modifier = Modifier.fillMaxSize(),
-                    contentAlignment = Alignment.Center
-                ) {
-                    AppLoadingIndicator(modifier = Modifier.size(72.dp))
-                }
-                return@Column
-            }
-
-            // The whole point of this screen's rework: 30 tracks used to be one endless scroll.
-            // Now they're dealt into pages that each fit on screen, and you flick sideways —
-            // same gesture as the mix carousel you arrived from.
-            BoxWithConstraints(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .weight(1f)
-            ) {
-                // Rows sit flush in one container per page, each one row plus its divider.
-                // Guessing low here is what let an extra row onto the page, and a Column with
-                // no room left squeezes its children rather than dropping them.
-                val rowHeight = TrackRowHeight + 1.dp
-                val rowGap = 0.dp
-                val perPage = ((maxHeight + rowGap) / (rowHeight + rowGap)).toInt().coerceIn(1, 8)
-                val pageCount = (tracks.size + perPage - 1) / perPage
-                val pagerState = rememberPagerState { pageCount }
-
-                Column(modifier = Modifier.fillMaxSize()) {
-                    HorizontalPager(
-                        state = pagerState,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .weight(1f),
-                        pageSpacing = 8.dp
-                    ) { page ->
-                        Column(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 16.dp),
-                            verticalArrangement = Arrangement.spacedBy(rowGap)
-                        ) {
-                            val from = page * perPage
-                            val to = minOf(from + perPage, tracks.size)
-                            for (index in from until to) {
-                                val track = tracks[index]
-                                val favorite = favoritesMap[track.id]
-                                TrackCard(
-                                    track = track,
-                                    isFavorite = favorite != null,
-                                    isSelected = track.id == currentTrackId,
-                                    downloadState = favorite?.downloadState,
-                                    progress = downloadProgress[track.id],
-                                    isPlaying = isPlaying,
-                                    onClick = { onPlayTrack(track) },
-                                    onFavoriteClick = { onFavoriteClick(track) },
-                                    position = groupPosition(index - from, to - from)
-                                )
-                            }
-                        }
-                    }
-
-                    if (pageCount > 1) {
-                        CarouselPageIndicator(
-                            count = pageCount,
-                            currentPage = pagerState.currentPage,
-                            modifier = Modifier
-                                .align(Alignment.CenterHorizontally)
-                                .padding(top = 10.dp)
+                item(key = "mix-loading") { LoadingBlock(height = 200.dp) }
+            } else {
+                itemsIndexed(tracks, key = { index, track -> "mix-${track.id}-$index" }) { _, track ->
+                    val favorite = favoritesMap[track.id]
+                    Box(modifier = Modifier.padding(horizontal = 8.dp)) {
+                        TrackCard(
+                            track = track,
+                            isFavorite = favorite != null,
+                            isSelected = track.id == currentTrackId,
+                            downloadState = favorite?.downloadState,
+                            progress = downloadProgress[track.id],
+                            isPlaying = isPlaying,
+                            onClick = { onPlayTrack(track) },
+                            onFavoriteClick = { onFavoriteClick(track) },
+                            flat = true
                         )
                     }
                 }
             }
-
-            Spacer(modifier = Modifier.height(if (playerVisible) 96.dp else 12.dp))
         }
+
+        CollapsingTopBar(title = title, collapsed = collapsed, onBack = onBack)
     }
 }
 
@@ -3798,6 +4063,9 @@ private fun TrackRowFrame(
     position: GroupPosition,
     isSelected: Boolean,
     onClick: () -> Unit,
+    // Straight on the backdrop, without the shared container: the mix and station screens,
+    // where the cover above is the only block. Only the playing row gets a fill there.
+    flat: Boolean = false,
     content: @Composable RowScope.() -> Unit
 ) {
     val haptic = LocalHapticFeedback.current
@@ -3807,11 +4075,11 @@ private fun TrackRowFrame(
             onClick()
         },
         modifier = Modifier.fillMaxWidth(),
-        shape = position.shape(),
-        color = if (isSelected) {
-            MaterialTheme.colorScheme.secondaryContainer
-        } else {
-            MaterialTheme.colorScheme.surfaceContainerHigh
+        shape = if (flat) RoundedCornerShape(20.dp) else position.shape(),
+        color = when {
+            isSelected -> MaterialTheme.colorScheme.secondaryContainer
+            flat -> Color.Transparent
+            else -> MaterialTheme.colorScheme.surfaceContainerHigh
         },
         contentColor = if (isSelected) {
             MaterialTheme.colorScheme.onSecondaryContainer
@@ -3820,7 +4088,7 @@ private fun TrackRowFrame(
         }
     ) {
         Column {
-            if (position.hasDividerAbove) GroupDivider()
+            if (position.hasDividerAbove && !flat) GroupDivider()
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -3907,9 +4175,21 @@ private fun TrackCard(
     isPlaying: Boolean = false,
     onClick: () -> Unit,
     onFavoriteClick: () -> Unit,
-    position: GroupPosition = GroupPosition.Single
+    position: GroupPosition = GroupPosition.Single,
+    // Chart position, for an artist's top tracks.
+    number: Int? = null,
+    flat: Boolean = false
 ) {
-    TrackRowFrame(position = position, isSelected = isSelected, onClick = onClick) {
+    TrackRowFrame(position = position, isSelected = isSelected, onClick = onClick, flat = flat) {
+        if (number != null) {
+            Text(
+                text = number.toString(),
+                style = MaterialTheme.typography.titleMedium,
+                color = LocalContentColor.current.copy(alpha = 0.6f),
+                textAlign = TextAlign.Center,
+                modifier = Modifier.width(22.dp)
+            )
+        }
         TrackRowArtwork(track.artworkUrl, isCurrent = isSelected, isPlaying = isPlaying)
         Column(modifier = Modifier.weight(1f)) {
             Text(
@@ -4602,7 +4882,27 @@ private fun PlayerSeekBar(
     }
 }
 
-/** Big play/pause on the panel: squarer while playing, rounder while paused. */
+/**
+ * Colours of a play/pause toggle on a panel. It switches on like the other panel toggles:
+ * accent fill while the track plays, a quiet tonal fill with an accent glyph while it is
+ * paused — a paused player used to show the same lit-up button and looked as if it played.
+ */
+@Composable
+private fun playToggleColors(isPlaying: Boolean): Pair<Color, Color> {
+    val container by animateColorAsState(
+        targetValue = if (isPlaying) PanelColors.accent else PanelColors.content.copy(alpha = 0.14f),
+        animationSpec = tween(300),
+        label = "playToggleContainer"
+    )
+    val content by animateColorAsState(
+        targetValue = if (isPlaying) PanelColors.onAccent else PanelColors.accent,
+        animationSpec = tween(300),
+        label = "playToggleContent"
+    )
+    return container to content
+}
+
+/** Big play/pause on the panel: squarer and lit while playing, round and tonal while paused. */
 @Composable
 private fun PanelPlayButton(isPlaying: Boolean, onClick: () -> Unit) {
     val haptic = LocalHapticFeedback.current
@@ -4611,6 +4911,7 @@ private fun PanelPlayButton(isPlaying: Boolean, onClick: () -> Unit) {
         animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessLow),
         label = "panelPlayCorner"
     )
+    val (container, content) = playToggleColors(isPlaying)
     Surface(
         onClick = {
             haptic.performHapticFeedback(HapticFeedbackType.LongPress)
@@ -4618,8 +4919,8 @@ private fun PanelPlayButton(isPlaying: Boolean, onClick: () -> Unit) {
         },
         modifier = Modifier.size(96.dp),
         shape = RoundedCornerShape(corner),
-        color = PanelColors.accent,
-        contentColor = PanelColors.onAccent
+        color = container,
+        contentColor = content
     ) {
         Box(contentAlignment = Alignment.Center) {
             Icon(
@@ -5315,6 +5616,7 @@ private fun PlayerBar(
                 animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessLow),
                 label = "miniPlayCorner"
             )
+            val (playContainer, playContent) = playToggleColors(isPlaying)
             Surface(
                 onClick = {
                     haptic.performHapticFeedback(HapticFeedbackType.LongPress)
@@ -5322,8 +5624,8 @@ private fun PlayerBar(
                 },
                 modifier = Modifier.size(52.dp),
                 shape = RoundedCornerShape(corner),
-                color = PanelColors.accent,
-                contentColor = PanelColors.onAccent
+                color = playContainer,
+                contentColor = playContent
             ) {
                 Box(contentAlignment = Alignment.Center) {
                     Icon(
@@ -6107,7 +6409,9 @@ private fun PlaylistDetailScreen(
     onRemoveTrack: (FavoriteTrack) -> Unit,
     onChangeArtwork: (String?) -> Unit,
     onMoveDownloadedToDownloads: () -> Unit,
-    onDeletePlaylist: () -> Unit = {}
+    onDeletePlaylist: () -> Unit = {},
+    onShuffle: () -> Unit = {},
+    onDownloadAll: () -> Unit = {}
 ) {
     val imagePicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument()
@@ -6127,15 +6431,51 @@ private fun PlaylistDetailScreen(
                 .fillMaxWidth()
                 .padding(horizontal = 16.dp, vertical = 8.dp)
         ) {
+            // The panel keeps the three things done most — play, shuffle, save on the device — and
+            // everything else lives here, or the row overflows the panel.
+            var showMenu by remember { mutableStateOf(false) }
+            val hasDownloaded = playlist.tracks.any { it.downloadState == DownloadState.DOWNLOADED }
             TopBar(
                 title = "",
                 onBack = onBack,
                 trailing = {
-                    HomeIconButton(
-                        icon = Icons.Default.Delete,
-                        contentDescription = "Удалить плейлист",
-                        onClick = onDeletePlaylist
-                    )
+                    Box {
+                        HomeIconButton(
+                            icon = Icons.Default.MoreVert,
+                            contentDescription = "Ещё",
+                            onClick = { showMenu = true }
+                        )
+                        DropdownMenu(expanded = showMenu, onDismissRequest = { showMenu = false }) {
+                            DropdownMenuItem(
+                                text = { Text("Сменить обложку") },
+                                leadingIcon = { Icon(Icons.Default.Image, contentDescription = null) },
+                                onClick = {
+                                    showMenu = false
+                                    imagePicker.launch(arrayOf("image/*"))
+                                }
+                            )
+                            if (hasDownloaded && !playlist.isLikedAlbum) {
+                                DropdownMenuItem(
+                                    text = { Text("Переместить скачанные в «Скачанное»") },
+                                    leadingIcon = { Icon(Icons.Default.Download, contentDescription = null) },
+                                    onClick = {
+                                        showMenu = false
+                                        onMoveDownloadedToDownloads()
+                                    }
+                                )
+                            }
+                            DropdownMenuItem(
+                                text = {
+                                    Text(if (playlist.isLikedAlbum) "Убрать из медиатеки" else "Удалить плейлист")
+                                },
+                                leadingIcon = { Icon(Icons.Default.Delete, contentDescription = null) },
+                                onClick = {
+                                    showMenu = false
+                                    onDeletePlaylist()
+                                }
+                            )
+                        }
+                    }
                 }
             )
         }
@@ -6145,11 +6485,14 @@ private fun PlaylistDetailScreen(
             contentPadding = PaddingValues(start = 16.dp, top = 4.dp, end = 16.dp, bottom = 120.dp)
         ) {
             item(key = "playlist-hero") {
-                val hasDownloaded = playlist.tracks.any { it.downloadState == DownloadState.DOWNLOADED }
                 CollectionHero(
                     title = playlist.name,
-                    kicker = "Плейлист",
-                    subtitle = plural(playlist.tracks.size, "трек", "трека", "треков"),
+                    kicker = if (playlist.isLikedAlbum) "Альбом · в медиатеке" else "Плейлист",
+                    subtitle = listOfNotNull(
+                        playlist.artist?.takeIf { playlist.isLikedAlbum && it.isNotBlank() },
+                        plural(playlist.tracks.size, "трек", "трека", "треков"),
+                        playlist.downloadedCount.takeIf { it > 0 }?.let { "$it на устройстве" }
+                    ).joinToString(" · "),
                     onArtworkClick = { imagePicker.launch(arrayOf("image/*")) },
                     artwork = {
                         if (playlist.artworkUrl != null) {
@@ -6170,17 +6513,18 @@ private fun PlaylistDetailScreen(
                                 icon = Icons.Default.PlayArrow,
                                 onClick = { onPlayTrack(playlist.tracks.first()) }
                             )
-                        }
-                        PanelIconButton(
-                            icon = Icons.Default.Image,
-                            contentDescription = "Сменить обложку",
-                            onClick = { imagePicker.launch(arrayOf("image/*")) }
-                        )
-                        if (hasDownloaded) {
                             PanelIconButton(
-                                icon = Icons.Default.Download,
-                                contentDescription = "Переместить скачанные в Скачанное",
-                                onClick = onMoveDownloadedToDownloads
+                                icon = Icons.Rounded.Shuffle,
+                                contentDescription = "Перемешать",
+                                onClick = onShuffle
+                            )
+                            // Saves the tracks for this playlist only; "Скачанное" stays as it is.
+                            PlaylistDownloadButton(playlist = playlist, onDownload = onDownloadAll)
+                        } else {
+                            PanelIconButton(
+                                icon = Icons.Default.Image,
+                                contentDescription = "Сменить обложку",
+                                onClick = { imagePicker.launch(arrayOf("image/*")) }
                             )
                         }
                     }
@@ -6421,7 +6765,8 @@ private fun ArtistDetailScreen(
     selectedPlaylist: SoundCloudPlaylist? = null,
     onDeselectPlaylist: () -> Unit = {},
     isAllTracksLoaded: Boolean = false,
-    onLoadAllTracks: () -> Unit = {}
+    onLoadAllTracks: () -> Unit = {},
+    onShuffle: () -> Unit = {}
 ) {
     if (selectedPlaylist != null) {
         SetDetailContent(
@@ -6434,104 +6779,140 @@ private fun ArtistDetailScreen(
             downloadProgress = downloadProgress,
             onBack = onDeselectPlaylist,
             onPlayTrack = onPlayTrack,
-            onFavoriteClick = onFavoriteClick
+            onFavoriteClick = onFavoriteClick,
+            artistName = artist.username
         )
-    } else {
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .statusBarsPadding()
-        ) {
-            AppTopBar(
-                modifier = Modifier.padding(horizontal = 16.dp),
-                leadingIcon = Icons.AutoMirrored.Filled.ArrowBack,
-                leadingDescription = "Назад",
-                onLeadingClick = onBack,
-                title = {
-                    // The bar used to carry no title at all, so a scrolled artist page had
-                    // nothing identifying it.
-                    Text(
-                        text = artist.username.orEmpty(),
-                        style = MaterialTheme.typography.headlineLarge,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                }
-            )
+        return
+    }
 
-            LazyColumn(
-                modifier = Modifier.fillMaxSize(),
-                contentPadding = PaddingValues(start = 16.dp, top = 8.dp, end = 16.dp, bottom = 120.dp),
-                verticalArrangement = Arrangement.spacedBy(16.dp)
-            ) {
-                item(key = "artist-hero") {
-                    ArtistHeroCard(
-                        artist = artist,
-                        albumCount = playlists.size,
-                        onPlay = tracks.firstOrNull()?.let { first -> { onPlayTrack(first) } }
-                    )
+    val listState = rememberLazyListState()
+    val collapsed = rememberCollapsed(listState, ArtistPortraitHeight - 160.dp)
+    // Five tracks until asked for the rest, then the whole list — loading it if only the
+    // highlights are in.
+    var showAllTracks by remember(artist.id, artist.username) { mutableStateOf(false) }
+    val shownTracks = if (showAllTracks) tracks else tracks.take(TOP_TRACKS)
+    val totalTracks = maxOf(artist.trackCount ?: 0, tracks.size)
+    val canShowMore = !showAllTracks && (tracks.size > TOP_TRACKS || (!isAllTracksLoaded && totalTracks > TOP_TRACKS))
+
+    // The portrait is this screen's picture; it gets a quiet backdrop rather than the shapes.
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(MaterialTheme.colorScheme.background)
+    ) {
+        LazyColumn(
+            state = listState,
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(bottom = 120.dp)
+        ) {
+            item(key = "artist-hero") {
+                ArtistPortraitHeader(
+                    artist = artist,
+                    albumCount = playlists.size,
+                    onPlay = tracks.firstOrNull()?.let { first -> { onPlayTrack(first) } },
+                    onShuffle = if (tracks.isEmpty()) null else onShuffle
+                )
+            }
+
+            if (isLoading) {
+                item(key = "artist-loading") { LoadingBlock() }
+            } else if (error != null) {
+                item(key = "artist-error") {
+                    Box(modifier = Modifier.padding(16.dp)) { MessageCard(error) }
+                }
+            } else {
+                if (tracks.isNotEmpty()) {
+                    item(key = "artist-tracks-title") {
+                        SectionTitle(
+                            text = "Популярные треки",
+                            modifier = Modifier.padding(start = 16.dp, top = 8.dp, end = 8.dp, bottom = 8.dp),
+                            actionLabel = when {
+                                canShowMore -> "Все $totalTracks"
+                                showAllTracks && tracks.size > TOP_TRACKS -> "Свернуть"
+                                else -> null
+                            },
+                            onAction = {
+                                if (showAllTracks) {
+                                    showAllTracks = false
+                                } else {
+                                    showAllTracks = true
+                                    if (!isAllTracksLoaded) onLoadAllTracks()
+                                }
+                            }
+                        )
+                    }
+                    itemsIndexed(shownTracks, key = { index, track -> "artist-track-${track.id}-$index" }) { index, track ->
+                        val favorite = favorites.firstOrNull { it.id == track.id }
+                        Box(modifier = Modifier.padding(horizontal = 16.dp)) {
+                            TrackCard(
+                                track = track,
+                                isFavorite = favorite != null,
+                                isSelected = track.id == currentTrackId,
+                                downloadState = favorite?.downloadState,
+                                progress = downloadProgress[track.id],
+                                isPlaying = isPlaying,
+                                onClick = { onPlayTrack(track) },
+                                onFavoriteClick = { onFavoriteClick(track) },
+                                position = groupPosition(index, shownTracks.size),
+                                number = index + 1
+                            )
+                        }
+                    }
+                }
+
+                if (playlists.isNotEmpty()) {
+                    item(key = "artist-sets-title") {
+                        SectionTitle(
+                            "Альбомы и плейлисты",
+                            modifier = Modifier.padding(start = 16.dp, top = 24.dp, end = 16.dp, bottom = 8.dp)
+                        )
+                    }
+                    item(key = "artist-sets") {
+                        val isYandexArtist = artist.permalinkUrl?.startsWith("yandex") == true
+                        AlbumCarousel(
+                            albums = playlists.map { playlist ->
+                                val isAlbum = isYandexArtist ||
+                                    playlist.permalinkUrl?.startsWith("yandex:album:") == true
+                                CarouselAlbum(
+                                    key = playlist.id,
+                                    title = playlist.title ?: "Альбом",
+                                    subtitle = "",
+                                    caption = if (isAlbum) {
+                                        "Альбом · " + plural(playlist.trackCount, "трек", "трека", "треков")
+                                    } else {
+                                        setCaption(playlist)
+                                    },
+                                    artworkUrl = playlist.displayArtworkUrl,
+                                    onClick = { onPlaylistClick(playlist) }
+                                )
+                            },
+                            modifier = Modifier.padding(horizontal = 16.dp)
+                        )
+                    }
                 }
 
                 if (!artist.description.isNullOrBlank()) {
-                    item(key = "artist-description") {
-                        ExpandableDescription(text = artist.description)
+                    item(key = "artist-about-title") {
+                        SectionTitle(
+                            "Об артисте",
+                            modifier = Modifier.padding(start = 16.dp, top = 24.dp, end = 16.dp, bottom = 8.dp)
+                        )
                     }
-                }
-
-                if (isLoading) {
-                    item(key = "artist-loading") { LoadingBlock() }
-                } else if (error != null) {
-                    item(key = "artist-error") { MessageCard(error) }
-                } else {
-                    if (tracks.isNotEmpty()) {
-                        item(key = "artist-tracks-title") {
-                            SectionTitle("Популярные треки", modifier = Modifier.padding(top = 8.dp))
-                        }
-                        item(key = "artist-tracks") {
-                            PagedTrackList(
-                                tracks = tracks,
-                                favorites = favorites,
-                                currentTrackId = currentTrackId,
-                                isPlaying = isPlaying,
-                                downloadProgress = downloadProgress,
-                                onPlayTrack = onPlayTrack,
-                                onFavoriteClick = onFavoriteClick,
-                                perPage = 4
-                            )
-                        }
-                    }
-
-                    if (playlists.isNotEmpty()) {
-                        item(key = "artist-sets-title") {
-                            SectionTitle("Альбомы и плейлисты", modifier = Modifier.padding(top = 8.dp))
-                        }
-                        item(key = "artist-sets") {
-                            val isYandexArtist = artist.permalinkUrl?.startsWith("yandex") == true
-                            AlbumCarousel(
-                                albums = playlists.map { playlist ->
-                                    val isAlbum = isYandexArtist ||
-                                        playlist.permalinkUrl?.startsWith("yandex:album:") == true
-                                    CarouselAlbum(
-                                        key = playlist.id,
-                                        title = playlist.title ?: "Альбом",
-                                        subtitle = "",
-                                        caption = if (isAlbum) {
-                                            "Альбом · " + plural(playlist.trackCount, "трек", "трека", "треков")
-                                        } else {
-                                            setCaption(playlist)
-                                        },
-                                        artworkUrl = playlist.displayArtworkUrl,
-                                        onClick = { onPlaylistClick(playlist) }
-                                    )
-                                }
-                            )
+                    item(key = "artist-about") {
+                        Box(modifier = Modifier.padding(horizontal = 16.dp)) {
+                            ExpandableDescription(text = artist.description)
                         }
                     }
                 }
             }
         }
+
+        CollapsingTopBar(title = artist.username.orEmpty(), collapsed = collapsed, onBack = onBack)
     }
 }
+
+/** How many of an artist's tracks show before "Все". */
+private const val TOP_TRACKS = 5
 
 /** Album or playlist opened from the artist page or from search: cover, then its tracks. */
 @Composable
@@ -6546,9 +6927,12 @@ private fun SetDetailContent(
     onBack: () -> Unit,
     onPlayTrack: (SoundCloudTrack) -> Unit,
     onFavoriteClick: (SoundCloudTrack) -> Unit,
-    error: String? = null
+    error: String? = null,
+    artistName: String? = null
 ) {
     val isYandex = playlist.permalinkUrl?.contains("yandex") == true
+    val albumLibrary = LocalAlbumLibrary.current
+    val liked = albumLibrary?.likedBySource?.get(playlist.sourceKey())
     val tracks = playlist.knownTracks
     // Until the full list arrives only a few tracks are known; the set's own count is closer
     // to what's about to appear.
@@ -6599,6 +6983,19 @@ private fun SetDetailContent(
                                 icon = Icons.Default.PlayArrow,
                                 onClick = { onPlayTrack(tracks.first()) }
                             )
+                            if (albumLibrary != null) {
+                                // Liking saves the album as a playlist next to "Скачанное"; from
+                                // then on it can be downloaded as a whole.
+                                PanelIconButton(
+                                    icon = if (liked != null) Icons.Rounded.Favorite else Icons.Rounded.FavoriteBorder,
+                                    contentDescription = if (liked != null) "Убрать из медиатеки" else "Сохранить в медиатеку",
+                                    onClick = { albumLibrary.onToggleLike(playlist, artistName ?: subtitle) },
+                                    selected = liked != null
+                                )
+                                if (liked != null) {
+                                    PlaylistDownloadButton(playlist = liked, onDownload = { albumLibrary.onDownload(liked) })
+                                }
+                            }
                         }
                     } else {
                         null

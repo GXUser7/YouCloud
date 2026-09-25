@@ -71,6 +71,39 @@ class SettingsRepository(
         preferences.edit().putBoolean(KEY_SHOW_DEBUG_PERCENTAGE, enabled).apply()
     }
 
+    // The backdrop's shapes lean and wobble with the phone. Off unregisters the accelerometer
+    // altogether rather than ignoring it, so a disabled effect costs nothing.
+    val backgroundMotion = MutableStateFlow(preferences.getBoolean(KEY_BACKGROUND_MOTION, true))
+
+    fun setBackgroundMotion(enabled: Boolean) {
+        backgroundMotion.value = enabled
+        preferences.edit().putBoolean(KEY_BACKGROUND_MOTION, enabled).apply()
+    }
+
+    // The full-screen player takes its palette from the cover instead of the wallpaper. Only the
+    // player: the rest of the app keeps the system colours either way.
+    val playerCoverColors = MutableStateFlow(preferences.getBoolean(KEY_PLAYER_COVER_COLORS, true))
+
+    fun setPlayerCoverColors(enabled: Boolean) {
+        playerCoverColors.value = enabled
+        preferences.edit().putBoolean(KEY_PLAYER_COVER_COLORS, enabled).apply()
+    }
+
+    // Asking GitHub for a new version twice a day; see UpdateRepository.
+    val updateAutoCheck = MutableStateFlow(preferences.getBoolean(KEY_UPDATE_AUTO_CHECK, true))
+
+    fun setUpdateAutoCheck(enabled: Boolean) {
+        updateAutoCheck.value = enabled
+        preferences.edit().putBoolean(KEY_UPDATE_AUTO_CHECK, enabled).apply()
+    }
+
+    val lastUpdateCheck: Long
+        get() = preferences.getLong(KEY_LAST_UPDATE_CHECK, 0L)
+
+    fun markUpdateChecked() {
+        preferences.edit().putLong(KEY_LAST_UPDATE_CHECK, System.currentTimeMillis()).apply()
+    }
+
     val equalizerEnabled = MutableStateFlow(preferences.getBoolean(KEY_EQ_ENABLED, false))
     val equalizerPreset = MutableStateFlow(preferences.getString(KEY_EQ_PRESET, "Flat") ?: "Flat")
     val homeSelectedTab = MutableStateFlow(preferences.getInt(KEY_HOME_SELECTED_TAB, 0))
@@ -211,5 +244,9 @@ class SettingsRepository(
         const val KEY_HOME_SELECTED_TAB = "home_selected_tab"
         const val KEY_HIDDEN_YANDEX_PLAYLISTS = "hidden_yandex_playlists"
         const val KEY_SHOW_DEBUG_PERCENTAGE = "show_debug_percentage"
+        const val KEY_BACKGROUND_MOTION = "background_motion"
+        const val KEY_PLAYER_COVER_COLORS = "player_cover_colors"
+        const val KEY_UPDATE_AUTO_CHECK = "update_auto_check"
+        const val KEY_LAST_UPDATE_CHECK = "last_update_check"
     }
 }

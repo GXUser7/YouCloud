@@ -17,6 +17,18 @@ fun localProperty(name: String): String =
         ?: localProperties.getProperty(name)
         ?: ""
 
+// Follows the GitHub release tags (v3.1 → 3.1), which is what the in-app updater compares
+// against. The code is derived from it so it can never fall behind: 3.2 → 30200.
+val appVersionName = "3.2"
+val appVersionCode = appVersionName.split(".").map { it.toInt() }.let { parts ->
+    parts.getOrElse(0) { 0 } * 10_000 + parts.getOrElse(1) { 0 } * 100 + parts.getOrElse(2) { 0 }
+}
+
+// The release key, when this machine has it: path and passwords come from local.properties (or
+// -P properties), never from the repository. With it both build types are signed alike, so a
+// debug build installs over the published app — keeping its data — and in-app updates verify.
+val releaseKeystore = localProperty("youcloud.storeFile").takeIf { it.isNotBlank() }?.let(::file)
+
 kotlin {
     jvmToolchain(21)
 }
@@ -29,8 +41,8 @@ android {
         applicationId = "com.example.myapplication"
         minSdk = 34
         targetSdk = 34
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = appVersionCode
+        versionName = appVersionName
 
         buildConfigField(
             "String",
@@ -51,14 +63,29 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
+    signingConfigs {
+        if (releaseKeystore?.exists() == true) {
+            create("youcloud") {
+                storeFile = releaseKeystore
+                storePassword = localProperty("youcloud.storePassword")
+                keyAlias = localProperty("youcloud.keyAlias")
+                keyPassword = localProperty("youcloud.keyPassword")
+            }
+        }
+    }
+
     buildTypes {
+        val signing = signingConfigs.findByName("youcloud") ?: signingConfigs.getByName("debug")
         release {
             isMinifyEnabled = false
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig = signing
+        }
+        debug {
+            signingConfig = signing
         }
     }
     compileOptions {
@@ -89,6 +116,7 @@ dependencies {
     implementation(libs.retrofit.gson)
     implementation(libs.okhttp)
     implementation(libs.coil.compose)
+    implementation(libs.material.color.utilities)
     testImplementation(libs.junit)
     androidTestImplementation(platform(libs.androidx.compose.bom))
     androidTestImplementation(libs.androidx.compose.ui.test.junit4)
@@ -98,13 +126,15 @@ dependencies {
     debugImplementation(libs.androidx.compose.ui.tooling)
 }
 
-// Ships the release build as YouCloud.apk rather than app-release.apk.
+// Ships the release build as YouCloud.<version>.apk, the name the releases use since v3.1 and
+// the one the in-app updater looks for first.
 tasks.register("renameReleaseApk") {
     val apkDir = layout.buildDirectory.dir("outputs/apk/release")
+    val apkName = "YouCloud.$appVersionName.apk"
     doLast {
         val dir = apkDir.get().asFile
         val built = File(dir, "app-release.apk")
-        val renamed = File(dir, "YouCloud.apk")
+        val renamed = File(dir, apkName)
         if (built.exists()) {
             renamed.delete()
             built.renameTo(renamed)
