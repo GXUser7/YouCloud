@@ -3854,12 +3854,14 @@ private fun MixCoverHeader(
             modifier = Modifier
                 .fillMaxSize()
                 .background(
+                    // Covers often carry lettering low down (a station's name, "STATION") right where
+                    // the title goes, so the fade is nearly opaque by then or the two overprint.
                     Brush.verticalGradient(
                         0f to Color.Black.copy(alpha = 0.35f),
                         0.2f to Color.Transparent,
-                        0.42f to backdrop.copy(alpha = 0.2f),
-                        0.74f to backdrop.copy(alpha = 0.86f),
-                        1f to backdrop
+                        0.36f to backdrop.copy(alpha = 0.3f),
+                        0.6f to backdrop.copy(alpha = 0.9f),
+                        0.72f to backdrop
                     )
                 )
         )
@@ -3878,12 +3880,9 @@ private fun MixCoverHeader(
                     maxLines = 2,
                     overflow = TextOverflow.Ellipsis
                 )
-                // Stations put "Artist station" in the description; their title already says it.
-                val subtitle = if (isStation) {
-                    if (trackCount > 0) plural(trackCount, "трек", "трека", "треков") else null
-                } else {
-                    mix.description?.takeIf { it.isNotBlank() }
-                }
+                // Stations put "Artist station" in the description, which their title already says,
+                // and their track count is the rule right below.
+                val subtitle = if (isStation) null else mix.description?.takeIf { it.isNotBlank() }
                 if (subtitle != null) {
                     Text(
                         text = subtitle,
