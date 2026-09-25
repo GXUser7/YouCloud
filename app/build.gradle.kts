@@ -18,8 +18,8 @@ fun localProperty(name: String): String =
         ?: ""
 
 // Follows the GitHub release tags (v3.1 → 3.1), which is what the in-app updater compares
-// against. The code is derived from it so it can never fall behind: 3.2 → 30200.
-val appVersionName = "3.2"
+// against. The code is derived from it so it can never fall behind: 4.0 → 40000.
+val appVersionName = "4.0"
 val appVersionCode = appVersionName.split(".").map { it.toInt() }.let { parts ->
     parts.getOrElse(0) { 0 } * 10_000 + parts.getOrElse(1) { 0 } * 100 + parts.getOrElse(2) { 0 }
 }
