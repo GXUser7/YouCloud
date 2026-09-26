@@ -20,8 +20,13 @@ import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.BlurredEdgeTreatment
-import androidx.compose.ui.draw.blur
+import androidx.compose.ui.graphics.BlurEffect
+import androidx.compose.ui.graphics.TileMode
+import androidx.compose.ui.graphics.TransformOrigin
+import androidx.compose.ui.graphics.drawscope.scale
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.layout.layout
+import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -276,12 +281,18 @@ internal fun ExpressiveBackground(motionEnabled: Boolean, animated: Boolean = tr
     LaunchedEffect(animated) {
         if (!animated) return@LaunchedEffect
         var last = 0L
+        var drawn = 0L
         while (isActive) {
             withFrameNanos { now ->
                 val dt = if (last == 0L) 0f else ((now - last) / 1_000_000_000f).coerceAtMost(0.05f)
                 last = now
                 motion.step(dt, shapes, tilt, shiftPx)
-                frame.longValue = now
+                // Redrawn sixty times a second at most: the shapes drift slowly, and on a 120 Hz
+                // screen every other frame of them was work nobody could see.
+                if (now - drawn >= BACKDROP_FRAME_NANOS) {
+                    drawn = now
+                    frame.longValue = now
+                }
             }
         }
     }
@@ -308,8 +319,8 @@ internal fun ExpressiveBackground(motionEnabled: Boolean, animated: Boolean = tr
     ) {
         // Depth of field: the far shapes are the softest, the near ones less so, and the content in
         // front is the only thing in focus — which is what separates a cover from the backdrop.
-        BackdropLayer(shapes, far, motion, frame, palette, blur = FAR_BLUR)
-        BackdropLayer(shapes, near, motion, frame, palette, blur = NEAR_BLUR)
+        BackdropLayer(shapes, far, motion, frame, palette, blur = FAR_BLUR, shrink = FAR_SHRINK)
+        BackdropLayer(shapes, near, motion, frame, palette, blur = NEAR_BLUR, shrink = NEAR_SHRINK)
     }
 }
 
@@ -328,7 +339,8 @@ private fun BackdropLayer(
     motion: BackdropMotion,
     frame: androidx.compose.runtime.MutableLongState,
     palette: BackdropPalette,
-    blur: Dp
+    blur: Dp,
+    shrink: Int
 ) {
     val work = remember { android.graphics.Path() }
     val matrix = remember { android.graphics.Matrix() }
@@ -337,21 +349,39 @@ private fun BackdropLayer(
             style = android.graphics.Paint.Style.FILL
         }
     }
+    // Drawn [shrink] times smaller and stretched back, blurred on the way: soft shapes lose
+    // nothing by it, and a full-screen blur on every frame was most of what the backdrop cost.
     Canvas(
         modifier = Modifier
             .fillMaxSize()
-            .blur(blur, BlurredEdgeTreatment.Unbounded)
+            .layout { measurable, constraints ->
+                val width = constraints.maxWidth
+                val height = constraints.maxHeight
+                val small = measurable.measure(
+                    Constraints.fixed((width + shrink - 1) / shrink, (height + shrink - 1) / shrink)
+                )
+                layout(width, height) { small.place(0, 0) }
+            }
+            .graphicsLayer {
+                scaleX = shrink.toFloat()
+                scaleY = shrink.toFloat()
+                transformOrigin = TransformOrigin(0f, 0f)
+                val radius = blur.toPx() / shrink
+                renderEffect = BlurEffect(radius, radius, TileMode.Decal)
+            }
     ) {
         // Read so that every frame of the simulation redraws, without recomposing anything.
         frame.longValue
-        val unit = min(size.width, size.height)
+        scale(1f / shrink, 1f / shrink, pivot = Offset.Zero) {
+        val full = androidx.compose.ui.geometry.Size(size.width * shrink, size.height * shrink)
+        val unit = min(full.width, full.height)
         val light = Offset(motion.lightX, motion.lightY)
         indices.forEach { i ->
             val shape = shapes[i]
             val diameter = shape.size * unit
             val center = Offset(
-                shape.cx * size.width + motion.x[i],
-                shape.cy * size.height + motion.y[i] + sin(motion.time * 0.35f + i * 1.7f) * 6f * density * shape.depth
+                shape.cx * full.width + motion.x[i],
+                shape.cy * full.height + motion.y[i] + sin(motion.time * 0.35f + i * 1.7f) * 6f * density * shape.depth
             )
             buildShapePath(shape, motion, i, diameter, center, work, matrix)
             val path = work.asComposePath()
@@ -391,6 +421,7 @@ private fun BackdropLayer(
                 ),
                 style = Stroke(width = 1.5f * density)
             )
+        }
         }
     }
 }
@@ -451,3 +482,6 @@ private const val PARALLAX_SHIFT_DP = 34f
 private const val NEAR_DEPTH = 0.6f
 private val FAR_BLUR = 8.dp
 private val NEAR_BLUR = 3.dp
+private const val FAR_SHRINK = 4
+private const val NEAR_SHRINK = 2
+private const val BACKDROP_FRAME_NANOS = 15_000_000L

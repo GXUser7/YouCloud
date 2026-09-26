@@ -36,6 +36,10 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.navigationBars
+import androidx.compose.foundation.layout.ime
+import androidx.compose.foundation.layout.union
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -175,8 +179,15 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.blur
 import androidx.compose.ui.graphics.Brush
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.foundation.gestures.detectVerticalDragGestures
+import androidx.compose.animation.core.FastOutLinearInEasing
+import androidx.compose.ui.graphics.BlurEffect
+import androidx.compose.ui.graphics.TileMode
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.layout.ContentScale
@@ -418,9 +429,16 @@ fun MusicScreen(viewModel: MusicViewModel) {
         }
     }
 
+    // What glass shows: the moving backdrop, and the screens over it (for the mini player, which
+    // floats over them all).
+    // The backdrop is blurred already: glass over it alone is a wash of colour.
+    val backdropFrost = rememberFrostSource(soft = true)
+    val screensFrost = rememberFrostSource()
     Box(modifier = Modifier.fillMaxSize()) {
         // The full player is opaque; nothing behind it needs a frame, or the accelerometer.
-        ExpressiveBackground(motionEnabled = backgroundMotion, animated = selectedTrack == null)
+        Box(modifier = Modifier.fillMaxSize().frostSource(backdropFrost)) {
+            ExpressiveBackground(motionEnabled = backgroundMotion, animated = selectedTrack == null)
+        }
 
         yandexLoginUrl?.let { url ->
             YandexLoginDialog(
@@ -469,7 +487,14 @@ fun MusicScreen(viewModel: MusicViewModel) {
         }
         if (isLoggedOut) {
             SoundCloudLoginScreen(viewModel = viewModel)
-        } else androidx.compose.runtime.CompositionLocalProvider(LocalAlbumLibrary provides albumLibrary) {
+        } else androidx.compose.runtime.CompositionLocalProvider(
+            LocalAlbumLibrary provides albumLibrary,
+            LocalFrostSources provides listOf(backdropFrost)
+        ) {
+            Box(modifier = Modifier.fillMaxSize().frostSource(screensFrost)) {
+            // Every screen stands on the moving backdrop: their pages, panels, buttons and cards
+            // are glass. (Not the full player, which draws its own backdrop.)
+            androidx.compose.runtime.CompositionLocalProvider(LocalGlass provides true) {
             AnimatedContent(
                 targetState = screen,
                 transitionSpec = {
@@ -693,6 +718,10 @@ fun MusicScreen(viewModel: MusicViewModel) {
                             viewModel.deleteDownloadedTrack(track)
                         },
                         onImportTracks = viewModel::importLocalTracks,
+                        onShuffle = {
+                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                            viewModel.playDownloadsShuffled()
+                        },
                         showDebugPercentage = showDebugPercentage,
                         downloadedPercentages = downloadedPercentages
                     )
@@ -951,10 +980,17 @@ fun MusicScreen(viewModel: MusicViewModel) {
                     )
                 }
             }
+            }
+            }
 
             // On home the floating toolbar owns the bottom edge; the mini player sits on top of it.
+            val searchTabsShown = screen == AppScreen.SEARCH && selectedMix == null && searchOpenedPlaylist == null
             val miniPlayerLift by animateDpAsState(
-                targetValue = if (screen == AppScreen.HOME && selectedMix == null) HomeToolbarClearance else 0.dp,
+                targetValue = when {
+                    screen == AppScreen.HOME && selectedMix == null -> HomeToolbarClearance
+                    searchTabsShown -> searchDockHeight(hasYandexToken || ytMusicAccount != null) - 4.dp
+                    else -> 0.dp
+                },
                 animationSpec = spring(dampingRatio = Spring.DampingRatioLowBouncy, stiffness = Spring.StiffnessMediumLow),
                 label = "miniPlayerLift"
             )
@@ -964,9 +1000,20 @@ fun MusicScreen(viewModel: MusicViewModel) {
                 exit = slideOutVertically(targetOffsetY = { it }) + fadeOut(),
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
-                    .navigationBarsPadding()
+                    .then(
+                        // On search the tabs ride the keyboard, and the mini player rides them.
+                        if (searchTabsShown) {
+                            Modifier.windowInsetsPadding(WindowInsets.ime.union(WindowInsets.navigationBars))
+                        } else {
+                            Modifier.navigationBarsPadding()
+                        }
+                    )
                     .padding(start = 16.dp, top = 16.dp, end = 16.dp, bottom = 16.dp + miniPlayerLift)
             ) {
+                androidx.compose.runtime.CompositionLocalProvider(
+                    LocalFrostSources provides listOf(backdropFrost, screensFrost),
+                    LocalGlass provides true
+                ) {
                 PlayerBar(
                     title = currentTrackTitle.orEmpty(),
                     artist = currentPlayingTrack?.user?.username.orEmpty(),
@@ -987,6 +1034,7 @@ fun MusicScreen(viewModel: MusicViewModel) {
                         currentPlayingTrack?.let(viewModel::openTrack)
                     }
                 )
+                }
             }
 
             AnimatedVisibility(
@@ -1019,6 +1067,11 @@ fun MusicScreen(viewModel: MusicViewModel) {
                         upcomingVideo = pendingTrackVideo?.takeIf { it.trackId == track.id },
                         livePosition = viewModel::livePositionMs,
                         videoGlow = videoGlow,
+                        hasNeighbourTrack = viewModel::hasNeighbourTrack,
+                        onSwipeTrack = { next ->
+                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                            viewModel.skipToNeighbourTrack(next)
+                        },
                         onBack = {
                             haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                             viewModel.closeTrack()
@@ -1308,30 +1361,53 @@ private fun HomeScreen(
         )
     }
 
+    // The services side by side, a page each, following the finger.
+    val serviceScope = rememberCoroutineScope()
+    val servicePager = rememberPagerState(initialPage = services.indexOf(service).coerceAtLeast(0)) { services.size }
+    // The service the toolbar lights: the page the pager is on, even mid-swipe.
+    val shownService = services.getOrElse(servicePager.currentPage) { service }
+    // A page come to rest is the service picked.
+    LaunchedEffect(servicePager.settledPage, services) {
+        val settled = services.getOrNull(servicePager.settledPage) ?: return@LaunchedEffect
+        if (settled != pickedService) {
+            pickedService = settled
+            val target = sectionsOf(settled).firstOrNull { it.key == lastSection[settled] } ?: sectionsOf(settled).first()
+            onTabSelected(target.category.ordinal)
+        }
+    }
+    // A service signed in or out of: the pages shift, the one shown stays.
+    LaunchedEffect(services) {
+        val index = services.indexOf(service)
+        if (index >= 0 && index != servicePager.currentPage) servicePager.scrollToPage(index)
+    }
+
     fun switchTo(picked: HomeService) {
-        if (picked == service) return
-        pickedService = picked
-        val target = sectionsOf(picked).firstOrNull { it.key == lastSection[picked] } ?: sectionsOf(picked).first()
-        onTabSelected(target.category.ordinal)
+        val index = services.indexOf(picked)
+        if (index < 0) return
+        serviceScope.launch { servicePager.animateScrollToPage(index, animationSpec = ServicePageSpring) }
     }
 
     val hasWarning = clientId.isBlank() || needsRelogin || isClientIdExpired
 
     Box(modifier = Modifier.fillMaxSize()) {
-        // A service's page slides in from the side it sits on in the toolbar.
-        AnimatedContent(
-            targetState = service,
-            transitionSpec = {
-                val forward = services.indexOf(targetState) > services.indexOf(initialState)
-                (slideInHorizontally { w -> if (forward) w else -w } + fadeIn()) togetherWith
-                    (slideOutHorizontally { w -> if (forward) -w / 3 else w / 3 } + fadeOut())
-            },
+    // Home stands on the moving backdrop: its panels and buttons are glass.
+    androidx.compose.runtime.CompositionLocalProvider(LocalGlass provides true) {
+        // A service a page: a swipe anywhere the carousels don't take it drags the next one in,
+        // and lets it settle on a spring.
+        HorizontalPager(
+            state = servicePager,
             modifier = Modifier.fillMaxSize(),
-            label = "homeService"
-        ) { shown ->
+            key = { services[it] },
+            beyondViewportPageCount = 1,
+            flingBehavior = androidx.compose.foundation.pager.PagerDefaults.flingBehavior(
+                state = servicePager,
+                // A third of the way over is enough to be meant.
+                snapPositionalThreshold = 0.3f,
+                snapAnimationSpec = ServicePageSpring
+            )
+        ) { page ->
+            val shown = services[page]
             val sections = sectionsOf(shown)
-            // The pointer handler outlives recompositions; it switches through the latest.
-            val currentSwitchTo by rememberUpdatedState<(HomeService) -> Unit> { switchTo(it) }
             val initialPage = sections.indexOfFirst { it.key == lastSection[shown] }.takeIf { it >= 0 }
                 ?: sections.indexOfFirst { it.category == savedCategory }.coerceAtLeast(0)
             val sectionPager = rememberPagerState(initialPage = initialPage) { sections.size }
@@ -1352,45 +1428,23 @@ private fun HomeScreen(
                     .fillMaxSize()
                     .statusBarsPadding()
                     .navigationBarsPadding()
-                    // A sideways swipe anywhere the carousels don't take it moves to the next
-                    // service: the room under them, the title, the edges.
-                    // Counted by its length or by its speed: a quick flick is short, and asking for
-                    // a long drag lost most of them.
-                    .pointerInput(services, shown) {
-                        var dragged = 0f
-                        val velocity = VelocityTracker()
-                        detectHorizontalDragGestures(
-                            onDragStart = { start ->
-                                dragged = 0f
-                                velocity.resetTracking()
-                            },
-                            onDragEnd = {
-                                val speed = velocity.calculateVelocity().x
-                                val far = kotlin.math.abs(dragged) > SERVICE_SWIPE_DISTANCE.toPx()
-                                val flung = kotlin.math.abs(speed) > SERVICE_SWIPE_VELOCITY.toPx() &&
-                                    kotlin.math.sign(speed) == kotlin.math.sign(dragged) &&
-                                    kotlin.math.abs(dragged) > SERVICE_SWIPE_MIN_FLICK.toPx()
-                                if (far || flung) {
-                                    val next = services.indexOf(shown) + if (dragged < 0) 1 else -1
-                                    services.getOrNull(next)?.let { target ->
-                                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                        currentSwitchTo(target)
-                                    }
-                                }
-                            },
-                            onHorizontalDrag = { change, amount ->
-                                dragged += amount
-                                velocity.addPosition(change.uptimeMillis, change.position)
-                                change.consume()
-                            }
-                        )
+                    // The page on its way out sinks back a little and dims, the one coming in
+                    // rises from it.
+                    .graphicsLayer {
+                        val away = ((servicePager.currentPage - page) + servicePager.currentPageOffsetFraction)
+                            .absoluteValue.coerceIn(0f, 1f)
+                        val scale = 1f - 0.06f * away
+                        scaleX = scale
+                        scaleY = scale
+                        alpha = 1f - 0.45f * away
                     }
             ) {
-                Row(
+                Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(start = 20.dp, top = 12.dp, end = 16.dp),
-                    verticalAlignment = Alignment.Top
+                        .padding(start = 20.dp, top = 12.dp, end = 20.dp)
+                        .heightIn(min = 64.dp),
+                    contentAlignment = Alignment.Center
                 ) {
                     AnimatedContent(
                         targetState = sections.getOrElse(sectionPager.currentPage) { sections.first() },
@@ -1401,34 +1455,18 @@ private fun HomeScreen(
                                 (slideOutVertically { h -> if (forward) -h / 2 else h / 2 } + fadeOut())
                         },
                         contentKey = { it.key },
-                        modifier = Modifier.weight(1f),
+                        modifier = Modifier.fillMaxWidth(),
                         label = "homeTitle"
                     ) { section ->
-                        Column {
-                            Text(
-                                text = section.title,
-                                style = MaterialTheme.typography.displaySmall,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                            Text(
-                                text = section.subtitle,
-                                style = MaterialTheme.typography.labelLarge,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                        }
+                        Text(
+                            text = section.title,
+                            style = MaterialTheme.typography.displaySmall,
+                            textAlign = TextAlign.Center,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.fillMaxWidth()
+                        )
                     }
-                    Spacer(modifier = Modifier.width(14.dp))
-                    HomeIconButton(
-                        icon = Icons.Default.Settings,
-                        contentDescription = "Настройки",
-                        onClick = {
-                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                            onOpenSettings()
-                        }
-                    )
                 }
 
                 if (hasWarning) {
@@ -1449,11 +1487,14 @@ private fun HomeScreen(
                     modifier = Modifier.padding(start = 16.dp, top = 8.dp, end = 16.dp)
                 )
 
-                VerticalPager(
-                    state = sectionPager,
+                Box(
                     modifier = Modifier
                         .fillMaxWidth()
                         .weight(1f)
+                ) {
+                VerticalPager(
+                    state = sectionPager,
+                    modifier = Modifier.fillMaxSize()
                 ) { page ->
                     val section = sections.getOrElse(page) { sections.first() }
                     when (section.category) {
@@ -1560,10 +1601,36 @@ private fun HomeScreen(
                         )
                     }
                 }
+                    if (sections.size > 1) {
+                        SectionIndicator(
+                            pager = sectionPager,
+                            modifier = Modifier
+                                .align(Alignment.CenterEnd)
+                                .padding(end = 5.dp)
+                        )
+                    }
+                }
+
+                // The section below (or, at the last, back to the first): says the page goes on
+                // downward, and takes you there.
+                if (sections.size > 1) {
+                    val current = sectionPager.currentPage
+                    val atEnd = current >= sections.lastIndex
+                    NextSectionHint(
+                        title = if (atEnd) sections.first().title else sections[current + 1].title,
+                        upward = atEnd,
+                        onClick = {
+                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                            serviceScope.launch {
+                                sectionPager.animateScrollToPage(if (atEnd) 0 else current + 1)
+                            }
+                        }
+                    )
+                }
 
                 Spacer(
                     modifier = Modifier.height(
-                        16.dp + HomeToolbarClearance + if (playerVisible) 72.dp + 12.dp else 0.dp
+                        8.dp + HomeToolbarClearance + if (playerVisible) 72.dp + 12.dp else 0.dp
                     )
                 )
             }
@@ -1571,20 +1638,25 @@ private fun HomeScreen(
 
         HomeToolbar(
             services = services,
-            selected = service,
+            selected = shownService,
             onSelect = { picked ->
                 haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                if (picked == service) reselected++ else switchTo(picked)
+                if (picked == service && picked == shownService) reselected++ else switchTo(picked)
             },
             onSearch = {
                 haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                 onOpenSearch()
+            },
+            onSettings = {
+                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                onOpenSettings()
             },
             modifier = Modifier
                 .align(Alignment.BottomCenter)
                 .navigationBarsPadding()
                 .padding(16.dp)
         )
+    }
     }
 
     if (showCreatePlaylistDialog) {
@@ -1621,6 +1693,74 @@ private fun HomeScreen(
     }
 }
 
+/**
+ * Where among a service's sections the page is: a short rail at the screen's edge with a thumb
+ * that slides along it as the sections are swiped — a list that goes on downward, at a glance.
+ */
+@Composable
+private fun SectionIndicator(pager: androidx.compose.foundation.pager.PagerState, modifier: Modifier = Modifier) {
+    val count = pager.pageCount
+    val rail = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.16f)
+    val thumb = PanelColors.accent
+    Box(
+        modifier = modifier
+            .width(4.dp)
+            .height((count * 14).coerceIn(28, 96).dp)
+            .drawBehind {
+                val corner = androidx.compose.ui.geometry.CornerRadius(size.width / 2f)
+                drawRoundRect(color = rail, cornerRadius = corner)
+                val length = (size.height / count).coerceAtLeast(8.dp.toPx())
+                val position = (pager.currentPage + pager.currentPageOffsetFraction).coerceIn(0f, (count - 1).toFloat())
+                val top = if (count > 1) (size.height - length) * position / (count - 1) else 0f
+                drawRoundRect(
+                    color = thumb,
+                    topLeft = Offset(0f, top),
+                    size = androidx.compose.ui.geometry.Size(size.width, length),
+                    cornerRadius = corner
+                )
+            }
+    )
+}
+
+/** The next section's name under the carousel, with a nudging chevron: the page goes on below. */
+@Composable
+private fun NextSectionHint(title: String, upward: Boolean, onClick: () -> Unit) {
+    val nudge = rememberInfiniteTransition(label = "nextSectionNudge")
+    val shift by nudge.animateFloat(
+        initialValue = 0f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(tween(900, easing = FastOutSlowInEasing), RepeatMode.Reverse),
+        label = "nextSectionShift"
+    )
+    Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+        Row(
+            modifier = Modifier
+                .clip(CircleShape)
+                .clickable(onClick = onClick)
+                .padding(horizontal = 14.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.labelLarge,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.widthIn(max = 240.dp)
+            )
+            Icon(
+                imageVector = if (upward) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
+                contentDescription = null,
+                tint = PanelColors.accent,
+                modifier = Modifier
+                    .size(20.dp)
+                    .graphicsLayer { translationY = (if (upward) -3f else 3f) * shift * density }
+            )
+        }
+    }
+}
+
 // A sideways swipe on home moves to the next service once it is this long — or, a flick, this fast
 // and at least this long.
 private val SERVICE_SWIPE_DISTANCE = 40.dp
@@ -1638,22 +1778,23 @@ private fun HomeToolbar(
     selected: HomeService,
     onSelect: (HomeService) -> Unit,
     onSearch: () -> Unit,
+    onSettings: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     Row(
         modifier = modifier.fillMaxWidth(),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.SpaceBetween
+        verticalAlignment = Alignment.CenterVertically
     ) {
+        val glass = LocalGlass.current
         Surface(
             modifier = Modifier
-                .weight(1f, fill = false)
                 .padding(end = 8.dp)
-                .height(64.dp),
+                .height(64.dp)
+                .glassOr(CircleShape, PanelColors.container),
             shape = CircleShape,
-            color = PanelColors.container,
+            color = if (glass) Color.Transparent else PanelColors.container,
             contentColor = PanelColors.content,
-            shadowElevation = 6.dp
+            shadowElevation = if (glass) 0.dp else 6.dp
         ) {
             // Where each service's mark lies across the bar, for a finger sliding along it.
             val spans = remember { mutableMapOf<HomeService, ClosedFloatingPointRange<Float>>() }
@@ -1700,13 +1841,32 @@ private fun HomeToolbar(
                 }
             }
         }
+        val searchFill = androidx.compose.ui.graphics.lerp(PanelColors.container, PanelColors.content, 0.08f)
+        Spacer(modifier = Modifier.weight(1f))
+        Surface(
+            onClick = onSettings,
+            modifier = Modifier
+                .size(64.dp)
+                .glassOr(RoundedCornerShape(20.dp), searchFill),
+            shape = RoundedCornerShape(20.dp),
+            color = if (glass) Color.Transparent else searchFill,
+            contentColor = PanelColors.accent,
+            shadowElevation = if (glass) 0.dp else 6.dp
+        ) {
+            Box(contentAlignment = Alignment.Center) {
+                Icon(Icons.Default.Settings, contentDescription = "Настройки", modifier = Modifier.size(26.dp))
+            }
+        }
+        Spacer(modifier = Modifier.width(8.dp))
         Surface(
             onClick = onSearch,
-            modifier = Modifier.size(64.dp),
+            modifier = Modifier
+                .size(64.dp)
+                .glassOr(RoundedCornerShape(20.dp), searchFill),
             shape = RoundedCornerShape(20.dp),
-            color = androidx.compose.ui.graphics.lerp(PanelColors.container, PanelColors.content, 0.08f),
+            color = if (glass) Color.Transparent else searchFill,
             contentColor = PanelColors.accent,
-            shadowElevation = 6.dp
+            shadowElevation = if (glass) 0.dp else 6.dp
         ) {
             Box(contentAlignment = Alignment.Center) {
                 Icon(Icons.Default.Search, contentDescription = "Поиск", modifier = Modifier.size(28.dp))
@@ -1814,11 +1974,14 @@ private fun HomeIconButton(
     contentDescription: String,
     onClick: () -> Unit
 ) {
+    val glass = LocalGlass.current
     Surface(
         onClick = onClick,
-        modifier = Modifier.size(48.dp),
+        modifier = Modifier
+            .size(48.dp)
+            .glassOr(RoundedCornerShape(16.dp), PanelColors.container),
         shape = RoundedCornerShape(16.dp),
-        color = PanelColors.container,
+        color = if (glass) Color.Transparent else PanelColors.container,
         contentColor = PanelColors.accent
     ) {
         Box(contentAlignment = Alignment.Center) {
@@ -2185,6 +2348,22 @@ private fun CarouselEmptyText(text: String) {
  * starts exactly [HeroStrip] plus the margin from the screen edge, and the mask only has to
  * narrow from the full cover to that strip as the page moves out.
  */
+// Swallows what a sideways scroller leaves over of a swipe, so nothing sideways around it moves.
+private val KeepSidewaysSwipe = object : NestedScrollConnection {
+    override fun onPostScroll(consumed: Offset, available: Offset, source: NestedScrollSource): Offset =
+        Offset(available.x, 0f)
+
+    override suspend fun onPostFling(consumed: androidx.compose.ui.unit.Velocity, available: androidx.compose.ui.unit.Velocity) =
+        androidx.compose.ui.unit.Velocity(available.x, 0f)
+}
+
+// How a page of services settles: soft, a touch of give, no wobble.
+private val ServicePageSpring = spring<Float>(dampingRatio = 0.86f, stiffness = 320f)
+
+private val HeroAsideBlur = 10.dp
+private const val HeroAsideWash = 0.45f
+private const val HeroAsideShade = 0.18f
+
 @Composable
 private fun HomeHeroCarousel(items: List<HeroItem>) {
     if (items.isEmpty()) return
@@ -2216,6 +2395,9 @@ private fun HomeHeroCarousel(items: List<HeroItem>) {
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(carouselHeight)
+                    // What the carousel doesn't use of a swipe, at its first or last cover, isn't
+                    // passed on to the pages of services around it.
+                    .nestedScroll(KeepSidewaysSwipe)
             ) { page ->
                 val item = items[page]
                 // Signed distance from the focused slot: positive to the right.
@@ -2250,6 +2432,10 @@ private fun HomeHeroCarousel(items: List<HeroItem>) {
                             .graphicsLayer {
                                 // Re-centres the picture inside whatever the mask leaves visible.
                                 translationX = -kotlin.math.sign(distance()) * (coverPx - visibleWidth()) / 2f
+                                // Out of focus beside the one in front, so the eye stays there.
+                                val aside = distance().absoluteValue.coerceIn(0f, 1f)
+                                val radius = HeroAsideBlur.toPx() * aside
+                                renderEffect = if (radius > 0.5f) BlurEffect(radius, radius, TileMode.Clamp) else null
                             }
                             .background(MaterialTheme.colorScheme.surfaceContainerHigh),
                         contentAlignment = Alignment.Center
@@ -2284,6 +2470,19 @@ private fun HomeHeroCarousel(items: List<HeroItem>) {
                             AppContainedLoadingIndicator(modifier = Modifier.size(72.dp))
                         }
                     }
+                    // The theme's colour over the covers aside, and a little shade.
+                    val wash = PanelColors.container
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .drawBehind {
+                                val aside = distance().absoluteValue.coerceIn(0f, 1f)
+                                if (aside > 0f) {
+                                    drawRect(wash.copy(alpha = HeroAsideWash * aside))
+                                    drawRect(Color.Black.copy(alpha = HeroAsideShade * aside))
+                                }
+                            }
+                    )
                 }
             }
 
@@ -2648,10 +2847,12 @@ private fun SettingsScreen(
                     modifier = Modifier.padding(start = 12.dp)
                 )
                 Card(
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .glassOr(MaterialTheme.shapes.extraLarge, MaterialTheme.colorScheme.surfaceContainer),
                     shape = MaterialTheme.shapes.extraLarge,
                     colors = CardDefaults.cardColors(
-                        containerColor = MaterialTheme.colorScheme.surfaceContainer
+                        containerColor = glassFill(MaterialTheme.colorScheme.surfaceContainer)
                     )
                 ) {
                     Column(modifier = Modifier.padding(vertical = 4.dp)) {
@@ -2693,10 +2894,12 @@ private fun SettingsScreen(
                     modifier = Modifier.padding(start = 12.dp)
                 )
                 Card(
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .glassOr(MaterialTheme.shapes.extraLarge, MaterialTheme.colorScheme.surfaceContainer),
                     shape = MaterialTheme.shapes.extraLarge,
                     colors = CardDefaults.cardColors(
-                        containerColor = MaterialTheme.colorScheme.surfaceContainer
+                        containerColor = glassFill(MaterialTheme.colorScheme.surfaceContainer)
                     )
                 ) {
                     Column(modifier = Modifier.padding(vertical = 4.dp)) {
@@ -2765,10 +2968,12 @@ private fun SettingsScreen(
                     modifier = Modifier.padding(start = 12.dp)
                 )
                 Card(
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .glassOr(MaterialTheme.shapes.extraLarge, MaterialTheme.colorScheme.surfaceContainer),
                     shape = MaterialTheme.shapes.extraLarge,
                     colors = CardDefaults.cardColors(
-                        containerColor = MaterialTheme.colorScheme.surfaceContainer
+                        containerColor = glassFill(MaterialTheme.colorScheme.surfaceContainer)
                     )
                 ) {
                     Column(modifier = Modifier.padding(vertical = 4.dp)) {
@@ -2800,10 +3005,12 @@ private fun SettingsScreen(
                 )
 
                 Card(
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .glassOr(MaterialTheme.shapes.extraLarge, MaterialTheme.colorScheme.surfaceContainer),
                     shape = MaterialTheme.shapes.extraLarge,
                     colors = CardDefaults.cardColors(
-                        containerColor = MaterialTheme.colorScheme.surfaceContainer
+                        containerColor = glassFill(MaterialTheme.colorScheme.surfaceContainer)
                     )
                 ) {
                     Column(
@@ -3174,10 +3381,12 @@ private fun SettingsScreen(
                 )
 
                 Card(
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .glassOr(MaterialTheme.shapes.extraLarge, MaterialTheme.colorScheme.surfaceContainer),
                     shape = MaterialTheme.shapes.extraLarge,
                     colors = CardDefaults.cardColors(
-                        containerColor = MaterialTheme.colorScheme.surfaceContainer
+                        containerColor = glassFill(MaterialTheme.colorScheme.surfaceContainer)
                     )
                 ) {
                     Column(
@@ -3356,10 +3565,12 @@ private fun SettingsScreen(
                 )
 
                 Card(
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .glassOr(MaterialTheme.shapes.extraLarge, MaterialTheme.colorScheme.surfaceContainer),
                     shape = MaterialTheme.shapes.extraLarge,
                     colors = CardDefaults.cardColors(
-                        containerColor = MaterialTheme.colorScheme.surfaceContainer
+                        containerColor = glassFill(MaterialTheme.colorScheme.surfaceContainer)
                     )
                 ) {
                     Row(
@@ -3439,10 +3650,12 @@ private fun SettingsScreen(
 
                 val showDebugPercentageVal by settingsRepository.showDebugPercentage.collectAsState()
                 Card(
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .glassOr(MaterialTheme.shapes.extraLarge, MaterialTheme.colorScheme.surfaceContainer),
                     shape = MaterialTheme.shapes.extraLarge,
                     colors = CardDefaults.cardColors(
-                        containerColor = MaterialTheme.colorScheme.surfaceContainer
+                        containerColor = glassFill(MaterialTheme.colorScheme.surfaceContainer)
                     )
                 ) {
                     Row(
@@ -3574,10 +3787,8 @@ private fun SearchScreen(
 ) {
     val focusRequester = remember { FocusRequester() }
     val haptic = LocalHapticFeedback.current
-    // Hoisted so that coming back from an album lands where the list was left.
-    val listState = rememberLazyListState()
-    val albumsRowState = rememberLazyListState()
-    val playlistsRowState = rememberLazyListState()
+    // Hoisted, one per service, so that coming back from an album lands where the list was left.
+    val listStates = remember { SearchSource.entries.associateWith { androidx.compose.foundation.lazy.LazyListState() } }
     val isFieldShown by rememberUpdatedState(openedPlaylist == null)
     LaunchedEffect(Unit) {
         kotlinx.coroutines.delay(100)
@@ -3608,108 +3819,201 @@ private fun SearchScreen(
         if (activeSource != source) onSearchSourceChanged(activeSource)
     }
     val ytPage = ytSearch.page
-    val activeQuery = when (activeSource) {
-        SearchSource.SOUNDCLOUD -> query
-        SearchSource.YANDEX -> yandexQuery
-        SearchSource.YOUTUBE -> ytSearch.query
+    fun resultsOf(of: SearchSource) = when (of) {
+        SearchSource.SOUNDCLOUD -> SearchResults(query, tracks, isLoading, errorMessage, albums, playlists, artists)
+        SearchSource.YANDEX -> SearchResults(
+            yandexQuery, yandexTracks, yandexLoading, yandexError, yandexAlbums, yandexPlaylists, yandexArtists
+        )
+        SearchSource.YOUTUBE -> SearchResults(
+            ytSearch.query,
+            ytPage?.tracks.orEmpty(),
+            ytSearch.loading,
+            ytSearch.error,
+            ytPage?.albums.orEmpty(),
+            ytPage?.playlists.orEmpty(),
+            ytPage?.artists.orEmpty()
+        )
     }
-    val activeTracks = when (activeSource) {
-        SearchSource.SOUNDCLOUD -> tracks
-        SearchSource.YANDEX -> yandexTracks
-        SearchSource.YOUTUBE -> ytPage?.tracks.orEmpty()
+    fun search(on: SearchSource, text: String) = when (on) {
+        SearchSource.SOUNDCLOUD -> onQueryChange(text)
+        SearchSource.YANDEX -> onYandexQueryChange(text)
+        SearchSource.YOUTUBE -> onYtQueryChange(text)
     }
-    val activeLoading = when (activeSource) {
-        SearchSource.SOUNDCLOUD -> isLoading
-        SearchSource.YANDEX -> yandexLoading
-        SearchSource.YOUTUBE -> ytSearch.loading
-    }
-    val activeError = when (activeSource) {
-        SearchSource.SOUNDCLOUD -> errorMessage
-        SearchSource.YANDEX -> yandexError
-        SearchSource.YOUTUBE -> ytSearch.error
-    }
-    val activeAlbums = when (activeSource) {
-        SearchSource.SOUNDCLOUD -> albums
-        SearchSource.YANDEX -> yandexAlbums
-        SearchSource.YOUTUBE -> ytPage?.albums.orEmpty()
-    }
-    val activePlaylists = when (activeSource) {
-        SearchSource.SOUNDCLOUD -> playlists
-        SearchSource.YANDEX -> yandexPlaylists
-        SearchSource.YOUTUBE -> ytPage?.playlists.orEmpty()
-    }
-    val activeArtists = when (activeSource) {
-        SearchSource.SOUNDCLOUD -> artists
-        SearchSource.YANDEX -> yandexArtists
-        SearchSource.YOUTUBE -> ytPage?.artists.orEmpty()
-    }
-    val topResult = remember(activeQuery, activeAlbums, activePlaylists) {
-        pickTopResult(activeQuery, activeAlbums, activePlaylists)
-    }
+    val activeQuery = resultsOf(activeSource).query
     val favoritesMap = remember(favorites) { favorites.associateBy { it.id } }
 
-    LazyColumn(
-        state = listState,
-        modifier = Modifier
-            .fillMaxSize()
-            .statusBarsPadding()
-            // The keyboard opens itself here, so without this the last result sits under it
-            // with no way to scroll to it.
-            .imePadding(),
-        // top = 0: the bar has to start at the same y as the home bar, or entering search
-        // shifts the title and back button downward and the transition reads as a jump.
-        // Rows of a group sit flush, so spacing between blocks is set per item instead.
-        contentPadding = PaddingValues(start = 16.dp, top = 0.dp, end = 16.dp, bottom = 120.dp)
-    ) {
-        item(key = "search-top-bar") {
-            TopBar(title = "Поиск", onBack = onBack)
+    // The services side by side, a page each; the one come to rest is the one searched.
+    val sourcePager = rememberPagerState(initialPage = sources.indexOf(activeSource).coerceAtLeast(0)) { sources.size }
+    val scope = rememberCoroutineScope()
+    LaunchedEffect(sourcePager.settledPage, sources) {
+        val settled = sources.getOrNull(sourcePager.settledPage) ?: return@LaunchedEffect
+        if (settled != activeSource) onSearchSourceChanged(settled)
+    }
+    LaunchedEffect(activeSource, sources) {
+        val index = sources.indexOf(activeSource)
+        if (index >= 0 && index != sourcePager.currentPage && !sourcePager.isScrollInProgress) {
+            sourcePager.scrollToPage(index)
         }
+    }
+    // The neighbours search what was typed too, once typing pauses, so a swipe finds their
+    // results already there.
+    LaunchedEffect(activeQuery, sources) {
+        kotlinx.coroutines.delay(700)
+        sources.filter { it != activeSource && resultsOf(it).query != activeQuery }.forEach { search(it, activeQuery) }
+    }
 
-        item(key = "search-field") {
-            SearchField(
-                query = activeQuery,
-                onQueryChange = { newQuery ->
-                    when (activeSource) {
-                        SearchSource.SOUNDCLOUD -> onQueryChange(newQuery)
-                        SearchSource.YANDEX -> onYandexQueryChange(newQuery)
-                        SearchSource.YOUTUBE -> onYtQueryChange(newQuery)
+    val backdrop = LocalFrostSources.current
+    val results = rememberFrostSource()
+    val tabsShown = sources.size > 1
+    val playerShown = currentTrackId != null
+    // Room at the bottom of each list for what floats over its end: the tabs, the mini player.
+    val bottomRoom = 24.dp + searchDockHeight(tabsShown) + (if (playerShown) MiniPlayerHeight + 12.dp else 0.dp)
+
+    // Search stands on the moving backdrop: its fields, rows and tabs are glass.
+    androidx.compose.runtime.CompositionLocalProvider(LocalGlass provides true) {
+    Box(modifier = Modifier.fillMaxSize()) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .statusBarsPadding()
+        ) {
+            // top = 0: the bar has to start at the same y as the home bar, or entering search
+            // shifts the title and back button downward and the transition reads as a jump.
+            Box(modifier = Modifier.padding(horizontal = 16.dp)) {
+                TopBar(title = "Поиск", onBack = onBack)
+            }
+            HorizontalPager(
+                state = sourcePager,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(1f)
+                    // Above the keyboard: without it the last result sits under it with no way
+                    // to scroll to it.
+                    .imePadding()
+                    // The results, recorded for the tabs floating over their end.
+                    .frostSource(results),
+                key = { sources[it] },
+                beyondViewportPageCount = 1,
+                flingBehavior = androidx.compose.foundation.pager.PagerDefaults.flingBehavior(
+                    state = sourcePager,
+                    snapPositionalThreshold = 0.3f,
+                    snapAnimationSpec = ServicePageSpring
+                )
+            ) { page ->
+                val pageSource = sources[page]
+                SearchResultsList(
+                    source = pageSource,
+                    results = resultsOf(pageSource),
+                    listState = listStates.getValue(pageSource),
+                    favoritesMap = favoritesMap,
+                    currentTrackId = currentTrackId,
+                    downloadProgress = downloadProgress,
+                    isPlaying = isPlaying,
+                    hasMore = hasMore && pageSource == activeSource,
+                    isLoadingMore = isLoadingMore && pageSource == activeSource,
+                    bottomRoom = bottomRoom,
+                    onPlayTrack = onPlayTrack,
+                    onFavoriteClick = onFavoriteClick,
+                    onOpenArtist = onOpenArtist,
+                    onOpenPlaylist = onOpenPlaylist,
+                    onLoadMore = onLoadMore,
+                    modifier = Modifier.graphicsLayer {
+                        // The page going sinks back a little, the one coming rises from it.
+                        val away = ((sourcePager.currentPage - page) + sourcePager.currentPageOffsetFraction)
+                            .absoluteValue.coerceIn(0f, 1f)
+                        val scale = 1f - 0.05f * away
+                        scaleX = scale
+                        scaleY = scale
+                        alpha = 1f - 0.4f * away
                     }
-                },
-                focusRequester = focusRequester,
-                modifier = Modifier.padding(top = 8.dp)
-            )
+                )
+            }
         }
 
-        // Only when there is a choice: services not connected in settings aren't offered.
-        if (sources.size > 1) {
-            item(key = "search-source") {
-                SegmentedControl(
-                    items = sources.map { option ->
+        // The field and, when there is a choice, the services, down where the thumb is: on the
+        // keyboard's top edge while it is up, at the bottom of the screen when it isn't.
+        androidx.compose.runtime.CompositionLocalProvider(LocalFrostSources provides backdrop + results) {
+            Column(
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .windowInsetsPadding(WindowInsets.ime.union(WindowInsets.navigationBars))
+                    .padding(horizontal = 16.dp, vertical = 12.dp),
+                verticalArrangement = Arrangement.spacedBy(SearchDockGap)
+            ) {
+                SearchField(
+                    query = activeQuery,
+                    onQueryChange = { newQuery -> search(activeSource, newQuery) },
+                    focusRequester = focusRequester
+                )
+                if (tabsShown) SearchSourceTabs(
+                    labels = sources.map { option ->
                         when (option) {
                             SearchSource.SOUNDCLOUD -> "SoundCloud"
                             SearchSource.YANDEX -> if (sources.size > 2) "Яндекс" else "Яндекс Музыка"
                             SearchSource.YOUTUBE -> if (sources.size > 2) "YouTube" else "YouTube Music"
                         }
                     },
-                    selectedIndex = sources.indexOf(activeSource),
-                    onSelectedIndexChanged = { index ->
+                    pager = sourcePager,
+                    onSelect = { index ->
                         haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                        onSearchSourceChanged(sources[index])
-                    },
-                    modifier = Modifier.padding(top = 12.dp)
+                        scope.launch { sourcePager.animateScrollToPage(index, animationSpec = ServicePageSpring) }
+                    }
                 )
             }
         }
+    }
+    }
+}
 
-        if (activeLoading) {
+/** One service's results, as a search page shows them. */
+private class SearchResults(
+    val query: String,
+    val tracks: List<SoundCloudTrack>,
+    val loading: Boolean,
+    val error: String?,
+    val albums: List<SoundCloudPlaylist>,
+    val playlists: List<SoundCloudPlaylist>,
+    val artists: List<SoundCloudUser>
+)
+
+/** A page of search: one service's best result, artists, albums, playlists and tracks. */
+@Composable
+private fun SearchResultsList(
+    source: SearchSource,
+    results: SearchResults,
+    listState: androidx.compose.foundation.lazy.LazyListState,
+    favoritesMap: Map<Long, FavoriteTrack>,
+    currentTrackId: Long?,
+    downloadProgress: Map<Long, Float>,
+    isPlaying: Boolean,
+    hasMore: Boolean,
+    isLoadingMore: Boolean,
+    bottomRoom: Dp,
+    onPlayTrack: (SoundCloudTrack) -> Unit,
+    onFavoriteClick: (SoundCloudTrack) -> Unit,
+    onOpenArtist: (SoundCloudUser) -> Unit,
+    onOpenPlaylist: (SoundCloudPlaylist) -> Unit,
+    onLoadMore: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val topResult = remember(results.query, results.albums, results.playlists) {
+        pickTopResult(results.query, results.albums, results.playlists)
+    }
+    LazyColumn(
+        state = listState,
+        modifier = modifier.fillMaxSize(),
+        // Rows of a group sit flush, so spacing between blocks is set per item instead.
+        contentPadding = PaddingValues(start = 16.dp, top = 0.dp, end = 16.dp, bottom = bottomRoom)
+    ) {
+        if (results.loading) {
             item(key = "search-loading") {
                 LoadingBlock(modifier = Modifier.padding(top = 16.dp), height = 120.dp)
             }
         }
 
-        if (activeError != null) {
+        if (results.error != null) {
             item(key = "search-error") {
-                Box(modifier = Modifier.padding(top = 16.dp)) { MessageCard(activeError) }
+                Box(modifier = Modifier.padding(top = 16.dp)) { MessageCard(results.error) }
             }
         }
 
@@ -3733,22 +4037,22 @@ private fun SearchScreen(
             }
         }
 
-        if (activeArtists.isNotEmpty()) {
+        if (results.artists.isNotEmpty()) {
             item(key = "search-artists-header") {
                 SectionTitle("Исполнители", modifier = Modifier.padding(top = 24.dp, bottom = 8.dp))
             }
             item(key = "search-artists") {
-                ArtistRow(artists = activeArtists, onOpen = onOpenArtist)
+                ArtistRow(artists = results.artists, onOpen = onOpenArtist)
             }
         }
 
-        if (activeAlbums.isNotEmpty()) {
+        if (results.albums.isNotEmpty()) {
             item(key = "search-albums-header") {
                 SectionTitle("Альбомы", modifier = Modifier.padding(top = 24.dp, bottom = 8.dp))
             }
             item(key = "search-albums") {
                 AlbumCarousel(
-                    albums = activeAlbums.map { album ->
+                    albums = results.albums.map { album ->
                         CarouselAlbum(
                             key = album.id,
                             title = album.title ?: "Без названия",
@@ -3762,7 +4066,7 @@ private fun SearchScreen(
             }
         }
 
-        if (activePlaylists.isNotEmpty()) {
+        if (results.playlists.isNotEmpty()) {
             item(key = "search-playlists-header") {
                 SectionTitle(
                     "Плейлисты и сборники",
@@ -3770,7 +4074,7 @@ private fun SearchScreen(
                 )
             }
             // Two to a row, up to three rows; the rest are a scroll of the search further on.
-            activePlaylists.take(6).chunked(2).forEachIndexed { rowIndex, pair ->
+            results.playlists.take(6).chunked(2).forEachIndexed { rowIndex, pair ->
                 item(key = "search-playlists-row-$rowIndex") {
                     Row(
                         modifier = Modifier
@@ -3781,7 +4085,11 @@ private fun SearchScreen(
                         pair.forEach { playlist ->
                             CompactCollectionCard(
                                 title = playlist.title ?: "Без названия",
-                                caption = plural(playlist.trackCount, "трек", "трека", "треков"),
+                                caption = if (playlist.trackCount > 0) {
+                                    plural(playlist.trackCount, "трек", "трека", "треков")
+                                } else {
+                                    setCaption(playlist)
+                                },
                                 artworkUrl = playlist.displayArtworkUrl,
                                 onClick = { onOpenPlaylist(playlist) },
                                 modifier = Modifier.weight(1f)
@@ -3793,19 +4101,19 @@ private fun SearchScreen(
             }
         }
 
-        if (activeTracks.isNotEmpty()) {
-            if (activeAlbums.isNotEmpty() || activePlaylists.isNotEmpty() || activeArtists.isNotEmpty() || topResult != null) {
+        if (results.tracks.isNotEmpty()) {
+            if (results.albums.isNotEmpty() || results.playlists.isNotEmpty() || results.artists.isNotEmpty() || topResult != null) {
                 item(key = "search-tracks-header") {
                     SectionTitle("Треки", modifier = Modifier.padding(top = 18.dp, bottom = 8.dp))
                 }
             } else {
                 item(key = "search-tracks-gap") { Spacer(modifier = Modifier.height(20.dp)) }
             }
-            val showLoadMore = hasMore && !activeLoading
-            val rowCount = activeTracks.size + if (showLoadMore) 1 else 0
+            val showLoadMore = hasMore && !results.loading
+            val rowCount = results.tracks.size + if (showLoadMore) 1 else 0
             itemsIndexed(
-                activeTracks,
-                key = { _, track -> "${activeSource.name}-search-${track.id}" }
+                results.tracks,
+                key = { _, track -> "${source.name}-search-${track.id}" }
             ) { index, track ->
                 val favorite = favoritesMap[track.id]
                 TrackCard(
@@ -3829,18 +4137,93 @@ private fun SearchScreen(
                     )
                 }
             }
-        } else if (!activeLoading && activeAlbums.isEmpty() && activePlaylists.isEmpty() && activeArtists.isEmpty()) {
+        } else if (!results.loading && results.query.isNotBlank() && results.error == null &&
+            results.albums.isEmpty() && results.playlists.isEmpty() && results.artists.isEmpty()
+        ) {
             item(key = "search-empty") {
-                Box(modifier = Modifier.padding(top = 20.dp)) {
-                    EmptyState(
-                        if (activeQuery.isBlank()) "Напиши, что хочешь услышать."
-                        else "Ничего не нашлось."
+                Box(modifier = Modifier.padding(top = 20.dp)) { EmptyState("Ничего не нашлось.") }
+            }
+        }
+    }
+}
+
+/**
+ * The services a search can ask, on a strip of glass at the bottom — over the keyboard while
+ * typing. The lit pill rides along with the pages as they are swiped.
+ */
+@Composable
+private fun SearchSourceTabs(
+    labels: List<String>,
+    pager: androidx.compose.foundation.pager.PagerState,
+    onSelect: (Int) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val spans = remember { mutableStateMapOf<Int, Pair<Float, Float>>() }
+    val density = LocalDensity.current
+    val accent = PanelColors.accent
+    Box(
+        modifier = modifier
+            .fillMaxWidth()
+            .height(SearchTabsHeight)
+            .frosted(CircleShape, PanelColors.container.copy(alpha = GlassAlpha))
+            .padding(6.dp)
+    ) {
+        // The pill, between the tabs the pages are between.
+        Box(
+            modifier = Modifier
+                .fillMaxHeight()
+                .drawBehind {
+                    val position = (pager.currentPage + pager.currentPageOffsetFraction)
+                        .coerceIn(0f, (labels.size - 1).toFloat())
+                    val from = spans[kotlin.math.floor(position).toInt()] ?: return@drawBehind
+                    val to = spans[kotlin.math.ceil(position).toInt()] ?: from
+                    val t = position - kotlin.math.floor(position)
+                    val left = from.first + (to.first - from.first) * t
+                    val width = from.second + (to.second - from.second) * t
+                    drawRoundRect(
+                        color = accent,
+                        topLeft = Offset(left, 0f),
+                        size = androidx.compose.ui.geometry.Size(width, size.height),
+                        cornerRadius = androidx.compose.ui.geometry.CornerRadius(size.height / 2f)
+                    )
+                }
+                .fillMaxWidth()
+        )
+        Row(modifier = Modifier.fillMaxSize()) {
+            labels.forEachIndexed { index, label ->
+                val lit = kotlin.math.abs(pager.currentPage + pager.currentPageOffsetFraction - index) < 0.5f
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxHeight()
+                        .onGloballyPositioned { spans[index] = it.positionInParent().x to it.size.width.toFloat() }
+                        .clip(CircleShape)
+                        .clickable { onSelect(index) },
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = label,
+                        style = MaterialTheme.typography.titleSmall,
+                        color = if (lit) PanelColors.onAccent else PanelColors.content,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                     )
                 }
             }
         }
     }
 }
+
+private val SearchTabsHeight = 56.dp
+private val SearchFieldHeight = 60.dp
+private val SearchDockGap = 8.dp
+
+// The field and the tabs under it, with the gap above the keyboard.
+private fun searchDockHeight(tabs: Boolean): Dp =
+    12.dp + SearchFieldHeight + (if (tabs) SearchDockGap + SearchTabsHeight else 0.dp)
+
+// The mini player's height, with its padding, for what must leave room for it.
+internal val MiniPlayerHeight = 72.dp
 
 /** Artists a search found: round portraits with a name, the way people show everywhere else. */
 @Composable
@@ -3941,6 +4324,7 @@ private fun DownloadsScreen(
     onPlayTrack: (FavoriteTrack) -> Unit,
     onDeleteDownload: (FavoriteTrack) -> Unit,
     onImportTracks: (List<android.net.Uri>) -> Unit,
+    onShuffle: () -> Unit = {},
     showDebugPercentage: Boolean = false,
     downloadedPercentages: Map<Long, Int> = emptyMap()
 ) {
@@ -3967,30 +4351,24 @@ private fun DownloadsScreen(
         }
     }
 
-    Column(
+    val albumLibrary = LocalAlbumLibrary.current
+    val isActive = currentTrackId != null && tracks.any { it.id == currentTrackId }
+    val listState = rememberLazyListState()
+    val collapsed = rememberCollapsed(listState, MixCoverHeight - 140.dp)
+
+    // A folder, opened as a mix is: its cover across the top, the big play button, the tracks.
+    Box(
         modifier = Modifier
             .fillMaxSize()
-            .statusBarsPadding()
+            .pageGlass(MaterialTheme.colorScheme.background)
     ) {
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 8.dp)
-        ) {
-            // No title here: the hero right below already carries it.
-            TopBar(title = "", onBack = onBack)
-        }
-
         LazyColumn(
+            state = listState,
             modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(start = 16.dp, top = 4.dp, end = 16.dp, bottom = 120.dp)
+            contentPadding = PaddingValues(bottom = 120.dp)
         ) {
             item(key = "downloads-hero") {
-                CollectionHero(
-                    title = "Скачанное",
-                    kicker = "На устройстве",
-                    subtitle = plural(tracks.size, "трек", "трека", "треков") + " доступны офлайн",
-                    onArtworkClick = { imagePicker.launch(arrayOf("image/*")) },
+                CoverHeader(
                     artwork = {
                         if (!folderArtworkUri.isNullOrBlank()) {
                             AsyncImage(
@@ -4003,50 +4381,66 @@ private fun DownloadsScreen(
                             IconCover(icon = Icons.Default.Download)
                         }
                     },
-                    actions = {
-                        if (tracks.isNotEmpty()) {
-                            PanelPrimaryButton(
-                                text = "Слушать",
-                                icon = Icons.Default.PlayArrow,
-                                onClick = { onPlayTrack(tracks.first()) }
-                            )
+                    kicker = "Папка · на устройстве",
+                    title = "Скачанное",
+                    subtitle = "Играет без сети",
+                    isActive = isActive,
+                    isPlaying = isPlaying,
+                    onPlay = if (tracks.isEmpty()) null else {
+                        {
+                            if (isActive && albumLibrary != null) albumLibrary.onTogglePlay() else onPlayTrack(tracks.first())
                         }
-                        PanelIconButton(
-                            icon = Icons.Default.Image,
-                            contentDescription = "Сменить обложку",
-                            onClick = { imagePicker.launch(arrayOf("image/*")) }
-                        )
-                        PanelIconButton(
-                            icon = Icons.Default.Add,
-                            contentDescription = "Импортировать треки с устройства",
-                            onClick = { audioPicker.launch(arrayOf("audio/*")) }
-                        )
-                    }
+                    },
+                    onShuffle = if (tracks.size < 2) null else onShuffle,
+                    onArtworkClick = { imagePicker.launch(arrayOf("image/*")) }
                 )
             }
 
-            item(key = "downloads-gap") { Spacer(modifier = Modifier.height(20.dp)) }
-
-            if (tracks.isEmpty()) {
-                item(key = "downloads-empty") {
-                    EmptyState("Здесь появятся треки, которые ты сохранишь на устройство.")
-                }
-            } else {
-                itemsIndexed(tracks, key = { _, track -> "downloaded-${track.id}" }) { index, track ->
-                    DownloadedTrackCard(
-                        track = track,
-                        isSelected = track.id == currentTrackId,
-                        progress = downloadProgress[track.id],
-                        isPlaying = isPlaying,
-                        onClick = { onPlayTrack(track) },
-                        onDeleteDownload = { onDeleteDownload(track) },
-                        showDebugPercentage = showDebugPercentage,
-                        debugPercentage = downloadedPercentages[track.id],
-                        position = groupPosition(index, tracks.size)
+            item(key = "downloads-count") {
+                CountRule(if (tracks.isEmpty()) "Нет треков" else plural(tracks.size, "трек", "трека", "треков")) {
+                    PanelIconButton(
+                        icon = Icons.Default.Image,
+                        contentDescription = "Сменить обложку",
+                        onClick = { imagePicker.launch(arrayOf("image/*")) },
+                        size = RuleButtonSize,
+                        iconSize = RuleIconSize
+                    )
+                    PanelIconButton(
+                        icon = Icons.Default.Add,
+                        contentDescription = "Импортировать треки с устройства",
+                        onClick = { audioPicker.launch(arrayOf("audio/*")) },
+                        size = RuleButtonSize,
+                        iconSize = RuleIconSize
                     )
                 }
             }
+
+            if (tracks.isEmpty()) {
+                item(key = "downloads-empty") {
+                    Box(modifier = Modifier.padding(horizontal = 16.dp)) {
+                        EmptyState("Здесь появятся треки, которые ты сохранишь на устройство.")
+                    }
+                }
+            } else {
+                itemsIndexed(tracks, key = { _, track -> "downloaded-${track.id}" }) { _, track ->
+                    Box(modifier = Modifier.padding(horizontal = 8.dp)) {
+                        DownloadedTrackCard(
+                            track = track,
+                            isSelected = track.id == currentTrackId,
+                            progress = downloadProgress[track.id],
+                            isPlaying = isPlaying,
+                            onClick = { onPlayTrack(track) },
+                            onDeleteDownload = { onDeleteDownload(track) },
+                            showDebugPercentage = showDebugPercentage,
+                            debugPercentage = downloadedPercentages[track.id],
+                            flat = true
+                        )
+                    }
+                }
+            }
         }
+
+        CollapsingTopBar(title = "Скачанное", collapsed = collapsed, onBack = onBack)
     }
 }
 
@@ -4095,12 +4489,15 @@ private fun SearchField(
     focusRequester: FocusRequester,
     modifier: Modifier = Modifier
 ) {
+    val glass = LocalGlass.current
+    val fill = MaterialTheme.colorScheme.surfaceContainerHigh
     OutlinedTextField(
         value = query,
         onValueChange = onQueryChange,
         modifier = modifier
             .fillMaxWidth()
-            .heightIn(min = 60.dp)
+            .height(SearchFieldHeight)
+            .glassOr(RoundedCornerShape(30.dp), fill)
             .focusRequester(focusRequester),
         singleLine = true,
         shape = RoundedCornerShape(30.dp),
@@ -4121,8 +4518,8 @@ private fun SearchField(
             }
         },
         colors = OutlinedTextFieldDefaults.colors(
-            focusedContainerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
-            unfocusedContainerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+            focusedContainerColor = if (glass) Color.Transparent else fill,
+            unfocusedContainerColor = if (glass) Color.Transparent else fill,
             focusedBorderColor = MaterialTheme.colorScheme.primary,
             unfocusedBorderColor = Color.Transparent
         )
@@ -4458,21 +4855,48 @@ private fun CollapsingTopBar(
         animationSpec = tween(220),
         label = "collapsingBar"
     )
+    val glass = LocalGlass.current
+    val barShown by animateFloatAsState(if (collapsed) 1f else 0f, tween(220), label = "collapsingBarGlass")
     Box(
         modifier = Modifier
             .fillMaxWidth()
-            .background(barColor)
+            .then(if (glass) Modifier else Modifier.background(barColor))
+    ) {
+        if (glass) {
+            // Only drawn once there is a bar to show: glass under a see-through bar would blur
+            // the picture it lies over.
+            Box(
+                modifier = Modifier
+                    .matchParentSize()
+                    .graphicsLayer { alpha = barShown }
+                    .then(
+                        if (barShown > 0f) {
+                            Modifier.frosted(tint = MaterialTheme.colorScheme.background.copy(alpha = PageGlassAlpha), rim = false)
+                        } else {
+                            Modifier
+                        }
+                    )
+            )
+        }
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
             .statusBarsPadding()
             .height(72.dp)
             .padding(horizontal = 16.dp),
         contentAlignment = Alignment.CenterStart
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
+            val backFill = if (collapsed) PanelColors.container else MaterialTheme.colorScheme.background.copy(alpha = 0.55f)
             Surface(
                 onClick = onBack,
-                modifier = Modifier.size(48.dp),
+                modifier = Modifier
+                    .size(48.dp)
+                    // Over the picture it stays see-through: glass there would blur the backdrop
+                    // behind the page, not the picture under the button.
+                    .then(if (collapsed) Modifier.glassOr(RoundedCornerShape(16.dp), backFill) else Modifier),
                 shape = RoundedCornerShape(16.dp),
-                color = if (collapsed) PanelColors.container else MaterialTheme.colorScheme.background.copy(alpha = 0.55f),
+                color = if (collapsed) glassFill(backFill) else backFill,
                 contentColor = if (collapsed) PanelColors.accent else MaterialTheme.colorScheme.onSurface
             ) {
                 Box(contentAlignment = Alignment.Center) {
@@ -4496,6 +4920,7 @@ private fun CollapsingTopBar(
             }
             trailing?.invoke()
         }
+    }
     }
 }
 
@@ -4534,11 +4959,14 @@ private fun PlayShuffleGroup(onPlay: () -> Unit, onShuffle: () -> Unit) {
                 Text("Слушать", style = MaterialTheme.typography.titleMedium)
             }
         }
+        val shuffleShape = RoundedCornerShape(topStart = 8.dp, bottomStart = 8.dp, topEnd = 28.dp, bottomEnd = 28.dp)
         Surface(
             onClick = onShuffle,
-            modifier = Modifier.size(width = 64.dp, height = 56.dp),
-            shape = RoundedCornerShape(topStart = 8.dp, bottomStart = 8.dp, topEnd = 28.dp, bottomEnd = 28.dp),
-            color = PanelColors.container,
+            modifier = Modifier
+                .size(width = 64.dp, height = 56.dp)
+                .glassOr(shuffleShape, PanelColors.container),
+            shape = shuffleShape,
+            color = glassFill(PanelColors.container),
             contentColor = PanelColors.accent
         ) {
             Box(contentAlignment = Alignment.Center) {
@@ -4573,6 +5001,7 @@ private fun ArtistPortraitHeader(
             modifier = Modifier
                 .fillMaxWidth()
                 .height(ArtistPortraitHeight)
+                .fadedDownward(PortraitFade)
                 .background(MaterialTheme.colorScheme.surfaceContainerHigh)
         ) {
             if (!artist.avatarUrl.isNullOrBlank()) {
@@ -4585,18 +5014,15 @@ private fun ArtistPortraitHeader(
             } else {
                 IconCover(icon = Icons.Default.Person, iconSize = 120.dp)
             }
-            // Dark at the top for the status bar and the back button, then the portrait sinks into
-            // the backdrop so the name below it sits on something calm.
+            // Dark at the top for the status bar and the back button; the portrait fades into the
+            // page below, so the name sits on something calm.
             Box(
                 modifier = Modifier
                     .fillMaxSize()
                     .background(
                         Brush.verticalGradient(
                             0f to Color.Black.copy(alpha = 0.35f),
-                            0.18f to Color.Transparent,
-                            0.45f to Color.Transparent,
-                            0.78f to backdrop.copy(alpha = 0.82f),
-                            1f to backdrop
+                            0.18f to Color.Transparent
                         )
                     )
             )
@@ -4693,22 +5119,21 @@ private fun CoverHeader(
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .background(MaterialTheme.colorScheme.surfaceContainerHigh)
-                .then(if (onArtworkClick != null) Modifier.clickable(onClick = onArtworkClick) else Modifier),
+                .then(if (onArtworkClick != null) Modifier.clickable(onClick = onArtworkClick) else Modifier)
+                // Covers often carry lettering low down (a station's name, "STATION") right where
+                // the title goes, so the cover is all but gone by then or the two overprint.
+                .fadedDownward(CoverFade)
+                .background(MaterialTheme.colorScheme.surfaceContainerHigh),
             content = artwork
         )
+        // The status bar and the back button stay legible on a bright cover.
         Box(
             modifier = Modifier
                 .fillMaxSize()
                 .background(
-                    // Covers often carry lettering low down (a station's name, "STATION") right where
-                    // the title goes, so the fade is nearly opaque by then or the two overprint.
                     Brush.verticalGradient(
                         0f to Color.Black.copy(alpha = 0.35f),
-                        0.2f to Color.Transparent,
-                        0.36f to backdrop.copy(alpha = 0.3f),
-                        0.6f to backdrop.copy(alpha = 0.9f),
-                        0.72f to backdrop
+                        0.2f to Color.Transparent
                     )
                 )
         )
@@ -4747,9 +5172,11 @@ private fun CoverHeader(
                     if (onShuffle != null) {
                         Surface(
                             onClick = onShuffle,
-                            modifier = Modifier.size(48.dp),
+                            modifier = Modifier
+                                .size(48.dp)
+                                .glassOr(CircleShape, PanelColors.container),
                             shape = CircleShape,
-                            color = PanelColors.container,
+                            color = glassFill(PanelColors.container),
                             contentColor = PanelColors.accent
                         ) {
                             Box(contentAlignment = Alignment.Center) {
@@ -4765,6 +5192,25 @@ private fun CoverHeader(
 }
 
 private val MixCoverHeight = 420.dp
+
+// Where a picture at the top of a page is whole, and where it has faded out into the page.
+private val CoverFade = 0.34f to 0.74f
+private val PortraitFade = 0.45f to 1f
+
+/** Fades what this box draws out downward, between [fade]'s two fractions of its height. */
+private fun Modifier.fadedDownward(fade: Pair<Float, Float>): Modifier = this
+    .graphicsLayer { compositingStrategy = CompositingStrategy.Offscreen }
+    .drawWithContent {
+        drawContent()
+        drawRect(
+            brush = Brush.verticalGradient(
+                0f to Color.Black,
+                fade.first to Color.Black,
+                fade.second to Color.Transparent
+            ),
+            blendMode = BlendMode.DstIn
+        )
+    }
 
 /**
  * The line between a collection's cover and its list: how many tracks, a rule, and what else can
@@ -4867,7 +5313,7 @@ private fun MixDetailScreen(
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(MaterialTheme.colorScheme.background)
+            .pageGlass(MaterialTheme.colorScheme.background)
     ) {
         LazyColumn(
             state = listState,
@@ -4935,18 +5381,23 @@ private fun TrackRowFrame(
     content: @Composable RowScope.() -> Unit
 ) {
     val haptic = LocalHapticFeedback.current
+    val shape = if (flat) RoundedCornerShape(20.dp) else position.shape()
+    val fill = when {
+        isSelected -> MaterialTheme.colorScheme.secondaryContainer
+        flat -> Color.Transparent
+        else -> MaterialTheme.colorScheme.surfaceContainerHigh
+    }
+    val glass = LocalGlass.current && fill != Color.Transparent
     Surface(
         onClick = {
             haptic.performHapticFeedback(HapticFeedbackType.LongPress)
             onClick()
         },
-        modifier = Modifier.fillMaxWidth(),
-        shape = if (flat) RoundedCornerShape(20.dp) else position.shape(),
-        color = when {
-            isSelected -> MaterialTheme.colorScheme.secondaryContainer
-            flat -> Color.Transparent
-            else -> MaterialTheme.colorScheme.surfaceContainerHigh
-        },
+        modifier = Modifier
+            .fillMaxWidth()
+            .then(if (glass) Modifier.glassOr(shape, fill, if (isSelected) 0.8f else GlassAlpha) else Modifier),
+        shape = shape,
+        color = if (glass) Color.Transparent else fill,
         contentColor = if (isSelected) {
             MaterialTheme.colorScheme.onSecondaryContainer
         } else {
@@ -5188,6 +5639,9 @@ private fun TrackDetailScreen(
     livePosition: () -> Long,
     // The glow of blurred copies around a video; see [VideoBackdrop].
     videoGlow: Boolean = true,
+    // Swiping the cover sideways: whether there is a track that way, and moving to it.
+    hasNeighbourTrack: (next: Boolean) -> Boolean = { false },
+    onSwipeTrack: (next: Boolean) -> Unit = {},
     onBack: () -> Unit,
     onTogglePlay: () -> Unit,
     onSeek: (Long) -> Unit,
@@ -5211,16 +5665,43 @@ private fun TrackDetailScreen(
         }
     }
     val haptic = LocalHapticFeedback.current
-    var showQueue by remember { mutableStateOf(false) }
+    // The queue: a sheet from below that follows the finger both ways and settles on a spring.
+    // 1: out of sight, 0: all the way up.
+    val queueHidden = remember { Animatable(1f) }
+    val queueScope = rememberCoroutineScope()
+    var queueHeightPx by remember { mutableFloatStateOf(1f) }
+    val showQueue by remember { androidx.compose.runtime.derivedStateOf { queueHidden.value < 1f } }
+    val flingPx = with(LocalDensity.current) { QueueFlingVelocity.toPx() }
+    // Moves the sheet by [dy] pixels (down is positive); what it could take of them.
+    val dragQueue: (Float) -> Float = { dy ->
+        val before = queueHidden.value
+        val after = (before + dy / queueHeightPx).coerceIn(0f, 1f)
+        queueScope.launch { queueHidden.snapTo(after) }
+        (after - before) * queueHeightPx
+    }
+    // Where the sheet was when the finger took it: a fifth of the way from there is enough.
+    var queueDragFrom by remember { mutableFloatStateOf(1f) }
+    // Let go: a fling decides, else how far it came; the fling's speed carries into the spring.
+    val releaseQueue: (Float) -> Unit = { velocity ->
+        val open = when {
+            kotlin.math.abs(velocity) > flingPx -> velocity < 0f
+            queueDragFrom > 0.5f -> queueHidden.value < 1f - QueueMeantFraction
+            else -> queueHidden.value < QueueMeantFraction
+        }
+        queueScope.launch {
+            queueHidden.animateTo(if (open) 0f else 1f, QueueSpring, initialVelocity = velocity / queueHeightPx)
+        }
+    }
+    val setQueueOpen: (Boolean) -> Unit = { open ->
+        queueScope.launch { queueHidden.animateTo(if (open) 0f else 1f, QueueSpring) }
+    }
     var showLyrics by remember(track.id) { mutableStateOf(false) }
     val lyricsShown = showLyrics && !lyrics.isNullOrEmpty()
     val showLoading = (downloadState != DownloadState.DOWNLOADED) &&
         (isBuffering || isLoading || (positionMs == 0L && !isPlaying))
-    val blurRadius by animateDpAsState(
-        targetValue = if (showQueue) 10.dp else 0.dp,
-        animationSpec = tween(durationMillis = 300),
-        label = "blurRadius"
-    )
+    // Nothing is blurred under the queue any more: a scrim that follows the sheet dims the player,
+    // and a full-screen blur changing on every frame of a drag cost more than it gave.
+    val blurRadius = 0.dp
     // Lyrics take the cover's place: it blurs into a backdrop behind them.
     val coverBlur by animateDpAsState(
         targetValue = if (lyricsShown) 28.dp else 0.dp,
@@ -5254,13 +5735,44 @@ private fun TrackDetailScreen(
         animationSpec = tween(durationMillis = 400),
         label = "videoPauseBlur"
     )
+    // Turned sideways with a video playing: the video alone, on the whole screen.
+    val landscape = LocalConfiguration.current.orientation == android.content.res.Configuration.ORIENTATION_LANDSCAPE
+
+    // Without a video the cover gets the same treatment: whole, between the buttons and the
+    // panel, its glow filling the screen around it and the panel frosted over it.
+    val coverGlowMode = videoGlow && !landscape
+    val coverGlow = rememberCoverGlow()
+
+    // Swiping the cover (or the video) sideways moves to the track next to this one. While it is
+    // dragged it shrinks back from the edges, its glow goes out and the panel turns solid; it
+    // follows the finger and, let go far or fast enough, goes, and the next one comes in.
+    val swipe = remember { Animatable(0f) }
+    val swipeScope = rememberCoroutineScope()
+    val currentTrackId by rememberUpdatedState(track.id)
+    val currentHasNeighbour by rememberUpdatedState(hasNeighbourTrack)
+    val currentOnSwipeTrack by rememberUpdatedState(onSwipeTrack)
+    // The moment a drag starts the glow goes out, the panel turns solid and the picture shrinks
+    // back — not by how far it has been dragged; they return once it has settled.
+    val swipeActive = remember { Animatable(0f) }
+    val swipeProgress: () -> Float = { swipeActive.value }
+
     // Over a video the buttons at the top turn to frosted glass as well, like the panel.
     val buttonGlass: (@Composable BoxScope.() -> Unit)? = videoState?.takeIf { it.showing }?.let { shown ->
         { FrostedVideoGlass(state = shown, tint = PanelColors.container.copy(alpha = 0.42f)) }
+    } ?: if (coverGlowMode) {
+        {
+            // The cover reaches up under them: glass over it, solid while it is swiped away.
+            FrostedVideoGlass(state = coverGlow, tint = PanelColors.container.copy(alpha = 0.42f))
+            val panel = PanelColors.container
+            Box(
+                modifier = Modifier
+                    .matchParentSize()
+                    .drawBehind { drawRect(panel.copy(alpha = 0.6f * swipeProgress())) }
+            )
+        }
+    } else {
+        null
     }
-
-    // Turned sideways with a video playing: the video alone, on the whole screen.
-    val landscape = LocalConfiguration.current.orientation == android.content.res.Configuration.ORIENTATION_LANDSCAPE
     if (landscape && videoState != null && videoState.showing) {
         FullScreenVideo(state = videoState, blur = pauseBlur, glow = videoGlow)
         return
@@ -5271,32 +5783,60 @@ private fun TrackDetailScreen(
             .fillMaxSize()
             // Drawn over the app's own screens, so the player owns its whole backdrop.
             .background(MaterialTheme.colorScheme.background)
-            .pointerInput(showQueue) {
-                detectDragGestures(
-                    onDrag = { _, dragAmount ->
-                        if (dragAmount.y < -40f && !showQueue) {
-                            showQueue = true
-                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+            .onSizeChanged { queueHeightPx = it.height * QueueHeightFraction }
+            // A swipe up anywhere nothing else takes it pulls the queue up after the finger.
+            .pointerInput(Unit) {
+                val velocity = VelocityTracker()
+                detectVerticalDragGestures(
+                    onDragStart = {
+                        velocity.resetTracking()
+                        queueDragFrom = queueHidden.value
+                        queueScope.launch { queueHidden.stop() }
+                    },
+                    onVerticalDrag = { change, dy ->
+                        velocity.addPosition(change.uptimeMillis, change.position)
+                        if (dy < 0f || queueHidden.value < 1f) {
+                            change.consume()
+                            dragQueue(dy)
                         }
-                    }
+                    },
+                    onDragEnd = { releaseQueue(velocity.calculateVelocity().y) },
+                    onDragCancel = { releaseQueue(0f) }
                 )
             }
     ) {
+        if (coverGlowMode) {
+            VideoBackdrop(
+                state = coverGlow,
+                alpha = 1f,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .graphicsLayer { alpha = 1f - swipeProgress() }
+                    // Under the lyrics the glow blurs with the cover, or its near steps would
+                    // stay sharper than the cover they come from.
+                    .blur(blurRadius + coverBlur)
+            )
+        }
         if (backdropVideo != null) {
             VideoBackdrop(
                 state = backdropVideo,
                 alpha = videoShown,
                 modifier = Modifier
                     .fillMaxSize()
-                    // Paused, the glow blurs with the video, or its near steps would stay sharper.
-                    .blur(blurRadius + pauseBlur)
+                    .graphicsLayer { alpha = 1f - swipeProgress() }
+                    // Paused, or under the lyrics, the glow blurs with the video, or its near steps
+                    // would stay sharper than the video they come from.
+                    .blur(blurRadius + pauseBlur + coverBlur)
             )
         }
         if (immersiveVideo != null) {
             Box(
                 modifier = Modifier
                     .fillMaxSize()
-                    .graphicsLayer { alpha = videoShown }
+                    .graphicsLayer {
+                        alpha = videoShown
+                        swiped(swipe.value, swipeProgress(), rounded = false)
+                    }
                     .blur(coverBlur + blurRadius + pauseBlur)
             ) {
                 VideoSurface(state = immersiveVideo, modifier = Modifier.fillMaxSize())
@@ -5318,13 +5858,71 @@ private fun TrackDetailScreen(
             PlayerLayout(
                 landscape = landscape,
                 artwork = {
-                    Box(modifier = Modifier.fillMaxSize()) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .pointerInput(Unit) {
+                                val velocity = VelocityTracker()
+                                detectHorizontalDragGestures(
+                                    onDragStart = {
+                                        velocity.resetTracking()
+                                        swipeScope.launch { swipe.stop() }
+                                        swipeScope.launch { swipeActive.animateTo(1f, tween(160)) }
+                                    },
+                                    onHorizontalDrag = { change, amount ->
+                                        velocity.addPosition(change.uptimeMillis, change.position)
+                                        change.consume()
+                                        val towardNext = swipe.value + amount < 0
+                                        // No track that way: it gives, but grudgingly.
+                                        val give = if (currentHasNeighbour(towardNext)) 1f else 0.3f
+                                        swipeScope.launch { swipe.snapTo(swipe.value + amount * give) }
+                                    },
+                                    onDragCancel = {
+                                        swipeScope.launch {
+                                            swipe.animateTo(0f, SwipeSettle)
+                                            swipeActive.animateTo(0f, tween(260))
+                                        }
+                                    },
+                                    onDragEnd = {
+                                        val offset = swipe.value
+                                        val speed = velocity.calculateVelocity().x
+                                        val width = size.width.toFloat()
+                                        val next = offset < 0
+                                        val meant = kotlin.math.abs(offset) > width * 0.25f ||
+                                            (kotlin.math.abs(speed) > SwipeFlingVelocity.toPx() &&
+                                                kotlin.math.sign(speed) == kotlin.math.sign(offset) &&
+                                                kotlin.math.abs(offset) > SwipeMinFling.toPx())
+                                        swipeScope.launch {
+                                            if (!meant || !currentHasNeighbour(next)) {
+                                                swipe.animateTo(0f, SwipeSettle)
+                                                swipeActive.animateTo(0f, tween(260))
+                                                return@launch
+                                            }
+                                            val leaving = currentTrackId
+                                            val side = if (next) -1f else 1f
+                                            swipe.animateTo(side * width, tween(170, easing = FastOutLinearInEasing))
+                                            currentOnSwipeTrack(next)
+                                            // The next track's cover comes in from the other side
+                                            // once the player has moved to it.
+                                            kotlinx.coroutines.withTimeoutOrNull(900) {
+                                                androidx.compose.runtime.snapshotFlow { currentTrackId }.first { it != leaving }
+                                            }
+                                            swipe.snapTo(-side * width * 0.55f)
+                                            swipe.animateTo(0f, SwipeSettle)
+                                            swipeActive.animateTo(0f, tween(260))
+                                        }
+                                    }
+                                )
+                            }
+                    ) {
                         Box(
                             modifier = Modifier
                                 .fillMaxSize()
                                 // Over a vertical video the cover gives way to it once it plays.
                                 .graphicsLayer { alpha = if (immersiveVideo != null) 1f - videoShown else 1f }
-                                .blur(coverBlur + pauseBlur)
+                                // Unbounded: cut at the edge of its box, which reaches under the
+                                // panel, the blur left a hard line across the panel's top.
+                                .blur(coverBlur + pauseBlur, androidx.compose.ui.draw.BlurredEdgeTreatment.Unbounded)
                         ) {
                             PlayerArtwork(
                                 track = track,
@@ -5333,7 +5931,10 @@ private fun TrackDetailScreen(
                                 vibrator = vibrator,
                                 onLongPress = onLongPressCover,
                                 video = videoState?.takeIf { immersiveVideo == null },
-                                videoShown = videoShown
+                                videoShown = videoShown,
+                                coverGlow = coverGlow.takeIf { coverGlowMode },
+                                swipeOffset = { swipe.value },
+                                swipeProgress = swipeProgress
                             )
                         }
                         AnimatedVisibility(
@@ -5362,13 +5963,23 @@ private fun TrackDetailScreen(
                                     )
                                 }
                             }
-                            // Over the copies of the video, already blurred: a tint makes the frost.
-                            backdropVideo != null && videoShown > 0f -> {
+                            // Over the copies of the video or the cover, already blurred: a tint makes
+                            // the frost.
+                            coverGlowMode || (backdropVideo != null && videoShown > 0f) -> {
                                 {
+                                    val frost = when {
+                                        backdropVideo != null && videoShown > 0f -> 1f - 0.58f * videoShown
+                                        // A cover's glow is as bright as the cover, often brighter than
+                                        // a video's: a little more colour keeps the panel readable.
+                                        else -> CoverFrost
+                                    }
+                                    val panel = PanelColors.container
                                     Box(
                                         modifier = Modifier
                                             .matchParentSize()
-                                            .background(PanelColors.container.copy(alpha = 1f - 0.58f * videoShown))
+                                            .drawBehind {
+                                                drawRect(panel.copy(alpha = frost + (1f - frost) * swipeProgress()))
+                                            }
                                     )
                                 }
                             }
@@ -5400,7 +6011,7 @@ private fun TrackDetailScreen(
                         },
                         onOpenQueue = {
                             haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                            showQueue = true
+                            setQueueOpen(true)
                         }
                     )
                 }
@@ -5470,19 +6081,31 @@ private fun TrackDetailScreen(
             }
         }
 
-        AnimatedVisibility(
-            visible = showQueue,
-            enter = slideInVertically(initialOffsetY = { it }) + fadeIn(),
-            exit = slideOutVertically(targetOffsetY = { it }) + fadeOut(),
-            modifier = Modifier.fillMaxSize()
-        ) {
+        if (showQueue) {
+            // The player dims as the sheet comes up; a tap on it sends the sheet back down.
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .graphicsLayer { alpha = 1f - queueHidden.value }
+                    .background(Color.Black.copy(alpha = 0.5f))
+                    .pointerInput(Unit) { detectTapGestures { setQueueOpen(false) } }
+            )
             QueueManagerPanel(
                 activeQueue = activeQueue,
                 currentTrack = track,
                 isPlaying = isPlaying,
-                onDismiss = { showQueue = false },
+                onDismiss = { setQueueOpen(false) },
                 onReorder = onReorderQueue,
-                onPlayTrack = onPlayTrackFromQueue
+                onPlayTrack = onPlayTrackFromQueue,
+                sheetOffset = { queueHidden.value * queueHeightPx },
+                onSheetDragStart = { queueDragFrom = queueHidden.value },
+                onSheetDrag = dragQueue,
+                onSheetRelease = releaseQueue,
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .fillMaxWidth()
+                    .fillMaxHeight(QueueHeightFraction)
+                    .graphicsLayer { translationY = queueHidden.value * size.height }
             )
         }
     }
@@ -5540,7 +6163,12 @@ private fun PlayerArtwork(
     vibrator: android.os.Vibrator?,
     onLongPress: () -> Unit,
     video: PlayerVideoState? = null,
-    videoShown: Float = 0f
+    videoShown: Float = 0f,
+    // The cover whole, its glow drawn from it: see [GlowingCover].
+    coverGlow: CoverGlow? = null,
+    // Where a sideways swipe has the picture, and how far into it the screen is.
+    swipeOffset: () -> Float = { 0f },
+    swipeProgress: () -> Float = { 0f }
 ) {
     val haptic = LocalHapticFeedback.current
     val coroutineScope = rememberCoroutineScope()
@@ -5556,7 +6184,11 @@ private fun PlayerArtwork(
             .fillMaxSize()
             .clipToBounds()
             .background(
-                MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = if (video != null) 1f - videoShown else 1f)
+                if (coverGlow != null) {
+                    Color.Transparent
+                } else {
+                    MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = if (video != null) 1f - videoShown else 1f)
+                }
             )
             .pointerInput(track.permalinkUrl) {
                 detectTapGestures(
@@ -5585,12 +6217,40 @@ private fun PlayerArtwork(
             },
         contentAlignment = Alignment.Center
     ) {
-        Box(
+        if (coverGlow != null) {
+            // Paused, the cover settles back a little, as if set down.
+            val restScale by animateFloatAsState(
+                targetValue = if (isPlaying) 1f else 0.9f,
+                animationSpec = spring(dampingRatio = Spring.DampingRatioLowBouncy, stiffness = Spring.StiffnessLow),
+                label = "coverRestScale"
+            )
+            GlowingCover(
+                artworkUrl = track.artworkUrl,
+                glow = coverGlow,
+                scale = { restScale * pressScale.value },
+                alpha = if (video != null) 1f - videoShown else 1f,
+                swipeOffset = swipeOffset,
+                swipeProgress = swipeProgress
+            )
+            if (video != null) {
+                AmbientVideo(
+                    state = video,
+                    top = WindowInsets.statusBars.asPaddingValues().calculateTopPadding() + 12.dp,
+                    bottom = PlayerPanelOverlap + 36.dp,
+                    overBackdrop = true,
+                    alpha = videoShown,
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .graphicsLayer { swiped(swipeOffset(), swipeProgress(), rounded = false) }
+                )
+            }
+        } else Box(
             modifier = Modifier
                 .fillMaxSize()
                 .graphicsLayer {
-                    scaleX = playScale * pressScale.value
-                    scaleY = playScale * pressScale.value
+                    swiped(swipeOffset(), swipeProgress())
+                    scaleX *= playScale * pressScale.value
+                    scaleY *= playScale * pressScale.value
                 }
         ) {
             AsyncImage(
@@ -5616,8 +6276,8 @@ private fun PlayerArtwork(
         }
 
         // Keeps the status bar and the buttons over the cover legible on bright artwork. A video's
-        // glow is left at its own brightness.
-        Box(
+        // glow is left at its own brightness, and so is the cover's: the buttons over it are glass.
+        if (coverGlow == null) Box(
             modifier = Modifier
                 .fillMaxWidth()
                 .height(140.dp)
@@ -5637,6 +6297,81 @@ private fun PlayerArtwork(
         ) {
             AppContainedLoadingIndicator(modifier = Modifier.size(84.dp))
         }
+    }
+}
+
+/**
+ * The cover whole: a square as large as fits between the buttons at the top and the panel, its
+ * picture recorded as [glow] for the glow that fills the rest of the screen.
+ */
+@Composable
+private fun GlowingCover(
+    artworkUrl: String?,
+    glow: CoverGlow,
+    scale: () -> Float,
+    alpha: Float,
+    swipeOffset: () -> Float,
+    swipeProgress: () -> Float
+) {
+    val statusBar = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
+    BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+        val top = statusBar + CoverTopClearance
+        val bottom = PlayerPanelOverlap + CoverBottomGap
+        val room = maxHeight - top - bottom
+        val side = minOf(room, maxWidth - CoverSideMargin * 2).coerceAtLeast(96.dp)
+        Box(
+            modifier = Modifier
+                .align(Alignment.TopCenter)
+                .padding(top = top + ((room - side) / 2).coerceAtLeast(0.dp))
+                .size(side)
+                // Swiped, it goes with the finger; the glow, out meanwhile, is drawn from where
+                // it is.
+                .graphicsLayer { swiped(swipeOffset(), swipeProgress(), rounded = false) }
+                .glowSource(glow)
+                .graphicsLayer {
+                    val s = scale()
+                    scaleX = s
+                    scaleY = s
+                    this.alpha = alpha
+                    shape = RoundedCornerShape(CoverCorner)
+                    clip = true
+                }
+                .background(MaterialTheme.colorScheme.surfaceContainerHigh)
+        ) {
+            AsyncImage(
+                model = artworkUrlForSize(artworkUrl, 500.dp),
+                contentDescription = null,
+                modifier = Modifier.fillMaxSize(),
+                contentScale = ContentScale.Crop
+            )
+        }
+    }
+}
+
+// From the buttons' line at the top — they lie over its corners, as glass — to the panel's edge,
+// and from one side of the screen to the other if the height allows.
+private val CoverTopClearance = 12.dp
+private val CoverBottomGap = 0.dp
+private val CoverSideMargin = 0.dp
+private val CoverCorner = 28.dp
+
+// How much of the panel's colour frosts it over the cover's glow.
+private const val CoverFrost = 0.55f
+
+// The cover swiped sideways: how far it goes before it has shrunk all it will, and what a flick is.
+private val SwipeFlingVelocity = 900.dp
+private val SwipeMinFling = 24.dp
+private val SwipeSettle = spring<Float>(dampingRatio = 0.82f, stiffness = Spring.StiffnessMediumLow)
+
+/** The artwork (or a video) as the swipe has it: along with the finger, shrunk back, rounded. */
+private fun androidx.compose.ui.graphics.GraphicsLayerScope.swiped(offset: Float, progress: Float, rounded: Boolean = true) {
+    translationX = offset
+    val s = 1f - 0.14f * progress
+    scaleX = s
+    scaleY = s
+    if (rounded && progress > 0f) {
+        shape = RoundedCornerShape(32.dp * progress)
+        clip = true
     }
 }
 
@@ -6140,10 +6875,25 @@ private fun LyricsOverlay(
     }
 
     val lit = MaterialTheme.colorScheme.onSurface
+    val scrim = MaterialTheme.colorScheme.background.copy(alpha = 0.38f)
     BoxWithConstraints(
         modifier = Modifier
             .fillMaxSize()
-            .background(MaterialTheme.colorScheme.background.copy(alpha = 0.38f))
+            // The shade behind the lines fades out as they do, by the panel's top edge: it used
+            // to run on under the panel and stop there in a hard line across it.
+            .drawBehind {
+                val h = size.height
+                val clear = h - PlayerPanelOverlap.toPx()
+                val solid = (clear - LyricsFade.toPx()).coerceAtLeast(0f)
+                drawRect(
+                    Brush.verticalGradient(
+                        0f to scrim,
+                        solid / h to scrim,
+                        clear / h to Color.Transparent,
+                        1f to Color.Transparent
+                    )
+                )
+            }
     ) {
         LazyColumn(
             state = listState,
@@ -6251,7 +7001,14 @@ private fun QueueManagerPanel(
     isPlaying: Boolean,
     onDismiss: () -> Unit,
     onReorder: (Int, Int) -> Unit,
-    onPlayTrack: (SoundCloudTrack) -> Unit
+    onPlayTrack: (SoundCloudTrack) -> Unit,
+    // The sheet's own movement, done by the screen that holds it: how far down it is, moving it,
+    // and letting it go with a speed.
+    sheetOffset: () -> Float,
+    onSheetDragStart: () -> Unit,
+    onSheetDrag: (Float) -> Float,
+    onSheetRelease: (Float) -> Unit,
+    modifier: Modifier = Modifier
 ) {
     val haptic = LocalHapticFeedback.current
     val density = androidx.compose.ui.platform.LocalDensity.current
@@ -6302,56 +7059,69 @@ private fun QueueManagerPanel(
 
     BackHandler(onBack = onDismiss)
 
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .pointerInput(Unit) {
-                detectDragGestures(
-                    onDrag = { change, dragAmount ->
-                        if (dragAmount.y > 10f) {
-                            onDismiss()
-                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                        }
-                    }
-                )
+    // The list at its top hands a pull downward to the sheet, which then follows the finger; a
+    // pull back up takes the sheet up first before the list scrolls again.
+    val sheetScroll = remember(onSheetDrag, onSheetRelease) {
+        object : NestedScrollConnection {
+            override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
+                if (available.y < 0f && sheetOffset() > 0f) return Offset(0f, onSheetDrag(available.y))
+                return Offset.Zero
             }
-            .pointerInput(Unit) {
-                detectTapGestures(onTap = { onDismiss() })
+
+            override fun onPostScroll(consumed: Offset, available: Offset, source: NestedScrollSource): Offset {
+                if (available.y > 0f && source == NestedScrollSource.UserInput) {
+                    if (sheetOffset() == 0f) onSheetDragStart()
+                    return Offset(0f, onSheetDrag(available.y))
+                }
+                return Offset.Zero
             }
-    ) {
+
+            override suspend fun onPreFling(available: androidx.compose.ui.unit.Velocity): androidx.compose.ui.unit.Velocity {
+                if (sheetOffset() > 0f) {
+                    onSheetRelease(available.y)
+                    return available
+                }
+                return androidx.compose.ui.unit.Velocity.Zero
+            }
+        }
+    }
+
         Card(
             shape = AppShapes.bottomSheet,
             colors = CardDefaults.cardColors(
-                // Translucent on purpose: the player behind is blurred by 20dp while this is
-                // open, and an opaque sheet simply hid that entirely.
-                containerColor = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.72f)
+                // Nearly solid: the player behind is only dimmed now, not blurred.
+                containerColor = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.96f)
             ),
-            modifier = Modifier
-                .fillMaxWidth()
-                .fillMaxHeight(0.9f)
-                .align(Alignment.BottomCenter)
+            modifier = modifier
+                // Taps on the sheet stay on it rather than reaching the scrim behind.
                 .pointerInput(Unit) {}
         ) {
             Column(
                 modifier = Modifier.fillMaxSize()
             ) {
+                // The handle, and the whole strip around it, drags the sheet.
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(vertical = 12.dp)
+                        .height(36.dp)
                         .pointerInput(Unit) {
-                            detectDragGestures(
-                                onDrag = { change, dragAmount ->
-                                    if (dragAmount.y > 10f) {
-                                        onDismiss()
-                                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                    }
-                                }
+                            val velocity = VelocityTracker()
+                            detectVerticalDragGestures(
+                                onDragStart = {
+                                    velocity.resetTracking()
+                                    onSheetDragStart()
+                                },
+                                onVerticalDrag = { change, dy ->
+                                    velocity.addPosition(change.uptimeMillis, change.position)
+                                    change.consume()
+                                    onSheetDrag(dy)
+                                },
+                                onDragEnd = { onSheetRelease(velocity.calculateVelocity().y) },
+                                onDragCancel = { onSheetRelease(0f) }
                             )
                         },
                     contentAlignment = Alignment.Center
                 ) {
-                    // Drag handle with adequate touch target (#40)
                     Box(
                         modifier = Modifier
                             .size(40.dp, 5.dp)
@@ -6360,52 +7130,11 @@ private fun QueueManagerPanel(
                     )
                 }
 
-                    var listDragAccumulator by remember { mutableStateOf(0f) }
-                    val nestedScrollConnection = remember {
-                        object : NestedScrollConnection {
-                            override fun onPreScroll(
-                                available: Offset,
-                                source: NestedScrollSource
-                            ): Offset {
-                                val isAtTop = lazyListState.firstVisibleItemIndex == 0 && lazyListState.firstVisibleItemScrollOffset == 0
-                                if (isAtTop && available.y > 0f) {
-                                    listDragAccumulator += available.y
-                                    if (listDragAccumulator > 150f) {
-                                        onDismiss()
-                                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                        listDragAccumulator = 0f
-                                    }
-                                    return Offset(0f, available.y)
-                                } else {
-                                    listDragAccumulator = 0f
-                                }
-                                return Offset.Zero
-                            }
-
-                            override fun onPostScroll(
-                                consumed: Offset,
-                                available: Offset,
-                                source: NestedScrollSource
-                            ): Offset {
-                                if (available.y > 0f) {
-                                    listDragAccumulator += available.y
-                                    if (listDragAccumulator > 150f) {
-                                        onDismiss()
-                                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                        listDragAccumulator = 0f
-                                    }
-                                    return Offset(0f, available.y)
-                                }
-                                return Offset.Zero
-                            }
-                        }
-                    }
-
             LazyColumn(
                 state = lazyListState,
                 modifier = Modifier
                     .fillMaxSize()
-                    .nestedScroll(nestedScrollConnection)
+                    .nestedScroll(sheetScroll)
                     .weight(1f),
                 contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp)
@@ -6438,6 +7167,14 @@ private fun QueueManagerPanel(
                     val elevation = if (isThisDragged) 8.dp else 0.dp
 
                     Card(
+                        // The whole row plays its track: only the words in it did, and a tap on
+                        // the cover or beside the title missed.
+                        onClick = {
+                            if (!isCurrent && draggedIndex == null) {
+                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                onPlayTrack(trackItem)
+                            }
+                        },
                         colors = CardDefaults.cardColors(
                             containerColor = if (isCurrent) {
                                 MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.92f)
@@ -6551,15 +7288,7 @@ private fun QueueManagerPanel(
 
                             Spacer(modifier = Modifier.width(14.dp))
 
-                            Column(
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .clickable {
-                                        if (!isCurrent) {
-                                            onPlayTrack(trackItem)
-                                        }
-                                    }
-                            ) {
+                            Column(modifier = Modifier.weight(1f)) {
                                 Text(
                                     text = trackItem.title ?: "Unknown Track",
                                     style = MaterialTheme.typography.bodyLarge,
@@ -6581,8 +7310,15 @@ private fun QueueManagerPanel(
                 }
             }
         }
-    }
 }
+
+// The queue sheet: how much of the screen it takes, how fast a flick of it has to be to count,
+// and how it settles — with the flick's speed carried in, a little give, no wobble.
+private const val QueueHeightFraction = 0.9f
+private const val QueueMeantFraction = 0.2f
+private val QueueFlingVelocity = 700.dp
+private val QueueSpring = spring<Float>(dampingRatio = 0.86f, stiffness = 360f)
+
 @Composable
 private fun FolderArtwork(artworkUri: String?, size: Dp) {
     if (artworkUri.isNullOrBlank()) {
@@ -6776,10 +7512,13 @@ private fun DownloadBadge(state: DownloadState) {
 
 @Composable
 private fun EmptyState(text: String) {
+    val glass = LocalGlass.current
     Surface(
-        color = MaterialTheme.colorScheme.surfaceContainerHighest,
+        color = if (glass) Color.Transparent else MaterialTheme.colorScheme.surfaceContainerHighest,
         shape = MaterialTheme.shapes.extraLarge,
-        modifier = Modifier.fillMaxWidth()
+        modifier = Modifier
+            .fillMaxWidth()
+            .glassOr(MaterialTheme.shapes.extraLarge, MaterialTheme.colorScheme.surfaceContainerHighest)
     ) {
         Text(
             text = text,
@@ -6822,13 +7561,17 @@ private fun PlayerBar(
 ) {
     val haptic = LocalHapticFeedback.current
     val onPanel = PanelColors.content
+    val glass = LocalGlass.current
     Surface(
         onClick = onOpen,
-        color = PanelColors.container,
+        color = if (glass) Color.Transparent else PanelColors.container,
         contentColor = onPanel,
         shape = RoundedCornerShape(32.dp),
-        shadowElevation = 8.dp,
-        modifier = Modifier.fillMaxWidth()
+        // A shadow shows through glass as a smudge.
+        shadowElevation = if (glass) 0.dp else 8.dp,
+        modifier = Modifier
+            .fillMaxWidth()
+            .glassOr(RoundedCornerShape(32.dp), PanelColors.container)
     ) {
         Row(
             modifier = Modifier
@@ -7687,7 +8430,7 @@ private fun PlaylistDetailScreen(
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(MaterialTheme.colorScheme.background)
+            .pageGlass(MaterialTheme.colorScheme.background)
     ) {
         LazyColumn(
             state = listState,
@@ -7926,7 +8669,7 @@ private fun YandexPlaylistDetailScreen(
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(MaterialTheme.colorScheme.background)
+            .pageGlass(MaterialTheme.colorScheme.background)
     ) {
         LazyColumn(
             state = listState,
@@ -8082,7 +8825,7 @@ private fun ArtistDetailScreen(
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(MaterialTheme.colorScheme.background)
+            .pageGlass(MaterialTheme.colorScheme.background)
     ) {
         LazyColumn(
             state = listState,
@@ -8234,7 +8977,7 @@ private fun SetDetailContent(
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(MaterialTheme.colorScheme.background)
+            .pageGlass(MaterialTheme.colorScheme.background)
     ) {
         LazyColumn(
             state = listState,

@@ -2416,6 +2416,12 @@ class MusicViewModel(
         musicPlayer.skipPrevious()
     }
 
+    fun hasNeighbourTrack(next: Boolean): Boolean = musicPlayer.hasNeighbourTrack(next)
+
+    fun skipToNeighbourTrack(next: Boolean) {
+        musicPlayer.skipToNeighbourTrack(next)
+    }
+
     fun cycleRepeatMode() {
         musicPlayer.cycleRepeatMode()
     }
@@ -2949,6 +2955,15 @@ class MusicViewModel(
         val start = queue.randomOrNull() ?: return
         if (!musicPlayer.shuffleEnabled.value) musicPlayer.toggleShuffle()
         if (fromMix) playMixTrack(start) else playQueuedTrack(start, queue)
+    }
+
+    /** Everything downloaded, shuffled. */
+    fun playDownloadsShuffled() {
+        val start = favoritesRepository.favorites.value
+            .filter { it.downloadState == DownloadState.DOWNLOADED && it.streamUrl != null }
+            .randomOrNull() ?: return
+        if (!musicPlayer.shuffleEnabled.value) musicPlayer.toggleShuffle()
+        playFavorite(start)
     }
 
     /** Same, for a saved playlist, whose tracks may already be on the device. */

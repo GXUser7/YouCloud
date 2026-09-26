@@ -200,6 +200,23 @@ class MusicPlayer(context: Context) {
         }
     }
 
+    /** Whether there is a track to move to that way: the queue's next, or the one before. */
+    fun hasNeighbourTrack(next: Boolean): Boolean {
+        val player = controller ?: return false
+        return if (next) player.hasNextMediaItem() else player.hasPreviousMediaItem()
+    }
+
+    /**
+     * To the next track or the one before — the track before however far into this one: swiping
+     * the cover back means the track, not its start.
+     */
+    fun skipToNeighbourTrack(next: Boolean) {
+        controller?.let { player ->
+            if (next) player.seekToNextMediaItem() else player.seekToPreviousMediaItem()
+            player.play()
+        }
+    }
+
     fun cycleRepeatMode() {
         val nextMode = when (_repeatMode.value) {
             Player.REPEAT_MODE_OFF -> Player.REPEAT_MODE_ALL

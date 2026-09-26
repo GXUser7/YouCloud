@@ -196,12 +196,15 @@ internal fun LoadMoreRow(
     modifier: Modifier = Modifier,
     position: GroupPosition = GroupPosition.Last
 ) {
+    val glass = LocalGlass.current
     Surface(
         onClick = onClick,
         enabled = !isLoading,
-        modifier = modifier.fillMaxWidth(),
+        modifier = modifier
+            .fillMaxWidth()
+            .glassOr(position.shape(), MaterialTheme.colorScheme.surfaceContainer),
         shape = position.shape(),
-        color = MaterialTheme.colorScheme.surfaceContainer,
+        color = if (glass) Color.Transparent else MaterialTheme.colorScheme.surfaceContainer,
         contentColor = MaterialTheme.colorScheme.primary
     ) {
         Column {
@@ -522,11 +525,14 @@ internal fun TopResultCard(
     onClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
+    val glass = LocalGlass.current
     Surface(
         onClick = onClick,
-        modifier = modifier.fillMaxWidth(),
+        modifier = modifier
+            .fillMaxWidth()
+            .glassOr(RoundedCornerShape(32.dp), PanelColors.container),
         shape = RoundedCornerShape(32.dp),
-        color = PanelColors.container,
+        color = if (glass) Color.Transparent else PanelColors.container,
         contentColor = PanelColors.content
     ) {
         Row(
@@ -585,11 +591,14 @@ internal fun CompactCollectionCard(
     onClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
+    val glass = LocalGlass.current
     Surface(
         onClick = onClick,
-        modifier = modifier.height(80.dp),
+        modifier = modifier
+            .height(80.dp)
+            .glassOr(RoundedCornerShape(24.dp), MaterialTheme.colorScheme.surfaceContainerHigh),
         shape = RoundedCornerShape(24.dp),
-        color = MaterialTheme.colorScheme.surfaceContainerHigh
+        color = if (glass) Color.Transparent else MaterialTheme.colorScheme.surfaceContainerHigh
     ) {
         Row(
             modifier = Modifier.padding(10.dp),
