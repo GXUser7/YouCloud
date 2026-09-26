@@ -5194,13 +5194,14 @@ private fun PlayerArtwork(
                 modifier = Modifier.fillMaxSize(),
                 contentScale = ContentScale.Crop
             )
-            // The music video, cropped to the cover's frame, fades in over it once it plays.
+            // The music video fades in over the cover once it plays: from the line the buttons
+            // over it start at, down, glowing into the space above.
             if (video != null) {
-                VideoSurface(
+                AmbientVideo(
                     state = video,
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .graphicsLayer { alpha = videoShown }
+                    top = WindowInsets.statusBars.asPaddingValues().calculateTopPadding() + 12.dp,
+                    alpha = videoShown,
+                    modifier = Modifier.fillMaxSize()
                 )
             }
         }

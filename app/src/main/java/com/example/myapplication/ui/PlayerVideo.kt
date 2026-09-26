@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.requiredSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -28,6 +29,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.BlurEffect
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.TileMode
+import androidx.compose.ui.graphics.drawscope.scale
 import androidx.compose.ui.graphics.drawscope.translate
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.layer.GraphicsLayer
@@ -303,6 +305,56 @@ fun VideoSurface(state: PlayerVideoState, modifier: Modifier = Modifier) {
         }
     }
 }
+
+/**
+ * A music video in the cover's place, from [top] down, cropped at the sides to fill that height,
+ * with its own light around it: copies of it, each a little larger and more blurred than the
+ * last, glow behind it and up under the status bar — YouTube's "ambient mode", in layers. They are
+ * the video's own layer drawn again, so the glow moves with every frame at no decoding cost.
+ */
+@Composable
+fun AmbientVideo(state: PlayerVideoState, top: androidx.compose.ui.unit.Dp, alpha: Float, modifier: Modifier = Modifier) {
+    val topPx = with(LocalDensity.current) { top.toPx() }
+    Box(modifier = modifier.graphicsLayer { this.alpha = alpha }) {
+        // Darkness to glow in: the cover goes out as the video comes in.
+        Box(modifier = Modifier.matchParentSize().drawBehind { drawRect(Color.Black) })
+        for (glow in AMBIENT_GLOWS) {
+            Box(
+                modifier = Modifier
+                    .matchParentSize()
+                    .graphicsLayer {
+                        val radius = glow.blur.toPx()
+                        renderEffect = BlurEffect(radius, radius, TileMode.Decal)
+                        this.alpha = glow.opacity
+                    }
+                    .drawBehind {
+                        val layer = state.frameLayer ?: return@drawBehind
+                        val height = size.height - topPx
+                        translate(0f, topPx) {
+                            scale(glow.scale, glow.scale, pivot = Offset(size.width / 2, height / 2)) {
+                                drawLayer(layer)
+                            }
+                        }
+                    }
+            )
+        }
+        VideoSurface(
+            state = state,
+            modifier = Modifier
+                .matchParentSize()
+                .padding(top = top)
+        )
+    }
+}
+
+private class Glow(val scale: Float, val blur: androidx.compose.ui.unit.Dp, val opacity: Float)
+
+// Widest and softest first, so each nearer one lies over it.
+private val AMBIENT_GLOWS = listOf(
+    Glow(scale = 1.45f, blur = 72.dp, opacity = 0.55f),
+    Glow(scale = 1.25f, blur = 40.dp, opacity = 0.75f),
+    Glow(scale = 1.1f, blur = 18.dp, opacity = 0.9f)
+)
 
 /**
  * Frosted glass: the part of the video behind this box, blurred, under a wash of [tint]. What a
