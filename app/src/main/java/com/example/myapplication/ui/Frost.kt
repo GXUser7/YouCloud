@@ -11,6 +11,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.geometry.Offset
@@ -41,16 +42,20 @@ import kotlin.math.ceil
  * [LocalFrostSources].
  */
 
-/** Something glass shows through: a layer the content is recorded into, and where it lies. */
+/**
+ * Something glass shows through: a layer the content is recorded into, and where it lies. [soft]:
+ * blurred already (the backdrop's shapes are), so glass over it alone needs no blur of its own —
+ * only a wash of colour, which looks the same and costs nothing on every frame of the backdrop.
+ */
 @Stable
-class FrostSource internal constructor(internal val layer: GraphicsLayer) {
+class FrostSource internal constructor(internal val layer: GraphicsLayer, internal val soft: Boolean) {
     internal var origin by mutableStateOf(Offset.Zero)
 }
 
 @Composable
-fun rememberFrostSource(): FrostSource {
+fun rememberFrostSource(soft: Boolean = false): FrostSource {
     val layer = rememberGraphicsLayer()
-    return remember(layer) { FrostSource(layer) }
+    return remember(layer) { FrostSource(layer, soft) }
 }
 
 /** What glass here shows through, back to front. Never a record the glass is inside of. */
@@ -84,6 +89,14 @@ fun Modifier.frosted(
     rim: Boolean = true
 ): Modifier {
     val sources = LocalFrostSources.current
+    // Blurring is only worth it over something sharp: a list scrolling under a bar, a screen
+    // under the mini player. A card on the backdrop alone is a wash of colour over it.
+    if (sources.all { it.soft }) {
+        return this
+            .clip(shape)
+            .drawBehind { drawRect(tint) }
+            .then(if (rim) Modifier.border(1.dp, Color.White.copy(alpha = 0.07f), shape) else Modifier)
+    }
     val here = remember { FrostOrigin() }
     return this
         .onGloballyPositioned { here.value = it.positionInRoot() }

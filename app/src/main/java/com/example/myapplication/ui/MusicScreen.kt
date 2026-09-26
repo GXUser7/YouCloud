@@ -428,7 +428,8 @@ fun MusicScreen(viewModel: MusicViewModel) {
 
     // What glass shows: the moving backdrop, and the screens over it (for the mini player, which
     // floats over them all).
-    val backdropFrost = rememberFrostSource()
+    // The backdrop is blurred already: glass over it alone is a wash of colour.
+    val backdropFrost = rememberFrostSource(soft = true)
     val screensFrost = rememberFrostSource()
     Box(modifier = Modifier.fillMaxSize()) {
         // The full player is opaque; nothing behind it needs a frame, or the accelerometer.
