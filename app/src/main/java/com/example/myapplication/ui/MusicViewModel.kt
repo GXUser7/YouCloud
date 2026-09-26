@@ -3894,7 +3894,10 @@ class MusicViewModel(
                     return@coroutineScope null
                 }
             }
-            TrackVideo(track.id, stream.url, loop = false, vertical = false, userAgent = stream.userAgent, segments = segments)
+            TrackVideo(
+                track.id, stream.url, loop = false, vertical = false, userAgent = stream.userAgent,
+                segments = segments, codec = stream.codec
+            )
         }
     }
 

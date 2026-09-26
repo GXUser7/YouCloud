@@ -29,7 +29,9 @@ data class TrackVideo(
     val segments: List<VideoSegment> = emptyList(),
     // False while it is still being lined up: the player buffers it, in step as far as is known,
     // but doesn't show it yet.
-    val ready: Boolean = true
+    val ready: Boolean = true,
+    // A YouTube video's codec, as YouTube names it; see [OfflineVideoStore].
+    val codec: String? = null
 ) {
     /** Where the video should be while the track is at [trackMs]. */
     fun videoPositionFor(trackMs: Long): Long {

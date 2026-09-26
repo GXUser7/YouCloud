@@ -43,14 +43,22 @@ object YtDlp {
      * What to ask yt-dlp for. Plain HTTPS only, never an HLS or DASH manifest: the players and
      * the downloader here all expect one file.
      */
-    enum class Kind(val format: String) {
+    enum class Kind(val format: String, val clients: String? = null) {
         /** AAC in MP4 (itag 140) first: every device decodes it, and downloads are kept as it. */
         AUDIO("140/bestaudio[ext=m4a][protocol=https]/bestaudio[protocol=https]"),
 
-        /** A music video's picture alone, H.264 first, no larger than the screen needs. */
+        /**
+         * A music video's picture alone, no larger than the screen needs, VP9 first. YouTube's
+         * H.264 of a busy scene can be missing frames — a third of them, in an anime opening —
+         * where its VP9 and the YouTube app are smooth. The clients yt-dlp asks when signed in
+         * only hand out H.264 at that size; the full TV client has them all. The pared-down one
+         * stays for when it won't answer, and the web clients are left out: they need a player
+         * script of their own, seconds more, for no formats the TV ones lack.
+         */
         VIDEO(
-            "bv[height<=720][vcodec^=avc1][protocol=https]/bv[height<=720][protocol=https]/" +
-                "bv*[height<=720][protocol=https]"
+            "bv[height<=720][vcodec^=vp][protocol=https]/bv[height<=720][vcodec^=avc1][protocol=https]/" +
+                "bv[height<=720][protocol=https]/bv*[height<=720][protocol=https]",
+            clients = "tv,tv_downgraded"
         )
     }
 
@@ -84,12 +92,14 @@ except Exception:
     pass
 
 KEEP = ("url", "ext", "format_id", "filesize", "filesize_approx", "http_headers", "vcodec", "height", "fps")
+YOUTUBE_ARGS = "youtube"
 FORMAT_KEEP = ("format_id", "url", "vcodec", "acodec", "protocol", "abr", "height", "fps")
 
 
 def main():
     opts = yt_dlp.parse_options(json.loads(sys.argv[2])).ydl_opts
     ydl = yt_dlp.YoutubeDL(opts)
+    base_args = dict(ydl.params.get("extractor_args") or {})
     # The format selector is built once, with the instance; each request brings its own.
     selectors = {}
     print(json.dumps({"ready": True}), flush=True)
@@ -104,6 +114,11 @@ def main():
                 selectors[wanted] = ydl.build_format_selector(wanted)
             ydl.params["format"] = wanted
             ydl.format_selector = selectors[wanted]
+            # The clients to ask, per request too: the extractor reads its arguments afresh.
+            youtube_args = dict(base_args.get(YOUTUBE_ARGS) or {})
+            if request.get("clients"):
+                youtube_args["player_client"] = request["clients"].split(",")
+            ydl.params["extractor_args"] = {**base_args, YOUTUBE_ARGS: youtube_args}
             info = ydl.extract_info(request["url"], download=False)
             reply = {key: info.get(key) for key in KEEP}
             reply["formats"] = [{key: f.get(key) for key in FORMAT_KEEP} for f in info.get("formats") or []]
@@ -122,7 +137,7 @@ main()
     // Any long-lived video will do to warm a server up.
     private const val WARM_UP_VIDEO = "jNQXAC9IVRw"
     private val CACHE_MAX_AGE_MS = TimeUnit.DAYS.toMillis(21)
-    private const val PLAYERS_KEPT = 2
+    private const val PLAYERS_KEPT = 3
     private val FAILED_UPDATE_RETRY_MS = TimeUnit.MINUTES.toMillis(30)
     private val RUN_TIMEOUT_MS = TimeUnit.SECONDS.toMillis(90)
 
@@ -270,7 +285,7 @@ main()
             .addOption("--cache-dir", cacheDir(context).absolutePath)
             .addOption("--plugin-dirs", pluginDir(context).absolutePath)
             // Only the plain audio files are of use; the HLS manifest is one more request.
-            .addOption("--extractor-args", "youtube:skip=hls,dash")
+            .addOption("--extractor-args", "youtube:skip=hls,dash" + kind.clients?.let { ";player_client=$it" }.orEmpty())
         // A file per run: yt-dlp writes the jar back when it exits, and two runs can overlap.
         val cookies = auth?.let { writeCookies(File(dir, "cookies-$kind-$videoId.txt"), it) }
         cookies?.let { request.addOption("--cookies", it.absolutePath) }
@@ -328,6 +343,7 @@ main()
             else -> null
         }
         val length = (field("filesize") ?: field("filesize_approx"))?.asLong ?: -1L
+        val codec = field("vcodec")?.asString?.takeUnless { it == "none" }
         // A video's sound comes with the same answer: every format is listed, deciphered. It is
         // only analysed ([ClipAligner]), so the smallest is tried first: over a VPN the download,
         // not the decoding, is what takes the time. The others are there for when a server won't
@@ -343,9 +359,9 @@ main()
             ?.mapNotNull { it.get("url")?.takeUnless { url -> url.isJsonNull }?.asString }
             .orEmpty()
         return if (userAgent != null) {
-            YouTubeStreams.Stream(url, mimeType, length, userAgent, audioUrls)
+            YouTubeStreams.Stream(url, mimeType, length, userAgent, audioUrls, codec)
         } else {
-            YouTubeStreams.Stream(url, mimeType, length, audioUrls = audioUrls)
+            YouTubeStreams.Stream(url, mimeType, length, audioUrls = audioUrls, codec = codec)
         }
     }
 
@@ -400,6 +416,7 @@ main()
             addProperty("id", id)
             addProperty("url", "https://www.youtube.com/watch?v=$videoId")
             addProperty("format", kind.format)
+            kind.clients?.let { addProperty("clients", it) }
         }
         // A request that hangs takes its server with it.
         val timeout = watchdog.schedule({ server.stop() }, RUN_TIMEOUT_MS, TimeUnit.MILLISECONDS)

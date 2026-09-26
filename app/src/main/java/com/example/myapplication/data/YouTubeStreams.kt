@@ -37,7 +37,9 @@ object YouTubeStreams {
         val mimeType: String?,
         val contentLength: Long,
         val userAgent: String = USER_AGENT,
-        val audioUrls: List<String> = emptyList()
+        val audioUrls: List<String> = emptyList(),
+        // A video's codec as YouTube names it ("vp09.00.31.08", "avc1.4d401f").
+        val codec: String? = null
     )
 
     private const val TAG = "YouTubeStreams"
