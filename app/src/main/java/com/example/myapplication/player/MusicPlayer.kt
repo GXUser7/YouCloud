@@ -175,6 +175,12 @@ class MusicPlayer(context: Context) {
         _positionMs.value = positionMs
     }
 
+    /**
+     * Where the track is right now, to the millisecond: [positionMs] is only sampled twice a
+     * second, too coarse to keep a music video's lips on the words. Main thread only.
+     */
+    fun livePositionMs(): Long = controller?.currentPosition?.coerceAtLeast(0L) ?: _positionMs.value
+
     fun skipNext() {
         controller?.let { player ->
             player.seekToNextMediaItem()

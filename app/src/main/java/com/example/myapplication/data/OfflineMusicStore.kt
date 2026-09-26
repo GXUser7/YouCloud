@@ -15,7 +15,8 @@ import okhttp3.OkHttpClient
 import java.io.File
 @UnstableApi
 class OfflineMusicStore private constructor(context: Context) {
-    private val databaseProvider = StandaloneDatabaseProvider(context)
+    // Shared with the video cache: one database, one helper holding it open.
+    val databaseProvider = StandaloneDatabaseProvider(context)
     private val downloadDirectory = File(context.filesDir, "offline_music").apply { mkdirs() }
     private val artworkDirectory = File(context.filesDir, "offline_art").apply { mkdirs() }
     private val hlsCacheDirectory = File(downloadDirectory, "hls_cache").apply { mkdirs() }

@@ -35,7 +35,9 @@ data class YandexTrack(
     val artists: List<YandexArtist>? = emptyList(),
     val durationMs: Long = 0L,
     val coverUri: String?,
-    val albums: List<YandexAlbum>? = emptyList()
+    val albums: List<YandexAlbum>? = emptyList(),
+    // A "videoshot": a short vertical loop Yandex plays behind the player, as an MP4.
+    val backgroundVideoUri: String? = null
 ) {
     fun getCoverUrl(size: String = "200x200"): String? {
         if (coverUri == null) return null
@@ -89,6 +91,32 @@ data class YandexTrack(
 data class YandexArtist(
     val id: String?,
     val name: String?
+)
+
+/** `artists/{id}/blocks/artist-clips`: the artist's music videos. */
+data class YandexArtistClipsResponse(
+    val result: YandexArtistClips? = null
+)
+
+data class YandexArtistClips(
+    val items: List<YandexArtistClipItem>? = null
+)
+
+data class YandexArtistClipItem(
+    val data: YandexArtistClipData? = null
+)
+
+data class YandexArtistClipData(
+    val clip: YandexClip? = null
+)
+
+/** A music video: [previewUrl] is its picture as an MP4, [trackIds] the tracks it is a video of. */
+data class YandexClip(
+    val clipId: Long? = null,
+    val title: String? = null,
+    val previewUrl: String? = null,
+    val duration: Int? = null,
+    val trackIds: List<Long>? = null
 )
 
 data class YandexDownloadInfoResponse(

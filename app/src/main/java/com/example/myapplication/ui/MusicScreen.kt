@@ -307,6 +307,7 @@ fun MusicScreen(viewModel: MusicViewModel) {
     val currentTrackTitle by viewModel.currentTrackTitle.collectAsState()
     val selectedTrack by viewModel.selectedTrack.collectAsState()
     val currentPlayingTrack by viewModel.currentPlayingTrack.collectAsState()
+    val trackVideo by viewModel.trackVideo.collectAsState()
     val currentTrackId by viewModel.currentTrackId.collectAsState()
     val favorites by viewModel.favorites.collectAsState()
     val downloadedFolderArtworkUri by viewModel.downloadedFolderArtworkUri.collectAsState()
@@ -466,6 +467,7 @@ fun MusicScreen(viewModel: MusicViewModel) {
                         trendingSection = trendingSection,
                         ytShelves = ytHome,
                         ytConnected = ytMusicAccount != null,
+                        yandexConnected = hasYandexToken,
                         ytLoading = ytHomeLoading,
                         ytError = ytHomeError,
                         onOpenYtSet = { set ->
@@ -542,7 +544,14 @@ fun MusicScreen(viewModel: MusicViewModel) {
                     )
 
                     AppScreen.SEARCH -> {
-                        val searchInYandex by viewModel.searchInYandex.collectAsState()
+                        val searchSource by viewModel.searchSource.collectAsState()
+                        val ytSearch by viewModel.ytSearch.collectAsState()
+                        // SoundCloud always; the others once connected in settings.
+                        val searchSources = buildList {
+                            add(SearchSource.SOUNDCLOUD)
+                            if (hasYandexToken) add(SearchSource.YANDEX)
+                            if (ytMusicAccount != null) add(SearchSource.YOUTUBE)
+                        }
                         val yandexSearchQuery by viewModel.yandexSearchQuery.collectAsState()
                         val yandexTracks by viewModel.yandexTracks.collectAsState()
                         val yandexLoading by viewModel.yandexLoading.collectAsState()
@@ -581,18 +590,16 @@ fun MusicScreen(viewModel: MusicViewModel) {
                                 haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                                 viewModel.toggleFavorite(track)
                             },
-                            searchInYandex = searchInYandex,
+                            source = searchSource,
+                            sources = searchSources,
                             onSearchSourceChanged = viewModel::setSearchSource,
                             yandexQuery = yandexSearchQuery,
                             yandexTracks = yandexTracks,
                             yandexLoading = yandexLoading,
                             yandexError = yandexError,
                             onYandexQueryChange = viewModel::onYandexSearchQueryChange,
-                            hasYandexToken = hasYandexToken,
-                            onOpenSettings = {
-                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                viewModel.openSettings()
-                            },
+                            ytSearch = ytSearch,
+                            onYtQueryChange = viewModel::onYtSearchQueryChange,
                             albums = searchAlbums,
                             playlists = searchPlaylists,
                             artists = searchArtists,
@@ -603,11 +610,23 @@ fun MusicScreen(viewModel: MusicViewModel) {
                                 haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                                 viewModel.openArtistFromSearch(artist)
                             },
-                            hasMore = if (searchInYandex) yandexHasMore else searchHasMore,
-                            isLoadingMore = if (searchInYandex) yandexLoadingMore else searchLoadingMore,
+                            hasMore = when (searchSource) {
+                                SearchSource.SOUNDCLOUD -> searchHasMore
+                                SearchSource.YANDEX -> yandexHasMore
+                                SearchSource.YOUTUBE -> ytSearch.page?.continuation != null
+                            },
+                            isLoadingMore = when (searchSource) {
+                                SearchSource.SOUNDCLOUD -> searchLoadingMore
+                                SearchSource.YANDEX -> yandexLoadingMore
+                                SearchSource.YOUTUBE -> ytSearch.loadingMore
+                            },
                             onLoadMore = {
                                 haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                if (searchInYandex) viewModel.loadMoreYandexSearchTracks() else viewModel.loadMoreSearchTracks()
+                                when (searchSource) {
+                                    SearchSource.SOUNDCLOUD -> viewModel.loadMoreSearchTracks()
+                                    SearchSource.YANDEX -> viewModel.loadMoreYandexSearchTracks()
+                                    SearchSource.YOUTUBE -> viewModel.loadMoreYtSearchTracks()
+                                }
                             },
                             openedPlaylist = searchOpenedPlaylist,
                             isPlaylistLoading = searchPlaylistLoading,
@@ -969,6 +988,8 @@ fun MusicScreen(viewModel: MusicViewModel) {
                         positionMs = playbackPositionMs,
                         durationMs = max(playbackDurationMs, track.duration),
                         lyrics = lyrics?.takeIf { it.trackId == track.id }?.lines,
+                        video = trackVideo?.takeIf { it.trackId == track.id },
+                        livePosition = viewModel::livePositionMs,
                         onBack = {
                             haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                             viewModel.closeTrack()
@@ -1118,6 +1139,7 @@ private fun HomeScreen(
     trendingSection: MixSection?,
     ytShelves: List<YtShelf>,
     ytConnected: Boolean,
+    yandexConnected: Boolean,
     ytLoading: Boolean,
     ytError: String?,
     onOpenYtSet: (SoundCloudPlaylist) -> Unit,
@@ -1152,11 +1174,22 @@ private fun HomeScreen(
     updates: com.example.myapplication.data.UpdateRepository
 ) {
     val haptic = LocalHapticFeedback.current
-    val categories = HomeCategory.entries
+    // A service not connected in settings has no row here at all.
+    val categories = remember(ytConnected, yandexConnected) {
+        HomeCategory.entries.filter { category ->
+            when (category) {
+                HomeCategory.YouTube -> ytConnected
+                HomeCategory.Library -> yandexConnected
+                else -> true
+            }
+        }
+    }
+    // [selectedTab] is the category's ordinal, so it survives rows coming and going.
+    val selectedIndex = categories.indexOf(HomeCategory.entries.getOrNull(selectedTab)).coerceAtLeast(0)
 
     // Categories still stack vertically — a swipe up or down moves between them, as it always
     // did — and the floating toolbar at the bottom is the same axis as buttons.
-    val categoryPager = rememberPagerState(initialPage = selectedTab.coerceIn(0, categories.lastIndex)) { categories.size }
+    val categoryPager = rememberPagerState(initialPage = selectedIndex) { categories.size }
     val scope = rememberCoroutineScope()
     var showCreatePlaylistDialog by remember { mutableStateOf(false) }
     var playlistNameInput by remember { mutableStateOf("") }
@@ -1165,9 +1198,14 @@ private fun HomeScreen(
     // made a jump from "Моя музыка" to "Миксы" save "Медиатека" on the way, and the saved tab then
     // pulled the pager back there mid-flight.
     LaunchedEffect(categoryPager.settledPage) {
-        if (categoryPager.settledPage != selectedTab) {
-            onTabSelected(categoryPager.settledPage)
+        val settled = categories.getOrNull(categoryPager.settledPage) ?: return@LaunchedEffect
+        if (settled.ordinal != selectedTab) {
+            onTabSelected(settled.ordinal)
         }
+    }
+    // A row appearing or leaving shifts the pages; stay on the same category.
+    LaunchedEffect(categories) {
+        if (categoryPager.currentPage != selectedIndex) categoryPager.scrollToPage(selectedIndex)
     }
 
     val mixes = mixSection?.mixes.orEmpty()
@@ -1191,7 +1229,6 @@ private fun HomeScreen(
             "Чарты: " + plural(trending.size, "жанр", "жанра", "жанров")
         },
         HomeCategory.YouTube to when {
-            !ytConnected -> "Твои миксы и рекомендации"
             ytItems.isEmpty() -> "Подборки для тебя"
             else -> plural(ytItems.size, "подборка", "подборки", "подборок") + " для тебя"
         },
@@ -1218,7 +1255,7 @@ private fun HomeScreen(
                 verticalAlignment = Alignment.Top
             ) {
                 AnimatedContent(
-                    targetState = categories[categoryPager.currentPage],
+                    targetState = categories.getOrElse(categoryPager.currentPage) { categories.first() },
                     transitionSpec = {
                         val forward = targetState.ordinal > initialState.ordinal
                         (slideInVertically { h -> if (forward) h / 2 else -h / 2 } + fadeIn()) togetherWith
@@ -1278,7 +1315,7 @@ private fun HomeScreen(
                     .fillMaxWidth()
                     .weight(1f)
             ) { page ->
-                when (categories[page]) {
+                when (categories.getOrElse(page) { categories.first() }) {
                     HomeCategory.Mixes, HomeCategory.Stations, HomeCategory.Trending -> {
                         val category = categories[page]
                         MixCarousel(
@@ -1301,11 +1338,6 @@ private fun HomeScreen(
                     }
 
                     HomeCategory.YouTube -> when {
-                        !ytConnected -> CarouselMessage(
-                            text = "Войди в YouTube Music, чтобы здесь были твои миксы и рекомендации.",
-                            actionLabel = "Войти",
-                            onAction = onYtLogin
-                        )
                         ytItems.isEmpty() && ytError != null -> CarouselMessage(
                             text = ytError,
                             actionLabel = "Повторить",
@@ -1322,7 +1354,7 @@ private fun HomeScreen(
 
                     HomeCategory.Library -> {
                         if (yandexPlaylists.isEmpty()) {
-                            CarouselEmptyText("Подключи Яндекс Музыку в настройках, чтобы увидеть свои плейлисты.")
+                            CarouselEmptyText("Плейлисты Яндекс Музыки пока не загрузились.")
                         } else {
                             HomeHeroCarousel(
                                 items = yandexPlaylists.map { playlist ->
@@ -1394,6 +1426,7 @@ private fun HomeScreen(
         }
 
         HomeToolbar(
+            categories = categories,
             selected = categoryPager.currentPage,
             onSelect = { index ->
                 haptic.performHapticFeedback(HapticFeedbackType.LongPress)
@@ -1451,6 +1484,7 @@ private fun HomeScreen(
  */
 @Composable
 private fun HomeToolbar(
+    categories: List<HomeCategory>,
     selected: Int,
     onSelect: (Int) -> Unit,
     onSearch: () -> Unit,
@@ -1476,7 +1510,7 @@ private fun HomeToolbar(
                 horizontalArrangement = Arrangement.spacedBy(4.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                HomeCategory.entries.forEachIndexed { index, category ->
+                categories.forEachIndexed { index, category ->
                     HomeToolbarItem(
                         category = category,
                         selected = index == selected,
@@ -2402,6 +2436,7 @@ private fun SettingsScreen(
         item {
             val backgroundMotion by settingsRepository.backgroundMotion.collectAsState()
             val playerCoverColors by settingsRepository.playerCoverColors.collectAsState()
+            val playerVideos by settingsRepository.playerVideos.collectAsState()
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text(
                     text = "ОФОРМЛЕНИЕ",
@@ -2434,6 +2469,17 @@ private fun SettingsScreen(
                             subtitle = "Только плеер перекрашивается в оттенок обложки трека, остальное — по обоям",
                             checked = playerCoverColors,
                             onCheckedChange = settingsRepository::setPlayerCoverColors
+                        )
+                        HorizontalDivider(
+                            color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.25f),
+                            modifier = Modifier.padding(horizontal = 18.dp)
+                        )
+                        SettingsSwitchRow(
+                            icon = Icons.Default.SmartDisplay,
+                            title = "Клипы в плеере",
+                            subtitle = "Клип трека вместо обложки, вертикальное видео — на весь плеер. Яндекс Музыка и YouTube Music, тратит трафик",
+                            checked = playerVideos,
+                            onCheckedChange = settingsRepository::setPlayerVideos
                         )
                     }
                 }
@@ -3229,15 +3275,16 @@ private fun SearchScreen(
     onQueryChange: (String) -> Unit,
     onPlayTrack: (SoundCloudTrack) -> Unit,
     onFavoriteClick: (SoundCloudTrack) -> Unit,
-    searchInYandex: Boolean,
-    onSearchSourceChanged: (Boolean) -> Unit,
+    source: SearchSource,
+    sources: List<SearchSource>,
+    onSearchSourceChanged: (SearchSource) -> Unit,
     yandexQuery: String,
     yandexTracks: List<SoundCloudTrack>,
     yandexLoading: Boolean,
     yandexError: String?,
     onYandexQueryChange: (String) -> Unit,
-    hasYandexToken: Boolean,
-    onOpenSettings: () -> Unit,
+    ytSearch: YtSearchState,
+    onYtQueryChange: (String) -> Unit,
     albums: List<SoundCloudPlaylist> = emptyList(),
     playlists: List<SoundCloudPlaylist> = emptyList(),
     artists: List<SoundCloudUser> = emptyList(),
@@ -3285,13 +3332,47 @@ private fun SearchScreen(
         return
     }
 
-    val activeQuery = if (searchInYandex) yandexQuery else query
-    val activeTracks = if (searchInYandex) yandexTracks else tracks
-    val activeLoading = if (searchInYandex) yandexLoading else isLoading
-    val activeError = if (searchInYandex) yandexError else errorMessage
-    val activeAlbums = if (searchInYandex) yandexAlbums else albums
-    val activePlaylists = if (searchInYandex) yandexPlaylists else playlists
-    val activeArtists = if (searchInYandex) yandexArtists else artists
+    // A service signed out of meanwhile hands search back to SoundCloud.
+    val activeSource = if (source in sources) source else SearchSource.SOUNDCLOUD
+    LaunchedEffect(activeSource, source) {
+        if (activeSource != source) onSearchSourceChanged(activeSource)
+    }
+    val ytPage = ytSearch.page
+    val activeQuery = when (activeSource) {
+        SearchSource.SOUNDCLOUD -> query
+        SearchSource.YANDEX -> yandexQuery
+        SearchSource.YOUTUBE -> ytSearch.query
+    }
+    val activeTracks = when (activeSource) {
+        SearchSource.SOUNDCLOUD -> tracks
+        SearchSource.YANDEX -> yandexTracks
+        SearchSource.YOUTUBE -> ytPage?.tracks.orEmpty()
+    }
+    val activeLoading = when (activeSource) {
+        SearchSource.SOUNDCLOUD -> isLoading
+        SearchSource.YANDEX -> yandexLoading
+        SearchSource.YOUTUBE -> ytSearch.loading
+    }
+    val activeError = when (activeSource) {
+        SearchSource.SOUNDCLOUD -> errorMessage
+        SearchSource.YANDEX -> yandexError
+        SearchSource.YOUTUBE -> ytSearch.error
+    }
+    val activeAlbums = when (activeSource) {
+        SearchSource.SOUNDCLOUD -> albums
+        SearchSource.YANDEX -> yandexAlbums
+        SearchSource.YOUTUBE -> ytPage?.albums.orEmpty()
+    }
+    val activePlaylists = when (activeSource) {
+        SearchSource.SOUNDCLOUD -> playlists
+        SearchSource.YANDEX -> yandexPlaylists
+        SearchSource.YOUTUBE -> ytPage?.playlists.orEmpty()
+    }
+    val activeArtists = when (activeSource) {
+        SearchSource.SOUNDCLOUD -> artists
+        SearchSource.YANDEX -> yandexArtists
+        SearchSource.YOUTUBE -> ytPage?.artists.orEmpty()
+    }
     val topResult = remember(activeQuery, activeAlbums, activePlaylists) {
         pickTopResult(activeQuery, activeAlbums, activePlaylists)
     }
@@ -3318,10 +3399,10 @@ private fun SearchScreen(
             SearchField(
                 query = activeQuery,
                 onQueryChange = { newQuery ->
-                    if (searchInYandex) {
-                        onYandexQueryChange(newQuery)
-                    } else {
-                        onQueryChange(newQuery)
+                    when (activeSource) {
+                        SearchSource.SOUNDCLOUD -> onQueryChange(newQuery)
+                        SearchSource.YANDEX -> onYandexQueryChange(newQuery)
+                        SearchSource.YOUTUBE -> onYtQueryChange(newQuery)
                     }
                 },
                 focusRequester = focusRequester,
@@ -3329,16 +3410,25 @@ private fun SearchScreen(
             )
         }
 
-        item(key = "search-source") {
-            SegmentedControl(
-                items = listOf("SoundCloud", "Яндекс Музыка"),
-                selectedIndex = if (searchInYandex) 1 else 0,
-                onSelectedIndexChanged = { index ->
-                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                    onSearchSourceChanged(index == 1)
-                },
-                modifier = Modifier.padding(top = 12.dp)
-            )
+        // Only when there is a choice: services not connected in settings aren't offered.
+        if (sources.size > 1) {
+            item(key = "search-source") {
+                SegmentedControl(
+                    items = sources.map { option ->
+                        when (option) {
+                            SearchSource.SOUNDCLOUD -> "SoundCloud"
+                            SearchSource.YANDEX -> if (sources.size > 2) "Яндекс" else "Яндекс Музыка"
+                            SearchSource.YOUTUBE -> if (sources.size > 2) "YouTube" else "YouTube Music"
+                        }
+                    },
+                    selectedIndex = sources.indexOf(activeSource),
+                    onSelectedIndexChanged = { index ->
+                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                        onSearchSourceChanged(sources[index])
+                    },
+                    modifier = Modifier.padding(top = 12.dp)
+                )
+            }
         }
 
         if (activeLoading) {
@@ -3351,36 +3441,6 @@ private fun SearchScreen(
             item(key = "search-error") {
                 Box(modifier = Modifier.padding(top = 16.dp)) { MessageCard(activeError) }
             }
-        }
-
-        if (searchInYandex && !hasYandexToken) {
-            item(key = "search-yandex-login") {
-                Surface(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(top = 20.dp),
-                    shape = RoundedCornerShape(32.dp),
-                    color = PanelColors.container,
-                    contentColor = PanelColors.content
-                ) {
-                    Column(
-                        modifier = Modifier.padding(24.dp),
-                        verticalArrangement = Arrangement.spacedBy(14.dp)
-                    ) {
-                        OnPanelChip(text = "Яндекс Музыка")
-                        Text(
-                            text = "Войдите в Яндекс Музыку, чтобы искать треки.",
-                            style = MaterialTheme.typography.titleLarge
-                        )
-                        PanelPrimaryButton(
-                            text = "Перейти в настройки",
-                            icon = Icons.Default.Settings,
-                            onClick = onOpenSettings
-                        )
-                    }
-                }
-            }
-            return@LazyColumn
         }
 
         if (topResult != null) {
@@ -3474,7 +3534,7 @@ private fun SearchScreen(
             val rowCount = activeTracks.size + if (showLoadMore) 1 else 0
             itemsIndexed(
                 activeTracks,
-                key = { _, track -> "${if (searchInYandex) "yandex" else "sc"}-search-${track.id}" }
+                key = { _, track -> "${activeSource.name}-search-${track.id}" }
             ) { index, track ->
                 val favorite = favoritesMap[track.id]
                 TrackCard(
@@ -4778,6 +4838,8 @@ private fun TrackDetailScreen(
     positionMs: Long,
     durationMs: Long,
     lyrics: List<LyricLine>?,
+    video: com.example.myapplication.data.TrackVideo?,
+    livePosition: () -> Long,
     onBack: () -> Unit,
     onTogglePlay: () -> Unit,
     onSeek: (Long) -> Unit,
@@ -4811,6 +4873,23 @@ private fun TrackDetailScreen(
         animationSpec = tween(durationMillis = 300),
         label = "blurRadius"
     )
+    // Lyrics take the cover's place: it blurs into a backdrop behind them.
+    val coverBlur by animateDpAsState(
+        targetValue = if (lyricsShown) 28.dp else 0.dp,
+        animationSpec = tween(durationMillis = 350),
+        label = "lyricsCoverBlur"
+    )
+
+    // A music video plays in the cover's place. A vertical one (Yandex's videoshots) fills the
+    // whole player instead, and the panel turns to frosted glass over it.
+    val videoState = rememberPlayerVideoState(video, isPlaying, livePosition)
+    val videoShown by animateFloatAsState(
+        targetValue = if (videoState?.showing == true) 1f else 0f,
+        animationSpec = tween(durationMillis = 500),
+        label = "videoShown"
+    )
+    val immersiveVideo = videoState?.takeIf { it.isPortrait }
+    val frost = immersiveVideo?.let { rememberVideoFrost(it) }
 
     Box(
         modifier = Modifier
@@ -4828,6 +4907,24 @@ private fun TrackDetailScreen(
                 )
             }
     ) {
+        if (immersiveVideo != null) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .graphicsLayer { alpha = videoShown }
+                    .blur(coverBlur + blurRadius)
+            ) {
+                VideoSurface(state = immersiveVideo, modifier = Modifier.fillMaxSize())
+                // Keeps the status bar and the buttons over the video legible.
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(140.dp)
+                        .align(Alignment.TopCenter)
+                        .background(Brush.verticalGradient(listOf(Color.Black.copy(alpha = 0.38f), Color.Transparent)))
+                )
+            }
+        }
         Box(
             modifier = Modifier
                 .fillMaxSize()
@@ -4835,20 +4932,22 @@ private fun TrackDetailScreen(
         ) {
             PlayerLayout(
                 artwork = {
-                    // Lyrics take the cover's place: it blurs into a backdrop behind them.
-                    val coverBlur by animateDpAsState(
-                        targetValue = if (lyricsShown) 28.dp else 0.dp,
-                        animationSpec = tween(durationMillis = 350),
-                        label = "lyricsCoverBlur"
-                    )
                     Box(modifier = Modifier.fillMaxSize()) {
-                        Box(modifier = Modifier.fillMaxSize().blur(coverBlur)) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                // Over a vertical video the cover gives way to it once it plays.
+                                .graphicsLayer { alpha = if (immersiveVideo != null) 1f - videoShown else 1f }
+                                .blur(coverBlur)
+                        ) {
                             PlayerArtwork(
                                 track = track,
                                 isPlaying = isPlaying,
                                 showLoading = showLoading,
                                 vibrator = vibrator,
-                                onLongPress = onLongPressCover
+                                onLongPress = onLongPressCover,
+                                video = videoState?.takeIf { immersiveVideo == null },
+                                videoShown = videoShown
                             )
                         }
                         AnimatedVisibility(
@@ -4867,6 +4966,17 @@ private fun TrackDetailScreen(
                 },
                 panel = {
                     PlayerPanel(
+                        glass = if (immersiveVideo != null && frost != null && videoShown > 0f) {
+                            {
+                                FrostedVideoGlass(
+                                    state = immersiveVideo,
+                                    frost = frost,
+                                    tint = PanelColors.container.copy(alpha = 0.42f)
+                                )
+                            }
+                        } else {
+                            null
+                        },
                         track = track,
                         activeQueue = activeQueue,
                         isFavorite = isFavorite,
@@ -5017,7 +5127,9 @@ private fun PlayerArtwork(
     isPlaying: Boolean,
     showLoading: Boolean,
     vibrator: android.os.Vibrator?,
-    onLongPress: () -> Unit
+    onLongPress: () -> Unit,
+    video: PlayerVideoState? = null,
+    videoShown: Float = 0f
 ) {
     val haptic = LocalHapticFeedback.current
     val coroutineScope = rememberCoroutineScope()
@@ -5060,17 +5172,30 @@ private fun PlayerArtwork(
             },
         contentAlignment = Alignment.Center
     ) {
-        AsyncImage(
-            model = artworkUrlForSize(track.artworkUrl, 500.dp),
-            contentDescription = null,
+        Box(
             modifier = Modifier
                 .fillMaxSize()
                 .graphicsLayer {
                     scaleX = playScale * pressScale.value
                     scaleY = playScale * pressScale.value
-                },
-            contentScale = ContentScale.Crop
-        )
+                }
+        ) {
+            AsyncImage(
+                model = artworkUrlForSize(track.artworkUrl, 500.dp),
+                contentDescription = null,
+                modifier = Modifier.fillMaxSize(),
+                contentScale = ContentScale.Crop
+            )
+            // The music video, cropped to the cover's frame, fades in over it once it plays.
+            if (video != null) {
+                VideoSurface(
+                    state = video,
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .graphicsLayer { alpha = videoShown }
+                )
+            }
+        }
 
         // Keeps the status bar and the buttons over the cover legible on bright artwork.
         Box(
@@ -5117,9 +5242,13 @@ private fun OverArtworkButton(
     }
 }
 
-/** The colour block: title, artists, seek bar, transport and what plays next. */
+/**
+ * The colour block: title, artists, seek bar, transport and what plays next. With [glass] it
+ * stands on that (frosted video) instead of its solid colour.
+ */
 @Composable
 private fun PlayerPanel(
+    glass: (@Composable BoxScope.() -> Unit)? = null,
     track: SoundCloudTrack,
     activeQueue: List<SoundCloudTrack>,
     isFavorite: Boolean,
@@ -5149,157 +5278,160 @@ private fun PlayerPanel(
     Surface(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(topStart = 44.dp, topEnd = 44.dp),
-        color = PanelColors.container,
+        color = if (glass != null) Color.Transparent else PanelColors.container,
         contentColor = onPanel
     ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .navigationBarsPadding()
-                .padding(start = 24.dp, top = 24.dp, end = 24.dp, bottom = 16.dp)
-        ) {
-            OnPanelChip(
-                text = buildString {
-                    append(
-                        when {
-                            track.urn?.startsWith("yandex:") == true -> "Яндекс Музыка"
-                            track.youTubeVideoId != null -> "YouTube Music"
-                            else -> "SoundCloud"
-                        }
-                    )
-                    if (downloadState == DownloadState.DOWNLOADED) append(" · на устройстве")
-                }
-            )
-            Spacer(modifier = Modifier.height(12.dp))
-            Text(
-                text = track.title ?: "Unknown Track",
-                style = MaterialTheme.typography.headlineMedium,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis
-            )
-            Spacer(modifier = Modifier.height(10.dp))
-
-            // Every credited artist gets its own tappable chip: a collaboration used to show a
-            // single name with no way to reach anyone else on the track.
-            val credited = remember(track) {
-                track.artists?.takeIf { it.isNotEmpty() } ?: listOfNotNull(track.user)
-            }
-            Row(
+        Box {
+            glass?.invoke(this)
+            Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .horizontalScroll(rememberScrollState()),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    .navigationBarsPadding()
+                    .padding(start = 24.dp, top = 24.dp, end = 24.dp, bottom = 16.dp)
             ) {
-                if (credited.isEmpty()) {
-                    Text(
-                        text = "Unknown Artist",
-                        style = MaterialTheme.typography.titleSmall,
-                        color = onPanel.copy(alpha = 0.8f)
-                    )
+                OnPanelChip(
+                    text = buildString {
+                        append(
+                            when {
+                                track.urn?.startsWith("yandex:") == true -> "Яндекс Музыка"
+                                track.youTubeVideoId != null -> "YouTube Music"
+                                else -> "SoundCloud"
+                            }
+                        )
+                        if (downloadState == DownloadState.DOWNLOADED) append(" · на устройстве")
+                    }
+                )
+                Spacer(modifier = Modifier.height(12.dp))
+                Text(
+                    text = track.title ?: "Unknown Track",
+                    style = MaterialTheme.typography.headlineMedium,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Spacer(modifier = Modifier.height(10.dp))
+
+                // Every credited artist gets its own tappable chip: a collaboration used to show a
+                // single name with no way to reach anyone else on the track.
+                val credited = remember(track) {
+                    track.artists?.takeIf { it.isNotEmpty() } ?: listOfNotNull(track.user)
                 }
-                credited.forEach { artist ->
-                    Surface(
-                        onClick = {
-                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                            onArtistClick(artist)
-                        },
-                        shape = CircleShape,
-                        color = onPanel.copy(alpha = 0.12f),
-                        contentColor = onPanel
-                    ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    if (credited.isEmpty()) {
                         Text(
-                            text = artist.username ?: "Unknown Artist",
+                            text = "Unknown Artist",
                             style = MaterialTheme.typography.titleSmall,
-                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 7.dp),
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
+                            color = onPanel.copy(alpha = 0.8f)
                         )
                     }
+                    credited.forEach { artist ->
+                        Surface(
+                            onClick = {
+                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                onArtistClick(artist)
+                            },
+                            shape = CircleShape,
+                            color = onPanel.copy(alpha = 0.12f),
+                            contentColor = onPanel
+                        ) {
+                            Text(
+                                text = artist.username ?: "Unknown Artist",
+                                style = MaterialTheme.typography.titleSmall,
+                                modifier = Modifier.padding(horizontal = 14.dp, vertical = 7.dp),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                    }
                 }
-            }
 
-            Spacer(modifier = Modifier.height(14.dp))
-            PlayerSeekBar(
-                trackId = track.id,
-                positionMs = positionMs,
-                durationMs = durationMs,
-                vibrator = vibrator,
-                onSeek = onSeek
-            )
+                Spacer(modifier = Modifier.height(14.dp))
+                PlayerSeekBar(
+                    trackId = track.id,
+                    positionMs = positionMs,
+                    durationMs = durationMs,
+                    vibrator = vibrator,
+                    onSeek = onSeek
+                )
 
-            Spacer(modifier = Modifier.height(10.dp))
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                PanelIconButton(
-                    icon = if (isFavorite) Icons.Rounded.Favorite else Icons.Rounded.FavoriteBorder,
-                    contentDescription = if (isFavorite) "Убрать из любимых" else "В любимые",
-                    onClick = {
-                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                        onFavoriteClick()
-                    },
-                    selected = isFavorite,
-                    size = 48.dp
-                )
-                PanelIconButton(
-                    icon = Icons.Rounded.SkipPrevious,
-                    contentDescription = "Предыдущий трек",
-                    onClick = onPrevious,
-                    size = 68.dp,
-                    iconSize = 32.dp
-                )
-                PanelPlayButton(isPlaying = isPlaying, onClick = onTogglePlay)
-                PanelIconButton(
-                    icon = Icons.Rounded.SkipNext,
-                    contentDescription = "Следующий трек",
-                    onClick = onNext,
-                    size = 68.dp,
-                    iconSize = 32.dp
-                )
-                PanelIconButton(
-                    icon = Icons.Rounded.Shuffle,
-                    contentDescription = if (shuffleEnabled) "Перемешивание включено" else "Перемешать",
-                    onClick = {
-                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                        onShuffle()
-                    },
-                    selected = shuffleEnabled,
-                    size = 48.dp
-                )
-            }
+                Spacer(modifier = Modifier.height(10.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    PanelIconButton(
+                        icon = if (isFavorite) Icons.Rounded.Favorite else Icons.Rounded.FavoriteBorder,
+                        contentDescription = if (isFavorite) "Убрать из любимых" else "В любимые",
+                        onClick = {
+                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                            onFavoriteClick()
+                        },
+                        selected = isFavorite,
+                        size = 48.dp
+                    )
+                    PanelIconButton(
+                        icon = Icons.Rounded.SkipPrevious,
+                        contentDescription = "Предыдущий трек",
+                        onClick = onPrevious,
+                        size = 68.dp,
+                        iconSize = 32.dp
+                    )
+                    PanelPlayButton(isPlaying = isPlaying, onClick = onTogglePlay)
+                    PanelIconButton(
+                        icon = Icons.Rounded.SkipNext,
+                        contentDescription = "Следующий трек",
+                        onClick = onNext,
+                        size = 68.dp,
+                        iconSize = 32.dp
+                    )
+                    PanelIconButton(
+                        icon = Icons.Rounded.Shuffle,
+                        contentDescription = if (shuffleEnabled) "Перемешивание включено" else "Перемешать",
+                        onClick = {
+                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                            onShuffle()
+                        },
+                        selected = shuffleEnabled,
+                        size = 48.dp
+                    )
+                }
 
-            Spacer(modifier = Modifier.height(18.dp))
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(10.dp)
-            ) {
-                val currentIndex = activeQueue.indexOfFirst { it.id == track.id }
-                val nextTrack = if (currentIndex >= 0) activeQueue.getOrNull(currentIndex + 1) else null
-                QueuePeek(
-                    nextTrack = nextTrack,
-                    queueSize = activeQueue.size,
-                    lyricsAvailable = lyricsAvailable,
-                    lyricsShown = lyricsShown,
-                    onToggleLyrics = onToggleLyrics,
-                    onClick = onOpenQueue,
-                    modifier = Modifier.weight(1f)
-                )
-                PanelIconButton(
-                    icon = if (repeatMode == Player.REPEAT_MODE_ONE) Icons.Rounded.RepeatOne else Icons.Rounded.Repeat,
-                    contentDescription = when (repeatMode) {
-                        Player.REPEAT_MODE_ONE -> "Повтор трека"
-                        Player.REPEAT_MODE_ALL -> "Повтор очереди"
-                        else -> "Повтор выключен"
-                    },
-                    onClick = {
-                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                        onRepeat()
-                    },
-                    selected = repeatMode != Player.REPEAT_MODE_OFF,
-                    size = 64.dp
-                )
+                Spacer(modifier = Modifier.height(18.dp))
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    val currentIndex = activeQueue.indexOfFirst { it.id == track.id }
+                    val nextTrack = if (currentIndex >= 0) activeQueue.getOrNull(currentIndex + 1) else null
+                    QueuePeek(
+                        nextTrack = nextTrack,
+                        queueSize = activeQueue.size,
+                        lyricsAvailable = lyricsAvailable,
+                        lyricsShown = lyricsShown,
+                        onToggleLyrics = onToggleLyrics,
+                        onClick = onOpenQueue,
+                        modifier = Modifier.weight(1f)
+                    )
+                    PanelIconButton(
+                        icon = if (repeatMode == Player.REPEAT_MODE_ONE) Icons.Rounded.RepeatOne else Icons.Rounded.Repeat,
+                        contentDescription = when (repeatMode) {
+                            Player.REPEAT_MODE_ONE -> "Повтор трека"
+                            Player.REPEAT_MODE_ALL -> "Повтор очереди"
+                            else -> "Повтор выключен"
+                        },
+                        onClick = {
+                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                            onRepeat()
+                        },
+                        selected = repeatMode != Player.REPEAT_MODE_OFF,
+                        size = 64.dp
+                    )
+                }
             }
         }
     }
@@ -7473,7 +7605,10 @@ private fun ArtistDetailScreen(
     var showAllTracks by remember(artist.id, artist.username) { mutableStateOf(false) }
     val shownTracks = if (showAllTracks) tracks else tracks.take(TOP_TRACKS)
     val totalTracks = maxOf(artist.trackCount ?: 0, tracks.size)
-    val canShowMore = !showAllTracks && (tracks.size > TOP_TRACKS || (!isAllTracksLoaded && totalTracks > TOP_TRACKS))
+    // YouTube Music doesn't say how many songs an artist has, only where to find them all.
+    val countKnown = artist.trackCount != null
+    val canShowMore = !showAllTracks &&
+        (tracks.size > TOP_TRACKS || (!isAllTracksLoaded && (totalTracks > TOP_TRACKS || !countKnown)))
 
     // The portrait is this screen's picture; it gets a quiet backdrop rather than the shapes.
     Box(
@@ -7508,7 +7643,7 @@ private fun ArtistDetailScreen(
                             text = "Популярные треки",
                             modifier = Modifier.padding(start = 16.dp, top = 8.dp, end = 8.dp, bottom = 8.dp),
                             actionLabel = when {
-                                canShowMore -> "Все $totalTracks"
+                                canShowMore -> if (countKnown) "Все $totalTracks" else "Все"
                                 showAllTracks && tracks.size > TOP_TRACKS -> "Свернуть"
                                 else -> null
                             },

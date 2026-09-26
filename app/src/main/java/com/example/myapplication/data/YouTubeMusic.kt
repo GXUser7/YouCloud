@@ -3,7 +3,10 @@ package com.example.myapplication.data
 import com.google.gson.JsonElement
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
@@ -49,6 +52,32 @@ data class YtShelf(
     val tracks: List<SoundCloudTrack>,
     val sets: List<SoundCloudPlaylist>
 )
+
+/** What a search found: songs a page at a time ([continuation] for the next), and the rest at once. */
+data class YtSearchPage(
+    val tracks: List<SoundCloudTrack>,
+    val artists: List<SoundCloudUser>,
+    val albums: List<SoundCloudPlaylist>,
+    val playlists: List<SoundCloudPlaylist>,
+    val continuation: String?
+)
+
+/**
+ * An artist's page: their top songs, the set that holds all of them ([allSongs], for "Все"), and
+ * their albums, then singles.
+ */
+data class YtArtistPage(
+    val artist: SoundCloudUser,
+    val topSongs: List<SoundCloudTrack>,
+    val allSongs: SoundCloudPlaylist?,
+    val releases: List<SoundCloudPlaylist>
+)
+
+/**
+ * A song's music video, and how the two timelines line up ([segments]; empty: one to one).
+ * [paired]: YouTube Music's own pairing, rather than a video found by search.
+ */
+data class YtMusicVideo(val videoId: String, val segments: List<VideoSegment>, val paired: Boolean)
 
 class YtMusicException(val code: Int, detail: String) : Exception("YouTube Music HTTP $code: $detail")
 
@@ -147,6 +176,130 @@ class YouTubeMusicClient(private val authProvider: () -> YtAuth?) {
         return watchQueue(json { addProperty("playlistId", playlistId) })
     }
 
+    /**
+     * Songs, artists, albums and community playlists for [query], each from the site's own
+     * filtered search: the unfiltered one mixes a few of each kind into a single list.
+     */
+    suspend fun search(query: String): YtSearchPage = coroutineScope {
+        val songs = async { searchShelf(query, FILTER_SONGS) }
+        // Extras: if one of them fails, the songs still show.
+        val artists = async { optional { searchShelf(query, FILTER_ARTISTS) } }
+        val albums = async { optional { searchShelf(query, FILTER_ALBUMS) } }
+        val playlists = async { optional { searchShelf(query, FILTER_PLAYLISTS) } }
+        val songShelf = songs.await()
+        YtSearchPage(
+            tracks = listRows(songShelf).mapNotNull { parseSongRow(it) }.distinctBy { it.id },
+            artists = listRows(artists.await()).mapNotNull(::parseListArtist).distinctBy { it.permalinkUrl },
+            albums = listRows(albums.await()).mapNotNull(::parseListSet).distinctBy { it.id },
+            playlists = listRows(playlists.await()).mapNotNull(::parseListSet).distinctBy { it.id },
+            continuation = songShelf.continuation()
+        )
+    }
+
+    /** The next page of a search's songs. */
+    suspend fun moreSongs(continuation: String): Pair<List<SoundCloudTrack>, String?> {
+        val shelf = post("search", JsonObject(), "&ctoken=$continuation&continuation=$continuation&type=next")
+            .at("continuationContents", "musicShelfContinuation")
+        return listRows(shelf).mapNotNull { parseSongRow(it) }.distinctBy { it.id } to shelf.continuation()
+    }
+
+    /** An artist's page (`UC…`). */
+    suspend fun artist(channelId: String): YtArtistPage {
+        val page = post("browse", json { addProperty("browseId", channelId) })
+        val header = page.at("header", "musicImmersiveHeaderRenderer")
+            ?: page.at("header", "musicVisualHeaderRenderer")
+        val name = header.runs("title") ?: ""
+        val sections = page.at(
+            "contents", "singleColumnBrowseResultsRenderer", "tabs", 0, "tabRenderer", "content",
+            "sectionListRenderer"
+        ).arr("contents")
+
+        val topShelf = sections.firstNotNullOfOrNull { it.at("musicShelfRenderer") }
+        val topSongs = listRows(topShelf).mapNotNull { parseSongRow(it, fallbackArtist = name) }.distinctBy { it.id }
+        // The shelf's title links to the playlist of all the artist's songs.
+        val allSongs = (topShelf.str("title", "runs", 0, "navigationEndpoint", "browseEndpoint", "browseId")
+            ?: topShelf.str("bottomEndpoint", "browseEndpoint", "browseId"))
+            ?.takeIf { it.startsWith("VL") }
+            ?.let { browseId ->
+                SoundCloudPlaylist(
+                    id = youTubeTrackId("set:$browseId"),
+                    title = topShelf.runs("title") ?: name,
+                    permalinkUrl = "$YT_SET_REF$browseId:${browseId.removePrefix("VL")}",
+                    user = SoundCloudUser(username = name)
+                )
+            }
+        val releases = sections.mapNotNull { it.at("musicCarouselShelfRenderer") }
+            .flatMap { shelf -> shelf.arr("contents").mapNotNull { item -> item.at("musicTwoRowItemRenderer")?.let(::parseTileSet) } }
+            // Albums before singles and the artist's playlists, as the page orders them.
+            .sortedBy { if (it.isAlbum == true) 0 else 1 }
+            .distinctBy { it.id }
+        val description = header.runs("description")
+            ?: sections.firstNotNullOfOrNull { it.at("musicDescriptionShelfRenderer") }.runs("description")
+        val listeners = header.runs("monthlyListenerCount")
+            ?: header.runs("subscriptionButton", "subscribeButtonRenderer", "subscriberCountText")
+        val artist = SoundCloudUser(
+            username = name,
+            avatarUrl = bestThumbnail(header.arr("thumbnail", "musicThumbnailRenderer", "thumbnail", "thumbnails"), PORTRAIT_SIZE),
+            description = description,
+            followersCount = listeners?.let(::parseCount),
+            permalinkUrl = YT_ARTIST_REF + channelId
+        )
+        return YtArtistPage(artist, topSongs, allSongs, releases)
+    }
+
+    /**
+     * The music video of the song [videoId] (null: a song from elsewhere, found by [title] and
+     * [artist]). YouTube Music pairs songs with their videos itself,
+     * and, for a signed-in listener, maps where the song's moments fall in the video. Without
+     * that, an official video found by search stands in, but only one as long as the song, so
+     * the two play in step.
+     */
+    suspend fun musicVideo(videoId: String?, title: String, artist: String?, durationMs: Long): YtMusicVideo? =
+        videoId?.let { counterpart(it) } ?: officialVideo(title, artist, durationMs)
+
+    private suspend fun counterpart(videoId: String): YtMusicVideo? {
+        val panel = post("next", json {
+            addProperty("videoId", videoId)
+            addProperty("enablePersistentPlaylistPanel", true)
+        }).findAll("playlistPanelVideoWrapperRenderer").firstOrNull() ?: return null
+        if (panel.str("primaryRenderer", "playlistPanelVideoRenderer", "videoId") != videoId) return null
+        val counterpart = panel.arr("counterpart").firstOrNull() ?: return null
+        val video = counterpart.str("counterpartRenderer", "playlistPanelVideoRenderer", "videoId") ?: return null
+        val segments = counterpart.arr("segmentMap", "segment").mapNotNull { segment ->
+            VideoSegment(
+                trackStartMs = segment.str("primaryVideoStartTimeMilliseconds")?.toLongOrNull() ?: return@mapNotNull null,
+                videoStartMs = segment.str("counterpartVideoStartTimeMilliseconds")?.toLongOrNull() ?: return@mapNotNull null,
+                durationMs = segment.str("durationMilliseconds")?.toLongOrNull() ?: return@mapNotNull null
+            )
+        }
+        return YtMusicVideo(video, segments, paired = true)
+    }
+
+    private suspend fun officialVideo(title: String, artist: String?, durationMs: Long): YtMusicVideo? {
+        if (durationMs <= 0) return null
+        val wanted = normalized(title)
+        if (wanted.isBlank()) return null
+        val shelf = searchShelf(listOfNotNull(artist, title).joinToString(" "), FILTER_VIDEOS)
+        return listRows(shelf).firstNotNullOfOrNull { row ->
+            val videoId = row.str("playlistItemData", "videoId") ?: return@firstNotNullOfOrNull null
+            val type = row.str(
+                "overlay", "musicItemThumbnailOverlayRenderer", "content", "musicPlayButtonRenderer",
+                "playNavigationEndpoint", "watchEndpoint", "watchEndpointMusicSupportedConfigs",
+                "watchEndpointMusicConfig", "musicVideoType"
+            )
+            val columns = flexColumns(row)
+            val videoTitle = normalized(columns.getOrNull(0).runsText())
+            val length = columns.getOrNull(1).durationRun()?.let(::parseDuration) ?: 0L
+            videoId.takeIf {
+                type == "MUSIC_VIDEO_TYPE_OMV" &&
+                    wanted in videoTitle &&
+                    // "Official Audio", "Lyric Video", "Visualizer": a still picture, or words.
+                    NOT_A_CLIP.none { it in videoTitle } &&
+                    kotlin.math.abs(length - durationMs) <= MATCHING_LENGTH_MS
+            }
+        }?.let { YtMusicVideo(it, emptyList(), paired = false) }
+    }
+
     suspend fun accountName(): String? {
         val header = post("account/account_menu", JsonObject()).at(
             "actions", 0, "openPopupAction", "popup", "multiPageMenuRenderer", "header",
@@ -205,14 +358,16 @@ class YouTubeMusicClient(private val authProvider: () -> YtAuth?) {
                 "playNavigationEndpoint", "watchEndpoint", "videoId"
             )
             ?: return null
-        val columns = row.arr("flexColumns").map { it.at("musicResponsiveListItemFlexColumnRenderer", "text") }
+        val columns = flexColumns(row)
         val title = columns.getOrNull(0).runsText() ?: return null
         val byline = columns.getOrNull(1)
         val artists = artistsOf(byline.arr("runs"))
             .ifEmpty { plainArtist(byline.runsText()) }
             .ifEmpty { plainArtist(fallbackArtist) }
-        val duration = row.arr("fixedColumns")
+        // A column of its own in playlists; the byline's last part in search results.
+        val duration = (row.arr("fixedColumns")
             .firstNotNullOfOrNull { it.at("musicResponsiveListItemFixedColumnRenderer", "text").runsText() }
+            ?: byline.durationRun())
             ?.let(::parseDuration) ?: 0L
         val artwork = bestThumbnail(row.arr("thumbnail", "musicThumbnailRenderer", "thumbnail", "thumbnails"))
             ?: fallbackArtwork
@@ -267,6 +422,63 @@ class YouTubeMusicClient(private val authProvider: () -> YtAuth?) {
         )
     }
 
+    /** An album or playlist row of a search. */
+    private fun parseListSet(row: JsonElement): SoundCloudPlaylist? {
+        val browse = row.at("navigationEndpoint", "browseEndpoint") ?: return null
+        val browseId = browse.str("browseId") ?: return null
+        val pageType = browse.str(
+            "browseEndpointContextSupportedConfigs", "browseEndpointContextMusicConfig", "pageType"
+        )
+        val isAlbum = pageType == "MUSIC_PAGE_TYPE_ALBUM" || browseId.startsWith("MPRE")
+        val isPlaylist = pageType == "MUSIC_PAGE_TYPE_PLAYLIST" || browseId.startsWith("VL")
+        if (!isAlbum && !isPlaylist) return null
+        val columns = flexColumns(row)
+        val title = columns.getOrNull(0).runsText() ?: return null
+        val byline = columns.getOrNull(1)
+        // "Альбом • Кишлак • 2026", "Сингл • …", "Автор • 2,9 тыс. просмотров".
+        val parts = byline.runsText()?.split(" • ").orEmpty()
+        val owner = artistsOf(byline.arr("runs")).joinToString(", ") { it.username.orEmpty() }
+            .ifBlank { parts.getOrNull(if (isAlbum) 1 else 0).orEmpty() }
+        val play = row.at(
+            "overlay", "musicItemThumbnailOverlayRenderer", "content", "musicPlayButtonRenderer",
+            "playNavigationEndpoint"
+        )
+        val playlistId = play.str("watchPlaylistEndpoint", "playlistId")
+            ?: play.str("watchEndpoint", "playlistId")
+            ?: browseId.takeIf { it.startsWith("VL") }?.removePrefix("VL")
+            ?: ""
+        return SoundCloudPlaylist(
+            id = youTubeTrackId("set:$browseId"),
+            title = title,
+            artworkUrl = bestThumbnail(row.arr("thumbnail", "musicThumbnailRenderer", "thumbnail", "thumbnails")),
+            permalinkUrl = "$YT_SET_REF$browseId:$playlistId",
+            user = SoundCloudUser(username = owner),
+            isAlbum = isAlbum,
+            setType = if (!isAlbum) null else when (parts.firstOrNull()?.lowercase()) {
+                "сингл", "single" -> "single"
+                "ep", "мини-альбом" -> "ep"
+                else -> "album"
+            },
+            releaseDate = parts.lastOrNull()?.trim()?.takeIf { isAlbum && it.length == 4 && it.all(Char::isDigit) }
+        )
+    }
+
+    /** An artist row of a search. */
+    private fun parseListArtist(row: JsonElement): SoundCloudUser? {
+        val channelId = row.str("navigationEndpoint", "browseEndpoint", "browseId")
+            ?.takeIf { it.startsWith("UC") } ?: return null
+        val columns = flexColumns(row)
+        val name = columns.getOrNull(0).runsText() ?: return null
+        // "Исполнитель • 411 тыс. слушателей в месяц"
+        val audience = columns.getOrNull(1).runsText()?.substringAfter(" • ", "")
+        return SoundCloudUser(
+            username = name,
+            avatarUrl = bestThumbnail(row.arr("thumbnail", "musicThumbnailRenderer", "thumbnail", "thumbnails")),
+            followersCount = audience?.takeIf { it.isNotBlank() }?.let(::parseCount),
+            permalinkUrl = YT_ARTIST_REF + channelId
+        )
+    }
+
     private fun track(
         videoId: String,
         title: String,
@@ -299,11 +511,42 @@ class YouTubeMusicClient(private val authProvider: () -> YtAuth?) {
         listOfNotNull(byline?.substringBefore(" • ")?.trim()?.takeIf { it.isNotEmpty() }
             ?.let { SoundCloudUser(username = it) })
 
-    private fun bestThumbnail(thumbnails: List<JsonElement>): String? {
+    private fun bestThumbnail(thumbnails: List<JsonElement>, size: Int = 544): String? {
         val url = thumbnails.lastOrNull()?.str("url") ?: return null
         val absolute = if (url.startsWith("//")) "https:$url" else url
         // Song and album art is served at any size; ask for one fit for the player.
-        return absolute.replace(SIZE_SUFFIX, "=w544-h544")
+        return absolute.replace(SIZE_SUFFIX, "=w$size-h$size")
+    }
+
+    /** "411 тыс. слушателей в месяц", "1,2 млн" → a count. */
+    private fun parseCount(text: String): Int? {
+        val match = COUNT.find(text.replace('\u00a0', ' ')) ?: return null
+        val number = match.groupValues[1].replace(',', '.').toDoubleOrNull() ?: return null
+        val scale = when (match.groupValues[2].lowercase()) {
+            "тыс", "k" -> 1_000.0
+            "млн", "m" -> 1_000_000.0
+            "млрд", "b" -> 1_000_000_000.0
+            else -> 1.0
+        }
+        return (number * scale).toLong().coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
+    }
+
+    /** Letters and digits only, lower case: titles compared past their punctuation. */
+    private fun normalized(text: String?): String =
+        text.orEmpty().lowercase().replace(NON_WORD, " ").trim()
+
+    private suspend fun searchShelf(query: String, params: String): JsonElement? =
+        post("search", json {
+            addProperty("query", query)
+            addProperty("params", params)
+        }).findAll("musicShelfRenderer").firstOrNull()
+
+    private suspend fun <T> optional(block: suspend () -> T): T? = try {
+        block()
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        null
     }
 
     private fun parseDuration(text: String): Long = text.split(':')
@@ -356,6 +599,19 @@ class YouTubeMusicClient(private val authProvider: () -> YtAuth?) {
     }
 
     companion object {
+        // The search page's filter chips, as it sends them.
+        private const val FILTER_SONGS = "EgWKAQIIAWoQEAUQCRADEAQQChAREBAQFQ=="
+        private const val FILTER_VIDEOS = "EgWKAQIQAWoQEAUQCRADEAQQChAREBAQFQ=="
+        private const val FILTER_ALBUMS = "EgWKAQIYAWoQEAUQCRADEAQQChAREBAQFQ=="
+        private const val FILTER_ARTISTS = "EgWKAQIgAWoQEAUQCRADEAQQChAREBAQFQ=="
+        private const val FILTER_PLAYLISTS = "EgeKAQQoAEABahAQBRAJEAMQBBAKEBEQEBAV"
+
+        private const val PORTRAIT_SIZE = 900
+        private const val MATCHING_LENGTH_MS = 3_000L
+        private val NOT_A_CLIP = listOf("audio", "lyric", "visualizer", "visualiser", "текст")
+        private val COUNT = Regex("(\\d+(?:[.,]\\d+)?)\\s*(тыс|млн|млрд|k|m|b)?", RegexOption.IGNORE_CASE)
+        private val NON_WORD = Regex("[^\\p{L}\\p{N}]+")
+
         private const val ORIGIN = "https://music.youtube.com"
         private const val API = "$ORIGIN/youtubei/v1/"
         private const val USER_AGENT =
@@ -407,6 +663,21 @@ private fun JsonElement?.runs(vararg path: Any): String? = at(*path).runsText()
 
 private fun JsonElement?.runsText(): String? =
     arr("runs").joinToString("") { it.str("text").orEmpty() }.takeIf { it.isNotBlank() }
+
+private fun JsonElement?.continuation(): String? = str("continuations", 0, "nextContinuationData", "continuation")
+
+/** The rows of a list shelf. */
+private fun listRows(shelf: JsonElement?): List<JsonElement> =
+    shelf.arr("contents").mapNotNull { it.at("musicResponsiveListItemRenderer") }
+
+private fun flexColumns(row: JsonElement): List<JsonElement?> =
+    row.arr("flexColumns").map { it.at("musicResponsiveListItemFlexColumnRenderer", "text") }
+
+/** The "3:20" among a byline's parts. */
+private fun JsonElement?.durationRun(): String? =
+    arr("runs").map { it.str("text").orEmpty().trim() }.lastOrNull { DURATION_TEXT.matches(it) }
+
+private val DURATION_TEXT = Regex("\\d{1,2}(:\\d{2}){1,2}")
 
 /** Every value under [key], anywhere below. */
 private fun JsonElement.findAll(key: String, into: MutableList<JsonElement> = mutableListOf()): List<JsonElement> {

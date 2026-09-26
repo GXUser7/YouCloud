@@ -102,6 +102,11 @@ interface YandexMusicService {
         @Field("track-ids") trackIds: String
     ): YandexTracksResponse
 
+    @GET("artists/{artistId}/blocks/artist-clips")
+    suspend fun getArtistClips(
+        @Path("artistId") artistId: String
+    ): YandexArtistClipsResponse
+
     @GET("albums/{albumId}/with-tracks")
     suspend fun getAlbumWithTracks(
         @Path("albumId") albumId: Long

@@ -29,7 +29,7 @@ import java.util.concurrent.TimeUnit
  */
 object YouTubeStreams {
     /** [userAgent]: the one to fetch [url] with — the client it was issued to. */
-    data class Audio(
+    data class Stream(
         val url: String,
         val mimeType: String?,
         val contentLength: Long,
@@ -39,7 +39,7 @@ object YouTubeStreams {
     private const val TAG = "YouTubeStreams"
     private const val USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; rv:140.0) Gecko/20100101 Firefox/140.0"
 
-    private val cache = ConcurrentHashMap<String, Pair<Audio, Long>>()
+    private val cache = ConcurrentHashMap<String, Pair<Stream, Long>>()
     private val http = OkHttpClient.Builder()
         .connectTimeout(15, TimeUnit.SECONDS)
         .readTimeout(30, TimeUnit.SECONDS)
@@ -53,19 +53,28 @@ object YouTubeStreams {
      *
      * @param auth the YouTube Music session, when there is one.
      */
-    fun resolve(context: Context, videoId: String, auth: YtAuth? = null): Audio? {
-        cache[videoId]?.let { (audio, validUntil) ->
-            if (System.currentTimeMillis() < validUntil) return audio
+    fun resolve(context: Context, videoId: String, auth: YtAuth? = null): Stream? =
+        cached("audio:$videoId") {
+            YtDlp.resolve(context, videoId, auth, YtDlp.Kind.AUDIO) ?: anonymousStream(videoId)
         }
-        val audio = YtDlp.resolve(context, videoId, auth) ?: anonymousStream(videoId) ?: return null
-        val expiresAt = Uri.parse(audio.url).getQueryParameter("expire")?.toLongOrNull()?.times(1000)
+
+    /** The picture of a music video, without its sound: the player shows it in the cover's place. */
+    fun resolveVideo(context: Context, videoId: String, auth: YtAuth? = null): Stream? =
+        cached("video:$videoId") { YtDlp.resolve(context, videoId, auth, YtDlp.Kind.VIDEO) }
+
+    private inline fun cached(key: String, resolve: () -> Stream?): Stream? {
+        cache[key]?.let { (stream, validUntil) ->
+            if (System.currentTimeMillis() < validUntil) return stream
+        }
+        val stream = resolve() ?: return null
+        val expiresAt = Uri.parse(stream.url).getQueryParameter("expire")?.toLongOrNull()?.times(1000)
             ?: (System.currentTimeMillis() + TimeUnit.HOURS.toMillis(5))
-        cache[videoId] = audio to (expiresAt - TimeUnit.MINUTES.toMillis(10))
-        return audio
+        cache[key] = stream to (expiresAt - TimeUnit.MINUTES.toMillis(10))
+        return stream
     }
 
     /** NewPipe's own extraction, signed out. */
-    private fun anonymousStream(videoId: String): Audio? {
+    private fun anonymousStream(videoId: String): Stream? {
         ensureInitialised()
         return try {
             val info = StreamInfo.getInfo(ServiceList.YouTube, "https://www.youtube.com/watch?v=$videoId")
@@ -76,7 +85,7 @@ object YouTubeStreams {
             val best = streams.filter { it.format == MediaFormat.M4A }.maxByOrNull { it.averageBitrate }
                 ?: streams.maxByOrNull { it.averageBitrate }
                 ?: return null
-            Audio(
+            Stream(
                 url = best.content,
                 mimeType = best.format?.mimeType,
                 contentLength = Uri.parse(best.content).getQueryParameter("clen")?.toLongOrNull() ?: -1L

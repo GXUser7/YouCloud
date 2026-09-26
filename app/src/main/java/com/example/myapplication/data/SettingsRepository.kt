@@ -140,6 +140,14 @@ class SettingsRepository(
         preferences.edit().putBoolean(KEY_PLAYER_COVER_COLORS, enabled).apply()
     }
 
+    // Music videos in the cover's place, and Yandex's looping videoshots behind the player.
+    val playerVideos = MutableStateFlow(preferences.getBoolean(KEY_PLAYER_VIDEOS, true))
+
+    fun setPlayerVideos(enabled: Boolean) {
+        playerVideos.value = enabled
+        preferences.edit().putBoolean(KEY_PLAYER_VIDEOS, enabled).apply()
+    }
+
     // Asking GitHub for a new version twice a day; see UpdateRepository.
     val updateAutoCheck = MutableStateFlow(preferences.getBoolean(KEY_UPDATE_AUTO_CHECK, true))
 
@@ -301,6 +309,7 @@ class SettingsRepository(
         const val KEY_YTM_ACCOUNT = "ytmusic_account"
         const val KEY_SHOW_DEBUG_PERCENTAGE = "show_debug_percentage"
         const val KEY_BACKGROUND_MOTION = "background_motion"
+        const val KEY_PLAYER_VIDEOS = "player_videos"
         const val KEY_PLAYER_COVER_COLORS = "player_cover_colors"
         const val KEY_UPDATE_AUTO_CHECK = "update_auto_check"
         const val KEY_LAST_UPDATE_CHECK = "last_update_check"

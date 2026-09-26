@@ -16,6 +16,8 @@ import com.example.myapplication.data.YT_ID_BASE
 import com.example.myapplication.data.YouTubeMusicClient
 import com.example.myapplication.data.YouTubeStreams
 import com.example.myapplication.data.YtDlp
+import com.example.myapplication.data.TrackVideo
+import com.example.myapplication.data.YT_SET_REF
 import com.example.myapplication.data.YtAuth
 import com.example.myapplication.data.YtShelf
 import com.example.myapplication.data.isProgressiveSource
@@ -56,6 +58,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.distinctUntilChangedBy
 import kotlinx.coroutines.flow.drop
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.SharingStarted
@@ -84,6 +87,18 @@ enum class AppScreen {
     YANDEX_PLAYLIST_DETAIL,
     YTM_SET_DETAIL
 }
+
+/** Where search looks. YouTube Music and Yandex only once they are connected. */
+enum class SearchSource { SOUNDCLOUD, YANDEX, YOUTUBE }
+
+/** A YouTube Music search: what was asked, and what came back so far. */
+data class YtSearchState(
+    val query: String = "",
+    val page: com.example.myapplication.data.YtSearchPage? = null,
+    val loading: Boolean = false,
+    val loadingMore: Boolean = false,
+    val error: String? = null
+)
 
 class MusicViewModel(
     context: Context,
@@ -201,22 +216,74 @@ class MusicViewModel(
         }
     }
 
-    // true = search in Yandex, false = search in SoundCloud
-    private val _searchInYandex = MutableStateFlow(false)
-    val searchInYandex = _searchInYandex.asStateFlow()
+    private val _searchSource = MutableStateFlow(SearchSource.SOUNDCLOUD)
+    val searchSource = _searchSource.asStateFlow()
 
-    fun setSearchSource(useYandex: Boolean) {
-        _searchInYandex.value = useYandex
-        // Re-run search in the new source if there's already a query
-        val q = _searchQuery.value
-        if (q.length >= 3) {
-            if (useYandex) {
-                clearSoundCloudSearchResults()
-                onYandexSearchQueryChange(q)
-            } else {
-                _yandexTracks.value = emptyList()
-                _yandexHasMore.value = false
-                onSearchQueryChange(q)
+    /** Switches search to [source], asking it what the one before was asked. */
+    fun setSearchSource(source: SearchSource) {
+        val query = when (_searchSource.value) {
+            SearchSource.SOUNDCLOUD -> _searchQuery.value
+            SearchSource.YANDEX -> _yandexSearchQuery.value
+            SearchSource.YOUTUBE -> _ytSearch.value.query
+        }
+        _searchSource.value = source
+        when (source) {
+            SearchSource.SOUNDCLOUD -> if (query != _searchQuery.value) onSearchQueryChange(query)
+            SearchSource.YANDEX -> if (query != _yandexSearchQuery.value) onYandexSearchQueryChange(query)
+            SearchSource.YOUTUBE -> if (query != _ytSearch.value.query) onYtSearchQueryChange(query)
+        }
+    }
+
+    private val _ytSearch = MutableStateFlow(YtSearchState())
+    val ytSearch = _ytSearch.asStateFlow()
+    private var ytSearchJob: Job? = null
+
+    fun onYtSearchQueryChange(query: String) {
+        ytSearchJob?.cancel()
+        if (query.isBlank()) {
+            _ytSearch.value = YtSearchState(query = query)
+            return
+        }
+        _ytSearch.value = _ytSearch.value.copy(query = query, loadingMore = false, error = null)
+        ytSearchJob = viewModelScope.launch {
+            delay(400)
+            _ytSearch.value = _ytSearch.value.copy(loading = true)
+            try {
+                val page = ytMusic.search(query.trim())
+                _ytSearch.value = _ytSearch.value.copy(page = page, loading = false)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.e("MusicViewModel", "YouTube Music search failed", e)
+                _ytSearch.value = _ytSearch.value.copy(
+                    page = null,
+                    loading = false,
+                    error = "Ошибка поиска: ${readableMessage(e)}"
+                )
+            }
+        }
+    }
+
+    fun loadMoreYtSearchTracks() {
+        val state = _ytSearch.value
+        val token = state.page?.continuation ?: return
+        if (state.loading || state.loadingMore) return
+        // Shares the search job so that typing a new query cancels a page still in flight.
+        ytSearchJob = viewModelScope.launch {
+            _ytSearch.value = state.copy(loadingMore = true)
+            try {
+                val (more, next) = ytMusic.moreSongs(token)
+                val current = _ytSearch.value
+                val page = current.page ?: return@launch
+                _ytSearch.value = current.copy(
+                    page = page.copy(tracks = (page.tracks + more).distinctBy { it.id }, continuation = next),
+                    loadingMore = false
+                )
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.e("MusicViewModel", "More YouTube Music results failed", e)
+                _ytSearch.value = _ytSearch.value.copy(loadingMore = false)
             }
         }
     }
@@ -395,6 +462,13 @@ class MusicViewModel(
     private val _currentPlayingTrack = MutableStateFlow<SoundCloudTrack?>(null)
     val currentPlayingTrack = _currentPlayingTrack.asStateFlow()
 
+    /** The playing track's music video or videoshot, once found; see [findTrackVideo]. */
+    private val _trackVideo = MutableStateFlow<TrackVideo?>(null)
+    val trackVideo = _trackVideo.asStateFlow()
+
+    // Tracks looked up lately, with or without a video, so reopening the player doesn't ask again.
+    private val videoLookups = java.util.concurrent.ConcurrentHashMap<Long, Pair<TrackVideo?, Long>>()
+
     private val _soundcloudLikesSyncStatus = MutableStateFlow(LikesSyncStatus())
     val soundcloudLikesSyncStatus = _soundcloudLikesSyncStatus.asStateFlow()
 
@@ -461,6 +535,39 @@ class MusicViewModel(
                         .onFailure { Log.w("MusicViewModel", "Couldn't save the queue", it) }
                 }
             }
+        }
+
+        viewModelScope.launch {
+            // Looked up only while the full player is open: what plays in the background has
+            // no picture to show, and every lookup costs traffic (and yt-dlp, on YouTube).
+            combine(
+                _currentPlayingTrack,
+                _selectedTrack.map { it != null },
+                settingsRepository.playerVideos
+            ) { track, playerOpen, enabled -> track.takeIf { playerOpen && enabled } }
+                .distinctUntilChangedBy { it?.id }
+                .collectLatest { track ->
+                    if (_trackVideo.value?.trackId != track?.id) _trackVideo.value = null
+                    if (track == null) return@collectLatest
+                    videoLookups[track.id]?.let { (video, at) ->
+                        if (System.currentTimeMillis() - at < VIDEO_LOOKUP_TTL_MS) {
+                            _trackVideo.value = video
+                            return@collectLatest
+                        }
+                    }
+                    // Flicking through the queue shouldn't start a lookup for every track passed.
+                    delay(700)
+                    val video = try {
+                        withContext(Dispatchers.IO) { findTrackVideo(track) }
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        Log.w("MusicViewModel", "No video for ${track.urn}: $e")
+                        null
+                    }
+                    videoLookups[track.id] = video to System.currentTimeMillis()
+                    _trackVideo.value = video
+                }
         }
 
         viewModelScope.launch {
@@ -1012,8 +1119,13 @@ class MusicViewModel(
         searchPlaylistJob = viewModelScope.launch {
             _searchPlaylistLoading.value = true
             val isYandex = playlist.permalinkUrl?.startsWith("yandex:") == true
+            val isYouTube = playlist.permalinkUrl?.startsWith(YT_SET_REF) == true
             try {
-                val tracks = if (isYandex) loadYandexSetTracks(playlist) else loadSoundCloudPlaylistTracks(playlist)
+                val tracks = when {
+                    isYandex -> loadYandexSetTracks(playlist)
+                    isYouTube -> ytMusic.setTracks(playlist)
+                    else -> loadSoundCloudPlaylistTracks(playlist)
+                }
                 if (_searchOpenedPlaylist.value?.id == playlist.id) {
                     _searchOpenedPlaylist.value = playlist.copy(tracks = tracks)
                 }
@@ -1022,7 +1134,7 @@ class MusicViewModel(
                 throw e
             } catch (e: Exception) {
                 Log.e("MusicViewModel", "Failed to load playlist ${playlist.permalinkUrl ?: playlist.id}", e)
-                if (!isYandex) handleSoundCloudApiError(e)
+                if (!isYandex && !isYouTube) handleSoundCloudApiError(e)
                 _searchPlaylistError.value = readableMessage(e, isYandex = isYandex)
             } finally {
                 _searchPlaylistLoading.value = false
@@ -1470,7 +1582,7 @@ class MusicViewModel(
     ) {
         returnToSearchFromArtist = false
         if (permalinkUrl?.startsWith(YT_ARTIST_REF) == true) {
-            android.widget.Toast.makeText(context, "Страниц артистов YouTube Music пока нет", android.widget.Toast.LENGTH_SHORT).show()
+            openYouTubeArtist(permalinkUrl.removePrefix(YT_ARTIST_REF), username, avatarUrl)
             return
         }
         val activeUrn = trackUrn ?: _selectedTrack.value?.urn ?: _currentPlayingTrack.value?.urn
@@ -1625,6 +1737,45 @@ class MusicViewModel(
         }
     }
 
+    // The playlist of all a YouTube Music artist's songs, which "Все" opens up.
+    private var ytArtistSongs: SoundCloudPlaylist? = null
+    private var ytArtistJob: Job? = null
+
+    private fun openYouTubeArtist(channelId: String, name: String?, avatarUrl: String?) {
+        _selectedTrack.value = null
+        _selectedMix.value = null
+        _currentArtist.value = SoundCloudUser(username = name, avatarUrl = avatarUrl, permalinkUrl = YT_ARTIST_REF + channelId)
+        _screen.value = AppScreen.ARTIST_DETAIL
+        _artistLoading.value = true
+        _artistError.value = null
+        _currentArtistTracks.value = emptyList()
+        _currentArtistPlaylists.value = emptyList()
+        _selectedArtistPlaylist.value = null
+        _isAllArtistTracksLoaded.value = false
+        ytArtistSongs = null
+        ytArtistJob?.cancel()
+        ytArtistJob = viewModelScope.launch {
+            try {
+                val page = ytMusic.artist(channelId)
+                _currentArtist.value = page.artist.copy(
+                    username = page.artist.username?.takeIf { it.isNotBlank() } ?: name,
+                    avatarUrl = page.artist.avatarUrl ?: avatarUrl
+                )
+                _currentArtistTracks.value = page.topSongs
+                _currentArtistPlaylists.value = page.releases
+                ytArtistSongs = page.allSongs
+                _isAllArtistTracksLoaded.value = page.allSongs == null
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.e("MusicViewModel", "YouTube Music artist $channelId failed", e)
+                _artistError.value = "Не удалось загрузить артиста: ${readableMessage(e)}"
+            } finally {
+                _artistLoading.value = false
+            }
+        }
+    }
+
     fun closeArtist() {
         _currentArtist.value = null
         _currentArtistTracks.value = emptyList()
@@ -1637,7 +1788,24 @@ class MusicViewModel(
     fun selectArtistPlaylist(playlist: SoundCloudPlaylist) {
         _selectedArtistPlaylist.value = playlist
         val isYandexAlbum = playlist.permalinkUrl?.startsWith("yandex:album:") == true
-        if (isYandexAlbum) {
+        if (playlist.permalinkUrl?.startsWith(YT_SET_REF) == true) {
+            viewModelScope.launch {
+                _artistLoading.value = true
+                try {
+                    val tracks = ytMusic.setTracks(playlist)
+                    if (_selectedArtistPlaylist.value?.id == playlist.id) {
+                        _selectedArtistPlaylist.value = playlist.copy(tracks = tracks, trackCount = tracks.size)
+                    }
+                    syncLikedAlbum(playlist.copy(tracks = tracks))
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    Log.e("MusicViewModel", "YouTube Music set ${playlist.permalinkUrl} failed", e)
+                } finally {
+                    _artistLoading.value = false
+                }
+            }
+        } else if (isYandexAlbum) {
             viewModelScope.launch {
                 _artistLoading.value = true
                 try {
@@ -2148,6 +2316,9 @@ class MusicViewModel(
     fun seekTo(positionMs: Long) {
         musicPlayer.seekTo(positionMs)
     }
+
+    /** See [MusicPlayer.livePositionMs]. */
+    fun livePositionMs(): Long = musicPlayer.livePositionMs()
 
     fun skipNext() {
         musicPlayer.skipNext()
@@ -2725,6 +2896,10 @@ class MusicViewModel(
         const val PLAY_REPORT_AFTER_MS = 25_000L
 
         const val SEARCH_PAGE_SIZE = 30
+
+        // A found video URL (YouTube's) holds for hours; an absent video stays absent a while.
+        const val VIDEO_LOOKUP_TTL_MS = 60 * 60 * 1000L
+        const val CLIP_LENGTH_SLACK_MS = 3_000L
     }
 
     /** Confirms a credential pair actually works before we treat the session as healthy. */
@@ -3228,14 +3403,21 @@ class MusicViewModel(
         viewModelScope.launch {
             _errorMessage.value = null
             val isYandexTrack = track.urn?.startsWith("yandex:track:") == true
-            val defaultQueue = if (isYandexTrack) _yandexTracks.value else _tracks.value
+            // Without a list of its own, a track plays among the search results of its service.
+            val defaultQueue = when {
+                isYandexTrack -> _yandexTracks.value
+                track.youTubeVideoId != null -> _ytSearch.value.page?.tracks.orEmpty()
+                else -> _tracks.value
+            }
             val qTracks = customQueue ?: defaultQueue
-            val playableTracks = if (customQueue != null) qTracks else qTracks.filter { isPlayableTrack(it) }
-            
-            if (playableTracks.isEmpty()) {
+            val listed = if (customQueue != null) qTracks else qTracks.filter { isPlayableTrack(it) }
+            // A track missing from that list plays on its own. Falling back to the list's first
+            // entry played a different track, from another service even.
+            if (listed.isEmpty()) {
                 playTrack(track)
                 return@launch
             }
+            val playableTracks = if (listed.any { it.id == track.id }) listed else listOf(track)
             // This queue came straight from a listing, so it carries full credits — a good moment
             // to repair saved tracks that were downloaded before every artist was persisted.
             favoritesRepository.syncCredits(playableTracks)
@@ -3481,7 +3663,86 @@ class MusicViewModel(
         }
     }
 
+    /**
+     * A moving picture for [track]. Yandex: the track's music video, else its videoshot (a
+     * vertical loop Yandex made to play behind the player). YouTube Music: the song's music
+     * video. A Yandex track without either borrows the music video from YouTube, when signed in
+     * there — its picture comes through yt-dlp, which needs the session on a VPN.
+     */
+    private suspend fun findTrackVideo(track: SoundCloudTrack): TrackVideo? {
+        val urn = track.urn.orEmpty()
+        val youTubeId = track.youTubeVideoId
+        return when {
+            urn.startsWith("yandex:track:") -> yandexVideo(track) ?: youTubeVideo(track, null)
+            youTubeId != null -> youTubeVideo(track, youTubeId)
+            else -> null
+        }
+    }
+
+    private suspend fun yandexVideo(track: SoundCloudTrack): TrackVideo? {
+        val trackId = track.urn.orEmpty().removePrefix("yandex:track:").substringBefore(':')
+        val details = yandexService.getTracksDetails(trackId).result.orEmpty().firstOrNull() ?: return null
+        val clips = details.artists.orEmpty().firstOrNull()?.id?.let { artistId ->
+            try {
+                yandexService.getArtistClips(artistId).result?.items.orEmpty().mapNotNull { it.data?.clip }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.w("MusicViewModel", "Yandex clips of artist $artistId: $e")
+                emptyList()
+            }
+        }.orEmpty()
+        val clip = clips.firstOrNull { trackId.toLongOrNull() in it.trackIds.orEmpty() && !it.previewUrl.isNullOrBlank() }
+        Log.d(
+            "MusicViewModel",
+            "Yandex $trackId: ${clips.size} clips of the artist, this track's: ${clip?.clipId} " +
+                "(${clip?.duration} s against ${track.duration / 1000} s), videoshot: ${details.backgroundVideoUri != null}"
+        )
+        // A video that runs longer or shorter than the track (an intro, an outro) can't be kept
+        // in step with it.
+        val inStep = clip?.duration?.let { kotlin.math.abs(it * 1000L - track.duration) <= CLIP_LENGTH_SLACK_MS } == true
+        if (clip != null && inStep) return TrackVideo(track.id, clip.previewUrl!!, loop = false)
+        return details.backgroundVideoUri?.takeIf { it.isNotBlank() }?.let { TrackVideo(track.id, it, loop = true) }
+    }
+
+    private suspend fun youTubeVideo(track: SoundCloudTrack, videoId: String?): TrackVideo? {
+        val auth = settingsRepository.ytMusicAuth() ?: return null
+        val video = ytMusic.musicVideo(
+            videoId = videoId,
+            title = track.title.orEmpty(),
+            artist = track.artists?.firstOrNull()?.username ?: track.user?.username,
+            durationMs = track.duration
+        )
+        Log.d(
+            "MusicViewModel",
+            "YouTube video for ${track.urn}: ${video?.videoId}, " +
+                (if (video?.paired == true) "paired, ${video.segments.size} segments" else "by search")
+        )
+        if (video == null) return null
+        val stream = YouTubeStreams.resolveVideo(context, video.videoId, auth) ?: return null
+        return TrackVideo(track.id, stream.url, loop = false, userAgent = stream.userAgent, segments = video.segments)
+    }
+
     fun loadAllArtistTracks(artistId: String, isYandex: Boolean) {
+        if (_currentArtist.value?.permalinkUrl?.startsWith(YT_ARTIST_REF) == true) {
+            val songs = ytArtistSongs ?: return
+            viewModelScope.launch {
+                _artistLoading.value = true
+                try {
+                    val tracks = ytMusic.setTracks(songs)
+                    if (tracks.isNotEmpty()) _currentArtistTracks.value = tracks
+                    _isAllArtistTracksLoaded.value = true
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    Log.e("MusicViewModel", "All songs of a YouTube Music artist failed", e)
+                    _artistError.value = "Ошибка: ${readableMessage(e)}"
+                } finally {
+                    _artistLoading.value = false
+                }
+            }
+            return
+        }
         viewModelScope.launch {
             _artistLoading.value = true
             _artistError.value = null

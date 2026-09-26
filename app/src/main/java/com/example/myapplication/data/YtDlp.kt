@@ -35,11 +35,19 @@ object YtDlp {
     private const val KEY_CHECKED_AT = "update_checked_at"
 
     /**
-     * AAC in MP4 (itag 140) first: every device decodes it, and downloads are kept as it. Plain
-     * HTTPS only, never an HLS or DASH manifest: the player's source and the downloader here both
-     * expect one file.
+     * What to ask yt-dlp for. Plain HTTPS only, never an HLS or DASH manifest: the players and
+     * the downloader here all expect one file.
      */
-    private const val FORMAT = "140/bestaudio[ext=m4a][protocol=https]/bestaudio[protocol=https]"
+    enum class Kind(val format: String) {
+        /** AAC in MP4 (itag 140) first: every device decodes it, and downloads are kept as it. */
+        AUDIO("140/bestaudio[ext=m4a][protocol=https]/bestaudio[protocol=https]"),
+
+        /** A music video's picture alone, H.264 first, no larger than the screen needs. */
+        VIDEO(
+            "bv[height<=720][vcodec^=avc1][protocol=https]/bv[height<=720][protocol=https]/" +
+                "bv*[height<=720][protocol=https]"
+        )
+    }
 
     /**
      * A yt-dlp plugin that keeps the challenge solver's preprocessed player between runs. Solving
@@ -66,7 +74,7 @@ EJSBaseJCP._ENABLE_PREPROCESSED_PLAYER_CACHE = True
 
     // Each run is a Python process of its own, tens of MB: the playing track and the next one.
     private val runs = Semaphore(2)
-    private val pending = ConcurrentHashMap<String, FutureTask<YouTubeStreams.Audio?>>()
+    private val pending = ConcurrentHashMap<String, FutureTask<YouTubeStreams.Stream?>>()
     private val lastUpdateAttempt = AtomicLong(0)
     private val watchdog = Executors.newSingleThreadScheduledExecutor { r ->
         Thread(r, "yt-dlp watchdog").apply { isDaemon = true }
@@ -79,19 +87,20 @@ EJSBaseJCP._ENABLE_PREPROCESSED_PLAYER_CACHE = True
     }
 
     /**
-     * The audio stream of [videoId], or null when yt-dlp couldn't get one. Blocking — a Python
+     * The [kind] of stream of [videoId], or null when yt-dlp couldn't get one. Blocking — a Python
      * process and several round trips, seconds on a phone; call it off the main thread. Asking
-     * again for a track already being resolved waits for that run instead of starting another.
+     * again for a stream already being resolved waits for that run instead of starting another.
      */
-    fun resolve(context: Context, videoId: String, auth: YtAuth?): YouTubeStreams.Audio? {
+    fun resolve(context: Context, videoId: String, auth: YtAuth?, kind: Kind): YouTubeStreams.Stream? {
         val app = context.applicationContext
-        val task = FutureTask { resolveOrUpdate(app, videoId, auth) }
-        val running = pending.putIfAbsent(videoId, task)
+        val key = "$kind:$videoId"
+        val task = FutureTask { resolveOrUpdate(app, videoId, auth, kind) }
+        val running = pending.putIfAbsent(key, task)
         if (running == null) {
             try {
                 task.run()
             } finally {
-                pending.remove(videoId, task)
+                pending.remove(key, task)
             }
         }
         return try {
@@ -102,12 +111,12 @@ EJSBaseJCP._ENABLE_PREPROCESSED_PLAYER_CACHE = True
         }
     }
 
-    private fun resolveOrUpdate(context: Context, videoId: String, auth: YtAuth?): YouTubeStreams.Audio? {
+    private fun resolveOrUpdate(context: Context, videoId: String, auth: YtAuth?, kind: Kind): YouTubeStreams.Stream? {
         if (!ensureReady(context)) return null
-        extract(context, videoId, auth)?.let { return it }
+        extract(context, videoId, auth, kind)?.let { return it }
         // Most failures are YouTube having changed something a newer yt-dlp already handles.
         if (!update(context, minInterval = FAILED_UPDATE_RETRY_MS)) return null
-        return extract(context, videoId, auth)
+        return extract(context, videoId, auth, kind)
     }
 
     private fun ensureReady(context: Context): Boolean {
@@ -160,21 +169,21 @@ EJSBaseJCP._ENABLE_PREPROCESSED_PLAYER_CACHE = True
         }
     }
 
-    private fun extract(context: Context, videoId: String, auth: YtAuth?): YouTubeStreams.Audio? {
+    private fun extract(context: Context, videoId: String, auth: YtAuth?, kind: Kind): YouTubeStreams.Stream? {
         runs.acquire()
         try {
-            return scriptLock.read { runYtDlp(context, videoId, auth) }
+            return scriptLock.read { runYtDlp(context, videoId, auth, kind) }
         } finally {
             runs.release()
         }
     }
 
-    private fun runYtDlp(context: Context, videoId: String, auth: YtAuth?): YouTubeStreams.Audio? {
+    private fun runYtDlp(context: Context, videoId: String, auth: YtAuth?, kind: Kind): YouTubeStreams.Stream? {
         val dir = runDir(context).apply { mkdirs() }
         val request = YoutubeDLRequest("https://www.youtube.com/watch?v=$videoId")
             .addOption("--dump-json")
             .addOption("--no-playlist")
-            .addOption("-f", FORMAT)
+            .addOption("-f", kind.format)
             .addOption("--socket-timeout", 15)
             // Keeps the player script and its solved challenges between runs; the library
             // otherwise turns the cache off.
@@ -183,10 +192,10 @@ EJSBaseJCP._ENABLE_PREPROCESSED_PLAYER_CACHE = True
             // Only the plain audio files are of use; the HLS manifest is one more request.
             .addOption("--extractor-args", "youtube:skip=hls,dash")
         // A file per run: yt-dlp writes the jar back when it exits, and two runs can overlap.
-        val cookies = auth?.let { writeCookies(File(dir, "cookies-$videoId.txt"), it) }
+        val cookies = auth?.let { writeCookies(File(dir, "cookies-$kind-$videoId.txt"), it) }
         cookies?.let { request.addOption("--cookies", it.absolutePath) }
 
-        val processId = "resolve-$videoId-${System.nanoTime()}"
+        val processId = "resolve-$kind-$videoId-${System.nanoTime()}"
         val timeout = watchdog.schedule(
             { YoutubeDL.destroyProcessById(processId) }, RUN_TIMEOUT_MS, TimeUnit.MILLISECONDS
         )
@@ -202,18 +211,19 @@ EJSBaseJCP._ENABLE_PREPROCESSED_PLAYER_CACHE = True
             val url = field("url")?.asString ?: return null
             val userAgent = json.getAsJsonObject("http_headers")?.get("User-Agent")?.asString
             val ext = field("ext")?.asString
+            val media = if (kind == Kind.VIDEO) "video" else "audio"
             val mimeType = when (ext) {
-                "m4a", "mp4" -> "audio/mp4"
-                "webm" -> "audio/webm"
+                "m4a", "mp4" -> "$media/mp4"
+                "webm" -> "$media/webm"
                 else -> null
             }
             val length = (field("filesize") ?: field("filesize_approx"))?.asLong ?: -1L
-            Log.i(TAG, "$videoId: format ${field("format_id")?.asString} ($ext) " +
+            Log.i(TAG, "$videoId: $media ${field("format_id")?.asString} ($ext) " +
                 "in ${response.elapsedTime} ms, signed in: ${cookies != null}")
             if (userAgent != null) {
-                YouTubeStreams.Audio(url, mimeType, length, userAgent)
+                YouTubeStreams.Stream(url, mimeType, length, userAgent)
             } else {
-                YouTubeStreams.Audio(url, mimeType, length)
+                YouTubeStreams.Stream(url, mimeType, length)
             }
         } catch (e: YoutubeDL.CanceledException) {
             Log.w(TAG, "$videoId: yt-dlp gave no answer in ${RUN_TIMEOUT_MS / 1000} s")
