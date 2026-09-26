@@ -3776,14 +3776,19 @@ class MusicViewModel(
         Log.d(
             "MusicViewModel",
             "YouTube video for ${track.urn}: ${video?.videoId}, " +
-                (if (video?.paired == true) "paired, ${video.segments.size} segments" else "by search")
+                when {
+                    video?.itself == true -> "the track itself"
+                    video?.paired == true -> "paired, ${video.segments.size} segments"
+                    else -> "by search"
+                }
         )
         if (video == null) return null
         val workDir = java.io.File(context.cacheDir, "clip-align")
         return coroutineScope {
             // The track's own sound doesn't depend on the video: it is fetched and decoded while
             // yt-dlp looks for the video's.
-            val trackOnsets = if (video.paired && video.segments.isNotEmpty()) {
+            // Nothing to line up when the track is the video, or YouTube mapped the two itself.
+            val trackOnsets = if (video.itself || (video.paired && video.segments.isNotEmpty())) {
                 null
             } else {
                 async { trackOnsets(track, videoId, auth, workDir) }

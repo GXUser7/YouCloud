@@ -75,9 +75,16 @@ data class YtArtistPage(
 
 /**
  * A song's music video, and how the two timelines line up ([segments]; empty: one to one).
- * [paired]: YouTube Music's own pairing, rather than a video found by search.
+ * [paired]: YouTube Music's own pairing, rather than a video found by search. [itself]: the
+ * "song" is a video to begin with — an official one, or somebody's upload — so its picture is
+ * its video, and in step with its sound by definition.
  */
-data class YtMusicVideo(val videoId: String, val segments: List<VideoSegment>, val paired: Boolean)
+data class YtMusicVideo(
+    val videoId: String,
+    val segments: List<VideoSegment>,
+    val paired: Boolean,
+    val itself: Boolean = false
+)
 
 class YtMusicException(val code: Int, detail: String) : Exception("YouTube Music HTTP $code: $detail")
 
@@ -329,10 +336,20 @@ class YouTubeMusicClient(private val authProvider: () -> YtAuth?) {
         videoId?.let { counterpart(it) } ?: officialVideo(title, artist, durationMs)
 
     private suspend fun counterpart(videoId: String): YtMusicVideo? {
-        val panel = post("next", json {
+        val next = post("next", json {
             addProperty("videoId", videoId)
             addProperty("enablePersistentPlaylistPanel", true)
-        }).findAll("playlistPanelVideoWrapperRenderer").firstOrNull() ?: return null
+        })
+        val type = next.findAll("playlistPanelVideoRenderer")
+            .firstOrNull { it.str("videoId") == videoId }
+            .str(
+                "navigationEndpoint", "watchEndpoint", "watchEndpointMusicSupportedConfigs",
+                "watchEndpointMusicConfig", "musicVideoType"
+            )
+        if (type == "MUSIC_VIDEO_TYPE_OMV" || type == "MUSIC_VIDEO_TYPE_UGC") {
+            return YtMusicVideo(videoId, emptyList(), paired = true, itself = true)
+        }
+        val panel = next.findAll("playlistPanelVideoWrapperRenderer").firstOrNull() ?: return null
         if (panel.str("primaryRenderer", "playlistPanelVideoRenderer", "videoId") != videoId) return null
         val counterpart = panel.arr("counterpart").firstOrNull() ?: return null
         val video = counterpart.str("counterpartRenderer", "playlistPanelVideoRenderer", "videoId") ?: return null
