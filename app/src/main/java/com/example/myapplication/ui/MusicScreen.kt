@@ -5212,13 +5212,12 @@ private fun PlayerArtwork(
                 contentScale = ContentScale.Crop
             )
             // The music video fades in over the cover once it plays: from the line the buttons
-            // over it start at, down to as far above the panel, glowing into the space around it.
+            // over it start at, down to a little above the panel, glowing into the space around it.
             if (video != null) {
-                val videoInset = WindowInsets.statusBars.asPaddingValues().calculateTopPadding() + 12.dp
                 AmbientVideo(
                     state = video,
-                    top = videoInset,
-                    bottom = PlayerPanelOverlap + videoInset,
+                    top = WindowInsets.statusBars.asPaddingValues().calculateTopPadding() + 12.dp,
+                    bottom = PlayerPanelOverlap + 36.dp,
                     alpha = videoShown,
                     modifier = Modifier.fillMaxSize()
                 )
