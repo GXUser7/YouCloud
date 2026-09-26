@@ -478,7 +478,7 @@ private val BACKDROP_GLOWS by lazy {
  * around a 16:9 video) its glow fills in, steps of larger and softer copies as in the player.
  */
 @Composable
-fun FullScreenVideo(state: PlayerVideoState, blur: androidx.compose.ui.unit.Dp) {
+fun FullScreenVideo(state: PlayerVideoState, blur: androidx.compose.ui.unit.Dp, glow: Boolean = true) {
     val view = androidx.compose.ui.platform.LocalView.current
     DisposableEffect(view) {
         val activity = generateSequence(view.context) { (it as? android.content.ContextWrapper)?.baseContext }
@@ -496,14 +496,15 @@ fun FullScreenVideo(state: PlayerVideoState, blur: androidx.compose.ui.unit.Dp) 
             .drawBehind { drawRect(Color.Black) }
             .blur(blur)
     ) {
-        for (glow in FULL_SCREEN_GLOWS) {
+        // Without its glow the sides stay black.
+        for (step in if (glow) FULL_SCREEN_GLOWS else emptyList()) {
             Box(
                 modifier = Modifier
                     .matchParentSize()
-                    .blurredDrawing(glow.blur, alpha = glow.opacity) { size ->
+                    .blurredDrawing(step.blur, alpha = step.opacity) { size ->
                         val layer = state.frameLayer ?: return@blurredDrawing
                         // The layer is the whole screen with the picture in its middle.
-                        scale(glow.scale, glow.scale, pivot = Offset(size.width / 2, size.height / 2)) {
+                        scale(step.scale, step.scale, pivot = Offset(size.width / 2, size.height / 2)) {
                             drawLayer(layer)
                         }
                     }

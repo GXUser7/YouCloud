@@ -77,6 +77,9 @@ import com.example.myapplication.data.YtShelf
 import com.example.myapplication.data.youTubeTrackId
 import com.example.myapplication.data.youTubeVideoId
 import androidx.compose.material.icons.filled.SmartDisplay
+import androidx.compose.material.icons.filled.OndemandVideo
+import androidx.compose.material.icons.filled.Videocam
+import androidx.compose.material.icons.filled.AutoAwesome
 import kotlinx.coroutines.flow.first
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.FlowRow
@@ -355,6 +358,7 @@ fun MusicScreen(viewModel: MusicViewModel) {
     val isAllArtistTracksLoaded by viewModel.isAllArtistTracksLoaded.collectAsState()
     val backgroundMotion by viewModel.settingsRepo.backgroundMotion.collectAsState()
     val playerCoverColors by viewModel.settingsRepo.playerCoverColors.collectAsState()
+    val videoGlow by viewModel.settingsRepo.videoGlow.collectAsState()
 
     // The playing track's cover colours are worked out before the player opens, so it opens in
     // them instead of fading over from the app's own every time.
@@ -453,6 +457,11 @@ fun MusicScreen(viewModel: MusicViewModel) {
                 onDownload = { playlist ->
                     haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                     viewModel.downloadPlaylist(playlist.id)
+                },
+                onTogglePlay = viewModel::togglePlayPause,
+                onShuffle = { tracks ->
+                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                    viewModel.playShuffled(tracks)
                 }
             )
         }
@@ -1007,6 +1016,7 @@ fun MusicScreen(viewModel: MusicViewModel) {
                         video = trackVideo?.takeIf { it.trackId == track.id },
                         upcomingVideo = pendingTrackVideo?.takeIf { it.trackId == track.id },
                         livePosition = viewModel::livePositionMs,
+                        videoGlow = videoGlow,
                         onBack = {
                             haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                             viewModel.closeTrack()
@@ -2572,7 +2582,6 @@ private fun SettingsScreen(
         item {
             val backgroundMotion by settingsRepository.backgroundMotion.collectAsState()
             val playerCoverColors by settingsRepository.playerCoverColors.collectAsState()
-            val playerVideos by settingsRepository.playerVideos.collectAsState()
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text(
                     text = "ОФОРМЛЕНИЕ",
@@ -2606,16 +2615,81 @@ private fun SettingsScreen(
                             checked = playerCoverColors,
                             onCheckedChange = settingsRepository::setPlayerCoverColors
                         )
-                        HorizontalDivider(
-                            color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.25f),
-                            modifier = Modifier.padding(horizontal = 18.dp)
-                        )
+                    }
+                }
+            }
+        }
+
+        // Section 0.25: Videos
+        item {
+            val playerVideos by settingsRepository.playerVideos.collectAsState()
+            val videoYouTube by settingsRepository.videoYouTube.collectAsState()
+            val videoYandex by settingsRepository.videoYandex.collectAsState()
+            val videoGlow by settingsRepository.videoGlow.collectAsState()
+            val videoDownload by settingsRepository.videoDownload.collectAsState()
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(
+                    text = "ВИДЕО",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.padding(start = 12.dp)
+                )
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = MaterialTheme.shapes.extraLarge,
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.surfaceContainer
+                    )
+                ) {
+                    Column(modifier = Modifier.padding(vertical = 4.dp)) {
+                        val divider: @Composable () -> Unit = {
+                            HorizontalDivider(
+                                color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.25f),
+                                modifier = Modifier.padding(horizontal = 18.dp)
+                            )
+                        }
                         SettingsSwitchRow(
                             icon = Icons.Default.SmartDisplay,
                             title = "Клипы в плеере",
-                            subtitle = "Клип трека вместо обложки, вертикальное видео — на весь плеер. Яндекс Музыка и YouTube Music, тратит трафик",
+                            subtitle = "Видео трека вместо обложки, вертикальное — на весь плеер. Выключите, и в плеере останутся только обложки",
                             checked = playerVideos,
                             onCheckedChange = settingsRepository::setPlayerVideos
+                        )
+                        divider()
+                        SettingsSwitchRow(
+                            icon = Icons.Default.OndemandVideo,
+                            title = "Клипы с YouTube",
+                            subtitle = "Клипы треков YouTube Music, а для треков Яндекса — найденные на YouTube. Тратит трафик",
+                            checked = videoYouTube,
+                            onCheckedChange = settingsRepository::setVideoYouTube,
+                            enabled = playerVideos
+                        )
+                        divider()
+                        SettingsSwitchRow(
+                            icon = Icons.Default.Videocam,
+                            title = "Видео Яндекс Музыки",
+                            subtitle = "Вертикальные видеошоты на весь плеер и короткие отрывки клипов",
+                            checked = videoYandex,
+                            onCheckedChange = settingsRepository::setVideoYandex,
+                            enabled = playerVideos
+                        )
+                        divider()
+                        SettingsSwitchRow(
+                            icon = Icons.Default.AutoAwesome,
+                            title = "Подсветка вокруг клипа",
+                            subtitle = "Размытые копии клипа заполняют фон плеера и поля при повороте. Без неё — меньше нагрузка",
+                            checked = videoGlow,
+                            onCheckedChange = settingsRepository::setVideoGlow,
+                            enabled = playerVideos
+                        )
+                        divider()
+                        SettingsSwitchRow(
+                            icon = Icons.Default.Download,
+                            title = "Скачивать клипы",
+                            subtitle = "Вместе с треками в медиатеке, по Wi-Fi, чтобы играли без сети. Клип YouTube — десятки МБ",
+                            checked = videoDownload,
+                            onCheckedChange = settingsRepository::setVideoDownload,
+                            enabled = playerVideos
                         )
                     }
                 }
@@ -3362,12 +3436,14 @@ private fun SettingsSwitchRow(
     title: String,
     subtitle: String,
     checked: Boolean,
-    onCheckedChange: (Boolean) -> Unit
+    onCheckedChange: (Boolean) -> Unit,
+    enabled: Boolean = true
 ) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable { onCheckedChange(!checked) }
+            .graphicsLayer { alpha = if (enabled) 1f else 0.38f }
+            .clickable(enabled = enabled) { onCheckedChange(!checked) }
             .padding(horizontal = 18.dp, vertical = 14.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(14.dp)
@@ -3587,9 +3663,10 @@ private fun SearchScreen(
                     TopResultCard(
                         kicker = setCaption(topResult),
                         title = topResult.title ?: "Без названия",
+                        // YouTube Music doesn't say how many tracks a set has until it is opened.
                         subtitle = listOfNotNull(
                             topResult.user?.username,
-                            plural(topResult.trackCount, "трек", "трека", "треков")
+                            topResult.trackCount.takeIf { it > 0 }?.let { plural(it, "трек", "трека", "треков") }
                         ).joinToString(" · "),
                         artworkUrl = topResult.displayArtworkUrl,
                         onClick = { onOpenPlaylist(topResult) }
@@ -4246,13 +4323,16 @@ private fun MixCard(
 }
 
 /**
- * Liked albums as seen from any album screen, wherever it was opened from (artist page, search).
- * Provided once at the root so those screens don't each thread three more parameters through.
+ * Liked albums as seen from any album screen, wherever it was opened from (artist page, search),
+ * and the player as those screens' big buttons work it. Provided once at the root so those
+ * screens don't each thread five more parameters through.
  */
 private class AlbumLibrary(
     val likedBySource: Map<String, Playlist>,
     val onToggleLike: (album: SoundCloudPlaylist, artistName: String?) -> Unit,
-    val onDownload: (Playlist) -> Unit
+    val onDownload: (Playlist) -> Unit,
+    val onTogglePlay: () -> Unit,
+    val onShuffle: (List<SoundCloudTrack>) -> Unit
 )
 
 private val LocalAlbumLibrary = androidx.compose.runtime.staticCompositionLocalOf<AlbumLibrary?> { null }
@@ -4263,14 +4343,15 @@ private val LocalAlbumLibrary = androidx.compose.runtime.staticCompositionLocalO
  * ring filling with the share already saved; once everything is saved it stays lit.
  */
 @Composable
-private fun PlaylistDownloadButton(playlist: Playlist, onDownload: () -> Unit) {
+private fun PlaylistDownloadButton(playlist: Playlist, onDownload: () -> Unit, size: Dp = 56.dp) {
+    val iconSize = if (size < 56.dp) 20.dp else 24.dp
     val total = playlist.tracks.count { !it.urn.startsWith("local:") }
     if (total == 0) return
     val saved = playlist.tracks.count { it.downloadState == DownloadState.DOWNLOADED && !it.urn.startsWith("local:") }
     val downloading = playlist.tracks.any { it.downloadState == DownloadState.DOWNLOADING }
     when {
         downloading -> Surface(
-            modifier = Modifier.size(56.dp),
+            modifier = Modifier.size(size),
             shape = CircleShape,
             color = PanelColors.content.copy(alpha = 0.12f),
             contentColor = PanelColors.accent
@@ -4278,7 +4359,7 @@ private fun PlaylistDownloadButton(playlist: Playlist, onDownload: () -> Unit) {
             Box(contentAlignment = Alignment.Center) {
                 AppCircularProgress(
                     progress = saved.toFloat() / total,
-                    modifier = Modifier.size(40.dp),
+                    modifier = Modifier.size(size * 0.72f),
                     color = PanelColors.accent
                 )
             }
@@ -4288,13 +4369,17 @@ private fun PlaylistDownloadButton(playlist: Playlist, onDownload: () -> Unit) {
             icon = Icons.Default.DownloadDone,
             contentDescription = "Все треки на устройстве",
             onClick = {},
-            selected = true
+            selected = true,
+            size = size,
+            iconSize = iconSize
         )
 
         else -> PanelIconButton(
             icon = Icons.Default.Download,
             contentDescription = "Скачать все треки",
-            onClick = onDownload
+            onClick = onDownload,
+            size = size,
+            iconSize = iconSize
         )
     }
 }
@@ -4304,7 +4389,12 @@ private fun PlaylistDownloadButton(playlist: Playlist, onDownload: () -> Unit) {
  * view, then the backdrop tone and the title once it has scrolled away.
  */
 @Composable
-private fun CollapsingTopBar(title: String, collapsed: Boolean, onBack: () -> Unit) {
+private fun CollapsingTopBar(
+    title: String,
+    collapsed: Boolean,
+    onBack: () -> Unit,
+    trailing: (@Composable () -> Unit)? = null
+) {
     val barColor by animateColorAsState(
         targetValue = if (collapsed) MaterialTheme.colorScheme.background else Color.Transparent,
         animationSpec = tween(220),
@@ -4332,18 +4422,21 @@ private fun CollapsingTopBar(title: String, collapsed: Boolean, onBack: () -> Un
                 }
             }
             Spacer(modifier = Modifier.width(14.dp))
-            AnimatedVisibility(
-                visible = collapsed,
-                enter = fadeIn() + slideInVertically { it / 2 },
-                exit = fadeOut() + slideOutVertically { it / 2 }
-            ) {
-                Text(
-                    text = title,
-                    style = MaterialTheme.typography.titleLarge,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
+            Box(modifier = Modifier.weight(1f)) {
+                androidx.compose.animation.AnimatedVisibility(
+                    visible = collapsed,
+                    enter = fadeIn() + slideInVertically { it / 2 },
+                    exit = fadeOut() + slideOutVertically { it / 2 }
+                ) {
+                    Text(
+                        text = title,
+                        style = MaterialTheme.typography.titleLarge,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
             }
+            trailing?.invoke()
         }
     }
 }
@@ -4485,20 +4578,53 @@ private fun ArtistPortraitHeader(
 
 private val ArtistPortraitHeight = 420.dp
 
-/**
- * The mix or station cover as the backdrop of the screen's top, the title over its lower edge and
- * the big play button beside it, where the cover meets the list.
- */
+/** A mix's or station's top: its cover, "Микс" or "Станция", its name and description. */
 @Composable
 private fun MixCoverHeader(
     mix: SoundCloudMix,
     title: String,
     isStation: Boolean,
-    trackCount: Int,
     isActive: Boolean,
     isPlaying: Boolean,
     onPlay: (() -> Unit)?,
     onShuffle: (() -> Unit)?
+) {
+    CoverHeader(
+        artwork = {
+            AsyncImage(
+                model = ArtworkUrls.highRes(mix.artworkUrl) ?: mix.artworkUrl,
+                contentDescription = null,
+                modifier = Modifier.fillMaxSize(),
+                contentScale = ContentScale.Crop
+            )
+        },
+        kicker = if (isStation) "Станция" else "Микс",
+        title = title,
+        // Stations put "Artist station" in the description, which their title already says.
+        subtitle = if (isStation) null else mix.description?.takeIf { it.isNotBlank() },
+        isActive = isActive,
+        isPlaying = isPlaying,
+        onPlay = onPlay,
+        onShuffle = onShuffle
+    )
+}
+
+/**
+ * The top of a collection screen — a mix, an album, a playlist: its cover as the backdrop of the
+ * screen's top, the title over its lower edge and the big play button beside it, where the cover
+ * meets the list.
+ */
+@Composable
+private fun CoverHeader(
+    artwork: @Composable BoxScope.() -> Unit,
+    kicker: String,
+    title: String,
+    subtitle: String?,
+    isActive: Boolean,
+    isPlaying: Boolean,
+    onPlay: (() -> Unit)?,
+    onShuffle: (() -> Unit)?,
+    onArtworkClick: (() -> Unit)? = null
 ) {
     val backdrop = MaterialTheme.colorScheme.background
     Box(
@@ -4506,13 +4632,12 @@ private fun MixCoverHeader(
             .fillMaxWidth()
             .height(MixCoverHeight)
     ) {
-        AsyncImage(
-            model = ArtworkUrls.highRes(mix.artworkUrl) ?: mix.artworkUrl,
-            contentDescription = null,
+        Box(
             modifier = Modifier
                 .fillMaxSize()
-                .background(MaterialTheme.colorScheme.surfaceContainerHigh),
-            contentScale = ContentScale.Crop
+                .background(MaterialTheme.colorScheme.surfaceContainerHigh)
+                .then(if (onArtworkClick != null) Modifier.clickable(onClick = onArtworkClick) else Modifier),
+            content = artwork
         )
         Box(
             modifier = Modifier
@@ -4537,16 +4662,14 @@ private fun MixCoverHeader(
             verticalAlignment = Alignment.Bottom
         ) {
             Column(modifier = Modifier.weight(1f)) {
-                Kicker(text = if (isStation) "Станция" else "Микс", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Kicker(text = kicker, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Text(
                     text = title,
                     style = MaterialTheme.typography.displaySmall,
                     maxLines = 2,
                     overflow = TextOverflow.Ellipsis
                 )
-                // Stations put "Artist station" in the description, which their title already says,
-                // and their track count is the rule right below.
-                val subtitle = if (isStation) null else mix.description?.takeIf { it.isNotBlank() }
+                // The track count is the rule right below.
                 if (subtitle != null) {
                     Text(
                         text = subtitle,
@@ -4557,21 +4680,23 @@ private fun MixCoverHeader(
                     )
                 }
             }
-            if (onPlay != null && onShuffle != null) {
+            if (onPlay != null) {
                 Spacer(modifier = Modifier.width(12.dp))
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
-                    Surface(
-                        onClick = onShuffle,
-                        modifier = Modifier.size(48.dp),
-                        shape = CircleShape,
-                        color = PanelColors.container,
-                        contentColor = PanelColors.accent
-                    ) {
-                        Box(contentAlignment = Alignment.Center) {
-                            Icon(Icons.Rounded.Shuffle, contentDescription = "Перемешать", modifier = Modifier.size(24.dp))
+                    if (onShuffle != null) {
+                        Surface(
+                            onClick = onShuffle,
+                            modifier = Modifier.size(48.dp),
+                            shape = CircleShape,
+                            color = PanelColors.container,
+                            contentColor = PanelColors.accent
+                        ) {
+                            Box(contentAlignment = Alignment.Center) {
+                                Icon(Icons.Rounded.Shuffle, contentDescription = "Перемешать", modifier = Modifier.size(24.dp))
+                            }
                         }
                     }
                     MixPlayButton(isActive = isActive, isPlaying = isPlaying, onClick = onPlay)
@@ -4582,6 +4707,45 @@ private fun MixCoverHeader(
 }
 
 private val MixCoverHeight = 420.dp
+
+/**
+ * The line between a collection's cover and its list: how many tracks, a rule, and what else can
+ * be done with the collection as a whole (save it, download it).
+ */
+@Composable
+private fun CountRule(text: String, actions: (@Composable RowScope.() -> Unit)? = null) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(start = 20.dp, top = 12.dp, end = 20.dp, bottom = 8.dp)
+            .heightIn(min = 40.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        Text(
+            text = text,
+            style = MaterialTheme.typography.labelLarge,
+            color = MaterialTheme.colorScheme.primary
+        )
+        Box(
+            modifier = Modifier
+                .weight(1f)
+                .height(1.dp)
+                .background(MaterialTheme.colorScheme.outlineVariant)
+        )
+        if (actions != null) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                content = actions
+            )
+        }
+    }
+}
+
+// The small actions on a [CountRule].
+private val RuleButtonSize = 40.dp
+private val RuleIconSize = 20.dp
 
 /**
  * The big play button of a mix. Until the mix is playing it is the call to action, in the accent.
@@ -4657,7 +4821,6 @@ private fun MixDetailScreen(
                     mix = mix,
                     title = title,
                     isStation = isStation,
-                    trackCount = tracks.size,
                     isActive = isActive,
                     isPlaying = isPlaying,
                     onPlay = if (tracks.isEmpty()) null else {
@@ -4669,25 +4832,7 @@ private fun MixDetailScreen(
 
             // A rule between the cover and the list, so the two never blur together.
             item(key = "mix-count") {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(start = 20.dp, top = 12.dp, end = 20.dp, bottom = 8.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(12.dp)
-                ) {
-                    Text(
-                        text = if (tracks.isEmpty()) "Загружаем треки" else plural(tracks.size, "трек", "трека", "треков"),
-                        style = MaterialTheme.typography.labelLarge,
-                        color = MaterialTheme.colorScheme.primary
-                    )
-                    Box(
-                        modifier = Modifier
-                            .weight(1f)
-                            .height(1.dp)
-                            .background(MaterialTheme.colorScheme.outlineVariant)
-                    )
-                }
+                CountRule(if (tracks.isEmpty()) "Загружаем треки" else plural(tracks.size, "трек", "трека", "треков"))
             }
 
             if (tracks.isEmpty()) {
@@ -4906,9 +5051,10 @@ private fun DownloadedTrackCard(
     onDeleteDownload: () -> Unit,
     showDebugPercentage: Boolean = false,
     debugPercentage: Int? = null,
-    position: GroupPosition = GroupPosition.Single
+    position: GroupPosition = GroupPosition.Single,
+    flat: Boolean = false
 ) {
-    TrackRowFrame(position = position, isSelected = isSelected, onClick = onClick) {
+    TrackRowFrame(position = position, isSelected = isSelected, onClick = onClick, flat = flat) {
         // Cached cover when the track is downloaded, so the row still shows artwork offline.
         TrackRowArtwork(track.displayArtworkUrl, isCurrent = isSelected, isPlaying = isPlaying)
         Column(modifier = Modifier.weight(1f)) {
@@ -4982,6 +5128,8 @@ private fun TrackDetailScreen(
     video: com.example.myapplication.data.TrackVideo?,
     upcomingVideo: com.example.myapplication.data.TrackVideo?,
     livePosition: () -> Long,
+    // The glow of blurred copies around a video; see [VideoBackdrop].
+    videoGlow: Boolean = true,
     onBack: () -> Unit,
     onTogglePlay: () -> Unit,
     onSeek: (Long) -> Unit,
@@ -5038,8 +5186,10 @@ private fun TrackDetailScreen(
         label = "videoShown"
     )
     val immersiveVideo = videoState?.takeIf { it.isPortrait }
-    // A video in the cover's place fills the whole background with copies of itself.
+    // A video in the cover's place fills the whole background with copies of itself — unless
+    // that glow is turned off, and the video stands on the player's own background.
     val coverVideo = videoState?.takeIf { !it.isPortrait }
+    val backdropVideo = coverVideo?.takeIf { videoGlow }
     // Paused, a video blurs, as if it had stopped to wait.
     val pauseBlur by animateDpAsState(
         targetValue = if (!isPlaying && videoState?.showing == true) 24.dp else 0.dp,
@@ -5054,7 +5204,7 @@ private fun TrackDetailScreen(
     // Turned sideways with a video playing: the video alone, on the whole screen.
     val landscape = LocalConfiguration.current.orientation == android.content.res.Configuration.ORIENTATION_LANDSCAPE
     if (landscape && videoState != null && videoState.showing) {
-        FullScreenVideo(state = videoState, blur = pauseBlur)
+        FullScreenVideo(state = videoState, blur = pauseBlur, glow = videoGlow)
         return
     }
 
@@ -5074,9 +5224,9 @@ private fun TrackDetailScreen(
                 )
             }
     ) {
-        if (coverVideo != null) {
+        if (backdropVideo != null) {
             VideoBackdrop(
-                state = coverVideo,
+                state = backdropVideo,
                 alpha = videoShown,
                 modifier = Modifier
                     .fillMaxSize()
@@ -5155,7 +5305,7 @@ private fun TrackDetailScreen(
                                 }
                             }
                             // Over the copies of the video, already blurred: a tint makes the frost.
-                            coverVideo != null && videoShown > 0f -> {
+                            backdropVideo != null && videoShown > 0f -> {
                                 {
                                     Box(
                                         modifier = Modifier
@@ -7470,79 +7620,24 @@ private fun PlaylistDetailScreen(
         }
     }
 
-    Column(
+    val albumLibrary = LocalAlbumLibrary.current
+    val tracks = playlist.tracks
+    val isActive = currentTrackId != null && tracks.any { it.id == currentTrackId }
+    val listState = rememberLazyListState()
+    val collapsed = rememberCollapsed(listState, MixCoverHeight - 140.dp)
+
+    Box(
         modifier = Modifier
             .fillMaxSize()
-            .statusBarsPadding()
+            .background(MaterialTheme.colorScheme.background)
     ) {
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 8.dp)
-        ) {
-            // The panel keeps the three things done most — play, shuffle, save on the device — and
-            // everything else lives here, or the row overflows the panel.
-            var showMenu by remember { mutableStateOf(false) }
-            val hasDownloaded = playlist.tracks.any { it.downloadState == DownloadState.DOWNLOADED }
-            TopBar(
-                title = "",
-                onBack = onBack,
-                trailing = {
-                    Box {
-                        HomeIconButton(
-                            icon = Icons.Default.MoreVert,
-                            contentDescription = "Ещё",
-                            onClick = { showMenu = true }
-                        )
-                        DropdownMenu(expanded = showMenu, onDismissRequest = { showMenu = false }) {
-                            DropdownMenuItem(
-                                text = { Text("Сменить обложку") },
-                                leadingIcon = { Icon(Icons.Default.Image, contentDescription = null) },
-                                onClick = {
-                                    showMenu = false
-                                    imagePicker.launch(arrayOf("image/*"))
-                                }
-                            )
-                            if (hasDownloaded && !playlist.isLikedAlbum) {
-                                DropdownMenuItem(
-                                    text = { Text("Переместить скачанные в «Скачанное»") },
-                                    leadingIcon = { Icon(Icons.Default.Download, contentDescription = null) },
-                                    onClick = {
-                                        showMenu = false
-                                        onMoveDownloadedToDownloads()
-                                    }
-                                )
-                            }
-                            DropdownMenuItem(
-                                text = {
-                                    Text(if (playlist.isLikedAlbum) "Убрать из медиатеки" else "Удалить плейлист")
-                                },
-                                leadingIcon = { Icon(Icons.Default.Delete, contentDescription = null) },
-                                onClick = {
-                                    showMenu = false
-                                    onDeletePlaylist()
-                                }
-                            )
-                        }
-                    }
-                }
-            )
-        }
-
         LazyColumn(
+            state = listState,
             modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(start = 16.dp, top = 4.dp, end = 16.dp, bottom = 120.dp)
+            contentPadding = PaddingValues(bottom = 120.dp)
         ) {
             item(key = "playlist-hero") {
-                CollectionHero(
-                    title = playlist.name,
-                    kicker = if (playlist.isLikedAlbum) "Альбом · в медиатеке" else "Плейлист",
-                    subtitle = listOfNotNull(
-                        playlist.artist?.takeIf { playlist.isLikedAlbum && it.isNotBlank() },
-                        plural(playlist.tracks.size, "трек", "трека", "треков"),
-                        playlist.downloadedCount.takeIf { it > 0 }?.let { "$it на устройстве" }
-                    ).joinToString(" · "),
-                    onArtworkClick = { imagePicker.launch(arrayOf("image/*")) },
+                CoverHeader(
                     artwork = {
                         if (playlist.artworkUrl != null) {
                             AsyncImage(
@@ -7555,51 +7650,113 @@ private fun PlaylistDetailScreen(
                             IconCover(icon = Icons.AutoMirrored.Filled.QueueMusic)
                         }
                     },
-                    actions = {
-                        if (playlist.tracks.isNotEmpty()) {
-                            PanelPrimaryButton(
-                                text = "Слушать",
-                                icon = Icons.Default.PlayArrow,
-                                onClick = { onPlayTrack(playlist.tracks.first()) }
-                            )
-                            PanelIconButton(
-                                icon = Icons.Rounded.Shuffle,
-                                contentDescription = "Перемешать",
-                                onClick = onShuffle
-                            )
-                            // Saves the tracks for this playlist only; "Скачанное" stays as it is.
-                            PlaylistDownloadButton(playlist = playlist, onDownload = onDownloadAll)
-                        } else {
-                            PanelIconButton(
-                                icon = Icons.Default.Image,
-                                contentDescription = "Сменить обложку",
-                                onClick = { imagePicker.launch(arrayOf("image/*")) }
-                            )
+                    kicker = if (playlist.isLikedAlbum) "Альбом · в медиатеке" else "Плейлист",
+                    title = playlist.name,
+                    subtitle = playlist.artist?.takeIf { playlist.isLikedAlbum && it.isNotBlank() },
+                    isActive = isActive,
+                    isPlaying = isPlaying,
+                    onPlay = if (tracks.isEmpty()) null else {
+                        {
+                            if (isActive && albumLibrary != null) albumLibrary.onTogglePlay() else onPlayTrack(tracks.first())
                         }
-                    }
+                    },
+                    onShuffle = if (tracks.size < 2) null else onShuffle,
+                    onArtworkClick = { imagePicker.launch(arrayOf("image/*")) }
                 )
             }
 
-            item(key = "playlist-gap") { Spacer(modifier = Modifier.height(20.dp)) }
+            item(key = "playlist-count") {
+                CountRule(
+                    text = listOfNotNull(
+                        if (tracks.isEmpty()) "Нет треков" else plural(tracks.size, "трек", "трека", "треков"),
+                        playlist.downloadedCount.takeIf { it > 0 }?.let { "$it на устройстве" }
+                    ).joinToString(" · ")
+                ) {
+                    if (tracks.isNotEmpty()) {
+                        // Saves the tracks for this playlist only; "Скачанное" stays as it is.
+                        PlaylistDownloadButton(playlist = playlist, onDownload = onDownloadAll, size = RuleButtonSize)
+                    } else {
+                        PanelIconButton(
+                            icon = Icons.Default.Image,
+                            contentDescription = "Сменить обложку",
+                            onClick = { imagePicker.launch(arrayOf("image/*")) },
+                            size = RuleButtonSize,
+                            iconSize = RuleIconSize
+                        )
+                    }
+                }
+            }
 
-            if (playlist.tracks.isEmpty()) {
+            if (tracks.isEmpty()) {
                 item(key = "playlist-empty") {
-                    EmptyState("Здесь пока нет треков. Зажмите обложку трека в плеере, чтобы добавить его.")
+                    Box(modifier = Modifier.padding(horizontal = 16.dp)) {
+                        EmptyState("Здесь пока нет треков. Зажмите обложку трека в плеере, чтобы добавить его.")
+                    }
                 }
             } else {
-                itemsIndexed(playlist.tracks, key = { _, track -> "playlist-${playlist.id}-${track.id}" }) { index, track ->
-                    DownloadedTrackCard(
-                        track = track,
-                        isSelected = track.id == currentTrackId,
-                        progress = downloadProgress[track.id],
-                        isPlaying = isPlaying,
-                        onClick = { onPlayTrack(track) },
-                        onDeleteDownload = { onRemoveTrack(track) },
-                        position = groupPosition(index, playlist.tracks.size)
-                    )
+                itemsIndexed(tracks, key = { _, track -> "playlist-${playlist.id}-${track.id}" }) { _, track ->
+                    Box(modifier = Modifier.padding(horizontal = 8.dp)) {
+                        DownloadedTrackCard(
+                            track = track,
+                            isSelected = track.id == currentTrackId,
+                            progress = downloadProgress[track.id],
+                            isPlaying = isPlaying,
+                            onClick = { onPlayTrack(track) },
+                            onDeleteDownload = { onRemoveTrack(track) },
+                            flat = true
+                        )
+                    }
                 }
             }
         }
+
+        // The rest of what can be done with the playlist, kept off the cover.
+        CollapsingTopBar(
+            title = playlist.name,
+            collapsed = collapsed,
+            onBack = onBack,
+            trailing = {
+                var showMenu by remember { mutableStateOf(false) }
+                val hasDownloaded = tracks.any { it.downloadState == DownloadState.DOWNLOADED }
+                Box {
+                    HomeIconButton(
+                        icon = Icons.Default.MoreVert,
+                        contentDescription = "Ещё",
+                        onClick = { showMenu = true }
+                    )
+                    DropdownMenu(expanded = showMenu, onDismissRequest = { showMenu = false }) {
+                        DropdownMenuItem(
+                            text = { Text("Сменить обложку") },
+                            leadingIcon = { Icon(Icons.Default.Image, contentDescription = null) },
+                            onClick = {
+                                showMenu = false
+                                imagePicker.launch(arrayOf("image/*"))
+                            }
+                        )
+                        if (hasDownloaded && !playlist.isLikedAlbum) {
+                            DropdownMenuItem(
+                                text = { Text("Переместить скачанные в «Скачанное»") },
+                                leadingIcon = { Icon(Icons.Default.Download, contentDescription = null) },
+                                onClick = {
+                                    showMenu = false
+                                    onMoveDownloadedToDownloads()
+                                }
+                            )
+                        }
+                        DropdownMenuItem(
+                            text = {
+                                Text(if (playlist.isLikedAlbum) "Убрать из медиатеки" else "Удалить плейлист")
+                            },
+                            leadingIcon = { Icon(Icons.Default.Delete, contentDescription = null) },
+                            onClick = {
+                                showMenu = false
+                                onDeletePlaylist()
+                            }
+                        )
+                    }
+                }
+            }
+        )
     }
 }
 
@@ -7699,40 +7856,27 @@ private fun YandexPlaylistDetailScreen(
         }
     }
 
-    Column(
+    val albumLibrary = LocalAlbumLibrary.current
+    val tracks = playlist.tracks
+    val title = playlist.title ?: "Без названия"
+    val isLikedPlaylist = playlist.id == -100L
+    val isActive = currentTrackId != null && tracks.any { it.id == currentTrackId }
+    val favoritesMap = remember(favorites) { favorites.associateBy { it.id } }
+    val listState = rememberLazyListState()
+    val collapsed = rememberCollapsed(listState, MixCoverHeight - 140.dp)
+
+    Box(
         modifier = Modifier
             .fillMaxSize()
-            .statusBarsPadding()
+            .background(MaterialTheme.colorScheme.background)
     ) {
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 8.dp)
-        ) {
-            TopBar(
-                title = "",
-                onBack = onBack,
-                trailing = {
-                    HomeIconButton(
-                        icon = Icons.Default.VisibilityOff,
-                        contentDescription = "Скрыть плейлист",
-                        onClick = onHidePlaylist
-                    )
-                }
-            )
-        }
-
         LazyColumn(
+            state = listState,
             modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(start = 16.dp, top = 4.dp, end = 16.dp, bottom = 120.dp)
+            contentPadding = PaddingValues(bottom = 120.dp)
         ) {
             item(key = "yandex-playlist-hero") {
-                val isLikedPlaylist = playlist.id == -100L
-                CollectionHero(
-                    title = playlist.title ?: "Без названия",
-                    kicker = "Яндекс Музыка",
-                    subtitle = plural(playlist.trackCount, "трек", "трека", "треков"),
-                    onArtworkClick = { imagePicker.launch(arrayOf("image/*")) },
+                CoverHeader(
                     artwork = {
                         if (playlist.artworkUrl != null) {
                             AsyncImage(
@@ -7747,52 +7891,82 @@ private fun YandexPlaylistDetailScreen(
                             )
                         }
                     },
-                    actions = {
-                        if (playlist.tracks.isNotEmpty()) {
-                            PanelPrimaryButton(
-                                text = "Слушать",
-                                icon = Icons.Default.PlayArrow,
-                                onClick = { onPlayTrack(playlist.tracks.first()) }
-                            )
+                    kicker = "Плейлист · Яндекс Музыка",
+                    title = title,
+                    subtitle = null,
+                    isActive = isActive,
+                    isPlaying = isPlaying,
+                    onPlay = if (tracks.isEmpty()) null else {
+                        {
+                            if (isActive && albumLibrary != null) albumLibrary.onTogglePlay() else onPlayTrack(tracks.first())
                         }
-                        PanelIconButton(
-                            icon = Icons.Default.Image,
-                            contentDescription = "Сменить обложку",
-                            onClick = { imagePicker.launch(arrayOf("image/*")) }
-                        )
-                    }
+                    },
+                    onShuffle = if (tracks.size < 2 || albumLibrary == null) null else {
+                        { albumLibrary.onShuffle(tracks) }
+                    },
+                    onArtworkClick = { imagePicker.launch(arrayOf("image/*")) }
                 )
             }
 
-            item(key = "yandex-playlist-gap") { Spacer(modifier = Modifier.height(20.dp)) }
-
-            if (isLoading) {
-                item(key = "yandex-playlist-loading") { LoadingBlock() }
-            } else if (playlist.tracks.isEmpty()) {
-                item(key = "yandex-playlist-empty") {
-                    EmptyState("Здесь пока нет треков.")
-                }
-            } else {
-                val favoritesMap = favorites.associateBy { it.id }
-                itemsIndexed(
-                    playlist.tracks,
-                    key = { _, track -> "yandex-playlist-detail-${playlist.id}-${track.id}" }
-                ) { index, track ->
-                    val favorite = favoritesMap[track.id]
-                    TrackCard(
-                        track = track,
-                        isFavorite = favorite != null,
-                        isSelected = track.id == currentTrackId,
-                        downloadState = favorite?.downloadState,
-                        progress = downloadProgress[track.id],
-                        isPlaying = isPlaying,
-                        onClick = { onPlayTrack(track) },
-                        onFavoriteClick = { onFavoriteClick(track) },
-                        position = groupPosition(index, playlist.tracks.size)
+            item(key = "yandex-playlist-count") {
+                CountRule(
+                    text = when {
+                        playlist.trackCount > 0 -> plural(playlist.trackCount, "трек", "трека", "треков")
+                        isLoading -> "Загружаем треки"
+                        else -> "Нет треков"
+                    }
+                ) {
+                    PanelIconButton(
+                        icon = Icons.Default.Image,
+                        contentDescription = "Сменить обложку",
+                        onClick = { imagePicker.launch(arrayOf("image/*")) },
+                        size = RuleButtonSize,
+                        iconSize = RuleIconSize
                     )
                 }
             }
+
+            if (isLoading) {
+                item(key = "yandex-playlist-loading") { LoadingBlock(height = 200.dp) }
+            } else if (tracks.isEmpty()) {
+                item(key = "yandex-playlist-empty") {
+                    Box(modifier = Modifier.padding(horizontal = 16.dp)) { EmptyState("Здесь пока нет треков.") }
+                }
+            } else {
+                itemsIndexed(
+                    tracks,
+                    key = { _, track -> "yandex-playlist-detail-${playlist.id}-${track.id}" }
+                ) { _, track ->
+                    val favorite = favoritesMap[track.id]
+                    Box(modifier = Modifier.padding(horizontal = 8.dp)) {
+                        TrackCard(
+                            track = track,
+                            isFavorite = favorite != null,
+                            isSelected = track.id == currentTrackId,
+                            downloadState = favorite?.downloadState,
+                            progress = downloadProgress[track.id],
+                            isPlaying = isPlaying,
+                            onClick = { onPlayTrack(track) },
+                            onFavoriteClick = { onFavoriteClick(track) },
+                            flat = true
+                        )
+                    }
+                }
+            }
         }
+
+        CollapsingTopBar(
+            title = title,
+            collapsed = collapsed,
+            onBack = onBack,
+            trailing = {
+                HomeIconButton(
+                    icon = Icons.Default.VisibilityOff,
+                    contentDescription = "Скрыть плейлист",
+                    onClick = onHidePlaylist
+                )
+            }
+        )
     }
 }
 
@@ -7966,7 +8140,10 @@ private fun ArtistDetailScreen(
 /** How many of an artist's tracks show before "Все". */
 private const val TOP_TRACKS = 5
 
-/** Album or playlist opened from the artist page or from search: cover, then its tracks. */
+/**
+ * Album or playlist opened from the artist page or from search: laid out as a mix is, the cover
+ * across the top with the title over it and the big play button, then the tracks.
+ */
 @Composable
 private fun SetDetailContent(
     playlist: SoundCloudPlaylist,
@@ -7989,33 +8166,26 @@ private fun SetDetailContent(
     // Until the full list arrives only a few tracks are known; the set's own count is closer
     // to what's about to appear.
     val trackCount = if (isLoading) maxOf(playlist.trackCount, tracks.size) else tracks.size
-    Column(
+    val favoritesMap = remember(favorites) { favorites.associateBy { it.id } }
+    val title = playlist.title ?: "Без названия"
+    // Playing from this set: the big button pauses and resumes rather than starting over.
+    val isActive = currentTrackId != null && tracks.any { it.id == currentTrackId }
+    val listState = rememberLazyListState()
+    val collapsed = rememberCollapsed(listState, MixCoverHeight - 140.dp)
+
+    Box(
         modifier = Modifier
             .fillMaxSize()
-            .statusBarsPadding()
+            .background(MaterialTheme.colorScheme.background)
     ) {
-        AppTopBar(
-            modifier = Modifier.padding(horizontal = 16.dp),
-            leadingIcon = Icons.AutoMirrored.Filled.ArrowBack,
-            leadingDescription = "Назад",
-            onLeadingClick = onBack,
-            // No title here: the hero right below already carries it.
-            title = {}
-        )
-
         LazyColumn(
+            state = listState,
             modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(start = 16.dp, top = 4.dp, end = 16.dp, bottom = 120.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp)
+            contentPadding = PaddingValues(bottom = 120.dp)
         ) {
             item(key = "set-hero") {
-                val artworkUrl = ArtworkUrls.highRes(playlist.displayArtworkUrl)
-                CollectionHero(
-                    title = playlist.title ?: "Без названия",
-                    kicker = if (isYandex) "Альбом" else setCaption(playlist),
-                    subtitle = listOf(subtitle, plural(trackCount, "трек", "трека", "треков"))
-                        .filter { it.isNotBlank() }
-                        .joinToString(" · "),
+                val artworkUrl = ArtworkUrls.highRes(playlist.displayArtworkUrl) ?: playlist.displayArtworkUrl
+                CoverHeader(
                     artwork = {
                         if (artworkUrl != null) {
                             AsyncImage(
@@ -8028,25 +8198,47 @@ private fun SetDetailContent(
                             IconCover(icon = Icons.Default.Album)
                         }
                     },
-                    actions = if (tracks.isNotEmpty()) {
+                    kicker = if (isYandex) "Альбом" else setCaption(playlist),
+                    title = title,
+                    subtitle = subtitle.takeIf { it.isNotBlank() },
+                    isActive = isActive,
+                    isPlaying = isPlaying,
+                    onPlay = if (tracks.isEmpty()) null else {
                         {
-                            PanelPrimaryButton(
-                                text = "Слушать",
-                                icon = Icons.Default.PlayArrow,
-                                onClick = { onPlayTrack(tracks.first()) }
+                            if (isActive && albumLibrary != null) albumLibrary.onTogglePlay() else onPlayTrack(tracks.first())
+                        }
+                    },
+                    onShuffle = if (tracks.size < 2 || albumLibrary == null) null else {
+                        { albumLibrary.onShuffle(tracks) }
+                    }
+                )
+            }
+
+            item(key = "set-count") {
+                CountRule(
+                    text = when {
+                        trackCount > 0 -> plural(trackCount, "трек", "трека", "треков")
+                        isLoading -> "Загружаем треки"
+                        else -> "Нет треков"
+                    },
+                    actions = if (albumLibrary != null && tracks.isNotEmpty()) {
+                        {
+                            // Liking saves the album as a playlist next to "Скачанное"; from then
+                            // on it can be downloaded as a whole.
+                            PanelIconButton(
+                                icon = if (liked != null) Icons.Rounded.Favorite else Icons.Rounded.FavoriteBorder,
+                                contentDescription = if (liked != null) "Убрать из медиатеки" else "Сохранить в медиатеку",
+                                onClick = { albumLibrary.onToggleLike(playlist, artistName ?: subtitle) },
+                                selected = liked != null,
+                                size = RuleButtonSize,
+                                iconSize = RuleIconSize
                             )
-                            if (albumLibrary != null) {
-                                // Liking saves the album as a playlist next to "Скачанное"; from
-                                // then on it can be downloaded as a whole.
-                                PanelIconButton(
-                                    icon = if (liked != null) Icons.Rounded.Favorite else Icons.Rounded.FavoriteBorder,
-                                    contentDescription = if (liked != null) "Убрать из медиатеки" else "Сохранить в медиатеку",
-                                    onClick = { albumLibrary.onToggleLike(playlist, artistName ?: subtitle) },
-                                    selected = liked != null
+                            if (liked != null) {
+                                PlaylistDownloadButton(
+                                    playlist = liked,
+                                    onDownload = { albumLibrary.onDownload(liked) },
+                                    size = RuleButtonSize
                                 )
-                                if (liked != null) {
-                                    PlaylistDownloadButton(playlist = liked, onDownload = { albumLibrary.onDownload(liked) })
-                                }
                             }
                         }
                     } else {
@@ -8055,35 +8247,45 @@ private fun SetDetailContent(
                 )
             }
 
-            if (isLoading) {
-                item(key = "set-loading") { LoadingBlock(height = 120.dp) }
-            }
-
             if (error != null) {
-                item(key = "set-error") { MessageCard(error) }
+                item(key = "set-error") {
+                    Box(modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) { MessageCard(error) }
+                }
             }
 
             if (tracks.isEmpty()) {
-                if (!isLoading && error == null) {
+                if (isLoading) {
+                    item(key = "set-loading") { LoadingBlock(height = 200.dp) }
+                } else if (error == null) {
                     item(key = "set-empty") {
-                        EmptyState("Здесь пока нет треков.")
+                        Box(modifier = Modifier.padding(horizontal = 16.dp)) { EmptyState("Здесь пока нет треков.") }
                     }
                 }
             } else {
-                item(key = "set-tracks") {
-                    PagedTrackList(
-                        tracks = tracks,
-                        favorites = favorites,
-                        currentTrackId = currentTrackId,
-                        isPlaying = isPlaying,
-                        downloadProgress = downloadProgress,
-                        onPlayTrack = onPlayTrack,
-                        onFavoriteClick = onFavoriteClick,
-                        perPage = 5
-                    )
+                itemsIndexed(tracks, key = { index, track -> "set-${track.id}-$index" }) { _, track ->
+                    val favorite = favoritesMap[track.id]
+                    Box(modifier = Modifier.padding(horizontal = 8.dp)) {
+                        TrackCard(
+                            track = track,
+                            isFavorite = favorite != null,
+                            isSelected = track.id == currentTrackId,
+                            downloadState = favorite?.downloadState,
+                            progress = downloadProgress[track.id],
+                            isPlaying = isPlaying,
+                            onClick = { onPlayTrack(track) },
+                            onFavoriteClick = { onFavoriteClick(track) },
+                            flat = true
+                        )
+                    }
+                }
+                // The first few are in; the rest are on their way.
+                if (isLoading) {
+                    item(key = "set-loading-more") { LoadingBlock(height = 120.dp) }
                 }
             }
         }
+
+        CollapsingTopBar(title = title, collapsed = collapsed, onBack = onBack)
     }
 }
 

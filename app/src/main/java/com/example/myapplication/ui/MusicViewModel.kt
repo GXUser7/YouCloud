@@ -616,13 +616,28 @@ class MusicViewModel(
         viewModelScope.launch {
             // Looked up only while the full player is open: what plays in the background has
             // no picture to show, and every lookup costs traffic (and yt-dlp, on YouTube).
+            // Videos looked up under other settings aren't the ones to show now.
+            var lookedUpFor: Pair<Boolean, Boolean>? = null
             combine(
                 _currentPlayingTrack,
                 _selectedTrack.map { it != null },
-                settingsRepository.playerVideos
-            ) { track, playerOpen, enabled -> track.takeIf { playerOpen && enabled } }
-                .distinctUntilChangedBy { it?.id }
-                .collectLatest { track ->
+                settingsRepository.playerVideos,
+                settingsRepository.videoYouTube,
+                settingsRepository.videoYandex
+            ) { track, playerOpen, enabled, youTube, yandex ->
+                Triple(track.takeIf { playerOpen && enabled }, youTube, yandex)
+            }
+                .distinctUntilChangedBy { (track, youTube, yandex) -> Triple(track?.id, youTube, yandex) }
+                .collectLatest { (track, youTube, yandex) ->
+                    val sources = youTube to yandex
+                    if (lookedUpFor != null && lookedUpFor != sources) {
+                        videoLookups.clear()
+                        videoLookupsInFlight.clear()
+                        _trackVideo.value = null
+                        _pendingTrackVideo.value = null
+                        withContext(Dispatchers.IO) { offlineVideos.forgetNone() }
+                    }
+                    lookedUpFor = sources
                     if (_trackVideo.value?.trackId != track?.id) _trackVideo.value = null
                     if (_pendingTrackVideo.value?.trackId != track?.id) _pendingTrackVideo.value = null
                     if (track == null) return@collectLatest
@@ -3742,7 +3757,10 @@ class MusicViewModel(
      * there — its picture comes through yt-dlp, which needs the session on a VPN.
      */
     private suspend fun findTrackVideo(track: SoundCloudTrack): TrackVideo? =
-        withContext(Dispatchers.IO) { offlineVideos.get(track.id) } ?: findOnlineTrackVideo(track)
+        withContext(Dispatchers.IO) { offlineVideos.get(track.id) }
+            // Yandex's loop, or a video from YouTube: shown only while their kind is.
+            ?.takeIf { if (it.loop) settingsRepository.videoYandex.value else settingsRepository.videoYouTube.value }
+            ?: findOnlineTrackVideo(track)
 
     /**
      * What a downloaded track needs to be itself offline, besides its sound: its synced lyrics
@@ -3753,7 +3771,9 @@ class MusicViewModel(
     private suspend fun downloadExtras(track: SoundCloudTrack) {
         val urn = track.urn.orEmpty()
         if (urn.startsWith("yandex:track:")) lyricsRepository.syncedLyrics(urn)
-        if (!settingsRepository.playerVideos.value || isNetworkMetered()) return
+        if (!settingsRepository.playerVideos.value || !settingsRepository.videoDownload.value || isNetworkMetered()) return
+        // Neither kind of video wanted: nothing to look for, and nothing to mark as not found.
+        if (!settingsRepository.videoYouTube.value && !settingsRepository.videoYandex.value) return
         val video = findOnlineTrackVideo(track)
         if (video == null) {
             offlineVideos.markNone(track.id)
@@ -3773,7 +3793,7 @@ class MusicViewModel(
         val youTubeId = track.youTubeVideoId
         return when {
             urn.startsWith("yandex:track:") -> {
-                val own = yandexVideo(track)
+                val own = if (settingsRepository.videoYandex.value) yandexVideo(track) else null
                 when {
                     own == null -> youTubeVideo(track, null)
                     // The videoshot: made for the player, and it fills it.
@@ -3834,6 +3854,7 @@ class MusicViewModel(
      * is lined up by its sound ([ClipAligner]); one that can't be isn't shown at all.
      */
     private suspend fun youTubeVideo(track: SoundCloudTrack, videoId: String?): TrackVideo? {
+        if (!settingsRepository.videoYouTube.value) return null
         val auth = settingsRepository.ytMusicAuth() ?: return null
         val video = ytMusic.musicVideo(
             videoId = videoId,

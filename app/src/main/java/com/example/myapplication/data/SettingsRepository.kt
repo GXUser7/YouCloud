@@ -148,6 +148,38 @@ class SettingsRepository(
         preferences.edit().putBoolean(KEY_PLAYER_VIDEOS, enabled).apply()
     }
 
+    // Which videos, when [playerVideos] is on: YouTube's music videos (a YouTube Music song's own,
+    // or one found for a Yandex track), and Yandex's videoshots and clip loops.
+    val videoYouTube = MutableStateFlow(preferences.getBoolean(KEY_VIDEO_YOUTUBE, true))
+
+    fun setVideoYouTube(enabled: Boolean) {
+        videoYouTube.value = enabled
+        preferences.edit().putBoolean(KEY_VIDEO_YOUTUBE, enabled).apply()
+    }
+
+    val videoYandex = MutableStateFlow(preferences.getBoolean(KEY_VIDEO_YANDEX, true))
+
+    fun setVideoYandex(enabled: Boolean) {
+        videoYandex.value = enabled
+        preferences.edit().putBoolean(KEY_VIDEO_YANDEX, enabled).apply()
+    }
+
+    // The glow of blurred copies around a video in the cover's place and behind the panel.
+    val videoGlow = MutableStateFlow(preferences.getBoolean(KEY_VIDEO_GLOW, true))
+
+    fun setVideoGlow(enabled: Boolean) {
+        videoGlow.value = enabled
+        preferences.edit().putBoolean(KEY_VIDEO_GLOW, enabled).apply()
+    }
+
+    // Downloaded tracks' videos kept on the phone, to play offline.
+    val videoDownload = MutableStateFlow(preferences.getBoolean(KEY_VIDEO_DOWNLOAD, true))
+
+    fun setVideoDownload(enabled: Boolean) {
+        videoDownload.value = enabled
+        preferences.edit().putBoolean(KEY_VIDEO_DOWNLOAD, enabled).apply()
+    }
+
     // Asking GitHub for a new version twice a day; see UpdateRepository.
     val updateAutoCheck = MutableStateFlow(preferences.getBoolean(KEY_UPDATE_AUTO_CHECK, true))
 
@@ -310,6 +342,10 @@ class SettingsRepository(
         const val KEY_SHOW_DEBUG_PERCENTAGE = "show_debug_percentage"
         const val KEY_BACKGROUND_MOTION = "background_motion"
         const val KEY_PLAYER_VIDEOS = "player_videos"
+        const val KEY_VIDEO_YOUTUBE = "video_youtube"
+        const val KEY_VIDEO_YANDEX = "video_yandex"
+        const val KEY_VIDEO_GLOW = "video_glow"
+        const val KEY_VIDEO_DOWNLOAD = "video_download"
         const val KEY_PLAYER_COVER_COLORS = "player_cover_colors"
         const val KEY_UPDATE_AUTO_CHECK = "update_auto_check"
         const val KEY_LAST_UPDATE_CHECK = "last_update_check"

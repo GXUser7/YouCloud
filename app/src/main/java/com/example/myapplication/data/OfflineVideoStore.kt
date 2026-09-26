@@ -62,6 +62,11 @@ class OfflineVideoStore(context: Context) {
         noneFile(trackId).writeText("")
     }
 
+    /** Every track looked into again: what was found to have no video was looked for less widely. */
+    fun forgetNone() {
+        dir.listFiles { file -> file.name.endsWith(".none") }.orEmpty().forEach { it.delete() }
+    }
+
     /**
      * Downloads [video]'s stream and keeps it for its track — unless the one kept already is in
      * the same codec, so the same picture.
