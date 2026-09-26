@@ -4910,6 +4910,8 @@ private fun TrackDetailScreen(
         label = "videoShown"
     )
     val immersiveVideo = videoState?.takeIf { it.isPortrait }
+    // A video in the cover's place fills the whole background with copies of itself.
+    val coverVideo = videoState?.takeIf { !it.isPortrait }
     // Paused, a video blurs, as if it had stopped to wait.
     val pauseBlur by animateDpAsState(
         targetValue = if (!isPlaying && videoState?.showing == true) 24.dp else 0.dp,
@@ -4937,6 +4939,15 @@ private fun TrackDetailScreen(
                 )
             }
     ) {
+        if (coverVideo != null) {
+            VideoBackdrop(
+                state = coverVideo,
+                alpha = videoShown,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .blur(blurRadius)
+            )
+        }
         if (immersiveVideo != null) {
             Box(
                 modifier = Modifier
@@ -4996,15 +5007,26 @@ private fun TrackDetailScreen(
                 },
                 panel = {
                     PlayerPanel(
-                        glass = if (immersiveVideo != null && videoShown > 0f) {
-                            {
-                                FrostedVideoGlass(
-                                    state = immersiveVideo,
-                                    tint = PanelColors.container.copy(alpha = 0.42f)
-                                )
+                        glass = when {
+                            immersiveVideo != null && videoShown > 0f -> {
+                                {
+                                    FrostedVideoGlass(
+                                        state = immersiveVideo,
+                                        tint = PanelColors.container.copy(alpha = 0.42f)
+                                    )
+                                }
                             }
-                        } else {
-                            null
+                            // Over the copies of the video, already blurred: a tint makes the frost.
+                            coverVideo != null && videoShown > 0f -> {
+                                {
+                                    Box(
+                                        modifier = Modifier
+                                            .matchParentSize()
+                                            .background(PanelColors.container.copy(alpha = 1f - 0.58f * videoShown))
+                                    )
+                                }
+                            }
+                            else -> null
                         },
                         track = track,
                         activeQueue = activeQueue,
@@ -5174,7 +5196,9 @@ private fun PlayerArtwork(
         modifier = Modifier
             .fillMaxSize()
             .clipToBounds()
-            .background(MaterialTheme.colorScheme.surfaceContainerHigh)
+            .background(
+                MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = if (video != null) 1f - videoShown else 1f)
+            )
             .pointerInput(track.permalinkUrl) {
                 detectTapGestures(
                     onLongPress = {
@@ -5213,7 +5237,9 @@ private fun PlayerArtwork(
             AsyncImage(
                 model = artworkUrlForSize(track.artworkUrl, 500.dp),
                 contentDescription = null,
-                modifier = Modifier.fillMaxSize(),
+                modifier = Modifier
+                    .fillMaxSize()
+                    .graphicsLayer { alpha = if (video != null) 1f - videoShown else 1f },
                 contentScale = ContentScale.Crop
             )
             // The music video fades in over the cover once it plays: from the line the buttons
@@ -5223,6 +5249,7 @@ private fun PlayerArtwork(
                     state = video,
                     top = WindowInsets.statusBars.asPaddingValues().calculateTopPadding() + 12.dp,
                     bottom = PlayerPanelOverlap + 36.dp,
+                    overBackdrop = true,
                     alpha = videoShown,
                     modifier = Modifier.fillMaxSize()
                 )

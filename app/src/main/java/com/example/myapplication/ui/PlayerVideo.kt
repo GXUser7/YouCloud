@@ -321,13 +321,15 @@ fun AmbientVideo(
     top: androidx.compose.ui.unit.Dp,
     bottom: androidx.compose.ui.unit.Dp,
     alpha: Float,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    // A [VideoBackdrop] lies behind: the glow shines over it rather than over black.
+    overBackdrop: Boolean = false
 ) {
     val topPx = with(LocalDensity.current) { top.toPx() }
     val bottomPx = with(LocalDensity.current) { bottom.toPx() }
     Box(modifier = modifier.graphicsLayer { this.alpha = alpha }) {
         // Darkness to glow in: the cover goes out as the video comes in.
-        Box(modifier = Modifier.matchParentSize().drawBehind { drawRect(Color.Black) })
+        if (!overBackdrop) Box(modifier = Modifier.matchParentSize().drawBehind { drawRect(Color.Black) })
         Box(modifier = Modifier.matchParentSize()) {
         for (glow in AMBIENT_GLOWS) {
             Box(
@@ -377,6 +379,46 @@ fun AmbientVideo(
 }
 
 private val VIDEO_EDGE_FADE = 64.dp
+
+/**
+ * The whole player's background while a music video plays in the cover's place: copies of the
+ * video cascading down from it to the bottom of the screen, each mirrored from the one above so
+ * that they meet without a seam, and each softer than the last. The panel stands on them as on
+ * frosted glass. They are the video's own layer drawn again, and move with every frame.
+ */
+@Composable
+fun VideoBackdrop(state: PlayerVideoState, alpha: Float, modifier: Modifier = Modifier) {
+    Box(modifier = modifier.graphicsLayer { this.alpha = alpha }) {
+        Box(modifier = Modifier.matchParentSize().drawBehind { drawRect(Color.Black) })
+        BACKDROP_BLURS.forEachIndexed { index, blur ->
+            Box(
+                modifier = Modifier
+                    .matchParentSize()
+                    .graphicsLayer {
+                        val radius = blur.toPx()
+                        renderEffect = BlurEffect(radius, radius, TileMode.Clamp)
+                    }
+                    .drawBehind {
+                        val layer = state.frameLayer ?: return@drawBehind
+                        val origin = state.frameOrigin ?: return@drawBehind
+                        val width = layer.size.width.toFloat()
+                        val height = layer.size.height.toFloat()
+                        if (height <= 0f) return@drawBehind
+                        // Copy after copy below the video, down past the bottom of the screen.
+                        translate(origin.x, origin.y + height * (index + 1)) {
+                            // Mirrored every other time: the copy's top meets the bottom above.
+                            scale(1f, if (index % 2 == 0) -1f else 1f, pivot = Offset(width / 2, height / 2)) {
+                                drawLayer(layer)
+                            }
+                        }
+                    }
+            )
+        }
+    }
+}
+
+// From the copy right below the video downward: ever softer, as it moves away from the picture.
+private val BACKDROP_BLURS = listOf(28.dp, 44.dp, 60.dp)
 
 private class Glow(val scale: Float, val blur: androidx.compose.ui.unit.Dp, val opacity: Float)
 
