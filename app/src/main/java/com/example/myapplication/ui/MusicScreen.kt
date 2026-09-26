@@ -239,6 +239,8 @@ import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.ui.input.pointer.util.VelocityTracker
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.positionInParent
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.animation.core.Animatable
 import androidx.compose.runtime.rememberCoroutineScope
 import kotlinx.coroutines.launch
@@ -1328,6 +1330,8 @@ private fun HomeScreen(
             label = "homeService"
         ) { shown ->
             val sections = sectionsOf(shown)
+            // The pointer handler outlives recompositions; it switches through the latest.
+            val currentSwitchTo by rememberUpdatedState<(HomeService) -> Unit> { switchTo(it) }
             val initialPage = sections.indexOfFirst { it.key == lastSection[shown] }.takeIf { it >= 0 }
                 ?: sections.indexOfFirst { it.category == savedCategory }.coerceAtLeast(0)
             val sectionPager = rememberPagerState(initialPage = initialPage) { sections.size }
@@ -1350,21 +1354,33 @@ private fun HomeScreen(
                     .navigationBarsPadding()
                     // A sideways swipe anywhere the carousels don't take it moves to the next
                     // service: the room under them, the title, the edges.
+                    // Counted by its length or by its speed: a quick flick is short, and asking for
+                    // a long drag lost most of them.
                     .pointerInput(services, shown) {
                         var dragged = 0f
+                        val velocity = VelocityTracker()
                         detectHorizontalDragGestures(
-                            onDragStart = { dragged = 0f },
+                            onDragStart = { start ->
+                                dragged = 0f
+                                velocity.resetTracking()
+                            },
                             onDragEnd = {
-                                if (kotlin.math.abs(dragged) > 64.dp.toPx()) {
+                                val speed = velocity.calculateVelocity().x
+                                val far = kotlin.math.abs(dragged) > SERVICE_SWIPE_DISTANCE.toPx()
+                                val flung = kotlin.math.abs(speed) > SERVICE_SWIPE_VELOCITY.toPx() &&
+                                    kotlin.math.sign(speed) == kotlin.math.sign(dragged) &&
+                                    kotlin.math.abs(dragged) > SERVICE_SWIPE_MIN_FLICK.toPx()
+                                if (far || flung) {
                                     val next = services.indexOf(shown) + if (dragged < 0) 1 else -1
                                     services.getOrNull(next)?.let { target ->
                                         haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                        switchTo(target)
+                                        currentSwitchTo(target)
                                     }
                                 }
                             },
                             onHorizontalDrag = { change, amount ->
                                 dragged += amount
+                                velocity.addPosition(change.uptimeMillis, change.position)
                                 change.consume()
                             }
                         )
@@ -1605,6 +1621,12 @@ private fun HomeScreen(
     }
 }
 
+// A sideways swipe on home moves to the next service once it is this long — or, a flick, this fast
+// and at least this long.
+private val SERVICE_SWIPE_DISTANCE = 40.dp
+private val SERVICE_SWIPE_VELOCITY = 300.dp
+private val SERVICE_SWIPE_MIN_FLICK = 12.dp
+
 /**
  * Material 3 Expressive's floating toolbar: the services on the panel tone, each by its own mark,
  * the chosen one an accent pill, and search beside it as its own floating button. Marks only: the
@@ -1633,8 +1655,35 @@ private fun HomeToolbar(
             contentColor = PanelColors.content,
             shadowElevation = 6.dp
         ) {
+            // Where each service's mark lies across the bar, for a finger sliding along it.
+            val spans = remember { mutableMapOf<HomeService, ClosedFloatingPointRange<Float>>() }
+            val currentSelected by rememberUpdatedState(selected)
+            val currentOnSelect by rememberUpdatedState(onSelect)
             Row(
-                modifier = Modifier.padding(8.dp),
+                modifier = Modifier
+                    .padding(8.dp)
+                    // Slid along, the bar picks whatever service is under the finger, as a
+                    // segmented control does.
+                    .pointerInput(services) {
+                        var picked: HomeService? = null
+                        fun pickAt(x: Float) {
+                            val under = spans.entries.firstOrNull { x in it.value }?.key ?: return
+                            if (under != picked) {
+                                picked = under
+                                if (under != currentSelected) currentOnSelect(under)
+                            }
+                        }
+                        detectHorizontalDragGestures(
+                            onDragStart = { start ->
+                                picked = currentSelected
+                                pickAt(start.x)
+                            },
+                            onHorizontalDrag = { change, _ ->
+                                pickAt(change.position.x)
+                                change.consume()
+                            }
+                        )
+                    },
                 horizontalArrangement = Arrangement.spacedBy(4.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
@@ -1642,7 +1691,11 @@ private fun HomeToolbar(
                     HomeToolbarItem(
                         service = service,
                         selected = service == selected,
-                        onClick = { onSelect(service) }
+                        onClick = { onSelect(service) },
+                        modifier = Modifier.onGloballyPositioned { coordinates ->
+                            val left = coordinates.positionInParent().x
+                            spans[service] = left..(left + coordinates.size.width)
+                        }
                     )
                 }
             }
@@ -1663,7 +1716,12 @@ private fun HomeToolbar(
 }
 
 @Composable
-private fun HomeToolbarItem(service: HomeService, selected: Boolean, onClick: () -> Unit) {
+private fun HomeToolbarItem(
+    service: HomeService,
+    selected: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
     val container by animateColorAsState(
         targetValue = if (selected) PanelColors.accent else Color.Transparent,
         animationSpec = tween(250),
@@ -1676,7 +1734,7 @@ private fun HomeToolbarItem(service: HomeService, selected: Boolean, onClick: ()
     )
     Surface(
         onClick = onClick,
-        modifier = Modifier
+        modifier = modifier
             .height(48.dp)
             .animateContentSize(
                 animationSpec = spring(
