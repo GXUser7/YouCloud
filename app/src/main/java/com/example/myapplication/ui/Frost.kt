@@ -89,15 +89,24 @@ fun Modifier.frosted(
     rim: Boolean = true
 ): Modifier {
     val sources = LocalFrostSources.current
+    val here = remember { FrostOrigin() }
     // Blurring is only worth it over something sharp: a list scrolling under a bar, a screen
-    // under the mini player. A card on the backdrop alone is a wash of colour over it.
+    // under the mini player. Over the backdrop alone (blurred already) the glass draws it as it
+    // is under a wash of colour — which still hides whatever else passes behind, a list under a
+    // bar, as glass does.
     if (sources.all { it.soft }) {
         return this
+            .onGloballyPositioned { here.value = it.positionInRoot() }
             .clip(shape)
-            .drawBehind { drawRect(tint) }
+            .drawBehind {
+                val at = here.value
+                for (source in sources) {
+                    translate(source.origin.x - at.x, source.origin.y - at.y) { drawLayer(source.layer) }
+                }
+                drawRect(tint)
+            }
             .then(if (rim) Modifier.border(1.dp, Color.White.copy(alpha = 0.07f), shape) else Modifier)
     }
-    val here = remember { FrostOrigin() }
     return this
         .onGloballyPositioned { here.value = it.positionInRoot() }
         .clip(shape)

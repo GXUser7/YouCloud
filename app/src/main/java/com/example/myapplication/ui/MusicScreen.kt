@@ -182,6 +182,9 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.blur
 import androidx.compose.ui.graphics.Brush
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.animation.core.FastOutLinearInEasing
 import androidx.compose.ui.graphics.BlurEffect
 import androidx.compose.ui.graphics.TileMode
@@ -5662,16 +5665,43 @@ private fun TrackDetailScreen(
         }
     }
     val haptic = LocalHapticFeedback.current
-    var showQueue by remember { mutableStateOf(false) }
+    // The queue: a sheet from below that follows the finger both ways and settles on a spring.
+    // 1: out of sight, 0: all the way up.
+    val queueHidden = remember { Animatable(1f) }
+    val queueScope = rememberCoroutineScope()
+    var queueHeightPx by remember { mutableFloatStateOf(1f) }
+    val showQueue by remember { androidx.compose.runtime.derivedStateOf { queueHidden.value < 1f } }
+    val flingPx = with(LocalDensity.current) { QueueFlingVelocity.toPx() }
+    // Moves the sheet by [dy] pixels (down is positive); what it could take of them.
+    val dragQueue: (Float) -> Float = { dy ->
+        val before = queueHidden.value
+        val after = (before + dy / queueHeightPx).coerceIn(0f, 1f)
+        queueScope.launch { queueHidden.snapTo(after) }
+        (after - before) * queueHeightPx
+    }
+    // Where the sheet was when the finger took it: a fifth of the way from there is enough.
+    var queueDragFrom by remember { mutableFloatStateOf(1f) }
+    // Let go: a fling decides, else how far it came; the fling's speed carries into the spring.
+    val releaseQueue: (Float) -> Unit = { velocity ->
+        val open = when {
+            kotlin.math.abs(velocity) > flingPx -> velocity < 0f
+            queueDragFrom > 0.5f -> queueHidden.value < 1f - QueueMeantFraction
+            else -> queueHidden.value < QueueMeantFraction
+        }
+        queueScope.launch {
+            queueHidden.animateTo(if (open) 0f else 1f, QueueSpring, initialVelocity = velocity / queueHeightPx)
+        }
+    }
+    val setQueueOpen: (Boolean) -> Unit = { open ->
+        queueScope.launch { queueHidden.animateTo(if (open) 0f else 1f, QueueSpring) }
+    }
     var showLyrics by remember(track.id) { mutableStateOf(false) }
     val lyricsShown = showLyrics && !lyrics.isNullOrEmpty()
     val showLoading = (downloadState != DownloadState.DOWNLOADED) &&
         (isBuffering || isLoading || (positionMs == 0L && !isPlaying))
-    val blurRadius by animateDpAsState(
-        targetValue = if (showQueue) 10.dp else 0.dp,
-        animationSpec = tween(durationMillis = 300),
-        label = "blurRadius"
-    )
+    // Nothing is blurred under the queue any more: a scrim that follows the sheet dims the player,
+    // and a full-screen blur changing on every frame of a drag cost more than it gave.
+    val blurRadius = 0.dp
     // Lyrics take the cover's place: it blurs into a backdrop behind them.
     val coverBlur by animateDpAsState(
         targetValue = if (lyricsShown) 28.dp else 0.dp,
@@ -5753,14 +5783,25 @@ private fun TrackDetailScreen(
             .fillMaxSize()
             // Drawn over the app's own screens, so the player owns its whole backdrop.
             .background(MaterialTheme.colorScheme.background)
-            .pointerInput(showQueue) {
-                detectDragGestures(
-                    onDrag = { _, dragAmount ->
-                        if (dragAmount.y < -40f && !showQueue) {
-                            showQueue = true
-                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+            .onSizeChanged { queueHeightPx = it.height * QueueHeightFraction }
+            // A swipe up anywhere nothing else takes it pulls the queue up after the finger.
+            .pointerInput(Unit) {
+                val velocity = VelocityTracker()
+                detectVerticalDragGestures(
+                    onDragStart = {
+                        velocity.resetTracking()
+                        queueDragFrom = queueHidden.value
+                        queueScope.launch { queueHidden.stop() }
+                    },
+                    onVerticalDrag = { change, dy ->
+                        velocity.addPosition(change.uptimeMillis, change.position)
+                        if (dy < 0f || queueHidden.value < 1f) {
+                            change.consume()
+                            dragQueue(dy)
                         }
-                    }
+                    },
+                    onDragEnd = { releaseQueue(velocity.calculateVelocity().y) },
+                    onDragCancel = { releaseQueue(0f) }
                 )
             }
     ) {
@@ -5771,7 +5812,9 @@ private fun TrackDetailScreen(
                 modifier = Modifier
                     .fillMaxSize()
                     .graphicsLayer { alpha = 1f - swipeProgress() }
-                    .blur(blurRadius)
+                    // Under the lyrics the glow blurs with the cover, or its near steps would
+                    // stay sharper than the cover they come from.
+                    .blur(blurRadius + coverBlur)
             )
         }
         if (backdropVideo != null) {
@@ -5781,8 +5824,9 @@ private fun TrackDetailScreen(
                 modifier = Modifier
                     .fillMaxSize()
                     .graphicsLayer { alpha = 1f - swipeProgress() }
-                    // Paused, the glow blurs with the video, or its near steps would stay sharper.
-                    .blur(blurRadius + pauseBlur)
+                    // Paused, or under the lyrics, the glow blurs with the video, or its near steps
+                    // would stay sharper than the video they come from.
+                    .blur(blurRadius + pauseBlur + coverBlur)
             )
         }
         if (immersiveVideo != null) {
@@ -5876,7 +5920,9 @@ private fun TrackDetailScreen(
                                 .fillMaxSize()
                                 // Over a vertical video the cover gives way to it once it plays.
                                 .graphicsLayer { alpha = if (immersiveVideo != null) 1f - videoShown else 1f }
-                                .blur(coverBlur + pauseBlur)
+                                // Unbounded: cut at the edge of its box, which reaches under the
+                                // panel, the blur left a hard line across the panel's top.
+                                .blur(coverBlur + pauseBlur, androidx.compose.ui.draw.BlurredEdgeTreatment.Unbounded)
                         ) {
                             PlayerArtwork(
                                 track = track,
@@ -5965,7 +6011,7 @@ private fun TrackDetailScreen(
                         },
                         onOpenQueue = {
                             haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                            showQueue = true
+                            setQueueOpen(true)
                         }
                     )
                 }
@@ -6035,19 +6081,31 @@ private fun TrackDetailScreen(
             }
         }
 
-        AnimatedVisibility(
-            visible = showQueue,
-            enter = slideInVertically(initialOffsetY = { it }) + fadeIn(),
-            exit = slideOutVertically(targetOffsetY = { it }) + fadeOut(),
-            modifier = Modifier.fillMaxSize()
-        ) {
+        if (showQueue) {
+            // The player dims as the sheet comes up; a tap on it sends the sheet back down.
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .graphicsLayer { alpha = 1f - queueHidden.value }
+                    .background(Color.Black.copy(alpha = 0.5f))
+                    .pointerInput(Unit) { detectTapGestures { setQueueOpen(false) } }
+            )
             QueueManagerPanel(
                 activeQueue = activeQueue,
                 currentTrack = track,
                 isPlaying = isPlaying,
-                onDismiss = { showQueue = false },
+                onDismiss = { setQueueOpen(false) },
                 onReorder = onReorderQueue,
-                onPlayTrack = onPlayTrackFromQueue
+                onPlayTrack = onPlayTrackFromQueue,
+                sheetOffset = { queueHidden.value * queueHeightPx },
+                onSheetDragStart = { queueDragFrom = queueHidden.value },
+                onSheetDrag = dragQueue,
+                onSheetRelease = releaseQueue,
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .fillMaxWidth()
+                    .fillMaxHeight(QueueHeightFraction)
+                    .graphicsLayer { translationY = queueHidden.value * size.height }
             )
         }
     }
@@ -6928,7 +6986,14 @@ private fun QueueManagerPanel(
     isPlaying: Boolean,
     onDismiss: () -> Unit,
     onReorder: (Int, Int) -> Unit,
-    onPlayTrack: (SoundCloudTrack) -> Unit
+    onPlayTrack: (SoundCloudTrack) -> Unit,
+    // The sheet's own movement, done by the screen that holds it: how far down it is, moving it,
+    // and letting it go with a speed.
+    sheetOffset: () -> Float,
+    onSheetDragStart: () -> Unit,
+    onSheetDrag: (Float) -> Float,
+    onSheetRelease: (Float) -> Unit,
+    modifier: Modifier = Modifier
 ) {
     val haptic = LocalHapticFeedback.current
     val density = androidx.compose.ui.platform.LocalDensity.current
@@ -6979,56 +7044,69 @@ private fun QueueManagerPanel(
 
     BackHandler(onBack = onDismiss)
 
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .pointerInput(Unit) {
-                detectDragGestures(
-                    onDrag = { change, dragAmount ->
-                        if (dragAmount.y > 10f) {
-                            onDismiss()
-                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                        }
-                    }
-                )
+    // The list at its top hands a pull downward to the sheet, which then follows the finger; a
+    // pull back up takes the sheet up first before the list scrolls again.
+    val sheetScroll = remember(onSheetDrag, onSheetRelease) {
+        object : NestedScrollConnection {
+            override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
+                if (available.y < 0f && sheetOffset() > 0f) return Offset(0f, onSheetDrag(available.y))
+                return Offset.Zero
             }
-            .pointerInput(Unit) {
-                detectTapGestures(onTap = { onDismiss() })
+
+            override fun onPostScroll(consumed: Offset, available: Offset, source: NestedScrollSource): Offset {
+                if (available.y > 0f && source == NestedScrollSource.UserInput) {
+                    if (sheetOffset() == 0f) onSheetDragStart()
+                    return Offset(0f, onSheetDrag(available.y))
+                }
+                return Offset.Zero
             }
-    ) {
+
+            override suspend fun onPreFling(available: androidx.compose.ui.unit.Velocity): androidx.compose.ui.unit.Velocity {
+                if (sheetOffset() > 0f) {
+                    onSheetRelease(available.y)
+                    return available
+                }
+                return androidx.compose.ui.unit.Velocity.Zero
+            }
+        }
+    }
+
         Card(
             shape = AppShapes.bottomSheet,
             colors = CardDefaults.cardColors(
-                // Translucent on purpose: the player behind is blurred by 20dp while this is
-                // open, and an opaque sheet simply hid that entirely.
-                containerColor = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.72f)
+                // Nearly solid: the player behind is only dimmed now, not blurred.
+                containerColor = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.96f)
             ),
-            modifier = Modifier
-                .fillMaxWidth()
-                .fillMaxHeight(0.9f)
-                .align(Alignment.BottomCenter)
+            modifier = modifier
+                // Taps on the sheet stay on it rather than reaching the scrim behind.
                 .pointerInput(Unit) {}
         ) {
             Column(
                 modifier = Modifier.fillMaxSize()
             ) {
+                // The handle, and the whole strip around it, drags the sheet.
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(vertical = 12.dp)
+                        .height(36.dp)
                         .pointerInput(Unit) {
-                            detectDragGestures(
-                                onDrag = { change, dragAmount ->
-                                    if (dragAmount.y > 10f) {
-                                        onDismiss()
-                                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                    }
-                                }
+                            val velocity = VelocityTracker()
+                            detectVerticalDragGestures(
+                                onDragStart = {
+                                    velocity.resetTracking()
+                                    onSheetDragStart()
+                                },
+                                onVerticalDrag = { change, dy ->
+                                    velocity.addPosition(change.uptimeMillis, change.position)
+                                    change.consume()
+                                    onSheetDrag(dy)
+                                },
+                                onDragEnd = { onSheetRelease(velocity.calculateVelocity().y) },
+                                onDragCancel = { onSheetRelease(0f) }
                             )
                         },
                     contentAlignment = Alignment.Center
                 ) {
-                    // Drag handle with adequate touch target (#40)
                     Box(
                         modifier = Modifier
                             .size(40.dp, 5.dp)
@@ -7037,52 +7115,11 @@ private fun QueueManagerPanel(
                     )
                 }
 
-                    var listDragAccumulator by remember { mutableStateOf(0f) }
-                    val nestedScrollConnection = remember {
-                        object : NestedScrollConnection {
-                            override fun onPreScroll(
-                                available: Offset,
-                                source: NestedScrollSource
-                            ): Offset {
-                                val isAtTop = lazyListState.firstVisibleItemIndex == 0 && lazyListState.firstVisibleItemScrollOffset == 0
-                                if (isAtTop && available.y > 0f) {
-                                    listDragAccumulator += available.y
-                                    if (listDragAccumulator > 150f) {
-                                        onDismiss()
-                                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                        listDragAccumulator = 0f
-                                    }
-                                    return Offset(0f, available.y)
-                                } else {
-                                    listDragAccumulator = 0f
-                                }
-                                return Offset.Zero
-                            }
-
-                            override fun onPostScroll(
-                                consumed: Offset,
-                                available: Offset,
-                                source: NestedScrollSource
-                            ): Offset {
-                                if (available.y > 0f) {
-                                    listDragAccumulator += available.y
-                                    if (listDragAccumulator > 150f) {
-                                        onDismiss()
-                                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                        listDragAccumulator = 0f
-                                    }
-                                    return Offset(0f, available.y)
-                                }
-                                return Offset.Zero
-                            }
-                        }
-                    }
-
             LazyColumn(
                 state = lazyListState,
                 modifier = Modifier
                     .fillMaxSize()
-                    .nestedScroll(nestedScrollConnection)
+                    .nestedScroll(sheetScroll)
                     .weight(1f),
                 contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp)
@@ -7115,6 +7152,14 @@ private fun QueueManagerPanel(
                     val elevation = if (isThisDragged) 8.dp else 0.dp
 
                     Card(
+                        // The whole row plays its track: only the words in it did, and a tap on
+                        // the cover or beside the title missed.
+                        onClick = {
+                            if (!isCurrent && draggedIndex == null) {
+                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                onPlayTrack(trackItem)
+                            }
+                        },
                         colors = CardDefaults.cardColors(
                             containerColor = if (isCurrent) {
                                 MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.92f)
@@ -7228,15 +7273,7 @@ private fun QueueManagerPanel(
 
                             Spacer(modifier = Modifier.width(14.dp))
 
-                            Column(
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .clickable {
-                                        if (!isCurrent) {
-                                            onPlayTrack(trackItem)
-                                        }
-                                    }
-                            ) {
+                            Column(modifier = Modifier.weight(1f)) {
                                 Text(
                                     text = trackItem.title ?: "Unknown Track",
                                     style = MaterialTheme.typography.bodyLarge,
@@ -7258,8 +7295,15 @@ private fun QueueManagerPanel(
                 }
             }
         }
-    }
 }
+
+// The queue sheet: how much of the screen it takes, how fast a flick of it has to be to count,
+// and how it settles — with the flick's speed carried in, a little give, no wobble.
+private const val QueueHeightFraction = 0.9f
+private const val QueueMeantFraction = 0.2f
+private val QueueFlingVelocity = 700.dp
+private val QueueSpring = spring<Float>(dampingRatio = 0.86f, stiffness = 360f)
+
 @Composable
 private fun FolderArtwork(artworkUri: String?, size: Dp) {
     if (artworkUri.isNullOrBlank()) {
