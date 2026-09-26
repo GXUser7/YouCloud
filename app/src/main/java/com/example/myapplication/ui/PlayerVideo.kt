@@ -351,7 +351,7 @@ fun AmbientVideo(
         }
         }
         val topFadePx = with(LocalDensity.current) { VIDEO_EDGE_FADE.toPx() }
-        val bottomFadePx = with(LocalDensity.current) { VIDEO_BOTTOM_FADE.toPx() }
+        val bottomFadePx = topFadePx
         VideoSurface(
             state = state,
             modifier = Modifier
@@ -377,9 +377,6 @@ fun AmbientVideo(
 }
 
 private val VIDEO_EDGE_FADE = 64.dp
-
-// Shorter at the bottom: the panel's straight edge covers it but for its rounded corners.
-private val VIDEO_BOTTOM_FADE = 28.dp
 
 private class Glow(val scale: Float, val blur: androidx.compose.ui.unit.Dp, val opacity: Float)
 
