@@ -14,6 +14,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.Stable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
@@ -254,11 +255,16 @@ fun VideoSurface(state: PlayerVideoState, modifier: Modifier = Modifier) {
             val scale = max(constraints.maxWidth.toFloat() / size.width, constraints.maxHeight.toFloat() / size.height)
             with(density) { Modifier.requiredSize((size.width * scale).toDp(), (size.height * scale).toDp()) }
         }
-        AndroidView(
-            factory = { context -> TextureView(context).also(state.player::setVideoTextureView) },
-            onRelease = state.player::clearVideoTextureView,
-            modifier = viewModifier
-        )
+        // A view of its own per player: the factory runs once per view, so a player taking over
+        // from another (a clip's loop giving way to the whole video) would find the view still
+        // bound to the one before, and draw nowhere.
+        key(state) {
+            AndroidView(
+                factory = { context -> TextureView(context).also(state.player::setVideoTextureView) },
+                onRelease = state.player::clearVideoTextureView,
+                modifier = viewModifier
+            )
+        }
     }
 }
 
