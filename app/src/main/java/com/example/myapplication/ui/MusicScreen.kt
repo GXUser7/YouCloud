@@ -5223,12 +5223,14 @@ private fun PlayerArtwork(
             }
         }
 
-        // Keeps the status bar and the buttons over the cover legible on bright artwork.
+        // Keeps the status bar and the buttons over the cover legible on bright artwork. A video's
+        // glow is left at its own brightness.
         Box(
             modifier = Modifier
                 .fillMaxWidth()
                 .height(140.dp)
                 .align(Alignment.TopCenter)
+                .graphicsLayer { alpha = if (video != null) 1f - videoShown else 1f }
                 .background(
                     Brush.verticalGradient(
                         listOf(Color.Black.copy(alpha = 0.38f), Color.Transparent)

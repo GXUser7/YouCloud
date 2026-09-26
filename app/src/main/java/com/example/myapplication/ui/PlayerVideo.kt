@@ -321,22 +321,7 @@ fun AmbientVideo(state: PlayerVideoState, top: androidx.compose.ui.unit.Dp, alph
     Box(modifier = modifier.graphicsLayer { this.alpha = alpha }) {
         // Darkness to glow in: the cover goes out as the video comes in.
         Box(modifier = Modifier.matchParentSize().drawBehind { drawRect(Color.Black) })
-        Box(
-            modifier = Modifier
-                .matchParentSize()
-                // The glow dies away toward the top of the screen rather than standing as a band.
-                .graphicsLayer { compositingStrategy = CompositingStrategy.Offscreen }
-                .drawWithContent {
-                    drawContent()
-                    drawRect(
-                        brush = Brush.verticalGradient(
-                            0f to Color.Black.copy(alpha = 0.15f),
-                            topPx / size.height to Color.Black
-                        ),
-                        blendMode = BlendMode.DstIn
-                    )
-                }
-        ) {
+        Box(modifier = Modifier.matchParentSize()) {
         for (glow in AMBIENT_GLOWS) {
             Box(
                 modifier = Modifier
@@ -383,12 +368,13 @@ private val VIDEO_EDGE_FADE = 64.dp
 private class Glow(val scale: Float, val blur: androidx.compose.ui.unit.Dp, val opacity: Float)
 
 // Widest and softest first, so each nearer one lies over it. Close steps in size, so that over
-// the line each shows as a band of its own, fainter and softer the further out.
+// the line each shows as a band of its own, softer the further out — at the video's own
+// brightness, not dimmed.
 private val AMBIENT_GLOWS = listOf(
-    Glow(scale = 1.24f, blur = 32.dp, opacity = 0.35f),
-    Glow(scale = 1.17f, blur = 20.dp, opacity = 0.5f),
-    Glow(scale = 1.11f, blur = 11.dp, opacity = 0.7f),
-    Glow(scale = 1.05f, blur = 5.dp, opacity = 0.9f)
+    Glow(scale = 1.24f, blur = 32.dp, opacity = 1f),
+    Glow(scale = 1.17f, blur = 20.dp, opacity = 1f),
+    Glow(scale = 1.11f, blur = 11.dp, opacity = 1f),
+    Glow(scale = 1.05f, blur = 5.dp, opacity = 1f)
 )
 
 /**
