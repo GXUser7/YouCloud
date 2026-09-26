@@ -27,6 +27,9 @@ import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.BlurEffect
+import androidx.compose.ui.graphics.CompositingStrategy
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.TileMode
 import androidx.compose.ui.graphics.drawscope.scale
@@ -318,6 +321,22 @@ fun AmbientVideo(state: PlayerVideoState, top: androidx.compose.ui.unit.Dp, alph
     Box(modifier = modifier.graphicsLayer { this.alpha = alpha }) {
         // Darkness to glow in: the cover goes out as the video comes in.
         Box(modifier = Modifier.matchParentSize().drawBehind { drawRect(Color.Black) })
+        Box(
+            modifier = Modifier
+                .matchParentSize()
+                // The glow dies away toward the top of the screen rather than standing as a band.
+                .graphicsLayer { compositingStrategy = CompositingStrategy.Offscreen }
+                .drawWithContent {
+                    drawContent()
+                    drawRect(
+                        brush = Brush.verticalGradient(
+                            0f to Color.Black.copy(alpha = 0.15f),
+                            topPx / size.height to Color.Black
+                        ),
+                        blendMode = BlendMode.DstIn
+                    )
+                }
+        ) {
         for (glow in AMBIENT_GLOWS) {
             Box(
                 modifier = Modifier
@@ -338,22 +357,38 @@ fun AmbientVideo(state: PlayerVideoState, top: androidx.compose.ui.unit.Dp, alph
                     }
             )
         }
+        }
+        val fadePx = with(LocalDensity.current) { VIDEO_EDGE_FADE.toPx() }
         VideoSurface(
             state = state,
             modifier = Modifier
                 .matchParentSize()
                 .padding(top = top)
+                // The video's top edge dissolves into its glow instead of ending on a line. The
+                // layer the glow is drawn from is recorded inside, whole.
+                .graphicsLayer { compositingStrategy = CompositingStrategy.Offscreen }
+                .drawWithContent {
+                    drawContent()
+                    drawRect(
+                        brush = Brush.verticalGradient(0f to Color.Transparent, fadePx / size.height to Color.Black),
+                        blendMode = BlendMode.DstIn
+                    )
+                }
         )
     }
 }
 
+private val VIDEO_EDGE_FADE = 64.dp
+
 private class Glow(val scale: Float, val blur: androidx.compose.ui.unit.Dp, val opacity: Float)
 
-// Widest and softest first, so each nearer one lies over it.
+// Widest and softest first, so each nearer one lies over it. Close steps in size, so that over
+// the line each shows as a band of its own, fainter and softer the further out.
 private val AMBIENT_GLOWS = listOf(
-    Glow(scale = 1.45f, blur = 72.dp, opacity = 0.55f),
-    Glow(scale = 1.25f, blur = 40.dp, opacity = 0.75f),
-    Glow(scale = 1.1f, blur = 18.dp, opacity = 0.9f)
+    Glow(scale = 1.24f, blur = 32.dp, opacity = 0.35f),
+    Glow(scale = 1.17f, blur = 20.dp, opacity = 0.5f),
+    Glow(scale = 1.11f, blur = 11.dp, opacity = 0.7f),
+    Glow(scale = 1.05f, blur = 5.dp, opacity = 0.9f)
 )
 
 /**

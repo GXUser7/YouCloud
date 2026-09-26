@@ -2156,7 +2156,8 @@ private class HeroStripShape(
 @Composable
 private fun NowPlayingBadge(
     modifier: Modifier = Modifier,
-    onClick: (() -> Unit)? = null
+    onClick: (() -> Unit)? = null,
+    glass: (@Composable BoxScope.() -> Unit)? = null
 ) {
     val transition = rememberInfiniteTransition(label = "nowPlaying")
     val barCount = 4
@@ -2182,23 +2183,28 @@ private fun NowPlayingBadge(
             modifier
         },
         shape = CircleShape,
-        // The panel accent, so in a cover-coloured player it is the cover's accent too.
-        color = PanelColors.accent,
-        contentColor = PanelColors.onAccent
+        // The panel accent, so in a cover-coloured player it is the cover's accent too; over a
+        // video, frosted glass.
+        color = if (glass != null) Color.Transparent else PanelColors.accent,
+        contentColor = if (glass != null) PanelColors.content else PanelColors.onAccent
     ) {
-        Row(
-            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
-            horizontalArrangement = Arrangement.spacedBy(3.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            heights.forEach { height ->
-                Box(
-                    modifier = Modifier
-                        .width(3.dp)
-                        .height(16.dp * height.value)
-                        .clip(CircleShape)
-                        .background(PanelColors.onAccent)
-                )
+        Box(contentAlignment = Alignment.Center) {
+            glass?.invoke(this)
+            Row(
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                horizontalArrangement = Arrangement.spacedBy(3.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                val barColor = LocalContentColor.current
+                heights.forEach { height ->
+                    Box(
+                        modifier = Modifier
+                            .width(3.dp)
+                            .height(16.dp * height.value)
+                            .clip(CircleShape)
+                            .background(barColor)
+                    )
+                }
             }
         }
     }
@@ -4899,6 +4905,16 @@ private fun TrackDetailScreen(
         label = "videoShown"
     )
     val immersiveVideo = videoState?.takeIf { it.isPortrait }
+    // Paused, a video blurs, as if it had stopped to wait.
+    val pauseBlur by animateDpAsState(
+        targetValue = if (!isPlaying && videoState?.showing == true) 24.dp else 0.dp,
+        animationSpec = tween(durationMillis = 400),
+        label = "videoPauseBlur"
+    )
+    // Over a video the buttons at the top turn to frosted glass as well, like the panel.
+    val buttonGlass: (@Composable BoxScope.() -> Unit)? = videoState?.takeIf { it.showing }?.let { shown ->
+        { FrostedVideoGlass(state = shown, tint = PanelColors.container.copy(alpha = 0.42f)) }
+    }
 
     Box(
         modifier = Modifier
@@ -4921,7 +4937,7 @@ private fun TrackDetailScreen(
                 modifier = Modifier
                     .fillMaxSize()
                     .graphicsLayer { alpha = videoShown }
-                    .blur(coverBlur + blurRadius)
+                    .blur(coverBlur + blurRadius + pauseBlur)
             ) {
                 VideoSurface(state = immersiveVideo, modifier = Modifier.fillMaxSize())
                 // Keeps the status bar and the buttons over the video legible.
@@ -4947,7 +4963,7 @@ private fun TrackDetailScreen(
                                 .fillMaxSize()
                                 // Over a vertical video the cover gives way to it once it plays.
                                 .graphicsLayer { alpha = if (immersiveVideo != null) 1f - videoShown else 1f }
-                                .blur(coverBlur)
+                                .blur(coverBlur + pauseBlur)
                         ) {
                             PlayerArtwork(
                                 track = track,
@@ -5028,7 +5044,8 @@ private fun TrackDetailScreen(
                 OverArtworkButton(
                     icon = Icons.Default.KeyboardArrowDown,
                     contentDescription = "Свернуть плеер",
-                    onClick = onBack
+                    onClick = onBack,
+                    glass = buttonGlass
                 )
                 // The indicator is always the equaliser, whatever the download state — tapping
                 // it reveals the state and the destructive action, instead of a separate delete
@@ -5036,7 +5053,7 @@ private fun TrackDetailScreen(
                 val state = downloadState ?: DownloadState.NONE
                 var showTrackMenu by remember { mutableStateOf(false) }
                 Box {
-                    NowPlayingBadge(onClick = { showTrackMenu = true })
+                    NowPlayingBadge(onClick = { showTrackMenu = true }, glass = buttonGlass)
                     DropdownMenu(
                         expanded = showTrackMenu,
                         onDismissRequest = { showTrackMenu = false }
@@ -5233,7 +5250,8 @@ private fun PlayerArtwork(
 private fun OverArtworkButton(
     icon: ImageVector,
     contentDescription: String,
-    onClick: () -> Unit
+    onClick: () -> Unit,
+    glass: (@Composable BoxScope.() -> Unit)? = null
 ) {
     Surface(
         onClick = onClick,
@@ -5242,10 +5260,12 @@ private fun OverArtworkButton(
         // The same accent as the playing badge across from it, so the two corners match — the
         // cover's own colour, or white/black for a greyscale cover. Solid: over a busy cover,
         // or lyrics scrolling beneath it, a see-through button blurred into what was behind it.
-        color = PanelColors.accent,
-        contentColor = PanelColors.onAccent
+        // Over a video, frosted glass instead: the video blurred, not what lies behind it.
+        color = if (glass != null) Color.Transparent else PanelColors.accent,
+        contentColor = if (glass != null) PanelColors.content else PanelColors.onAccent
     ) {
         Box(contentAlignment = Alignment.Center) {
+            glass?.invoke(this)
             Icon(icon, contentDescription = contentDescription, modifier = Modifier.size(26.dp))
         }
     }
