@@ -182,6 +182,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.blur
 import androidx.compose.ui.graphics.Brush
+import androidx.compose.animation.core.FastOutLinearInEasing
 import androidx.compose.ui.graphics.BlurEffect
 import androidx.compose.ui.graphics.TileMode
 import androidx.compose.ui.graphics.Color
@@ -1055,6 +1056,11 @@ fun MusicScreen(viewModel: MusicViewModel) {
                         upcomingVideo = pendingTrackVideo?.takeIf { it.trackId == track.id },
                         livePosition = viewModel::livePositionMs,
                         videoGlow = videoGlow,
+                        hasNeighbourTrack = viewModel::hasNeighbourTrack,
+                        onSwipeTrack = { next ->
+                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                            viewModel.skipToNeighbourTrack(next)
+                        },
                         onBack = {
                             haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                             viewModel.closeTrack()
@@ -5452,6 +5458,9 @@ private fun TrackDetailScreen(
     livePosition: () -> Long,
     // The glow of blurred copies around a video; see [VideoBackdrop].
     videoGlow: Boolean = true,
+    // Swiping the cover sideways: whether there is a track that way, and moving to it.
+    hasNeighbourTrack: (next: Boolean) -> Boolean = { false },
+    onSwipeTrack: (next: Boolean) -> Unit = {},
     onBack: () -> Unit,
     onTogglePlay: () -> Unit,
     onSeek: (Long) -> Unit,
@@ -5518,13 +5527,42 @@ private fun TrackDetailScreen(
         animationSpec = tween(durationMillis = 400),
         label = "videoPauseBlur"
     )
+    // Turned sideways with a video playing: the video alone, on the whole screen.
+    val landscape = LocalConfiguration.current.orientation == android.content.res.Configuration.ORIENTATION_LANDSCAPE
+
+    // Without a video the cover gets the same treatment: whole, between the buttons and the
+    // panel, its glow filling the screen around it and the panel frosted over it.
+    val coverGlowMode = videoGlow && !landscape
+    val coverGlow = rememberCoverGlow()
+
+    // Swiping the cover (or the video) sideways moves to the track next to this one. While it is
+    // dragged it shrinks back from the edges, its glow goes out and the panel turns solid; it
+    // follows the finger and, let go far or fast enough, goes, and the next one comes in.
+    val swipe = remember { Animatable(0f) }
+    val swipeScope = rememberCoroutineScope()
+    val currentTrackId by rememberUpdatedState(track.id)
+    val currentHasNeighbour by rememberUpdatedState(hasNeighbourTrack)
+    val currentOnSwipeTrack by rememberUpdatedState(onSwipeTrack)
+    val density = LocalDensity.current
+    val shrinkPx = with(density) { SwipeShrinkDistance.toPx() }
+    val swipeProgress: () -> Float = { (kotlin.math.abs(swipe.value) / shrinkPx).coerceIn(0f, 1f) }
+
     // Over a video the buttons at the top turn to frosted glass as well, like the panel.
     val buttonGlass: (@Composable BoxScope.() -> Unit)? = videoState?.takeIf { it.showing }?.let { shown ->
         { FrostedVideoGlass(state = shown, tint = PanelColors.container.copy(alpha = 0.42f)) }
+    } ?: if (coverGlowMode) {
+        {
+            // Over the cover's glow, already blurred: a tint makes the frost.
+            val panel = PanelColors.container
+            Box(
+                modifier = Modifier
+                    .matchParentSize()
+                    .drawBehind { drawRect(panel.copy(alpha = CoverFrost + (1f - CoverFrost) * swipeProgress())) }
+            )
+        }
+    } else {
+        null
     }
-
-    // Turned sideways with a video playing: the video alone, on the whole screen.
-    val landscape = LocalConfiguration.current.orientation == android.content.res.Configuration.ORIENTATION_LANDSCAPE
     if (landscape && videoState != null && videoState.showing) {
         FullScreenVideo(state = videoState, blur = pauseBlur, glow = videoGlow)
         return
@@ -5546,12 +5584,23 @@ private fun TrackDetailScreen(
                 )
             }
     ) {
+        if (coverGlowMode) {
+            VideoBackdrop(
+                state = coverGlow,
+                alpha = 1f,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .graphicsLayer { alpha = 1f - swipeProgress() }
+                    .blur(blurRadius)
+            )
+        }
         if (backdropVideo != null) {
             VideoBackdrop(
                 state = backdropVideo,
                 alpha = videoShown,
                 modifier = Modifier
                     .fillMaxSize()
+                    .graphicsLayer { alpha = 1f - swipeProgress() }
                     // Paused, the glow blurs with the video, or its near steps would stay sharper.
                     .blur(blurRadius + pauseBlur)
             )
@@ -5560,7 +5609,10 @@ private fun TrackDetailScreen(
             Box(
                 modifier = Modifier
                     .fillMaxSize()
-                    .graphicsLayer { alpha = videoShown }
+                    .graphicsLayer {
+                        alpha = videoShown
+                        swiped(swipe.value, swipeProgress())
+                    }
                     .blur(coverBlur + blurRadius + pauseBlur)
             ) {
                 VideoSurface(state = immersiveVideo, modifier = Modifier.fillMaxSize())
@@ -5582,7 +5634,56 @@ private fun TrackDetailScreen(
             PlayerLayout(
                 landscape = landscape,
                 artwork = {
-                    Box(modifier = Modifier.fillMaxSize()) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .graphicsLayer { swiped(swipe.value, swipeProgress()) }
+                            .pointerInput(Unit) {
+                                val velocity = VelocityTracker()
+                                detectHorizontalDragGestures(
+                                    onDragStart = {
+                                        velocity.resetTracking()
+                                        swipeScope.launch { swipe.stop() }
+                                    },
+                                    onHorizontalDrag = { change, amount ->
+                                        velocity.addPosition(change.uptimeMillis, change.position)
+                                        change.consume()
+                                        val towardNext = swipe.value + amount < 0
+                                        // No track that way: it gives, but grudgingly.
+                                        val give = if (currentHasNeighbour(towardNext)) 1f else 0.3f
+                                        swipeScope.launch { swipe.snapTo(swipe.value + amount * give) }
+                                    },
+                                    onDragCancel = { swipeScope.launch { swipe.animateTo(0f, SwipeSettle) } },
+                                    onDragEnd = {
+                                        val offset = swipe.value
+                                        val speed = velocity.calculateVelocity().x
+                                        val width = size.width.toFloat()
+                                        val next = offset < 0
+                                        val meant = kotlin.math.abs(offset) > width * 0.25f ||
+                                            (kotlin.math.abs(speed) > SwipeFlingVelocity.toPx() &&
+                                                kotlin.math.sign(speed) == kotlin.math.sign(offset) &&
+                                                kotlin.math.abs(offset) > SwipeMinFling.toPx())
+                                        swipeScope.launch {
+                                            if (!meant || !currentHasNeighbour(next)) {
+                                                swipe.animateTo(0f, SwipeSettle)
+                                                return@launch
+                                            }
+                                            val leaving = currentTrackId
+                                            val side = if (next) -1f else 1f
+                                            swipe.animateTo(side * width, tween(170, easing = FastOutLinearInEasing))
+                                            currentOnSwipeTrack(next)
+                                            // The next track's cover comes in from the other side
+                                            // once the player has moved to it.
+                                            kotlinx.coroutines.withTimeoutOrNull(900) {
+                                                androidx.compose.runtime.snapshotFlow { currentTrackId }.first { it != leaving }
+                                            }
+                                            swipe.snapTo(-side * width * 0.55f)
+                                            swipe.animateTo(0f, SwipeSettle)
+                                        }
+                                    }
+                                )
+                            }
+                    ) {
                         Box(
                             modifier = Modifier
                                 .fillMaxSize()
@@ -5597,7 +5698,8 @@ private fun TrackDetailScreen(
                                 vibrator = vibrator,
                                 onLongPress = onLongPressCover,
                                 video = videoState?.takeIf { immersiveVideo == null },
-                                videoShown = videoShown
+                                videoShown = videoShown,
+                                coverGlow = coverGlow.takeIf { coverGlowMode }
                             )
                         }
                         AnimatedVisibility(
@@ -5626,13 +5728,23 @@ private fun TrackDetailScreen(
                                     )
                                 }
                             }
-                            // Over the copies of the video, already blurred: a tint makes the frost.
-                            backdropVideo != null && videoShown > 0f -> {
+                            // Over the copies of the video or the cover, already blurred: a tint makes
+                            // the frost.
+                            coverGlowMode || (backdropVideo != null && videoShown > 0f) -> {
                                 {
+                                    val frost = when {
+                                        backdropVideo != null && videoShown > 0f -> 1f - 0.58f * videoShown
+                                        // A cover's glow is as bright as the cover, often brighter than
+                                        // a video's: a little more colour keeps the panel readable.
+                                        else -> CoverFrost
+                                    }
+                                    val panel = PanelColors.container
                                     Box(
                                         modifier = Modifier
                                             .matchParentSize()
-                                            .background(PanelColors.container.copy(alpha = 1f - 0.58f * videoShown))
+                                            .drawBehind {
+                                                drawRect(panel.copy(alpha = frost + (1f - frost) * swipeProgress()))
+                                            }
                                     )
                                 }
                             }
@@ -5804,7 +5916,9 @@ private fun PlayerArtwork(
     vibrator: android.os.Vibrator?,
     onLongPress: () -> Unit,
     video: PlayerVideoState? = null,
-    videoShown: Float = 0f
+    videoShown: Float = 0f,
+    // The cover whole, its glow drawn from it: see [GlowingCover].
+    coverGlow: CoverGlow? = null
 ) {
     val haptic = LocalHapticFeedback.current
     val coroutineScope = rememberCoroutineScope()
@@ -5820,7 +5934,11 @@ private fun PlayerArtwork(
             .fillMaxSize()
             .clipToBounds()
             .background(
-                MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = if (video != null) 1f - videoShown else 1f)
+                if (coverGlow != null) {
+                    Color.Transparent
+                } else {
+                    MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = if (video != null) 1f - videoShown else 1f)
+                }
             )
             .pointerInput(track.permalinkUrl) {
                 detectTapGestures(
@@ -5849,7 +5967,30 @@ private fun PlayerArtwork(
             },
         contentAlignment = Alignment.Center
     ) {
-        Box(
+        if (coverGlow != null) {
+            // Paused, the cover settles back a little, as if set down.
+            val restScale by animateFloatAsState(
+                targetValue = if (isPlaying) 1f else 0.9f,
+                animationSpec = spring(dampingRatio = Spring.DampingRatioLowBouncy, stiffness = Spring.StiffnessLow),
+                label = "coverRestScale"
+            )
+            GlowingCover(
+                artworkUrl = track.artworkUrl,
+                glow = coverGlow,
+                scale = { restScale * pressScale.value },
+                alpha = if (video != null) 1f - videoShown else 1f
+            )
+            if (video != null) {
+                AmbientVideo(
+                    state = video,
+                    top = WindowInsets.statusBars.asPaddingValues().calculateTopPadding() + 12.dp,
+                    bottom = PlayerPanelOverlap + 36.dp,
+                    overBackdrop = true,
+                    alpha = videoShown,
+                    modifier = Modifier.fillMaxSize()
+                )
+            }
+        } else Box(
             modifier = Modifier
                 .fillMaxSize()
                 .graphicsLayer {
@@ -5901,6 +6042,71 @@ private fun PlayerArtwork(
         ) {
             AppContainedLoadingIndicator(modifier = Modifier.size(84.dp))
         }
+    }
+}
+
+/**
+ * The cover whole: a square as large as fits between the buttons at the top and the panel, its
+ * picture recorded as [glow] for the glow that fills the rest of the screen.
+ */
+@Composable
+private fun GlowingCover(artworkUrl: String?, glow: CoverGlow, scale: () -> Float, alpha: Float) {
+    val statusBar = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
+    BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+        val top = statusBar + CoverTopClearance
+        val bottom = PlayerPanelOverlap + CoverBottomGap
+        val room = maxHeight - top - bottom
+        val side = minOf(room, maxWidth - CoverSideMargin * 2).coerceAtLeast(96.dp)
+        Box(
+            modifier = Modifier
+                .align(Alignment.TopCenter)
+                .padding(top = top + ((room - side) / 2).coerceAtLeast(0.dp))
+                .size(side)
+                .glowSource(glow)
+                .graphicsLayer {
+                    val s = scale()
+                    scaleX = s
+                    scaleY = s
+                    this.alpha = alpha
+                    shape = RoundedCornerShape(CoverCorner)
+                    clip = true
+                }
+                .background(MaterialTheme.colorScheme.surfaceContainerHigh)
+        ) {
+            AsyncImage(
+                model = artworkUrlForSize(artworkUrl, 500.dp),
+                contentDescription = null,
+                modifier = Modifier.fillMaxSize(),
+                contentScale = ContentScale.Crop
+            )
+        }
+    }
+}
+
+// Below the buttons at the top: their line, their height, a gap.
+private val CoverTopClearance = 12.dp + 48.dp + 16.dp
+private val CoverBottomGap = 16.dp
+private val CoverSideMargin = 16.dp
+private val CoverCorner = 28.dp
+
+// How much of the panel's colour frosts it over the cover's glow.
+private const val CoverFrost = 0.55f
+
+// The cover swiped sideways: how far it goes before it has shrunk all it will, and what a flick is.
+private val SwipeShrinkDistance = 72.dp
+private val SwipeFlingVelocity = 900.dp
+private val SwipeMinFling = 24.dp
+private val SwipeSettle = spring<Float>(dampingRatio = 0.82f, stiffness = Spring.StiffnessMediumLow)
+
+/** The artwork (or a video) as the swipe has it: along with the finger, shrunk back, rounded. */
+private fun androidx.compose.ui.graphics.GraphicsLayerScope.swiped(offset: Float, progress: Float) {
+    translationX = offset
+    val s = 1f - 0.14f * progress
+    scaleX = s
+    scaleY = s
+    if (progress > 0f) {
+        shape = RoundedCornerShape(32.dp * progress)
+        clip = true
     }
 }
 

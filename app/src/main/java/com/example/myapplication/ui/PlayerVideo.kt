@@ -91,9 +91,39 @@ private const val MAX_SEEK_LEAD_MS = 6_000L
 private const val MAX_HOLD_MS = 4_000L
 private const val SYNC_INTERVAL_MS = 100L
 
+/**
+ * A picture the player's glow and glass are drawn from: its layer as last drawn, and where on the
+ * screen it was drawn. A music video, or the cover.
+ */
+interface GlowSource {
+    val frameLayer: GraphicsLayer?
+    val frameOrigin: Offset?
+}
+
+/** The cover as a [GlowSource]: its picture, recorded where [glowSource] draws it. */
+@Stable
+class CoverGlow internal constructor(override val frameLayer: GraphicsLayer) : GlowSource {
+    override var frameOrigin: Offset? by mutableStateOf(null)
+        internal set
+}
+
+@Composable
+fun rememberCoverGlow(): CoverGlow {
+    val layer = rememberGraphicsLayer()
+    return remember(layer) { CoverGlow(layer) }
+}
+
+/** Records what this box draws as [glow]'s picture, for the glow and the glass around it. */
+fun Modifier.glowSource(glow: CoverGlow): Modifier = this
+    .onGloballyPositioned { glow.frameOrigin = it.positionInRoot() }
+    .drawWithContent {
+        glow.frameLayer.record { this@drawWithContent.drawContent() }
+        drawLayer(glow.frameLayer)
+    }
+
 /** A muted player for [video], and what the screen needs to know about its picture. */
 @Stable
-class PlayerVideoState internal constructor(video: TrackVideo, internal val player: ExoPlayer) {
+class PlayerVideoState internal constructor(video: TrackVideo, internal val player: ExoPlayer) : GlowSource {
     /**
      * The video as last known: the same stream, first while it is being lined up with the track,
      * then with its map. Swapped in place, so the player keeps what it has buffered.
@@ -124,8 +154,8 @@ class PlayerVideoState internal constructor(video: TrackVideo, internal val play
     internal var lastFrameUs = -1L
 
     // The picture as drawn, for the glass to draw again; and where on screen it is drawn.
-    internal var frameLayer: GraphicsLayer? = null
-    internal var frameOrigin: Offset? by mutableStateOf(null)
+    override var frameLayer: GraphicsLayer? = null
+    override var frameOrigin: Offset? by mutableStateOf(null)
 
     /**
      * Taller than wide: Yandex's videoshots. Played behind the whole player rather than in the
@@ -428,7 +458,7 @@ private val VIDEO_EDGE_FADE = 64.dp
  * drawn again, centred on the video, and move with every frame.
  */
 @Composable
-fun VideoBackdrop(state: PlayerVideoState, alpha: Float, modifier: Modifier = Modifier) {
+fun VideoBackdrop(state: GlowSource, alpha: Float, modifier: Modifier = Modifier) {
     Box(
         modifier = modifier.graphicsLayer {
             this.alpha = alpha
@@ -595,7 +625,7 @@ private val AMBIENT_GLOWS = listOf(
  * every frame, and nothing is read back from the GPU.
  */
 @Composable
-fun BoxScope.FrostedVideoGlass(state: PlayerVideoState, tint: Color) {
+fun BoxScope.FrostedVideoGlass(state: GlowSource, tint: Color) {
     var origin by remember { mutableStateOf(Offset.Zero) }
     Box(
         modifier = Modifier

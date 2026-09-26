@@ -2416,6 +2416,12 @@ class MusicViewModel(
         musicPlayer.skipPrevious()
     }
 
+    fun hasNeighbourTrack(next: Boolean): Boolean = musicPlayer.hasNeighbourTrack(next)
+
+    fun skipToNeighbourTrack(next: Boolean) {
+        musicPlayer.skipToNeighbourTrack(next)
+    }
+
     fun cycleRepeatMode() {
         musicPlayer.cycleRepeatMode()
     }
