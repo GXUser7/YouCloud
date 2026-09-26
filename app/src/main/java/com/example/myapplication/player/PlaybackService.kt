@@ -111,6 +111,8 @@ class PlaybackService : MediaLibraryService() {
 
         val player = ExoPlayer.Builder(this)
             .setMediaSourceFactory(DefaultMediaSourceFactory(resolvingFactory))
+            // "Previous" five seconds into a track starts it over instead.
+            .setMaxSeekToPreviousPositionMs(5_000)
             .setAudioAttributes(
                 AudioAttributes.Builder()
                     .setContentType(C.AUDIO_CONTENT_TYPE_MUSIC)

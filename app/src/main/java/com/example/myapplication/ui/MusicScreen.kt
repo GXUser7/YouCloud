@@ -204,6 +204,7 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Reorder
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material.icons.filled.Add
@@ -5376,23 +5377,28 @@ private fun PlayerPanel(
         color = if (glass != null) Color.Transparent else PanelColors.container,
         contentColor = onPanel
     ) {
-        Box {
+        BoxWithConstraints {
             glass?.invoke(this)
             Column(
                 modifier = if (landscape) {
-                    // A phone on its side is short: what doesn't fit scrolls.
+                    // Sideways the panel is wide and short: its content keeps to a phone's width
+                    // in the middle, centred up and down, and scrolls if it doesn't fit.
                     Modifier
-                        .fillMaxSize()
+                        .align(Alignment.Center)
+                        .widthIn(max = 560.dp)
+                        .fillMaxHeight()
                         .verticalScroll(rememberScrollState())
+                        .heightIn(min = maxHeight)
                         .statusBarsPadding()
                         .navigationBarsPadding()
-                        .padding(start = 24.dp, top = 16.dp, end = 24.dp, bottom = 16.dp)
+                        .padding(horizontal = 24.dp, vertical = 16.dp)
                 } else {
                     Modifier
                         .fillMaxWidth()
                         .navigationBarsPadding()
                         .padding(start = 24.dp, top = 24.dp, end = 24.dp, bottom = 16.dp)
-                }
+                },
+                verticalArrangement = if (landscape) Arrangement.Center else Arrangement.Top
             ) {
                 OnPanelChip(
                     text = buildString {

@@ -188,9 +188,14 @@ class MusicPlayer(context: Context) {
         }
     }
 
+    /**
+     * Back to the start of the track once it has played a few seconds, else to the track before,
+     * as every player does. How many seconds is the service's player's to say (5, there), so the
+     * notification's and the car's buttons behave the same.
+     */
     fun skipPrevious() {
         controller?.let { player ->
-            player.seekToPreviousMediaItem()
+            player.seekToPrevious()
             player.play()
         }
     }
