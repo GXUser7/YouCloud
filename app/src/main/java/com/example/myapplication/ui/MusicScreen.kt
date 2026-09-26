@@ -5695,6 +5695,24 @@ private fun TrackDetailScreen(
     val setQueueOpen: (Boolean) -> Unit = { open ->
         queueScope.launch { queueHidden.animateTo(if (open) 0f else 1f, QueueSpring) }
     }
+    // Pulled down, the whole player follows the finger — shrinking back, its corners rounding,
+    // the screen it was opened from showing above it — and, let go far or fast enough, folds
+    // away into the mini player; otherwise it springs back.
+    val collapse = remember { Animatable(0f) }
+    var playerHeightPx by remember { mutableFloatStateOf(1f) }
+    val currentOnBack by rememberUpdatedState(onBack)
+    val collapseProgress: () -> Float = { (collapse.value / playerHeightPx).coerceIn(0f, 1f) }
+    val releaseCollapse: (Float) -> Unit = { velocity ->
+        val away = if (kotlin.math.abs(velocity) > flingPx) velocity > 0f else collapseProgress() > CollapseMeantFraction
+        queueScope.launch {
+            if (away) {
+                collapse.animateTo(playerHeightPx, tween(200, easing = FastOutLinearInEasing), initialVelocity = velocity)
+                currentOnBack()
+            } else {
+                collapse.animateTo(0f, QueueSpring, initialVelocity = velocity)
+            }
+        }
+    }
     var showLyrics by remember(track.id) { mutableStateOf(false) }
     val lyricsShown = showLyrics && !lyrics.isNullOrEmpty()
     val showLoading = (downloadState != DownloadState.DOWNLOADED) &&
@@ -5781,29 +5799,79 @@ private fun TrackDetailScreen(
     Box(
         modifier = Modifier
             .fillMaxSize()
-            // Drawn over the app's own screens, so the player owns its whole backdrop.
-            .background(MaterialTheme.colorScheme.background)
-            .onSizeChanged { queueHeightPx = it.height * QueueHeightFraction }
-            // A swipe up anywhere nothing else takes it pulls the queue up after the finger.
+            .onSizeChanged {
+                queueHeightPx = it.height * QueueHeightFraction
+                playerHeightPx = it.height.toFloat()
+            }
+            // A swipe anywhere nothing else takes it: up pulls the queue after the finger, down
+            // pulls the player itself down. The first movement decides which; a queue already
+            // out is what a pull down moves. On a box that stays put, so that the player moving
+            // under the finger doesn't eat into the finger's own movement.
             .pointerInput(Unit) {
                 val velocity = VelocityTracker()
+                var pulling = PlayerPull.Undecided
                 detectVerticalDragGestures(
                     onDragStart = {
                         velocity.resetTracking()
                         queueDragFrom = queueHidden.value
+                        pulling = when {
+                            queueHidden.value < 1f -> PlayerPull.Queue
+                            collapse.value > 0f -> PlayerPull.Player
+                            else -> PlayerPull.Undecided
+                        }
                         queueScope.launch { queueHidden.stop() }
+                        queueScope.launch { collapse.stop() }
                     },
                     onVerticalDrag = { change, dy ->
                         velocity.addPosition(change.uptimeMillis, change.position)
-                        if (dy < 0f || queueHidden.value < 1f) {
-                            change.consume()
-                            dragQueue(dy)
+                        if (pulling == PlayerPull.Undecided) {
+                            pulling = if (dy < 0f) PlayerPull.Queue else PlayerPull.Player
+                        }
+                        change.consume()
+                        when (pulling) {
+                            PlayerPull.Queue -> dragQueue(dy)
+                            PlayerPull.Player -> queueScope.launch {
+                                collapse.snapTo((collapse.value + dy).coerceAtLeast(0f))
+                            }
+                            PlayerPull.Undecided -> Unit
                         }
                     },
-                    onDragEnd = { releaseQueue(velocity.calculateVelocity().y) },
-                    onDragCancel = { releaseQueue(0f) }
+                    onDragEnd = {
+                        val speed = velocity.calculateVelocity().y
+                        when (pulling) {
+                            PlayerPull.Queue -> releaseQueue(speed)
+                            PlayerPull.Player -> releaseCollapse(speed)
+                            PlayerPull.Undecided -> Unit
+                        }
+                    },
+                    onDragCancel = {
+                        when (pulling) {
+                            PlayerPull.Queue -> releaseQueue(0f)
+                            PlayerPull.Player -> releaseCollapse(0f)
+                            PlayerPull.Undecided -> Unit
+                        }
+                    }
                 )
             }
+    ) {
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .graphicsLayer {
+                val pulled = collapseProgress()
+                translationY = collapse.value
+                val scale = 1f - 0.08f * pulled
+                scaleX = scale
+                scaleY = scale
+                transformOrigin = TransformOrigin(0.5f, 0f)
+                if (pulled > 0f) {
+                    // Rounded almost as soon as it moves, as a card lifted off the screen.
+                    shape = RoundedCornerShape(PulledCorner * (pulled / 0.15f).coerceAtMost(1f))
+                    clip = true
+                }
+            }
+            // Drawn over the app's own screens, so the player owns its whole backdrop.
+            .background(MaterialTheme.colorScheme.background)
     ) {
         if (coverGlowMode) {
             VideoBackdrop(
@@ -6109,7 +6177,15 @@ private fun TrackDetailScreen(
             )
         }
     }
+    }
 }
+
+/** What a vertical drag on the player moves, decided by its first movement. */
+private enum class PlayerPull { Undecided, Queue, Player }
+
+// Pulled down this far (of its height), or flung, the player folds away; its corners round to this.
+private const val CollapseMeantFraction = 0.22f
+private val PulledCorner = 36.dp
 
 /**
  * Cover on top, panel at the bottom. The panel is measured first and keeps its natural height;
