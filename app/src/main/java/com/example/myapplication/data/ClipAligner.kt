@@ -81,9 +81,19 @@ object ClipAligner {
      */
     fun align(track: FloatArray, video: FloatArray): List<VideoSegment>? = match(track, video)
 
-    /** [source] as a local file: itself when it is one, else downloaded in ranges, several at once. */
+    /**
+     * [source] as a local file: itself when it is one, else downloaded in ranges, several at once
+     * — from a mirror when its own host doesn't answer.
+     */
     private suspend fun fetch(source: AudioSource, workDir: File): File? {
         if (!source.url.startsWith("http")) return File(source.url).takeIf { it.exists() }
+        for (url in YouTubeStreams.withMirrors(source.url)) {
+            fetchFrom(source.copy(url = url), workDir)?.let { return it }
+        }
+        return null
+    }
+
+    private suspend fun fetchFrom(source: AudioSource, workDir: File): File? {
         val file = File.createTempFile("align", ".media", workDir)
         val started = System.currentTimeMillis()
         return try {

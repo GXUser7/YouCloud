@@ -62,6 +62,22 @@ object YouTubeStreams {
             YtDlp.resolve(context, videoId, auth, YtDlp.Kind.AUDIO) ?: anonymousStream(videoId)
         }
 
+    /**
+     * [url], then the same stream at each of its mirrors (googlevideo's `mn`): some hosts can't be
+     * reached through a VPN while their mirrors can, and YouTube's own player moves to a mirror
+     * when a host doesn't answer. Anything that isn't a googlevideo URL is just itself.
+     */
+    fun withMirrors(url: String): List<String> {
+        val uri = Uri.parse(url)
+        val host = uri.host?.takeIf { it.endsWith(".googlevideo.com") } ?: return listOf(url)
+        val prefix = host.substringBefore("---", "").ifEmpty { return listOf(url) }
+        val current = host.substringAfter("---").removeSuffix(".googlevideo.com")
+        val mirrors = uri.getQueryParameter("mn").orEmpty().split(',')
+            .map { it.trim() }
+            .filter { it.isNotEmpty() && it != current }
+        return listOf(url) + mirrors.map { url.replaceFirst(host, "$prefix---$it.googlevideo.com") }
+    }
+
     /** The picture of a music video, without its sound: the player shows it in the cover's place. */
     fun resolveVideo(context: Context, videoId: String, auth: YtAuth? = null): Stream? =
         cached("video:$videoId") { YtDlp.resolve(context, videoId, auth, YtDlp.Kind.VIDEO) }

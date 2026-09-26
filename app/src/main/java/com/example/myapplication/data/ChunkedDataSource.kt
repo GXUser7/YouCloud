@@ -22,6 +22,9 @@ class ChunkedDataSource(private val upstream: DataSource, private val chunkSize:
     }
 
     private var dataSpec: DataSpec? = null
+    // The stream's addresses: its own, then its mirrors; the one in use is kept to.
+    private var addresses: List<Uri> = emptyList()
+    private var address = 0
     private var position = 0L
     // Where the read ends, exclusive; unknown until a server says how long the stream is.
     private var end = C.LENGTH_UNSET.toLong()
@@ -36,6 +39,8 @@ class ChunkedDataSource(private val upstream: DataSource, private val chunkSize:
 
     override fun open(dataSpec: DataSpec): Long {
         this.dataSpec = dataSpec
+        addresses = YouTubeStreams.withMirrors(dataSpec.uri.toString()).map(Uri::parse)
+        address = 0
         position = dataSpec.position
         end = if (dataSpec.length != C.LENGTH_UNSET.toLong()) dataSpec.position + dataSpec.length else C.LENGTH_UNSET.toLong()
         openChunk()
@@ -48,7 +53,19 @@ class ChunkedDataSource(private val upstream: DataSource, private val chunkSize:
     private fun openChunk() {
         val spec = dataSpec ?: return
         val length = if (end != C.LENGTH_UNSET.toLong()) min(chunkSize, end - position) else chunkSize
-        val opened = upstream.open(spec.buildUpon().setPosition(position).setLength(length).build())
+        var opened: Long
+        while (true) {
+            val uri = addresses.getOrElse(address) { spec.uri }
+            try {
+                opened = upstream.open(spec.buildUpon().setUri(uri).setPosition(position).setLength(length).build())
+                break
+            } catch (e: HttpDataSource.HttpDataSourceException) {
+                // A host that doesn't answer (not one that answers no) gives way to a mirror.
+                if (e is HttpDataSource.InvalidResponseCodeException || address + 1 >= addresses.size) throw e
+                upstream.close()
+                address++
+            }
+        }
         upstreamOpen = true
         freshChunk = true
         chunkLeft = if (opened != C.LENGTH_UNSET.toLong()) opened else length
