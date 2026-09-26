@@ -134,8 +134,14 @@ fun rememberPlayerVideoState(video: TrackVideo?, isPlaying: Boolean, trackPositi
     if (video == null) return null
     val context = LocalContext.current
     val state = remember(video.url) {
+        // A downloaded track's video is a file of its own, read as it is.
+        val dataSource = if (video.url.startsWith("file:")) {
+            androidx.media3.datasource.DefaultDataSource.Factory(context)
+        } else {
+            VideoCache.dataSourceFactory(context, video.userAgent)
+        }
         val player = ExoPlayer.Builder(context)
-            .setMediaSourceFactory(DefaultMediaSourceFactory(VideoCache.dataSourceFactory(context, video.userAgent)))
+            .setMediaSourceFactory(DefaultMediaSourceFactory(dataSource))
             // Off again after a second rather than the default two and a half: it is a picture,
             // and the sync loop makes up for a stall.
             .setLoadControl(

@@ -11,12 +11,8 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
-import okhttp3.OkHttpClient
-import okhttp3.Request
 import java.io.File
-import java.io.RandomAccessFile
 import java.nio.ByteOrder
-import java.util.concurrent.TimeUnit
 import kotlin.math.ln
 import kotlin.math.max
 import kotlin.math.sqrt
@@ -49,19 +45,10 @@ object ClipAligner {
     private const val SAME_OFFSET_FRAMES = 3
     private const val MAX_DECODE_US = 10 * 60 * 1_000_000L
 
-    // googlevideo sends a whole file at about the pace it plays, and a few megabytes asked for
-    // by range at full speed: yt-dlp downloads YouTube in pieces for the same reason.
-    private const val CHUNK_BYTES = 1L * 1024 * 1024
-    private val http = OkHttpClient.Builder()
-        .connectTimeout(10, TimeUnit.SECONDS)
-        .readTimeout(10, TimeUnit.SECONDS)
-        .build()
-    private const val RANGE_ATTEMPTS = 2
-
     /**
      * How [source]'s sound rises, ten milliseconds at a time. The stream is fetched to [workDir]
-     * first, in ranges: decoding straight off the network read it at the pace googlevideo trickles
-     * a whole file out, over a minute for one track. [onFetched] is told when the network is free.
+     * first: decoding straight off the network read it at the pace googlevideo trickles a whole
+     * file out, over a minute for one track. [onFetched] is told when the network is free.
      */
     suspend fun onsetsOf(source: AudioSource, workDir: File, onFetched: () -> Unit = {}): FloatArray? = withContext(Dispatchers.IO) {
         workDir.mkdirs()
@@ -81,80 +68,12 @@ object ClipAligner {
      */
     fun align(track: FloatArray, video: FloatArray): List<VideoSegment>? = match(track, video)
 
-    /**
-     * [source] as a local file: itself when it is one, else downloaded in ranges, several at once
-     * — from a mirror when its own host doesn't answer.
-     */
+    /** [source] as a local file: itself when it is one, else downloaded ([RangedDownload]). */
     private suspend fun fetch(source: AudioSource, workDir: File): File? {
         if (!source.url.startsWith("http")) return File(source.url).takeIf { it.exists() }
-        for (url in YouTubeStreams.withMirrors(source.url)) {
-            fetchFrom(source.copy(url = url), workDir)?.let { return it }
-        }
-        return null
-    }
-
-    private suspend fun fetchFrom(source: AudioSource, workDir: File): File? {
         val file = File.createTempFile("align", ".media", workDir)
-        val started = System.currentTimeMillis()
-        return try {
-            val (first, total) = range(source, 0)
-            RandomAccessFile(file, "rw").use { it.write(first) }
-            if (total != null && total > first.size) {
-                coroutineScope {
-                    (first.size.toLong() until total step CHUNK_BYTES).map { offset ->
-                        async(Dispatchers.IO) {
-                            val (bytes, _) = range(source, offset)
-                            RandomAccessFile(file, "rw").use { out ->
-                                out.seek(offset)
-                                out.write(bytes)
-                            }
-                        }
-                    }.awaitAll()
-                }
-            }
-            Log.d(TAG, "${file.length() / 1024} KB from ${source.url.substringAfter("//").substringBefore('/')} in ${System.currentTimeMillis() - started} ms")
-            file
-        } catch (e: CancellationException) {
-            file.delete()
-            throw e
-        } catch (e: Exception) {
-            Log.w(TAG, "Couldn't fetch ${source.url.take(80)}: $e")
-            file.delete()
-            null
-        }
-    }
-
-    /**
-     * [CHUNK_BYTES] of [source] from [offset], and the whole file's size when the server gave a
-     * range (null: it sent everything at once, which is then what came back).
-     */
-    private fun range(source: AudioSource, offset: Long): Pair<ByteArray, Long?> {
-        // googlevideo now and then leaves a request hanging; asked again, it answers.
-        var failure: java.io.IOException? = null
-        repeat(RANGE_ATTEMPTS) {
-            try {
-                return rangeOnce(source, offset)
-            } catch (e: java.io.IOException) {
-                failure = e
-            }
-        }
-        throw failure!!
-    }
-
-    private fun rangeOnce(source: AudioSource, offset: Long): Pair<ByteArray, Long?> {
-        val request = Request.Builder()
-            .url(source.url)
-            .header("Range", "bytes=$offset-${offset + CHUNK_BYTES - 1}")
-            .apply { source.headers.forEach { (name, value) -> header(name, value) } }
-            .build()
-        return http.newCall(request).execute().use { response ->
-            val bytes = response.body?.bytes() ?: error("no body")
-            when (response.code) {
-                200 -> bytes to null
-                206 -> bytes to response.header("Content-Range")?.substringAfter('/')?.toLongOrNull()
-                else -> error("HTTP ${response.code}")
-            }
-        }
+        return file.takeIf { RangedDownload.toFile(source.url, source.headers, it) }
+            ?: run { file.delete(); null }
     }
 
     private fun match(a: FloatArray, b: FloatArray): List<VideoSegment>? {

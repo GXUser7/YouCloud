@@ -19,6 +19,7 @@ import com.example.myapplication.data.YtDlp
 import com.example.myapplication.data.TrackVideo
 import com.example.myapplication.data.ClipAligner
 import com.example.myapplication.data.YT_SET_REF
+import com.example.myapplication.data.YT_TRACK_URN
 import com.example.myapplication.data.YtAuth
 import com.example.myapplication.data.YtShelf
 import com.example.myapplication.data.isProgressiveSource
@@ -474,6 +475,11 @@ class MusicViewModel(
     private val _pendingTrackVideo = MutableStateFlow<TrackVideo?>(null)
     val pendingTrackVideo = _pendingTrackVideo.asStateFlow()
 
+    // Videos of downloaded tracks, for playing offline; see [downloadExtras].
+    private val offlineVideos = com.example.myapplication.data.OfflineVideoStore(context)
+    private val extrasQueue = kotlinx.coroutines.channels.Channel<SoundCloudTrack>(kotlinx.coroutines.channels.Channel.UNLIMITED)
+    private val extrasQueued = java.util.concurrent.ConcurrentHashMap.newKeySet<Long>()
+
     // Tracks looked up lately, with or without a video, so reopening the player doesn't ask again.
     private val videoLookups = java.util.concurrent.ConcurrentHashMap<Long, Pair<TrackVideo?, Long>>()
 
@@ -559,6 +565,41 @@ class MusicViewModel(
         reportPlaysToSoundCloud()
 
         viewModelScope.launch { restoreQueueFromPlayer() }
+
+        // Downloaded tracks get their video and lyrics too, one at a time in the background —
+        // those downloaded before this existed as well as new ones.
+        viewModelScope.launch(Dispatchers.IO) {
+            for (track in extrasQueue) {
+                try {
+                    downloadExtras(track)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    Log.w("MusicViewModel", "Extras of ${track.urn} failed: $e")
+                } finally {
+                    extrasQueued.remove(track.id)
+                }
+            }
+        }
+        viewModelScope.launch {
+            combine(favorites, playlistsRepository.playlists) { saved, lists ->
+                (saved + lists.flatMap { it.tracks })
+                    .filter { it.downloadState == DownloadState.DOWNLOADED }
+                    .distinctBy { it.id }
+            }.collectLatest { downloaded ->
+                // Let a burst of changes (a playlist downloading) settle first.
+                delay(5_000)
+                val onDevice = downloaded.map { it.id }.toSet()
+                withContext(Dispatchers.IO) {
+                    // A track's video goes with the track.
+                    (offlineVideos.trackIds() - onDevice).forEach(offlineVideos::remove)
+                    downloaded
+                        .filter { it.urn.startsWith("yandex:track:") || it.urn.startsWith(YT_TRACK_URN) }
+                        .filterNot { offlineVideos.isSettled(it.id) }
+                        .forEach { track -> if (extrasQueued.add(track.id)) extrasQueue.trySend(track.toSoundCloudTrack()) }
+                }
+            }
+        }
         loadYtHome()
         viewModelScope.launch {
             // The first value is the empty start, which must not overwrite the saved queue
@@ -3700,7 +3741,34 @@ class MusicViewModel(
      * video. A Yandex track without either borrows the music video from YouTube, when signed in
      * there — its picture comes through yt-dlp, which needs the session on a VPN.
      */
-    private suspend fun findTrackVideo(track: SoundCloudTrack): TrackVideo? {
+    private suspend fun findTrackVideo(track: SoundCloudTrack): TrackVideo? =
+        withContext(Dispatchers.IO) { offlineVideos.get(track.id) } ?: findOnlineTrackVideo(track)
+
+    /**
+     * What a downloaded track needs to be itself offline, besides its sound: its synced lyrics
+     * (Yandex keeps them on disk once fetched) and its video, the one the player would find for
+     * it. Videos only off metered networks, and only when the player shows them at all; a track
+     * that has none is marked, so it isn't looked up on every start.
+     */
+    private suspend fun downloadExtras(track: SoundCloudTrack) {
+        val urn = track.urn.orEmpty()
+        if (urn.startsWith("yandex:track:")) lyricsRepository.syncedLyrics(urn)
+        if (!settingsRepository.playerVideos.value || isNetworkMetered()) return
+        val video = findOnlineTrackVideo(track)
+        if (video == null) {
+            offlineVideos.markNone(track.id)
+            return
+        }
+        val saved = offlineVideos.save(video)
+        Log.d("MusicViewModel", "Video of ${track.urn} ${if (saved) "saved" else "not saved"} for offline")
+    }
+
+    private fun isNetworkMetered(): Boolean {
+        val connectivity = context.getSystemService(android.net.ConnectivityManager::class.java)
+        return connectivity?.isActiveNetworkMetered ?: true
+    }
+
+    private suspend fun findOnlineTrackVideo(track: SoundCloudTrack): TrackVideo? {
         val urn = track.urn.orEmpty()
         val youTubeId = track.youTubeVideoId
         return when {
