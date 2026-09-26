@@ -980,12 +980,11 @@ fun MusicScreen(viewModel: MusicViewModel) {
             }
 
             // On home the floating toolbar owns the bottom edge; the mini player sits on top of it.
-            val searchTabsShown = screen == AppScreen.SEARCH && selectedMix == null &&
-                searchOpenedPlaylist == null && (hasYandexToken || ytMusicAccount != null)
+            val searchTabsShown = screen == AppScreen.SEARCH && selectedMix == null && searchOpenedPlaylist == null
             val miniPlayerLift by animateDpAsState(
                 targetValue = when {
                     screen == AppScreen.HOME && selectedMix == null -> HomeToolbarClearance
-                    searchTabsShown -> SearchTabsHeight + 8.dp
+                    searchTabsShown -> searchDockHeight(hasYandexToken || ytMusicAccount != null) - 4.dp
                     else -> 0.dp
                 },
                 animationSpec = spring(dampingRatio = Spring.DampingRatioLowBouncy, stiffness = Spring.StiffnessMediumLow),
@@ -3864,8 +3863,7 @@ private fun SearchScreen(
     val tabsShown = sources.size > 1
     val playerShown = currentTrackId != null
     // Room at the bottom of each list for what floats over its end: the tabs, the mini player.
-    val bottomRoom = 24.dp + (if (tabsShown) SearchTabsHeight + 12.dp else 0.dp) +
-        (if (playerShown) MiniPlayerHeight + 12.dp else 0.dp)
+    val bottomRoom = 24.dp + searchDockHeight(tabsShown) + (if (playerShown) MiniPlayerHeight + 12.dp else 0.dp)
 
     // Search stands on the moving backdrop: its fields, rows and tabs are glass.
     androidx.compose.runtime.CompositionLocalProvider(LocalGlass provides true) {
@@ -3880,12 +3878,6 @@ private fun SearchScreen(
             Box(modifier = Modifier.padding(horizontal = 16.dp)) {
                 TopBar(title = "Поиск", onBack = onBack)
             }
-            SearchField(
-                query = activeQuery,
-                onQueryChange = { newQuery -> search(activeSource, newQuery) },
-                focusRequester = focusRequester,
-                modifier = Modifier.padding(start = 16.dp, top = 8.dp, end = 16.dp)
-            )
             HorizontalPager(
                 state = sourcePager,
                 modifier = Modifier
@@ -3934,11 +3926,22 @@ private fun SearchScreen(
             }
         }
 
-        // Only when there is a choice: services not connected in settings aren't offered. On the
+        // The field and, when there is a choice, the services, down where the thumb is: on the
         // keyboard's top edge while it is up, at the bottom of the screen when it isn't.
-        if (tabsShown) {
-            androidx.compose.runtime.CompositionLocalProvider(LocalFrostSources provides backdrop + results) {
-                SearchSourceTabs(
+        androidx.compose.runtime.CompositionLocalProvider(LocalFrostSources provides backdrop + results) {
+            Column(
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .windowInsetsPadding(WindowInsets.ime.union(WindowInsets.navigationBars))
+                    .padding(horizontal = 16.dp, vertical = 12.dp),
+                verticalArrangement = Arrangement.spacedBy(SearchDockGap)
+            ) {
+                SearchField(
+                    query = activeQuery,
+                    onQueryChange = { newQuery -> search(activeSource, newQuery) },
+                    focusRequester = focusRequester
+                )
+                if (tabsShown) SearchSourceTabs(
                     labels = sources.map { option ->
                         when (option) {
                             SearchSource.SOUNDCLOUD -> "SoundCloud"
@@ -3950,11 +3953,7 @@ private fun SearchScreen(
                     onSelect = { index ->
                         haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                         scope.launch { sourcePager.animateScrollToPage(index, animationSpec = ServicePageSpring) }
-                    },
-                    modifier = Modifier
-                        .align(Alignment.BottomCenter)
-                        .windowInsetsPadding(WindowInsets.ime.union(WindowInsets.navigationBars))
-                        .padding(horizontal = 16.dp, vertical = 12.dp)
+                    }
                 )
             }
         }
@@ -4134,14 +4133,11 @@ private fun SearchResultsList(
                     )
                 }
             }
-        } else if (!results.loading && results.albums.isEmpty() && results.playlists.isEmpty() && results.artists.isEmpty()) {
+        } else if (!results.loading && results.query.isNotBlank() && results.error == null &&
+            results.albums.isEmpty() && results.playlists.isEmpty() && results.artists.isEmpty()
+        ) {
             item(key = "search-empty") {
-                Box(modifier = Modifier.padding(top = 20.dp)) {
-                    EmptyState(
-                        if (results.query.isBlank()) "Напиши, что хочешь услышать."
-                        else "Ничего не нашлось."
-                    )
-                }
+                Box(modifier = Modifier.padding(top = 20.dp)) { EmptyState("Ничего не нашлось.") }
             }
         }
     }
@@ -4215,6 +4211,12 @@ private fun SearchSourceTabs(
 }
 
 private val SearchTabsHeight = 56.dp
+private val SearchFieldHeight = 60.dp
+private val SearchDockGap = 8.dp
+
+// The field and the tabs under it, with the gap above the keyboard.
+private fun searchDockHeight(tabs: Boolean): Dp =
+    12.dp + SearchFieldHeight + (if (tabs) SearchDockGap + SearchTabsHeight else 0.dp)
 
 // The mini player's height, with its padding, for what must leave room for it.
 internal val MiniPlayerHeight = 72.dp
@@ -4490,7 +4492,7 @@ private fun SearchField(
         onValueChange = onQueryChange,
         modifier = modifier
             .fillMaxWidth()
-            .heightIn(min = 60.dp)
+            .height(SearchFieldHeight)
             .glassOr(RoundedCornerShape(30.dp), fill)
             .focusRequester(focusRequester),
         singleLine = true,
@@ -5718,21 +5720,23 @@ private fun TrackDetailScreen(
     val currentTrackId by rememberUpdatedState(track.id)
     val currentHasNeighbour by rememberUpdatedState(hasNeighbourTrack)
     val currentOnSwipeTrack by rememberUpdatedState(onSwipeTrack)
-    val density = LocalDensity.current
-    val shrinkPx = with(density) { SwipeShrinkDistance.toPx() }
-    val swipeProgress: () -> Float = { (kotlin.math.abs(swipe.value) / shrinkPx).coerceIn(0f, 1f) }
+    // The moment a drag starts the glow goes out, the panel turns solid and the picture shrinks
+    // back — not by how far it has been dragged; they return once it has settled.
+    val swipeActive = remember { Animatable(0f) }
+    val swipeProgress: () -> Float = { swipeActive.value }
 
     // Over a video the buttons at the top turn to frosted glass as well, like the panel.
     val buttonGlass: (@Composable BoxScope.() -> Unit)? = videoState?.takeIf { it.showing }?.let { shown ->
         { FrostedVideoGlass(state = shown, tint = PanelColors.container.copy(alpha = 0.42f)) }
     } ?: if (coverGlowMode) {
         {
-            // Over the cover's glow, already blurred: a tint makes the frost.
+            // The cover reaches up under them: glass over it, solid while it is swiped away.
+            FrostedVideoGlass(state = coverGlow, tint = PanelColors.container.copy(alpha = 0.42f))
             val panel = PanelColors.container
             Box(
                 modifier = Modifier
                     .matchParentSize()
-                    .drawBehind { drawRect(panel.copy(alpha = CoverFrost + (1f - CoverFrost) * swipeProgress())) }
+                    .drawBehind { drawRect(panel.copy(alpha = 0.6f * swipeProgress())) }
             )
         }
     } else {
@@ -5786,7 +5790,7 @@ private fun TrackDetailScreen(
                     .fillMaxSize()
                     .graphicsLayer {
                         alpha = videoShown
-                        swiped(swipe.value, swipeProgress())
+                        swiped(swipe.value, swipeProgress(), rounded = false)
                     }
                     .blur(coverBlur + blurRadius + pauseBlur)
             ) {
@@ -5812,13 +5816,13 @@ private fun TrackDetailScreen(
                     Box(
                         modifier = Modifier
                             .fillMaxSize()
-                            .graphicsLayer { swiped(swipe.value, swipeProgress()) }
                             .pointerInput(Unit) {
                                 val velocity = VelocityTracker()
                                 detectHorizontalDragGestures(
                                     onDragStart = {
                                         velocity.resetTracking()
                                         swipeScope.launch { swipe.stop() }
+                                        swipeScope.launch { swipeActive.animateTo(1f, tween(160)) }
                                     },
                                     onHorizontalDrag = { change, amount ->
                                         velocity.addPosition(change.uptimeMillis, change.position)
@@ -5828,7 +5832,12 @@ private fun TrackDetailScreen(
                                         val give = if (currentHasNeighbour(towardNext)) 1f else 0.3f
                                         swipeScope.launch { swipe.snapTo(swipe.value + amount * give) }
                                     },
-                                    onDragCancel = { swipeScope.launch { swipe.animateTo(0f, SwipeSettle) } },
+                                    onDragCancel = {
+                                        swipeScope.launch {
+                                            swipe.animateTo(0f, SwipeSettle)
+                                            swipeActive.animateTo(0f, tween(260))
+                                        }
+                                    },
                                     onDragEnd = {
                                         val offset = swipe.value
                                         val speed = velocity.calculateVelocity().x
@@ -5841,6 +5850,7 @@ private fun TrackDetailScreen(
                                         swipeScope.launch {
                                             if (!meant || !currentHasNeighbour(next)) {
                                                 swipe.animateTo(0f, SwipeSettle)
+                                                swipeActive.animateTo(0f, tween(260))
                                                 return@launch
                                             }
                                             val leaving = currentTrackId
@@ -5854,6 +5864,7 @@ private fun TrackDetailScreen(
                                             }
                                             swipe.snapTo(-side * width * 0.55f)
                                             swipe.animateTo(0f, SwipeSettle)
+                                            swipeActive.animateTo(0f, tween(260))
                                         }
                                     }
                                 )
@@ -5874,7 +5885,9 @@ private fun TrackDetailScreen(
                                 onLongPress = onLongPressCover,
                                 video = videoState?.takeIf { immersiveVideo == null },
                                 videoShown = videoShown,
-                                coverGlow = coverGlow.takeIf { coverGlowMode }
+                                coverGlow = coverGlow.takeIf { coverGlowMode },
+                                swipeOffset = { swipe.value },
+                                swipeProgress = swipeProgress
                             )
                         }
                         AnimatedVisibility(
@@ -6093,7 +6106,10 @@ private fun PlayerArtwork(
     video: PlayerVideoState? = null,
     videoShown: Float = 0f,
     // The cover whole, its glow drawn from it: see [GlowingCover].
-    coverGlow: CoverGlow? = null
+    coverGlow: CoverGlow? = null,
+    // Where a sideways swipe has the picture, and how far into it the screen is.
+    swipeOffset: () -> Float = { 0f },
+    swipeProgress: () -> Float = { 0f }
 ) {
     val haptic = LocalHapticFeedback.current
     val coroutineScope = rememberCoroutineScope()
@@ -6153,7 +6169,9 @@ private fun PlayerArtwork(
                 artworkUrl = track.artworkUrl,
                 glow = coverGlow,
                 scale = { restScale * pressScale.value },
-                alpha = if (video != null) 1f - videoShown else 1f
+                alpha = if (video != null) 1f - videoShown else 1f,
+                swipeOffset = swipeOffset,
+                swipeProgress = swipeProgress
             )
             if (video != null) {
                 AmbientVideo(
@@ -6162,15 +6180,18 @@ private fun PlayerArtwork(
                     bottom = PlayerPanelOverlap + 36.dp,
                     overBackdrop = true,
                     alpha = videoShown,
-                    modifier = Modifier.fillMaxSize()
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .graphicsLayer { swiped(swipeOffset(), swipeProgress(), rounded = false) }
                 )
             }
         } else Box(
             modifier = Modifier
                 .fillMaxSize()
                 .graphicsLayer {
-                    scaleX = playScale * pressScale.value
-                    scaleY = playScale * pressScale.value
+                    swiped(swipeOffset(), swipeProgress())
+                    scaleX *= playScale * pressScale.value
+                    scaleY *= playScale * pressScale.value
                 }
         ) {
             AsyncImage(
@@ -6196,8 +6217,8 @@ private fun PlayerArtwork(
         }
 
         // Keeps the status bar and the buttons over the cover legible on bright artwork. A video's
-        // glow is left at its own brightness.
-        Box(
+        // glow is left at its own brightness, and so is the cover's: the buttons over it are glass.
+        if (coverGlow == null) Box(
             modifier = Modifier
                 .fillMaxWidth()
                 .height(140.dp)
@@ -6225,7 +6246,14 @@ private fun PlayerArtwork(
  * picture recorded as [glow] for the glow that fills the rest of the screen.
  */
 @Composable
-private fun GlowingCover(artworkUrl: String?, glow: CoverGlow, scale: () -> Float, alpha: Float) {
+private fun GlowingCover(
+    artworkUrl: String?,
+    glow: CoverGlow,
+    scale: () -> Float,
+    alpha: Float,
+    swipeOffset: () -> Float,
+    swipeProgress: () -> Float
+) {
     val statusBar = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
     BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
         val top = statusBar + CoverTopClearance
@@ -6237,6 +6265,9 @@ private fun GlowingCover(artworkUrl: String?, glow: CoverGlow, scale: () -> Floa
                 .align(Alignment.TopCenter)
                 .padding(top = top + ((room - side) / 2).coerceAtLeast(0.dp))
                 .size(side)
+                // Swiped, it goes with the finger; the glow, out meanwhile, is drawn from where
+                // it is.
+                .graphicsLayer { swiped(swipeOffset(), swipeProgress(), rounded = false) }
                 .glowSource(glow)
                 .graphicsLayer {
                     val s = scale()
@@ -6258,28 +6289,28 @@ private fun GlowingCover(artworkUrl: String?, glow: CoverGlow, scale: () -> Floa
     }
 }
 
-// Below the buttons at the top: their line, their height, a gap.
-private val CoverTopClearance = 12.dp + 48.dp + 16.dp
-private val CoverBottomGap = 16.dp
-private val CoverSideMargin = 16.dp
+// From the buttons' line at the top — they lie over its corners, as glass — to the panel's edge,
+// and from one side of the screen to the other if the height allows.
+private val CoverTopClearance = 12.dp
+private val CoverBottomGap = 0.dp
+private val CoverSideMargin = 0.dp
 private val CoverCorner = 28.dp
 
 // How much of the panel's colour frosts it over the cover's glow.
 private const val CoverFrost = 0.55f
 
 // The cover swiped sideways: how far it goes before it has shrunk all it will, and what a flick is.
-private val SwipeShrinkDistance = 72.dp
 private val SwipeFlingVelocity = 900.dp
 private val SwipeMinFling = 24.dp
 private val SwipeSettle = spring<Float>(dampingRatio = 0.82f, stiffness = Spring.StiffnessMediumLow)
 
 /** The artwork (or a video) as the swipe has it: along with the finger, shrunk back, rounded. */
-private fun androidx.compose.ui.graphics.GraphicsLayerScope.swiped(offset: Float, progress: Float) {
+private fun androidx.compose.ui.graphics.GraphicsLayerScope.swiped(offset: Float, progress: Float, rounded: Boolean = true) {
     translationX = offset
     val s = 1f - 0.14f * progress
     scaleX = s
     scaleY = s
-    if (progress > 0f) {
+    if (rounded && progress > 0f) {
         shape = RoundedCornerShape(32.dp * progress)
         clip = true
     }
