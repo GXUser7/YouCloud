@@ -160,6 +160,8 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
@@ -1084,13 +1086,22 @@ fun MusicScreen(viewModel: MusicViewModel) {
 }
 
 /** The places home switches between, in the order the floating toolbar shows them. */
-private enum class HomeCategory(val title: String, val icon: ImageVector) {
-    Mixes("Миксы", Icons.AutoMirrored.Filled.QueueMusic),
-    Stations("Станции", Icons.Default.Radio),
-    Trending("Тренды", Icons.AutoMirrored.Filled.TrendingUp),
-    YouTube("YouTube Music", Icons.Default.SmartDisplay),
-    Library("Медиатека", Icons.Default.LibraryMusic),
-    MyMusic("Моя музыка", Icons.Default.Download)
+/** What home's toolbar picks between: a service, or what is on the device. */
+private enum class HomeService(val title: String, val icon: () -> ImageVector) {
+    SoundCloud("SoundCloud", { ServiceIcons.SoundCloud }),
+    Yandex("Яндекс Музыка", { ServiceIcons.Yandex }),
+    YouTube("YouTube Music", { ServiceIcons.YouTubeMusic }),
+    Downloads("Скачанное", { Icons.Default.Download })
+}
+
+// The order is persisted (the saved tab is an ordinal): new sections go at the end.
+private enum class HomeCategory(val title: String, val service: HomeService) {
+    Mixes("Миксы", HomeService.SoundCloud),
+    Stations("Станции", HomeService.SoundCloud),
+    Trending("Тренды", HomeService.SoundCloud),
+    YouTube("YouTube Music", HomeService.YouTube),
+    Library("Медиатека", HomeService.Yandex),
+    MyMusic("Моя музыка", HomeService.Downloads)
 }
 
 /**
@@ -1179,22 +1190,27 @@ private fun HomeScreen(
     updates: com.example.myapplication.data.UpdateRepository
 ) {
     val haptic = LocalHapticFeedback.current
-    // A service not connected in settings has no row here at all.
-    val categories = remember(ytConnected, yandexConnected) {
-        HomeCategory.entries.filter { category ->
-            when (category) {
-                HomeCategory.YouTube -> ytConnected
-                HomeCategory.Library -> yandexConnected
+    // The toolbar picks a service; a service not connected in settings isn't offered.
+    val services = remember(ytConnected, yandexConnected) {
+        HomeService.entries.filter { service ->
+            when (service) {
+                HomeService.Yandex -> yandexConnected
+                HomeService.YouTube -> ytConnected
                 else -> true
             }
         }
     }
     // [selectedTab] is the category's ordinal, so it survives rows coming and going.
-    val selectedIndex = categories.indexOf(HomeCategory.entries.getOrNull(selectedTab)).coerceAtLeast(0)
-
-    // Categories still stack vertically — a swipe up or down moves between them, as it always
-    // did — and the floating toolbar at the bottom is the same axis as buttons.
-    val categoryPager = rememberPagerState(initialPage = selectedIndex) { categories.size }
+    val savedCategory = HomeCategory.entries.getOrNull(selectedTab)
+    var pickedService by remember { mutableStateOf(savedCategory?.service ?: HomeService.SoundCloud) }
+    // Signed out of the service meanwhile: SoundCloud's page instead.
+    val service = pickedService.takeIf { it in services } ?: HomeService.SoundCloud
+    // Where each service was left, so coming back to it lands there.
+    val lastCategory = remember { mutableStateMapOf<HomeService, HomeCategory>() }
+    // The service's own sections stack vertically: a swipe up or down moves between them.
+    val categories = remember(service) { HomeCategory.entries.filter { it.service == service } }
+    val selectedIndex = categories.indexOf(savedCategory).coerceAtLeast(0)
+    val categoryPager = key(service) { rememberPagerState(initialPage = selectedIndex) { categories.size } }
     val scope = rememberCoroutineScope()
     var showCreatePlaylistDialog by remember { mutableStateOf(false) }
     var playlistNameInput by remember { mutableStateOf("") }
@@ -1202,8 +1218,9 @@ private fun HomeScreen(
     // Only a page the pager has come to rest on is remembered. Reporting every page it passes
     // made a jump from "Моя музыка" to "Миксы" save "Медиатека" on the way, and the saved tab then
     // pulled the pager back there mid-flight.
-    LaunchedEffect(categoryPager.settledPage) {
+    LaunchedEffect(categoryPager, categoryPager.settledPage) {
         val settled = categories.getOrNull(categoryPager.settledPage) ?: return@LaunchedEffect
+        lastCategory[settled.service] = settled
         if (settled.ordinal != selectedTab) {
             onTabSelected(settled.ordinal)
         }
@@ -1431,11 +1448,18 @@ private fun HomeScreen(
         }
 
         HomeToolbar(
-            categories = categories,
-            selected = categoryPager.currentPage,
-            onSelect = { index ->
+            services = services,
+            selected = service,
+            onSelect = { picked ->
                 haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                scope.launch { categoryPager.animateScrollToPage(index) }
+                if (picked == service) {
+                    // Again on the service in view: back to its first section.
+                    scope.launch { categoryPager.animateScrollToPage(0) }
+                } else {
+                    val target = lastCategory[picked] ?: HomeCategory.entries.first { it.service == picked }
+                    pickedService = picked
+                    onTabSelected(target.ordinal)
+                }
             },
             onSearch = {
                 haptic.performHapticFeedback(HapticFeedbackType.LongPress)
@@ -1483,15 +1507,15 @@ private fun HomeScreen(
 }
 
 /**
- * Material 3 Expressive's floating toolbar: the categories on the panel tone, the chosen one an
- * accent pill, and search beside it as its own floating button. Icons only: six labelled pills
- * don't fit a phone's width, and the title above the carousel already names the chosen one.
+ * Material 3 Expressive's floating toolbar: the services on the panel tone, each by its own mark,
+ * the chosen one an accent pill, and search beside it as its own floating button. Marks only: the
+ * title above the carousel already names what is shown.
  */
 @Composable
 private fun HomeToolbar(
-    categories: List<HomeCategory>,
-    selected: Int,
-    onSelect: (Int) -> Unit,
+    services: List<HomeService>,
+    selected: HomeService,
+    onSelect: (HomeService) -> Unit,
     onSearch: () -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -1515,11 +1539,11 @@ private fun HomeToolbar(
                 horizontalArrangement = Arrangement.spacedBy(4.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                categories.forEachIndexed { index, category ->
+                services.forEach { service ->
                     HomeToolbarItem(
-                        category = category,
-                        selected = index == selected,
-                        onClick = { onSelect(index) }
+                        service = service,
+                        selected = service == selected,
+                        onClick = { onSelect(service) }
                     )
                 }
             }
@@ -1540,7 +1564,7 @@ private fun HomeToolbar(
 }
 
 @Composable
-private fun HomeToolbarItem(category: HomeCategory, selected: Boolean, onClick: () -> Unit) {
+private fun HomeToolbarItem(service: HomeService, selected: Boolean, onClick: () -> Unit) {
     val container by animateColorAsState(
         targetValue = if (selected) PanelColors.accent else Color.Transparent,
         animationSpec = tween(250),
@@ -1569,7 +1593,7 @@ private fun HomeToolbarItem(category: HomeCategory, selected: Boolean, onClick: 
             modifier = Modifier.padding(horizontal = 12.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Icon(category.icon, contentDescription = category.title, modifier = Modifier.size(24.dp))
+            Icon(service.icon(), contentDescription = service.title, modifier = Modifier.size(24.dp))
         }
     }
 }
