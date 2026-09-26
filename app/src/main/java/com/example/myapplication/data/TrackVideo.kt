@@ -22,6 +22,8 @@ data class TrackVideo(
     val trackId: Long,
     val url: String,
     val loop: Boolean,
+    // Whether the picture is taller than wide, when known before it plays.
+    val vertical: Boolean? = null,
     val userAgent: String? = null,
     // Empty: the video runs alongside the track one to one.
     val segments: List<VideoSegment> = emptyList()

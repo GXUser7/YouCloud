@@ -105,7 +105,7 @@ interface YandexMusicService {
     @GET("artists/{artistId}/blocks/artist-clips")
     suspend fun getArtistClips(
         @Path("artistId") artistId: String
-    ): YandexArtistClipsResponse
+    ): com.google.gson.JsonObject
 
     @GET("albums/{albumId}/with-tracks")
     suspend fun getAlbumWithTracks(

@@ -17,6 +17,7 @@ import com.example.myapplication.data.YouTubeMusicClient
 import com.example.myapplication.data.YouTubeStreams
 import com.example.myapplication.data.YtDlp
 import com.example.myapplication.data.TrackVideo
+import com.example.myapplication.data.ClipAligner
 import com.example.myapplication.data.YT_SET_REF
 import com.example.myapplication.data.YtAuth
 import com.example.myapplication.data.YtShelf
@@ -2899,7 +2900,6 @@ class MusicViewModel(
 
         // A found video URL (YouTube's) holds for hours; an absent video stays absent a while.
         const val VIDEO_LOOKUP_TTL_MS = 60 * 60 * 1000L
-        const val CLIP_LENGTH_SLACK_MS = 3_000L
     }
 
     /** Confirms a credential pair actually works before we treat the session as healthy. */
@@ -3679,12 +3679,16 @@ class MusicViewModel(
         }
     }
 
+    /**
+     * Yandex's own: the ten-second loop of the track's music video that its player shows in the
+     * cover's place, else the track's videoshot, a vertical loop made to play behind the player.
+     */
     private suspend fun yandexVideo(track: SoundCloudTrack): TrackVideo? {
         val trackId = track.urn.orEmpty().removePrefix("yandex:track:").substringBefore(':')
         val details = yandexService.getTracksDetails(trackId).result.orEmpty().firstOrNull() ?: return null
         val clips = details.artists.orEmpty().firstOrNull()?.id?.let { artistId ->
             try {
-                yandexService.getArtistClips(artistId).result?.items.orEmpty().mapNotNull { it.data?.clip }
+                com.example.myapplication.data.yandexClipsIn(yandexService.getArtistClips(artistId))
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -3692,19 +3696,30 @@ class MusicViewModel(
                 emptyList()
             }
         }.orEmpty()
-        val clip = clips.firstOrNull { trackId.toLongOrNull() in it.trackIds.orEmpty() && !it.previewUrl.isNullOrBlank() }
+        // The clips block doesn't name their tracks; a clip is this track's when the titles agree.
+        val wanted = comparableTitle(track.title)
+        val clip = clips.firstOrNull { clip ->
+            val title = comparableTitle(clip.title)
+            wanted.isNotEmpty() && title.isNotEmpty() && (title == wanted || title.startsWith("$wanted "))
+        }?.takeIf { !it.cover?.videoUrl.isNullOrBlank() }
         Log.d(
             "MusicViewModel",
-            "Yandex $trackId: ${clips.size} clips of the artist, this track's: ${clip?.clipId} " +
-                "(${clip?.duration} s against ${track.duration / 1000} s), videoshot: ${details.backgroundVideoUri != null}"
+            "Yandex $trackId \"${track.title}\": clips of the artist ${clips.map { it.title }}, this track's: ${clip?.id}, " +
+                "videoshot: ${details.backgroundVideoUri != null}"
         )
-        // A video that runs longer or shorter than the track (an intro, an outro) can't be kept
-        // in step with it.
-        val inStep = clip?.duration?.let { kotlin.math.abs(it * 1000L - track.duration) <= CLIP_LENGTH_SLACK_MS } == true
-        if (clip != null && inStep) return TrackVideo(track.id, clip.previewUrl!!, loop = false)
-        return details.backgroundVideoUri?.takeIf { it.isNotBlank() }?.let { TrackVideo(track.id, it, loop = true) }
+        clip?.let { return TrackVideo(track.id, it.cover!!.videoUrl!!, loop = true, vertical = false) }
+        return details.backgroundVideoUri?.takeIf { it.isNotBlank() }
+            ?.let { TrackVideo(track.id, it, loop = true, vertical = true) }
     }
 
+    /** Lower case, letters and digits only. */
+    private fun comparableTitle(title: String?): String =
+        title.orEmpty().lowercase().replace(Regex("[^\\p{L}\\p{N}]+"), " ").trim()
+
+    /**
+     * The track's music video on YouTube, played in step with the track. A video found by search
+     * is lined up by its sound ([ClipAligner]); one that can't be isn't shown at all.
+     */
     private suspend fun youTubeVideo(track: SoundCloudTrack, videoId: String?): TrackVideo? {
         val auth = settingsRepository.ytMusicAuth() ?: return null
         val video = ytMusic.musicVideo(
@@ -3720,7 +3735,34 @@ class MusicViewModel(
         )
         if (video == null) return null
         val stream = YouTubeStreams.resolveVideo(context, video.videoId, auth) ?: return null
-        return TrackVideo(track.id, stream.url, loop = false, userAgent = stream.userAgent, segments = video.segments)
+        val segments = video.segments.takeIf { video.paired && it.isNotEmpty() } ?: run {
+            val videoSound = stream.audioUrl ?: return null
+            val trackSound = trackSound(track, videoId, auth) ?: return null
+            ClipAligner.align(
+                track = trackSound,
+                video = ClipAligner.AudioSource(videoSound, mapOf("User-Agent" to stream.userAgent)),
+                workDir = java.io.File(context.cacheDir, "clip-align")
+            ) ?: run {
+                Log.d("MusicViewModel", "The video ${video.videoId} doesn't line up with ${track.urn}")
+                return null
+            }
+        }
+        return TrackVideo(track.id, stream.url, loop = false, vertical = false, userAgent = stream.userAgent, segments = segments)
+    }
+
+    /** Where to read the track's own sound from: its file, when it is downloaded. */
+    private suspend fun trackSound(track: SoundCloudTrack, videoId: String?, auth: com.example.myapplication.data.YtAuth): ClipAligner.AudioSource? {
+        favoritesRepository.get(track.id)
+            ?.takeIf { it.downloadState == DownloadState.DOWNLOADED }
+            ?.streamUrl?.takeIf { it.startsWith("/") && java.io.File(it).exists() }
+            ?.let { return ClipAligner.AudioSource(it) }
+        if (videoId != null) {
+            val stream = YouTubeStreams.resolve(context, videoId, auth) ?: return null
+            return ClipAligner.AudioSource(stream.url, mapOf("User-Agent" to stream.userAgent))
+        }
+        val yandexId = track.urn.orEmpty().removePrefix("yandex:track:").substringBefore(':')
+        val token = settingsRepository.yandexTokenValue().takeIf { it.isNotBlank() } ?: return null
+        return YandexMusicApi.resolveTrackStream(yandexId, token)?.let { ClipAligner.AudioSource(it) }
     }
 
     fun loadAllArtistTracks(artistId: String, isYandex: Boolean) {

@@ -28,12 +28,16 @@ import java.util.concurrent.TimeUnit
  * Stream URLs are signed for a few hours ("expire" in the URL); within that they're reused.
  */
 object YouTubeStreams {
-    /** [userAgent]: the one to fetch [url] with — the client it was issued to. */
+    /**
+     * [userAgent]: the one to fetch [url] with — the client it was issued to. [audioUrl]: with a
+     * video's picture, its sound, to line the video up with a track by.
+     */
     data class Stream(
         val url: String,
         val mimeType: String?,
         val contentLength: Long,
-        val userAgent: String = USER_AGENT
+        val userAgent: String = USER_AGENT,
+        val audioUrl: String? = null
     )
 
     private const val TAG = "YouTubeStreams"

@@ -1,6 +1,5 @@
 package com.example.myapplication.ui
 
-import android.graphics.Bitmap
 import android.os.SystemClock
 import android.util.Log
 import android.view.TextureView
@@ -15,7 +14,6 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.Stable
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
@@ -24,23 +22,22 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.BlurEffect
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.FilterQuality
-import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.TileMode
-import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.drawscope.translate
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.layer.GraphicsLayer
+import androidx.compose.ui.graphics.layer.drawLayer
+import androidx.compose.ui.graphics.rememberGraphicsLayer
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.toSize
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
@@ -74,10 +71,6 @@ private const val SEEK_COOLDOWN_MS = 2_000L
 private const val SEEK_LEAD_MS = 200L
 private const val SYNC_INTERVAL_MS = 100L
 
-// The glass over a vertical video: a small copy of the picture, blurred, a dozen times a second.
-private const val FROST_DOWNSCALE = 12
-private const val FROST_FRAME_MS = 80L
-
 /** A muted player for [video], and what the screen needs to know about its picture. */
 @Stable
 class PlayerVideoState internal constructor(val video: TrackVideo, internal val player: ExoPlayer) {
@@ -90,17 +83,17 @@ class PlayerVideoState internal constructor(val video: TrackVideo, internal val 
         internal set
 
     internal var firstFrame = false
-    internal var textureView: TextureView? by mutableStateOf(null)
 
-    // Where the picture is drawn on screen, uncropped, for the glass to line its copy up with.
-    internal var surfaceRect: Rect? by mutableStateOf(null)
+    // The picture as drawn, for the glass to draw again; and where on screen it is drawn.
+    internal var frameLayer: GraphicsLayer? = null
+    internal var frameOrigin: Offset? by mutableStateOf(null)
 
     /**
      * Taller than wide: Yandex's videoshots. Played behind the whole player rather than in the
-     * cover's place. Before the size is known, a loop is taken for one.
+     * cover's place. Before the size is known, the video's own hint decides.
      */
     val isPortrait: Boolean
-        get() = if (size == IntSize.Zero) video.loop else size.height > size.width
+        get() = if (size == IntSize.Zero) video.vertical == true else size.height > size.width
 }
 
 /**
@@ -128,6 +121,8 @@ fun rememberPlayerVideoState(video: TrackVideo?, isPlaying: Boolean, trackPositi
         player.prepare()
         PlayerVideoState(video, player)
     }
+
+    state.frameLayer = rememberGraphicsLayer()
 
     DisposableEffect(state) {
         val listener = object : Player.Listener {
@@ -211,10 +206,27 @@ fun rememberPlayerVideoState(video: TrackVideo?, isPlaying: Boolean, trackPositi
     return state
 }
 
-/** The video's picture, cropped to fill [modifier]'s bounds as a cover is. */
+/**
+ * The video's picture, cropped to fill [modifier]'s bounds as a cover is. It is drawn through
+ * the state's layer, which [FrostedVideoGlass] draws a second time, blurred.
+ */
 @Composable
 fun VideoSurface(state: PlayerVideoState, modifier: Modifier = Modifier) {
-    BoxWithConstraints(modifier = modifier.clipToBounds(), contentAlignment = Alignment.Center) {
+    val layer = state.frameLayer
+    BoxWithConstraints(
+        modifier = modifier
+            .clipToBounds()
+            .onGloballyPositioned { state.frameOrigin = it.positionInRoot() }
+            .drawWithContent {
+                if (layer == null) {
+                    drawContent()
+                } else {
+                    layer.record { this@drawWithContent.drawContent() }
+                    drawLayer(layer)
+                }
+            },
+        contentAlignment = Alignment.Center
+    ) {
         val size = state.size
         val density = LocalDensity.current
         val viewModifier = if (size == IntSize.Zero || !constraints.hasBoundedWidth || !constraints.hasBoundedHeight) {
@@ -224,60 +236,22 @@ fun VideoSurface(state: PlayerVideoState, modifier: Modifier = Modifier) {
             with(density) { Modifier.requiredSize((size.width * scale).toDp(), (size.height * scale).toDp()) }
         }
         AndroidView(
-            factory = { context ->
-                TextureView(context).also { view ->
-                    state.player.setVideoTextureView(view)
-                    state.textureView = view
-                }
-            },
-            onRelease = { view ->
-                state.player.clearVideoTextureView(view)
-                if (state.textureView === view) state.textureView = null
-            },
-            modifier = viewModifier.onGloballyPositioned { coordinates ->
-                state.surfaceRect = Rect(coordinates.positionInRoot(), coordinates.size.toSize())
-            }
+            factory = { context -> TextureView(context).also(state.player::setVideoTextureView) },
+            onRelease = state.player::clearVideoTextureView,
+            modifier = viewModifier
         )
     }
-}
-
-/** Small copies of the video's frames, for [FrostedVideoGlass] to blur. */
-@Stable
-class VideoFrost internal constructor() {
-    internal var frame: ImageBitmap? by mutableStateOf(null)
-    internal var version by mutableIntStateOf(0)
-}
-
-@Composable
-fun rememberVideoFrost(state: PlayerVideoState): VideoFrost {
-    val frost = remember(state) { VideoFrost() }
-    LaunchedEffect(state) {
-        var bitmap: Bitmap? = null
-        while (isActive) {
-            val view = state.textureView
-            if (state.showing && view != null && view.isAvailable && view.width > 0 && view.height > 0) {
-                val width = (view.width / FROST_DOWNSCALE).coerceAtLeast(1)
-                val height = (view.height / FROST_DOWNSCALE).coerceAtLeast(1)
-                val target = bitmap?.takeIf { it.width == width && it.height == height }
-                    ?: Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888).also {
-                        bitmap = it
-                        frost.frame = it.asImageBitmap()
-                    }
-                view.getBitmap(target)
-                frost.version++
-            }
-            delay(FROST_FRAME_MS)
-        }
-    }
-    return frost
 }
 
 /**
  * Frosted glass: the part of the video behind this box, blurred, under a wash of [tint]. What a
  * panel stands on over a vertical video, in place of its solid colour.
+ *
+ * The video is drawn here a second time from the same layer, not copied: the glass moves with
+ * every frame, and nothing is read back from the GPU.
  */
 @Composable
-fun BoxScope.FrostedVideoGlass(state: PlayerVideoState, frost: VideoFrost, tint: Color) {
+fun BoxScope.FrostedVideoGlass(state: PlayerVideoState, tint: Color) {
     var origin by remember { mutableStateOf(Offset.Zero) }
     Box(
         modifier = Modifier
@@ -289,18 +263,9 @@ fun BoxScope.FrostedVideoGlass(state: PlayerVideoState, frost: VideoFrost, tint:
                 clip = true
             }
             .drawBehind {
-                // Read here, so a new frame redraws the glass without recomposing anything.
-                frost.version
-                val image = frost.frame ?: return@drawBehind
-                val rect = state.surfaceRect ?: return@drawBehind
-                drawImage(
-                    image = image,
-                    srcOffset = IntOffset.Zero,
-                    srcSize = IntSize(image.width, image.height),
-                    dstOffset = IntOffset((rect.left - origin.x).roundToInt(), (rect.top - origin.y).roundToInt()),
-                    dstSize = IntSize(rect.width.roundToInt(), rect.height.roundToInt()),
-                    filterQuality = FilterQuality.Low
-                )
+                val layer = state.frameLayer ?: return@drawBehind
+                val at = state.frameOrigin ?: return@drawBehind
+                translate(at.x - origin.x, at.y - origin.y) { drawLayer(layer) }
             }
     )
     Box(

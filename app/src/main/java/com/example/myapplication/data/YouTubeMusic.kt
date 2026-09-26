@@ -177,22 +177,94 @@ class YouTubeMusicClient(private val authProvider: () -> YtAuth?) {
     }
 
     /**
-     * Songs, artists, albums and community playlists for [query], each from the site's own
-     * filtered search: the unfiltered one mixes a few of each kind into a single list.
+     * What music.youtube.com shows for [query]: its own results page first — the top result and a
+     * list mixing songs, videos, artists and albums — and then, for depth, the site's filtered
+     * searches. The songs filter alone misses every track that YouTube has only as a video, which
+     * is a good half of some genres.
      */
     suspend fun search(query: String): YtSearchPage = coroutineScope {
-        val songs = async { searchShelf(query, FILTER_SONGS) }
-        // Extras: if one of them fails, the songs still show.
+        val main = async { post("search", json { addProperty("query", query) }) }
+        // Extras: if one of them fails, the main results still show.
+        val songs = async { optional { searchShelf(query, FILTER_SONGS) } }
         val artists = async { optional { searchShelf(query, FILTER_ARTISTS) } }
         val albums = async { optional { searchShelf(query, FILTER_ALBUMS) } }
         val playlists = async { optional { searchShelf(query, FILTER_PLAYLISTS) } }
+
+        val mixed = parseMixedResults(main.await())
         val songShelf = songs.await()
+        val filteredSongs = listRows(songShelf).mapNotNull { parseSongRow(it) }
+        // The filtered rows carry the length and album the main page leaves out.
+        val detailed = filteredSongs.associateBy { it.id }
         YtSearchPage(
-            tracks = listRows(songShelf).mapNotNull { parseSongRow(it) }.distinctBy { it.id },
-            artists = listRows(artists.await()).mapNotNull(::parseListArtist).distinctBy { it.permalinkUrl },
-            albums = listRows(albums.await()).mapNotNull(::parseListSet).distinctBy { it.id },
-            playlists = listRows(playlists.await()).mapNotNull(::parseListSet).distinctBy { it.id },
+            tracks = (mixed.tracks.map { detailed[it.id] ?: it } + filteredSongs).distinctBy { it.id },
+            artists = (mixed.artists + listRows(artists.await()).mapNotNull(::parseListArtist))
+                .distinctBy { it.permalinkUrl },
+            albums = (mixed.sets.filter { it.isAlbum == true } + listRows(albums.await()).mapNotNull(::parseListSet))
+                .distinctBy { it.id },
+            playlists = (mixed.sets.filter { it.isAlbum != true } + listRows(playlists.await()).mapNotNull(::parseListSet))
+                .distinctBy { it.id },
             continuation = songShelf.continuation()
+        )
+    }
+
+    private class MixedResults(
+        val tracks: List<SoundCloudTrack>,
+        val artists: List<SoundCloudUser>,
+        val sets: List<SoundCloudPlaylist>
+    )
+
+    /** The main results page: the top result's card, then every row, in the site's order. */
+    private fun parseMixedResults(page: JsonElement): MixedResults {
+        val tracks = mutableListOf<SoundCloudTrack>()
+        val artists = mutableListOf<SoundCloudUser>()
+        val sets = mutableListOf<SoundCloudPlaylist>()
+        page.findAll("musicCardShelfRenderer").firstOrNull()?.let { card ->
+            parseCardTrack(card)?.let(tracks::add)
+            parseCardArtist(card)?.let(artists::add)
+        }
+        for (row in page.findAll("musicResponsiveListItemRenderer")) {
+            val browseId = row.str("navigationEndpoint", "browseEndpoint", "browseId")
+            when {
+                browseId == null -> parseSongRow(row)?.let(tracks::add)
+                browseId.startsWith("UC") -> {
+                    // Listeners' own channels ("Профили") come up too; artists only.
+                    val pageType = row.str(
+                        "navigationEndpoint", "browseEndpoint", "browseEndpointContextSupportedConfigs",
+                        "browseEndpointContextMusicConfig", "pageType"
+                    )
+                    if (pageType == null || pageType == "MUSIC_PAGE_TYPE_ARTIST") parseListArtist(row)?.let(artists::add)
+                }
+                else -> parseListSet(row)?.let(sets::add)
+            }
+        }
+        return MixedResults(tracks, artists, sets)
+    }
+
+    /** The top result, when it is a song or a video. */
+    private fun parseCardTrack(card: JsonElement): SoundCloudTrack? {
+        val videoId = card.str("title", "runs", 0, "navigationEndpoint", "watchEndpoint", "videoId")
+            ?: card.str("onTap", "watchEndpoint", "videoId")
+            ?: return null
+        val title = card.runs("title") ?: return null
+        val subtitle = card.at("subtitle")
+        return track(
+            videoId = videoId,
+            title = title,
+            artists = artistsOf(subtitle.arr("runs")).ifEmpty { plainArtist(subtitle.runsText()) },
+            durationMs = subtitle.durationRun()?.let(::parseDuration) ?: 0L,
+            artwork = bestThumbnail(card.arr("thumbnail", "musicThumbnailRenderer", "thumbnail", "thumbnails"))
+        )
+    }
+
+    /** The top result, when it is an artist. */
+    private fun parseCardArtist(card: JsonElement): SoundCloudUser? {
+        val channelId = card.str("title", "runs", 0, "navigationEndpoint", "browseEndpoint", "browseId")
+            ?.takeIf { it.startsWith("UC") } ?: return null
+        return SoundCloudUser(
+            username = card.runs("title"),
+            avatarUrl = bestThumbnail(card.arr("thumbnail", "musicThumbnailRenderer", "thumbnail", "thumbnails")),
+            followersCount = card.runs("subtitle")?.substringAfter(" • ", "")?.takeIf { it.isNotBlank() }?.let(::parseCount),
+            permalinkUrl = YT_ARTIST_REF + channelId
         )
     }
 
@@ -249,10 +321,9 @@ class YouTubeMusicClient(private val authProvider: () -> YtAuth?) {
 
     /**
      * The music video of the song [videoId] (null: a song from elsewhere, found by [title] and
-     * [artist]). YouTube Music pairs songs with their videos itself,
-     * and, for a signed-in listener, maps where the song's moments fall in the video. Without
-     * that, an official video found by search stands in, but only one as long as the song, so
-     * the two play in step.
+     * [artist]). YouTube Music pairs songs with their videos itself, for some listeners with a
+     * map of where the song's moments fall in the video. Otherwise an official video found by
+     * search stands in, to be lined up by its sound ([ClipAligner]).
      */
     suspend fun musicVideo(videoId: String?, title: String, artist: String?, durationMs: Long): YtMusicVideo? =
         videoId?.let { counterpart(it) } ?: officialVideo(title, artist, durationMs)
@@ -276,7 +347,6 @@ class YouTubeMusicClient(private val authProvider: () -> YtAuth?) {
     }
 
     private suspend fun officialVideo(title: String, artist: String?, durationMs: Long): YtMusicVideo? {
-        if (durationMs <= 0) return null
         val wanted = normalized(title)
         if (wanted.isBlank()) return null
         val shelf = searchShelf(listOfNotNull(artist, title).joinToString(" "), FILTER_VIDEOS)
@@ -295,7 +365,8 @@ class YouTubeMusicClient(private val authProvider: () -> YtAuth?) {
                     wanted in videoTitle &&
                     // "Official Audio", "Lyric Video", "Visualizer": a still picture, or words.
                     NOT_A_CLIP.none { it in videoTitle } &&
-                    kotlin.math.abs(length - durationMs) <= MATCHING_LENGTH_MS
+                    // Room for an opening scene or a skit, not for a compilation.
+                    (durationMs <= 0 || length in (durationMs - SHORTER_BY_MS)..(durationMs + LONGER_BY_MS))
             }
         }?.let { YtMusicVideo(it, emptyList(), paired = false) }
     }
@@ -506,10 +577,12 @@ class YouTubeMusicClient(private val authProvider: () -> YtAuth?) {
         SoundCloudUser(username = run.str("text"), permalinkUrl = YT_ARTIST_REF + id)
     }
 
-    /** "Artist • 29 млн прослушиваний" → the artist. */
-    private fun plainArtist(byline: String?): List<SoundCloudUser> =
-        listOfNotNull(byline?.substringBefore(" • ")?.trim()?.takeIf { it.isNotEmpty() }
-            ?.let { SoundCloudUser(username = it) })
+    /** "Artist • 29 млн прослушиваний", "Видео • Artist • …" → the artist. */
+    private fun plainArtist(byline: String?): List<SoundCloudUser> {
+        val parts = byline?.split(" • ")?.map { it.trim() }.orEmpty()
+        val name = parts.firstOrNull { it.isNotEmpty() && it.lowercase() !in KIND_WORDS }
+        return listOfNotNull(name?.let { SoundCloudUser(username = it) })
+    }
 
     private fun bestThumbnail(thumbnails: List<JsonElement>, size: Int = 544): String? {
         val url = thumbnails.lastOrNull()?.str("url") ?: return null
@@ -607,8 +680,11 @@ class YouTubeMusicClient(private val authProvider: () -> YtAuth?) {
         private const val FILTER_PLAYLISTS = "EgeKAQQoAEABahAQBRAJEAMQBBAKEBEQEBAV"
 
         private const val PORTRAIT_SIZE = 900
-        private const val MATCHING_LENGTH_MS = 3_000L
+        private const val SHORTER_BY_MS = 10_000L
+        private const val LONGER_BY_MS = 150_000L
         private val NOT_A_CLIP = listOf("audio", "lyric", "visualizer", "visualiser", "текст")
+        // What a search row's byline starts with before naming anyone.
+        private val KIND_WORDS = setOf("композиция", "видео", "трек", "song", "video", "эпизод", "episode")
         private val COUNT = Regex("(\\d+(?:[.,]\\d+)?)\\s*(тыс|млн|млрд|k|m|b)?", RegexOption.IGNORE_CASE)
         private val NON_WORD = Regex("[^\\p{L}\\p{N}]+")
 

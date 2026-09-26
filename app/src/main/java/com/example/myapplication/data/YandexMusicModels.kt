@@ -93,30 +93,44 @@ data class YandexArtist(
     val name: String?
 )
 
-/** `artists/{id}/blocks/artist-clips`: the artist's music videos. */
-data class YandexArtistClipsResponse(
-    val result: YandexArtistClips? = null
-)
+/**
+ * Every clip in an `artists/{id}/blocks/artist-clips` answer: the objects under a `clip` key, how
+ * deep the blocks nest them (`items[].data.clip` today) notwithstanding.
+ */
+fun yandexClipsIn(json: com.google.gson.JsonElement?): List<YandexClip> {
+    val found = mutableListOf<YandexClip>()
+    fun walk(element: com.google.gson.JsonElement?) {
+        when {
+            element == null || element.isJsonNull -> Unit
+            element.isJsonObject -> element.asJsonObject.entrySet().forEach { (key, value) ->
+                if (key == "clip" && value.isJsonObject) {
+                    runCatching { com.google.gson.Gson().fromJson(value, YandexClip::class.java) }.getOrNull()?.let(found::add)
+                } else {
+                    walk(value)
+                }
+            }
+            element.isJsonArray -> element.asJsonArray.forEach(::walk)
+        }
+    }
+    walk(json)
+    return found.distinctBy { it.id }
+}
 
-data class YandexArtistClips(
-    val items: List<YandexArtistClipItem>? = null
-)
-
-data class YandexArtistClipItem(
-    val data: YandexArtistClipData? = null
-)
-
-data class YandexArtistClipData(
-    val clip: YandexClip? = null
-)
-
-/** A music video: [previewUrl] is its picture as an MP4, [trackIds] the tracks it is a video of. */
+/**
+ * A music video, as an artist's page lists it: [cover]'s `videoUrl` is ten seconds of it, silent,
+ * which Yandex's own player loops in the cover's place. The block doesn't say which track it is a
+ * video of; the title does.
+ */
 data class YandexClip(
-    val clipId: Long? = null,
+    val id: Long? = null,
     val title: String? = null,
-    val previewUrl: String? = null,
     val duration: Int? = null,
-    val trackIds: List<Long>? = null
+    val cover: YandexClipCover? = null
+)
+
+data class YandexClipCover(
+    val uri: String? = null,
+    val videoUrl: String? = null
 )
 
 data class YandexDownloadInfoResponse(

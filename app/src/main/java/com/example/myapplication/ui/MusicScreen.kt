@@ -4889,7 +4889,6 @@ private fun TrackDetailScreen(
         label = "videoShown"
     )
     val immersiveVideo = videoState?.takeIf { it.isPortrait }
-    val frost = immersiveVideo?.let { rememberVideoFrost(it) }
 
     Box(
         modifier = Modifier
@@ -4966,11 +4965,10 @@ private fun TrackDetailScreen(
                 },
                 panel = {
                     PlayerPanel(
-                        glass = if (immersiveVideo != null && frost != null && videoShown > 0f) {
+                        glass = if (immersiveVideo != null && videoShown > 0f) {
                             {
                                 FrostedVideoGlass(
                                     state = immersiveVideo,
-                                    frost = frost,
                                     tint = PanelColors.container.copy(alpha = 0.42f)
                                 )
                             }

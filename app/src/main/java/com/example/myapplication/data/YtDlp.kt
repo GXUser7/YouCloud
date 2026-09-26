@@ -218,12 +218,22 @@ EJSBaseJCP._ENABLE_PREPROCESSED_PLAYER_CACHE = True
                 else -> null
             }
             val length = (field("filesize") ?: field("filesize_approx"))?.asLong ?: -1L
+            // A video's sound comes with the same answer: every format is listed, deciphered.
+            val audioUrl = if (kind != Kind.VIDEO) null else json.getAsJsonArray("formats")
+                ?.map { it.asJsonObject }
+                ?.filter { format ->
+                    format.get("vcodec")?.takeUnless { it.isJsonNull }?.asString == "none" &&
+                        format.get("acodec")?.takeUnless { it.isJsonNull }?.asString.let { it != null && it != "none" } &&
+                        format.get("protocol")?.takeUnless { it.isJsonNull }?.asString == "https"
+                }
+                ?.let { audio -> audio.firstOrNull { it.get("format_id")?.asString == "140" } ?: audio.firstOrNull() }
+                ?.get("url")?.asString
             Log.i(TAG, "$videoId: $media ${field("format_id")?.asString} ($ext) " +
                 "in ${response.elapsedTime} ms, signed in: ${cookies != null}")
             if (userAgent != null) {
-                YouTubeStreams.Stream(url, mimeType, length, userAgent)
+                YouTubeStreams.Stream(url, mimeType, length, userAgent, audioUrl)
             } else {
-                YouTubeStreams.Stream(url, mimeType, length)
+                YouTubeStreams.Stream(url, mimeType, length, audioUrl = audioUrl)
             }
         } catch (e: YoutubeDL.CanceledException) {
             Log.w(TAG, "$videoId: yt-dlp gave no answer in ${RUN_TIMEOUT_MS / 1000} s")
