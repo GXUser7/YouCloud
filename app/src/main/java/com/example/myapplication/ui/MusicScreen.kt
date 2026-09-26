@@ -179,6 +179,8 @@ import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -1087,9 +1089,9 @@ fun MusicScreen(viewModel: MusicViewModel) {
 
 /** The places home switches between, in the order the floating toolbar shows them. */
 /** What home's toolbar picks between: a service, or what is on the device. */
-private enum class HomeService(val title: String, val icon: () -> ImageVector) {
+private enum class HomeService(val title: String, val icon: (() -> ImageVector)?, val letter: String? = null) {
     SoundCloud("SoundCloud", { ServiceIcons.SoundCloud }),
-    Yandex("Яндекс Музыка", { ServiceIcons.Yandex }),
+    Yandex("Яндекс Музыка", icon = null, letter = "Я"),
     YouTube("YouTube Music", { ServiceIcons.YouTubeMusic }),
     Downloads("Скачанное", { Icons.Default.Download })
 }
@@ -1593,7 +1595,19 @@ private fun HomeToolbarItem(service: HomeService, selected: Boolean, onClick: ()
             modifier = Modifier.padding(horizontal = 12.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Icon(service.icon(), contentDescription = service.title, modifier = Modifier.size(24.dp))
+            val icon = service.icon
+            if (icon != null) {
+                Icon(icon(), contentDescription = service.title, modifier = Modifier.size(24.dp))
+            } else {
+                Box(modifier = Modifier.size(24.dp), contentAlignment = Alignment.Center) {
+                    Text(
+                        text = service.letter.orEmpty(),
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.Black,
+                        modifier = Modifier.semantics { contentDescription = service.title }
+                    )
+                }
+            }
         }
     }
 }
