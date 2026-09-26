@@ -3799,12 +3799,16 @@ class MusicViewModel(
                 }
             }
             val segments = if (trackOnsets == null) video.segments else {
-                val videoOnsets = stream.audioUrl?.let { sound ->
-                    ClipAligner.onsetsOf(
+                // The smallest of the video's sounds first; one a server won't hand out gives way
+                // to the next.
+                var videoOnsets: FloatArray? = null
+                for (sound in stream.audioUrls.take(3)) {
+                    videoOnsets = ClipAligner.onsetsOf(
                         ClipAligner.AudioSource(sound, mapOf("User-Agent" to stream.userAgent)),
                         workDir,
                         onFetched = startBuffering
                     )
+                    if (videoOnsets != null) break
                 }
                 val ownOnsets = trackOnsets.await()
                 val aligned = if (videoOnsets != null && ownOnsets != null) {

@@ -316,21 +316,23 @@ main()
         }
         val length = (field("filesize") ?: field("filesize_approx"))?.asLong ?: -1L
         // A video's sound comes with the same answer: every format is listed, deciphered. It is
-        // only analysed ([ClipAligner]), so the smallest does: over a VPN the download, not the
-        // decoding, is what takes the time.
-        val audioUrl = if (kind != Kind.VIDEO) null else json.getAsJsonArray("formats")
+        // only analysed ([ClipAligner]), so the smallest is tried first: over a VPN the download,
+        // not the decoding, is what takes the time. The others are there for when a server won't
+        // hand one out.
+        val audioUrls = if (kind != Kind.VIDEO) emptyList() else json.getAsJsonArray("formats")
             ?.map { it.asJsonObject }
             ?.filter { format ->
                 format.get("vcodec")?.takeUnless { it.isJsonNull }?.asString == "none" &&
                     format.get("acodec")?.takeUnless { it.isJsonNull }?.asString.let { it != null && it != "none" } &&
                     format.get("protocol")?.takeUnless { it.isJsonNull }?.asString == "https"
             }
-            ?.minByOrNull { it.get("abr")?.takeUnless { abr -> abr.isJsonNull }?.asDouble ?: Double.MAX_VALUE }
-            ?.get("url")?.asString
+            ?.sortedBy { it.get("abr")?.takeUnless { abr -> abr.isJsonNull }?.asDouble ?: Double.MAX_VALUE }
+            ?.mapNotNull { it.get("url")?.takeUnless { url -> url.isJsonNull }?.asString }
+            .orEmpty()
         return if (userAgent != null) {
-            YouTubeStreams.Stream(url, mimeType, length, userAgent, audioUrl)
+            YouTubeStreams.Stream(url, mimeType, length, userAgent, audioUrls)
         } else {
-            YouTubeStreams.Stream(url, mimeType, length, audioUrl = audioUrl)
+            YouTubeStreams.Stream(url, mimeType, length, audioUrls = audioUrls)
         }
     }
 

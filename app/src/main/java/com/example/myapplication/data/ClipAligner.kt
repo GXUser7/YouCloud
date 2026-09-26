@@ -56,7 +56,7 @@ object ClipAligner {
         .connectTimeout(10, TimeUnit.SECONDS)
         .readTimeout(10, TimeUnit.SECONDS)
         .build()
-    private const val RANGE_ATTEMPTS = 3
+    private const val RANGE_ATTEMPTS = 2
 
     /**
      * How [source]'s sound rises, ten milliseconds at a time. The stream is fetched to [workDir]

@@ -29,15 +29,15 @@ import java.util.concurrent.TimeUnit
  */
 object YouTubeStreams {
     /**
-     * [userAgent]: the one to fetch [url] with — the client it was issued to. [audioUrl]: with a
-     * video's picture, its sound, to line the video up with a track by.
+     * [userAgent]: the one to fetch [url] with — the client it was issued to. [audioUrls]: with a
+     * video's picture, its sound, to line the video up with a track by — smallest first.
      */
     data class Stream(
         val url: String,
         val mimeType: String?,
         val contentLength: Long,
         val userAgent: String = USER_AGENT,
-        val audioUrl: String? = null
+        val audioUrls: List<String> = emptyList()
     )
 
     private const val TAG = "YouTubeStreams"
