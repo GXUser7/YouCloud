@@ -294,7 +294,14 @@ class YouTubeMusicClient(private val authProvider: () -> YtAuth?) {
         ).arr("contents")
 
         val topShelf = sections.firstNotNullOfOrNull { it.at("musicShelfRenderer") }
-        val topSongs = listRows(topShelf).mapNotNull { parseSongRow(it, fallbackArtist = name) }.distinctBy { it.id }
+        val carousels = sections.mapNotNull { it.at("musicCarouselShelfRenderer") }
+        // A channel that uploads rather than releases (a remixer, say) has no songs, only videos.
+        val videos = carousels.flatMap { shelf ->
+            shelf.arr("contents").mapNotNull { item -> item.at("musicTwoRowItemRenderer")?.let(::parseTileTrack) }
+        }
+        val topSongs = listRows(topShelf).mapNotNull { parseSongRow(it, fallbackArtist = name) }
+            .ifEmpty { videos }
+            .distinctBy { it.id }
         // The shelf's title links to the playlist of all the artist's songs.
         val allSongs = (topShelf.str("title", "runs", 0, "navigationEndpoint", "browseEndpoint", "browseId")
             ?: topShelf.str("bottomEndpoint", "browseEndpoint", "browseId"))
@@ -307,7 +314,7 @@ class YouTubeMusicClient(private val authProvider: () -> YtAuth?) {
                     user = SoundCloudUser(username = name)
                 )
             }
-        val releases = sections.mapNotNull { it.at("musicCarouselShelfRenderer") }
+        val releases = carousels
             .flatMap { shelf -> shelf.arr("contents").mapNotNull { item -> item.at("musicTwoRowItemRenderer")?.let(::parseTileSet) } }
             // Albums before singles and the artist's playlists, as the page orders them.
             .sortedBy { if (it.isAlbum == true) 0 else 1 }
@@ -318,7 +325,9 @@ class YouTubeMusicClient(private val authProvider: () -> YtAuth?) {
             ?: header.runs("subscriptionButton", "subscribeButtonRenderer", "subscriberCountText")
         val artist = SoundCloudUser(
             username = name,
-            avatarUrl = bestThumbnail(header.arr("thumbnail", "musicThumbnailRenderer", "thumbnail", "thumbnails"), PORTRAIT_SIZE),
+            // A channel's page shows its avatar apart from a wide banner; an artist's, one picture.
+            avatarUrl = bestThumbnail(header.arr("foregroundThumbnail", "musicThumbnailRenderer", "thumbnail", "thumbnails"), PORTRAIT_SIZE)
+                ?: bestThumbnail(header.arr("thumbnail", "musicThumbnailRenderer", "thumbnail", "thumbnails"), PORTRAIT_SIZE),
             description = description,
             followersCount = listeners?.let(::parseCount),
             permalinkUrl = YT_ARTIST_REF + channelId

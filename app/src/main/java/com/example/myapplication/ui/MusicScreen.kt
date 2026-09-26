@@ -3658,7 +3658,12 @@ private fun setCaption(set: SoundCloudPlaylist): String {
         else -> if (set.isAlbum == true) "Альбом" else "Плейлист"
     }
     val year = set.releaseDate?.take(4)?.takeIf { it.length == 4 && it.all(Char::isDigit) }
-    return if (year != null) "$kind · $year" else "$kind · ${plural(set.trackCount, "трек", "трека", "треков")}"
+    return when {
+        year != null -> "$kind · $year"
+        // YouTube Music doesn't say how many tracks a set has until it is opened.
+        set.trackCount <= 0 -> kind
+        else -> "$kind · ${plural(set.trackCount, "трек", "трека", "треков")}"
+    }
 }
 
 @Composable
