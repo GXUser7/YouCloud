@@ -387,11 +387,12 @@ private class Glow(val scale: Float, val blur: androidx.compose.ui.unit.Dp, val 
 // the line each shows as a band of its own, softer the further out — at the video's own
 // brightness, not dimmed.
 private val AMBIENT_GLOWS = listOf(
-    // Large enough to reach the top of the screen, so no black shows above the glow.
-    Glow(scale = 1.5f, blur = 40.dp, opacity = 1f),
-    Glow(scale = 1.24f, blur = 28.dp, opacity = 1f),
-    Glow(scale = 1.13f, blur = 14.dp, opacity = 1f),
-    Glow(scale = 1.05f, blur = 5.dp, opacity = 1f)
+    // Large enough to reach the top of the screen, so no black shows above the glow, yet only
+    // moderately blurred: the top of the screen is where it shows alone.
+    Glow(scale = 1.42f, blur = 22.dp, opacity = 1f),
+    Glow(scale = 1.26f, blur = 15.dp, opacity = 1f),
+    Glow(scale = 1.14f, blur = 9.dp, opacity = 1f),
+    Glow(scale = 1.05f, blur = 4.dp, opacity = 1f)
 )
 
 /**
