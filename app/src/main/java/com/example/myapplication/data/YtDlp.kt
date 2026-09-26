@@ -117,7 +117,10 @@ main()
 
     private val UPDATE_INTERVAL_MS = TimeUnit.DAYS.toMillis(1)
     private val SERVER_START_TIMEOUT_MS = TimeUnit.SECONDS.toMillis(40)
-    private val SERVER_IDLE_MS = TimeUnit.MINUTES.toMillis(5)
+    private val SERVER_IDLE_MS = TimeUnit.MINUTES.toMillis(10)
+
+    // Any long-lived video will do to warm a server up.
+    private const val WARM_UP_VIDEO = "jNQXAC9IVRw"
     private val CACHE_MAX_AGE_MS = TimeUnit.DAYS.toMillis(21)
     private const val PLAYERS_KEPT = 2
     private val FAILED_UPDATE_RETRY_MS = TimeUnit.MINUTES.toMillis(30)
@@ -147,7 +150,11 @@ main()
             if (!ensureReady(app)) return@thread
             scriptLock.read {
                 synchronized(idleServers) { if (idleServers.isNotEmpty()) return@read }
-                startServer(app, auth)?.let(::release)
+                val server = startServer(app, auth) ?: return@read
+                // A first request fetches YouTube's player script and solves its challenges from
+                // scratch; made now, it spares the first track that wait.
+                release(server)
+                askServer(app, WARM_UP_VIDEO, auth, Kind.AUDIO)
             }
         }
     }
@@ -309,7 +316,8 @@ main()
         }
         val length = (field("filesize") ?: field("filesize_approx"))?.asLong ?: -1L
         // A video's sound comes with the same answer: every format is listed, deciphered. It is
-        // only analysed ([ClipAligner]), so the smallest does.
+        // only analysed ([ClipAligner]), so the smallest does — in AAC when there is one, which
+        // decodes faster than Opus.
         val audioUrl = if (kind != Kind.VIDEO) null else json.getAsJsonArray("formats")
             ?.map { it.asJsonObject }
             ?.filter { format ->
@@ -317,7 +325,10 @@ main()
                     format.get("acodec")?.takeUnless { it.isJsonNull }?.asString.let { it != null && it != "none" } &&
                     format.get("protocol")?.takeUnless { it.isJsonNull }?.asString == "https"
             }
-            ?.minByOrNull { it.get("abr")?.takeUnless { abr -> abr.isJsonNull }?.asDouble ?: Double.MAX_VALUE }
+            ?.minWithOrNull(
+                compareBy<JsonObject> { it.get("acodec")?.asString?.startsWith("mp4a") != true }
+                    .thenBy { it.get("abr")?.takeUnless { abr -> abr.isJsonNull }?.asDouble ?: Double.MAX_VALUE }
+            )
             ?.get("url")?.asString
         return if (userAgent != null) {
             YouTubeStreams.Stream(url, mimeType, length, userAgent, audioUrl)

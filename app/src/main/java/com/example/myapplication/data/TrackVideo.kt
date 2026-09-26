@@ -46,6 +46,7 @@ data class TrackVideo(
 @UnstableApi
 object VideoCache {
     private const val MAX_BYTES = 200L * 1024 * 1024
+    private const val CHUNK_BYTES = 2L * 1024 * 1024
 
     @Volatile
     private var cache: SimpleCache? = null
@@ -56,7 +57,7 @@ object VideoCache {
             .apply { userAgent?.let(::setUserAgent) }
         return CacheDataSource.Factory()
             .setCache(cache(context))
-            .setUpstreamDataSourceFactory(upstream)
+            .setUpstreamDataSourceFactory(ChunkedDataSource.Factory(upstream, CHUNK_BYTES))
             .setFlags(CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR)
     }
 

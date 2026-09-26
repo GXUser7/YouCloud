@@ -48,6 +48,7 @@ import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.VideoSize
 import androidx.media3.common.util.UnstableApi
+import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import com.example.myapplication.data.TrackVideo
@@ -119,6 +120,13 @@ fun rememberPlayerVideoState(video: TrackVideo?, isPlaying: Boolean, trackPositi
     val state = remember(video.url) {
         val player = ExoPlayer.Builder(context)
             .setMediaSourceFactory(DefaultMediaSourceFactory(VideoCache.dataSourceFactory(context, video.userAgent)))
+            // Off again after a second rather than the default two and a half: it is a picture,
+            // and the sync loop makes up for a stall.
+            .setLoadControl(
+                DefaultLoadControl.Builder()
+                    .setBufferDurationsMs(15_000, 30_000, 1_000, 2_000)
+                    .build()
+            )
             .build()
         player.volume = 0f
         // A clip may carry its own sound; the track is what's heard.
