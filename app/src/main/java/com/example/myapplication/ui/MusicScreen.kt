@@ -175,8 +175,11 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.blur
 import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.BlurEffect
+import androidx.compose.ui.graphics.TileMode
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.layout.ContentScale
@@ -418,9 +421,15 @@ fun MusicScreen(viewModel: MusicViewModel) {
         }
     }
 
+    // What glass shows: the moving backdrop, and the screens over it (for the mini player, which
+    // floats over them all).
+    val backdropFrost = rememberFrostSource()
+    val screensFrost = rememberFrostSource()
     Box(modifier = Modifier.fillMaxSize()) {
         // The full player is opaque; nothing behind it needs a frame, or the accelerometer.
-        ExpressiveBackground(motionEnabled = backgroundMotion, animated = selectedTrack == null)
+        Box(modifier = Modifier.fillMaxSize().frostSource(backdropFrost)) {
+            ExpressiveBackground(motionEnabled = backgroundMotion, animated = selectedTrack == null)
+        }
 
         yandexLoginUrl?.let { url ->
             YandexLoginDialog(
@@ -469,7 +478,11 @@ fun MusicScreen(viewModel: MusicViewModel) {
         }
         if (isLoggedOut) {
             SoundCloudLoginScreen(viewModel = viewModel)
-        } else androidx.compose.runtime.CompositionLocalProvider(LocalAlbumLibrary provides albumLibrary) {
+        } else androidx.compose.runtime.CompositionLocalProvider(
+            LocalAlbumLibrary provides albumLibrary,
+            LocalFrostSources provides listOf(backdropFrost)
+        ) {
+            Box(modifier = Modifier.fillMaxSize().frostSource(screensFrost)) {
             AnimatedContent(
                 targetState = screen,
                 transitionSpec = {
@@ -951,6 +964,7 @@ fun MusicScreen(viewModel: MusicViewModel) {
                     )
                 }
             }
+            }
 
             // On home the floating toolbar owns the bottom edge; the mini player sits on top of it.
             val miniPlayerLift by animateDpAsState(
@@ -967,6 +981,10 @@ fun MusicScreen(viewModel: MusicViewModel) {
                     .navigationBarsPadding()
                     .padding(start = 16.dp, top = 16.dp, end = 16.dp, bottom = 16.dp + miniPlayerLift)
             ) {
+                androidx.compose.runtime.CompositionLocalProvider(
+                    LocalFrostSources provides listOf(backdropFrost, screensFrost),
+                    LocalGlass provides true
+                ) {
                 PlayerBar(
                     title = currentTrackTitle.orEmpty(),
                     artist = currentPlayingTrack?.user?.username.orEmpty(),
@@ -987,6 +1005,7 @@ fun MusicScreen(viewModel: MusicViewModel) {
                         currentPlayingTrack?.let(viewModel::openTrack)
                     }
                 )
+                }
             }
 
             AnimatedVisibility(
@@ -1308,30 +1327,53 @@ private fun HomeScreen(
         )
     }
 
+    // The services side by side, a page each, following the finger.
+    val serviceScope = rememberCoroutineScope()
+    val servicePager = rememberPagerState(initialPage = services.indexOf(service).coerceAtLeast(0)) { services.size }
+    // The service the toolbar lights: the page the pager is on, even mid-swipe.
+    val shownService = services.getOrElse(servicePager.currentPage) { service }
+    // A page come to rest is the service picked.
+    LaunchedEffect(servicePager.settledPage, services) {
+        val settled = services.getOrNull(servicePager.settledPage) ?: return@LaunchedEffect
+        if (settled != pickedService) {
+            pickedService = settled
+            val target = sectionsOf(settled).firstOrNull { it.key == lastSection[settled] } ?: sectionsOf(settled).first()
+            onTabSelected(target.category.ordinal)
+        }
+    }
+    // A service signed in or out of: the pages shift, the one shown stays.
+    LaunchedEffect(services) {
+        val index = services.indexOf(service)
+        if (index >= 0 && index != servicePager.currentPage) servicePager.scrollToPage(index)
+    }
+
     fun switchTo(picked: HomeService) {
-        if (picked == service) return
-        pickedService = picked
-        val target = sectionsOf(picked).firstOrNull { it.key == lastSection[picked] } ?: sectionsOf(picked).first()
-        onTabSelected(target.category.ordinal)
+        val index = services.indexOf(picked)
+        if (index < 0) return
+        serviceScope.launch { servicePager.animateScrollToPage(index, animationSpec = ServicePageSpring) }
     }
 
     val hasWarning = clientId.isBlank() || needsRelogin || isClientIdExpired
 
     Box(modifier = Modifier.fillMaxSize()) {
-        // A service's page slides in from the side it sits on in the toolbar.
-        AnimatedContent(
-            targetState = service,
-            transitionSpec = {
-                val forward = services.indexOf(targetState) > services.indexOf(initialState)
-                (slideInHorizontally { w -> if (forward) w else -w } + fadeIn()) togetherWith
-                    (slideOutHorizontally { w -> if (forward) -w / 3 else w / 3 } + fadeOut())
-            },
+    // Home stands on the moving backdrop: its panels and buttons are glass.
+    androidx.compose.runtime.CompositionLocalProvider(LocalGlass provides true) {
+        // A service a page: a swipe anywhere the carousels don't take it drags the next one in,
+        // and lets it settle on a spring.
+        HorizontalPager(
+            state = servicePager,
             modifier = Modifier.fillMaxSize(),
-            label = "homeService"
-        ) { shown ->
+            key = { services[it] },
+            beyondViewportPageCount = 1,
+            flingBehavior = androidx.compose.foundation.pager.PagerDefaults.flingBehavior(
+                state = servicePager,
+                // A third of the way over is enough to be meant.
+                snapPositionalThreshold = 0.3f,
+                snapAnimationSpec = ServicePageSpring
+            )
+        ) { page ->
+            val shown = services[page]
             val sections = sectionsOf(shown)
-            // The pointer handler outlives recompositions; it switches through the latest.
-            val currentSwitchTo by rememberUpdatedState<(HomeService) -> Unit> { switchTo(it) }
             val initialPage = sections.indexOfFirst { it.key == lastSection[shown] }.takeIf { it >= 0 }
                 ?: sections.indexOfFirst { it.category == savedCategory }.coerceAtLeast(0)
             val sectionPager = rememberPagerState(initialPage = initialPage) { sections.size }
@@ -1352,38 +1394,15 @@ private fun HomeScreen(
                     .fillMaxSize()
                     .statusBarsPadding()
                     .navigationBarsPadding()
-                    // A sideways swipe anywhere the carousels don't take it moves to the next
-                    // service: the room under them, the title, the edges.
-                    // Counted by its length or by its speed: a quick flick is short, and asking for
-                    // a long drag lost most of them.
-                    .pointerInput(services, shown) {
-                        var dragged = 0f
-                        val velocity = VelocityTracker()
-                        detectHorizontalDragGestures(
-                            onDragStart = { start ->
-                                dragged = 0f
-                                velocity.resetTracking()
-                            },
-                            onDragEnd = {
-                                val speed = velocity.calculateVelocity().x
-                                val far = kotlin.math.abs(dragged) > SERVICE_SWIPE_DISTANCE.toPx()
-                                val flung = kotlin.math.abs(speed) > SERVICE_SWIPE_VELOCITY.toPx() &&
-                                    kotlin.math.sign(speed) == kotlin.math.sign(dragged) &&
-                                    kotlin.math.abs(dragged) > SERVICE_SWIPE_MIN_FLICK.toPx()
-                                if (far || flung) {
-                                    val next = services.indexOf(shown) + if (dragged < 0) 1 else -1
-                                    services.getOrNull(next)?.let { target ->
-                                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                        currentSwitchTo(target)
-                                    }
-                                }
-                            },
-                            onHorizontalDrag = { change, amount ->
-                                dragged += amount
-                                velocity.addPosition(change.uptimeMillis, change.position)
-                                change.consume()
-                            }
-                        )
+                    // The page on its way out sinks back a little and dims, the one coming in
+                    // rises from it.
+                    .graphicsLayer {
+                        val away = ((servicePager.currentPage - page) + servicePager.currentPageOffsetFraction)
+                            .absoluteValue.coerceIn(0f, 1f)
+                        val scale = 1f - 0.06f * away
+                        scaleX = scale
+                        scaleY = scale
+                        alpha = 1f - 0.45f * away
                     }
             ) {
                 Row(
@@ -1420,15 +1439,7 @@ private fun HomeScreen(
                             )
                         }
                     }
-                    Spacer(modifier = Modifier.width(14.dp))
-                    HomeIconButton(
-                        icon = Icons.Default.Settings,
-                        contentDescription = "Настройки",
-                        onClick = {
-                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                            onOpenSettings()
-                        }
-                    )
+                    Spacer(modifier = Modifier.width(14.dp + 48.dp))
                 }
 
                 if (hasWarning) {
@@ -1569,12 +1580,28 @@ private fun HomeScreen(
             }
         }
 
+        Box(
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .statusBarsPadding()
+                .padding(top = 12.dp, end = 16.dp)
+        ) {
+            HomeIconButton(
+                icon = Icons.Default.Settings,
+                contentDescription = "Настройки",
+                onClick = {
+                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                    onOpenSettings()
+                }
+            )
+        }
+
         HomeToolbar(
             services = services,
-            selected = service,
+            selected = shownService,
             onSelect = { picked ->
                 haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                if (picked == service) reselected++ else switchTo(picked)
+                if (picked == service && picked == shownService) reselected++ else switchTo(picked)
             },
             onSearch = {
                 haptic.performHapticFeedback(HapticFeedbackType.LongPress)
@@ -1585,6 +1612,7 @@ private fun HomeScreen(
                 .navigationBarsPadding()
                 .padding(16.dp)
         )
+    }
     }
 
     if (showCreatePlaylistDialog) {
@@ -1645,15 +1673,17 @@ private fun HomeToolbar(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.SpaceBetween
     ) {
+        val glass = LocalGlass.current
         Surface(
             modifier = Modifier
                 .weight(1f, fill = false)
                 .padding(end = 8.dp)
-                .height(64.dp),
+                .height(64.dp)
+                .glassOr(CircleShape, PanelColors.container),
             shape = CircleShape,
-            color = PanelColors.container,
+            color = if (glass) Color.Transparent else PanelColors.container,
             contentColor = PanelColors.content,
-            shadowElevation = 6.dp
+            shadowElevation = if (glass) 0.dp else 6.dp
         ) {
             // Where each service's mark lies across the bar, for a finger sliding along it.
             val spans = remember { mutableMapOf<HomeService, ClosedFloatingPointRange<Float>>() }
@@ -1700,13 +1730,16 @@ private fun HomeToolbar(
                 }
             }
         }
+        val searchFill = androidx.compose.ui.graphics.lerp(PanelColors.container, PanelColors.content, 0.08f)
         Surface(
             onClick = onSearch,
-            modifier = Modifier.size(64.dp),
+            modifier = Modifier
+                .size(64.dp)
+                .glassOr(RoundedCornerShape(20.dp), searchFill),
             shape = RoundedCornerShape(20.dp),
-            color = androidx.compose.ui.graphics.lerp(PanelColors.container, PanelColors.content, 0.08f),
+            color = if (glass) Color.Transparent else searchFill,
             contentColor = PanelColors.accent,
-            shadowElevation = 6.dp
+            shadowElevation = if (glass) 0.dp else 6.dp
         ) {
             Box(contentAlignment = Alignment.Center) {
                 Icon(Icons.Default.Search, contentDescription = "Поиск", modifier = Modifier.size(28.dp))
@@ -1814,11 +1847,14 @@ private fun HomeIconButton(
     contentDescription: String,
     onClick: () -> Unit
 ) {
+    val glass = LocalGlass.current
     Surface(
         onClick = onClick,
-        modifier = Modifier.size(48.dp),
+        modifier = Modifier
+            .size(48.dp)
+            .glassOr(RoundedCornerShape(16.dp), PanelColors.container),
         shape = RoundedCornerShape(16.dp),
-        color = PanelColors.container,
+        color = if (glass) Color.Transparent else PanelColors.container,
         contentColor = PanelColors.accent
     ) {
         Box(contentAlignment = Alignment.Center) {
@@ -2185,6 +2221,22 @@ private fun CarouselEmptyText(text: String) {
  * starts exactly [HeroStrip] plus the margin from the screen edge, and the mask only has to
  * narrow from the full cover to that strip as the page moves out.
  */
+// Swallows what a sideways scroller leaves over of a swipe, so nothing sideways around it moves.
+private val KeepSidewaysSwipe = object : NestedScrollConnection {
+    override fun onPostScroll(consumed: Offset, available: Offset, source: NestedScrollSource): Offset =
+        Offset(available.x, 0f)
+
+    override suspend fun onPostFling(consumed: androidx.compose.ui.unit.Velocity, available: androidx.compose.ui.unit.Velocity) =
+        androidx.compose.ui.unit.Velocity(available.x, 0f)
+}
+
+// How a page of services settles: soft, a touch of give, no wobble.
+private val ServicePageSpring = spring<Float>(dampingRatio = 0.86f, stiffness = 320f)
+
+private val HeroAsideBlur = 10.dp
+private const val HeroAsideWash = 0.45f
+private const val HeroAsideShade = 0.18f
+
 @Composable
 private fun HomeHeroCarousel(items: List<HeroItem>) {
     if (items.isEmpty()) return
@@ -2216,6 +2268,9 @@ private fun HomeHeroCarousel(items: List<HeroItem>) {
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(carouselHeight)
+                    // What the carousel doesn't use of a swipe, at its first or last cover, isn't
+                    // passed on to the pages of services around it.
+                    .nestedScroll(KeepSidewaysSwipe)
             ) { page ->
                 val item = items[page]
                 // Signed distance from the focused slot: positive to the right.
@@ -2250,6 +2305,10 @@ private fun HomeHeroCarousel(items: List<HeroItem>) {
                             .graphicsLayer {
                                 // Re-centres the picture inside whatever the mask leaves visible.
                                 translationX = -kotlin.math.sign(distance()) * (coverPx - visibleWidth()) / 2f
+                                // Out of focus beside the one in front, so the eye stays there.
+                                val aside = distance().absoluteValue.coerceIn(0f, 1f)
+                                val radius = HeroAsideBlur.toPx() * aside
+                                renderEffect = if (radius > 0.5f) BlurEffect(radius, radius, TileMode.Clamp) else null
                             }
                             .background(MaterialTheme.colorScheme.surfaceContainerHigh),
                         contentAlignment = Alignment.Center
@@ -2284,6 +2343,19 @@ private fun HomeHeroCarousel(items: List<HeroItem>) {
                             AppContainedLoadingIndicator(modifier = Modifier.size(72.dp))
                         }
                     }
+                    // The theme's colour over the covers aside, and a little shade.
+                    val wash = PanelColors.container
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .drawBehind {
+                                val aside = distance().absoluteValue.coerceIn(0f, 1f)
+                                if (aside > 0f) {
+                                    drawRect(wash.copy(alpha = HeroAsideWash * aside))
+                                    drawRect(Color.Black.copy(alpha = HeroAsideShade * aside))
+                                }
+                            }
+                    )
                 }
             }
 
@@ -4095,12 +4167,15 @@ private fun SearchField(
     focusRequester: FocusRequester,
     modifier: Modifier = Modifier
 ) {
+    val glass = LocalGlass.current
+    val fill = MaterialTheme.colorScheme.surfaceContainerHigh
     OutlinedTextField(
         value = query,
         onValueChange = onQueryChange,
         modifier = modifier
             .fillMaxWidth()
             .heightIn(min = 60.dp)
+            .glassOr(RoundedCornerShape(30.dp), fill)
             .focusRequester(focusRequester),
         singleLine = true,
         shape = RoundedCornerShape(30.dp),
@@ -4121,8 +4196,8 @@ private fun SearchField(
             }
         },
         colors = OutlinedTextFieldDefaults.colors(
-            focusedContainerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
-            unfocusedContainerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+            focusedContainerColor = if (glass) Color.Transparent else fill,
+            unfocusedContainerColor = if (glass) Color.Transparent else fill,
             focusedBorderColor = MaterialTheme.colorScheme.primary,
             unfocusedBorderColor = Color.Transparent
         )
@@ -4935,18 +5010,23 @@ private fun TrackRowFrame(
     content: @Composable RowScope.() -> Unit
 ) {
     val haptic = LocalHapticFeedback.current
+    val shape = if (flat) RoundedCornerShape(20.dp) else position.shape()
+    val fill = when {
+        isSelected -> MaterialTheme.colorScheme.secondaryContainer
+        flat -> Color.Transparent
+        else -> MaterialTheme.colorScheme.surfaceContainerHigh
+    }
+    val glass = LocalGlass.current && fill != Color.Transparent
     Surface(
         onClick = {
             haptic.performHapticFeedback(HapticFeedbackType.LongPress)
             onClick()
         },
-        modifier = Modifier.fillMaxWidth(),
-        shape = if (flat) RoundedCornerShape(20.dp) else position.shape(),
-        color = when {
-            isSelected -> MaterialTheme.colorScheme.secondaryContainer
-            flat -> Color.Transparent
-            else -> MaterialTheme.colorScheme.surfaceContainerHigh
-        },
+        modifier = Modifier
+            .fillMaxWidth()
+            .then(if (glass) Modifier.glassOr(shape, fill, if (isSelected) 0.8f else GlassAlpha) else Modifier),
+        shape = shape,
+        color = if (glass) Color.Transparent else fill,
         contentColor = if (isSelected) {
             MaterialTheme.colorScheme.onSecondaryContainer
         } else {
@@ -6776,10 +6856,13 @@ private fun DownloadBadge(state: DownloadState) {
 
 @Composable
 private fun EmptyState(text: String) {
+    val glass = LocalGlass.current
     Surface(
-        color = MaterialTheme.colorScheme.surfaceContainerHighest,
+        color = if (glass) Color.Transparent else MaterialTheme.colorScheme.surfaceContainerHighest,
         shape = MaterialTheme.shapes.extraLarge,
-        modifier = Modifier.fillMaxWidth()
+        modifier = Modifier
+            .fillMaxWidth()
+            .glassOr(MaterialTheme.shapes.extraLarge, MaterialTheme.colorScheme.surfaceContainerHighest)
     ) {
         Text(
             text = text,
@@ -6822,13 +6905,17 @@ private fun PlayerBar(
 ) {
     val haptic = LocalHapticFeedback.current
     val onPanel = PanelColors.content
+    val glass = LocalGlass.current
     Surface(
         onClick = onOpen,
-        color = PanelColors.container,
+        color = if (glass) Color.Transparent else PanelColors.container,
         contentColor = onPanel,
         shape = RoundedCornerShape(32.dp),
-        shadowElevation = 8.dp,
-        modifier = Modifier.fillMaxWidth()
+        // A shadow shows through glass as a smudge.
+        shadowElevation = if (glass) 0.dp else 8.dp,
+        modifier = Modifier
+            .fillMaxWidth()
+            .glassOr(RoundedCornerShape(32.dp), PanelColors.container)
     ) {
         Row(
             modifier = Modifier
