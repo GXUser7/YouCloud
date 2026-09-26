@@ -470,6 +470,33 @@ class MusicViewModel(
     // Tracks looked up lately, with or without a video, so reopening the player doesn't ask again.
     private val videoLookups = java.util.concurrent.ConcurrentHashMap<Long, Pair<TrackVideo?, Long>>()
 
+    // Lookups under way. Not tied to the track on screen: skipping to a track whose video is
+    // still being found picks that work up instead of starting it over.
+    private val videoLookupsInFlight = java.util.concurrent.ConcurrentHashMap<Long, kotlinx.coroutines.Deferred<Pair<TrackVideo?, Long>>>()
+
+    private fun freshVideoLookup(trackId: Long): Pair<TrackVideo?, Long>? =
+        videoLookups[trackId]?.takeIf { System.currentTimeMillis() - it.second < VIDEO_LOOKUP_TTL_MS }
+
+    private fun videoLookup(track: SoundCloudTrack): kotlinx.coroutines.Deferred<Pair<TrackVideo?, Long>> =
+        videoLookupsInFlight[track.id] ?: viewModelScope.async(Dispatchers.IO, start = kotlinx.coroutines.CoroutineStart.LAZY) {
+            val video = try {
+                findTrackVideo(track)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.w("MusicViewModel", "No video for ${track.urn}: $e")
+                null
+            }
+            (video to System.currentTimeMillis()).also {
+                videoLookups[track.id] = it
+                videoLookupsInFlight.remove(track.id)
+            }
+        }.also {
+            // Registered before it starts, so that it can't finish, and unregister, first.
+            videoLookupsInFlight[track.id] = it
+            it.start()
+        }
+
     private val _soundcloudLikesSyncStatus = MutableStateFlow(LikesSyncStatus())
     val soundcloudLikesSyncStatus = _soundcloudLikesSyncStatus.asStateFlow()
 
@@ -550,24 +577,17 @@ class MusicViewModel(
                 .collectLatest { track ->
                     if (_trackVideo.value?.trackId != track?.id) _trackVideo.value = null
                     if (track == null) return@collectLatest
-                    videoLookups[track.id]?.let { (video, at) ->
-                        if (System.currentTimeMillis() - at < VIDEO_LOOKUP_TTL_MS) {
-                            _trackVideo.value = video
-                            return@collectLatest
-                        }
+                    val video = freshVideoLookup(track.id) ?: run {
+                        // Flicking through the queue shouldn't start a lookup for every track passed.
+                        delay(700)
+                        videoLookup(track).await()
                     }
-                    // Flicking through the queue shouldn't start a lookup for every track passed.
-                    delay(700)
-                    val video = try {
-                        withContext(Dispatchers.IO) { findTrackVideo(track) }
-                    } catch (e: CancellationException) {
-                        throw e
-                    } catch (e: Exception) {
-                        Log.w("MusicViewModel", "No video for ${track.urn}: $e")
-                        null
-                    }
-                    videoLookups[track.id] = video to System.currentTimeMillis()
-                    _trackVideo.value = video
+                    _trackVideo.value = video?.first
+                    // The next track's video, found while this one plays, shows as soon as it starts.
+                    val nextIndex = musicPlayer.getNextMediaItemIndex()
+                    _activeQueue.value.getOrNull(nextIndex)
+                        ?.takeIf { next -> freshVideoLookup(next.id) == null }
+                        ?.let(::videoLookup)
                 }
         }
 
@@ -3734,20 +3754,47 @@ class MusicViewModel(
                 (if (video?.paired == true) "paired, ${video.segments.size} segments" else "by search")
         )
         if (video == null) return null
-        val stream = YouTubeStreams.resolveVideo(context, video.videoId, auth) ?: return null
-        val segments = video.segments.takeIf { video.paired && it.isNotEmpty() } ?: run {
-            val videoSound = stream.audioUrl ?: return null
-            val trackSound = trackSound(track, videoId, auth) ?: return null
-            ClipAligner.align(
-                track = trackSound,
-                video = ClipAligner.AudioSource(videoSound, mapOf("User-Agent" to stream.userAgent)),
-                workDir = java.io.File(context.cacheDir, "clip-align")
-            ) ?: run {
-                Log.d("MusicViewModel", "The video ${video.videoId} doesn't line up with ${track.urn}")
-                return null
+        val workDir = java.io.File(context.cacheDir, "clip-align")
+        return coroutineScope {
+            // The track's own sound doesn't depend on the video: it is fetched and decoded while
+            // yt-dlp looks for the video's.
+            val trackOnsets = if (video.paired && video.segments.isNotEmpty()) {
+                null
+            } else {
+                async { trackOnsets(track, videoId, auth, workDir) }
             }
+            val stream = YouTubeStreams.resolveVideo(context, video.videoId, auth) ?: return@coroutineScope null
+            val segments = if (trackOnsets == null) video.segments else {
+                val videoOnsets = stream.audioUrl?.let { sound ->
+                    ClipAligner.onsetsOf(ClipAligner.AudioSource(sound, mapOf("User-Agent" to stream.userAgent)), workDir)
+                }
+                val ownOnsets = trackOnsets.await()
+                val aligned = if (videoOnsets != null && ownOnsets != null) {
+                    withContext(Dispatchers.Default) { ClipAligner.align(ownOnsets, videoOnsets) }
+                } else {
+                    null
+                }
+                aligned ?: run {
+                    Log.d("MusicViewModel", "The video ${video.videoId} doesn't line up with ${track.urn}")
+                    return@coroutineScope null
+                }
+            }
+            TrackVideo(track.id, stream.url, loop = false, vertical = false, userAgent = stream.userAgent, segments = segments)
         }
-        return TrackVideo(track.id, stream.url, loop = false, vertical = false, userAgent = stream.userAgent, segments = segments)
+    }
+
+    // Tracks' sound, decoded for lining videos up, kept for a replay or a reopened player.
+    private val onsetCache = android.util.LruCache<Long, FloatArray>(8)
+
+    private suspend fun trackOnsets(
+        track: SoundCloudTrack,
+        videoId: String?,
+        auth: com.example.myapplication.data.YtAuth,
+        workDir: java.io.File
+    ): FloatArray? {
+        onsetCache.get(track.id)?.let { return it }
+        val source = trackSound(track, videoId, auth) ?: return null
+        return ClipAligner.onsetsOf(source, workDir)?.also { onsetCache.put(track.id, it) }
     }
 
     /** Where to read the track's own sound from: its file, when it is downloaded. */

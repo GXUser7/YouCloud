@@ -5,13 +5,16 @@ import android.media.MediaCodec
 import android.media.MediaExtractor
 import android.media.MediaFormat
 import android.util.Log
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.io.File
+import java.io.RandomAccessFile
 import java.nio.ByteOrder
 import java.util.concurrent.TimeUnit
 import kotlin.math.ln
@@ -32,6 +35,9 @@ object ClipAligner {
     data class AudioSource(val url: String, val headers: Map<String, String> = emptyMap())
 
     private const val FRAME_MS = 10
+    private const val FRAME_US = FRAME_MS * 1_000L
+    private const val DECODE_PARTS = 4
+    private const val PREROLL_US = 500_000L
     private const val WINDOW_FRAMES = 1_000 // ten seconds of the track per anchor
     private const val REFINE_FRAMES = 4
     private const val MIN_CORRELATION = 0.45f
@@ -41,86 +47,84 @@ object ClipAligner {
 
     // googlevideo sends a whole file at about the pace it plays, and a few megabytes asked for
     // by range at full speed: yt-dlp downloads YouTube in pieces for the same reason.
-    private const val CHUNK_BYTES = 2L * 1024 * 1024
+    private const val CHUNK_BYTES = 1L * 1024 * 1024
     private val http = OkHttpClient.Builder()
         .connectTimeout(15, TimeUnit.SECONDS)
         .readTimeout(30, TimeUnit.SECONDS)
         .build()
 
     /**
-     * The map from the track's timeline to the video's, or null. Both sounds are fetched to
-     * [workDir] first, side by side: decoding straight off the network read them at the pace
-     * googlevideo trickles a whole file out, over a minute for one track.
+     * How [source]'s sound rises, ten milliseconds at a time. The stream is fetched to [workDir]
+     * first, in ranges: decoding straight off the network read it at the pace googlevideo trickles
+     * a whole file out, over a minute for one track.
      */
-    suspend fun align(track: AudioSource, video: AudioSource, workDir: File): List<VideoSegment>? = coroutineScope {
-        val started = System.currentTimeMillis()
+    suspend fun onsetsOf(source: AudioSource, workDir: File): FloatArray? = withContext(Dispatchers.IO) {
         workDir.mkdirs()
-        val trackFile = async(Dispatchers.IO) { fetch(track, workDir) }
-        val videoFile = async(Dispatchers.IO) { fetch(video, workDir) }
-        val files = listOfNotNull(trackFile.await(), videoFile.await())
+        val file = fetch(source, workDir) ?: return@withContext null
         try {
-            if (files.size < 2) return@coroutineScope null
-            val fetched = System.currentTimeMillis()
-            val onsetsA = async(Dispatchers.Default) { onsets(files[0].path) }
-            val onsetsB = async(Dispatchers.Default) { onsets(files[1].path) }
-            val a = onsetsA.await() ?: return@coroutineScope null
-            val b = onsetsB.await() ?: return@coroutineScope null
-            val decoded = System.currentTimeMillis()
-            withContext(Dispatchers.Default) { match(a, b) }.also {
-                Log.d(
-                    TAG,
-                    "fetched in ${fetched - started} ms, decoded in ${decoded - fetched} ms, " +
-                        "matched in ${System.currentTimeMillis() - decoded} ms"
-                )
-            }
+            onsets(file.path)
         } finally {
             // Only what was downloaded here: a downloaded track's own file is read in place.
-            files.filter { it.parentFile == workDir }.forEach { it.delete() }
+            if (file.parentFile == workDir) file.delete()
         }
     }
 
-    /** [source] as a local file: itself when it is one, else downloaded in ranges. */
-    private fun fetch(source: AudioSource, workDir: File): File? {
+    /**
+     * The map from the track's timeline ([track]'s onsets) to the video's, or null when the two
+     * don't convincingly line up.
+     */
+    fun align(track: FloatArray, video: FloatArray): List<VideoSegment>? = match(track, video)
+
+    /** [source] as a local file: itself when it is one, else downloaded in ranges, several at once. */
+    private suspend fun fetch(source: AudioSource, workDir: File): File? {
         if (!source.url.startsWith("http")) return File(source.url).takeIf { it.exists() }
         val file = File.createTempFile("align", ".media", workDir)
         val started = System.currentTimeMillis()
         return try {
-            file.outputStream().use { out ->
-                var offset = 0L
-                var total = -1L
-                while (total < 0 || offset < total) {
-                    val request = Request.Builder()
-                        .url(source.url)
-                        .header("Range", "bytes=$offset-${offset + CHUNK_BYTES - 1}")
-                        .apply { source.headers.forEach { (name, value) -> header(name, value) } }
-                        .build()
-                    val done = http.newCall(request).execute().use { response ->
-                        val body = response.body ?: error("no body")
-                        when (response.code) {
-                            // The whole file, ranges or not.
-                            200 -> {
-                                body.byteStream().copyTo(out)
-                                true
-                            }
-                            206 -> {
-                                total = response.header("Content-Range")?.substringAfter('/')?.toLongOrNull() ?: -1L
-                                val bytes = body.bytes()
+            val (first, total) = range(source, 0)
+            RandomAccessFile(file, "rw").use { it.write(first) }
+            if (total != null && total > first.size) {
+                coroutineScope {
+                    (first.size.toLong() until total step CHUNK_BYTES).map { offset ->
+                        async(Dispatchers.IO) {
+                            val (bytes, _) = range(source, offset)
+                            RandomAccessFile(file, "rw").use { out ->
+                                out.seek(offset)
                                 out.write(bytes)
-                                offset += bytes.size
-                                bytes.isEmpty() || (total < 0 && bytes.size < CHUNK_BYTES)
                             }
-                            else -> error("HTTP ${response.code}")
                         }
-                    }
-                    if (done) break
+                    }.awaitAll()
                 }
             }
             Log.d(TAG, "${file.length() / 1024} KB from ${source.url.substringAfter("//").substringBefore('/')} in ${System.currentTimeMillis() - started} ms")
             file
+        } catch (e: CancellationException) {
+            file.delete()
+            throw e
         } catch (e: Exception) {
             Log.w(TAG, "Couldn't fetch ${source.url.take(80)}: $e")
             file.delete()
             null
+        }
+    }
+
+    /**
+     * [CHUNK_BYTES] of [source] from [offset], and the whole file's size when the server gave a
+     * range (null: it sent everything at once, which is then what came back).
+     */
+    private fun range(source: AudioSource, offset: Long): Pair<ByteArray, Long?> {
+        val request = Request.Builder()
+            .url(source.url)
+            .header("Range", "bytes=$offset-${offset + CHUNK_BYTES - 1}")
+            .apply { source.headers.forEach { (name, value) -> header(name, value) } }
+            .build()
+        return http.newCall(request).execute().use { response ->
+            val bytes = response.body?.bytes() ?: error("no body")
+            when (response.code) {
+                200 -> bytes to null
+                206 -> bytes to response.header("Content-Range")?.substringAfter('/')?.toLongOrNull()
+                else -> error("HTTP ${response.code}")
+            }
         }
     }
 
@@ -247,17 +251,76 @@ object ClipAligner {
      * How much louder the sound gets, frame by frame (10 ms): the rise of its log energy. Beats,
      * syllables and chords all show as rises, and they fall at the same places in any copy of
      * the same recording.
+     *
+     * Decoded in [DECODE_PARTS] stretches at once, each by a codec of its own: the system's
+     * decoders run in another process and hand back a few milliseconds of sound per round trip,
+     * which took the better part of ten seconds for one song.
      */
-    private fun onsets(path: String): FloatArray? {
+    private suspend fun onsets(path: String): FloatArray? = coroutineScope {
+        val probe = MediaExtractor()
+        val (trackIndex, format) = try {
+            probe.setDataSource(path)
+            val index = (0 until probe.trackCount).firstOrNull {
+                probe.getTrackFormat(it).getString(MediaFormat.KEY_MIME)?.startsWith("audio/") == true
+            } ?: return@coroutineScope null
+            index to probe.getTrackFormat(index)
+        } catch (e: Exception) {
+            Log.w(TAG, "Couldn't read $path: $e")
+            return@coroutineScope null
+        } finally {
+            probe.release()
+        }
+        val durationUs = if (format.containsKey(MediaFormat.KEY_DURATION)) format.getLong(MediaFormat.KEY_DURATION) else -1L
+        val endUs = if (durationUs > 0) minOf(durationUs, MAX_DECODE_US) else MAX_DECODE_US
+        val frames = (endUs / FRAME_US).toInt() + 1
+        val parts = if (durationUs > 0) DECODE_PARTS else 1
+        val started = System.currentTimeMillis()
+        val decoded = (0 until parts).map { part ->
+            async(Dispatchers.Default) {
+                decodePart(path, trackIndex, format, endUs * part / parts, endUs * (part + 1) / parts, frames)
+            }
+        }.awaitAll()
+        if (decoded.any { it == null }) return@coroutineScope null
+
+        val sums = DoubleArray(frames)
+        val counts = IntArray(frames)
+        for (part in decoded.filterNotNull()) {
+            for (f in 0 until frames) {
+                sums[f] += part.sums[f]
+                counts[f] += part.counts[f]
+            }
+        }
+        val used = counts.indexOfLast { it > 0 } + 1
+        if (used == 0) return@coroutineScope null
+        val energies = FloatArray(used)
+        var last = ln(1e-9).toFloat()
+        for (f in 0 until used) {
+            if (counts[f] > 0) last = ln(1e-9 + sums[f] / counts[f]).toFloat()
+            energies[f] = last
+        }
+        Log.d(TAG, "${used * FRAME_MS / 1000} s of ${format.getString(MediaFormat.KEY_MIME)} decoded in ${System.currentTimeMillis() - started} ms")
+        FloatArray(used) { i -> if (i == 0) 0f else max(0f, energies[i] - energies[i - 1]) }
+    }
+
+    /** Energy summed per frame, and samples per frame, of one stretch of a file. */
+    private class PartialEnergy(val sums: DoubleArray, val counts: IntArray)
+
+    private fun decodePart(
+        path: String,
+        trackIndex: Int,
+        format: MediaFormat,
+        startUs: Long,
+        endUs: Long,
+        frames: Int
+    ): PartialEnergy? {
         val extractor = MediaExtractor()
         var codec: MediaCodec? = null
         return try {
             extractor.setDataSource(path)
-            val trackIndex = (0 until extractor.trackCount).firstOrNull {
-                extractor.getTrackFormat(it).getString(MediaFormat.KEY_MIME)?.startsWith("audio/") == true
-            } ?: return null
             extractor.selectTrack(trackIndex)
-            val format = extractor.getTrackFormat(trackIndex)
+            // Started a little early: a decoder's first moments after a seek are silence while it
+            // warms up, which read as a burst of loudness right where the stretch begins.
+            extractor.seekTo((startUs - PREROLL_US).coerceAtLeast(0L), MediaExtractor.SEEK_TO_PREVIOUS_SYNC)
             val decoder = MediaCodec.createDecoderByType(format.getString(MediaFormat.KEY_MIME)!!)
             codec = decoder
             decoder.configure(format, null, null, 0)
@@ -266,18 +329,15 @@ object ClipAligner {
             var sampleRate = format.getInteger(MediaFormat.KEY_SAMPLE_RATE)
             var channels = format.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
             var floatPcm = false
-            val energies = ArrayList<Float>(40_000)
+            val sums = DoubleArray(frames)
+            val counts = IntArray(frames)
             var shortScratch = ShortArray(0)
             var floatScratch = FloatArray(0)
-            var frameSum = 0.0
-            var frameCount = 0
-            var frameSize = sampleRate * FRAME_MS / 1000
 
             val info = MediaCodec.BufferInfo()
             var inputDone = false
             var outputDone = false
-            // Fed and drained as far as the codec lets, and only then waited on: a buffer in and
-            // a buffer out per turn, each with a wait, spent seconds just waiting on a song.
+            // Fed and drained as far as the codec lets, and only then waited on.
             while (!outputDone) {
                 var progressed = false
                 while (!inputDone) {
@@ -285,7 +345,7 @@ object ClipAligner {
                     if (inIndex < 0) break
                     val buffer = decoder.getInputBuffer(inIndex)!!
                     val size = extractor.readSampleData(buffer, 0)
-                    if (size < 0 || extractor.sampleTime > MAX_DECODE_US) {
+                    if (size < 0 || extractor.sampleTime >= endUs) {
                         decoder.queueInputBuffer(inIndex, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
                         inputDone = true
                     } else {
@@ -300,34 +360,42 @@ object ClipAligner {
                         val out = decoder.getOutputBuffer(outIndex)!!.order(ByteOrder.nativeOrder())
                         out.position(info.offset)
                         out.limit(info.offset + info.size)
-                        // Copied out in bulk: a get() per sample made decoding the slow part.
+                        // Copied out in bulk: a get() per sample is slow.
                         val count: Int
                         if (floatPcm) {
                             val samples = out.asFloatBuffer()
                             count = samples.remaining()
                             if (floatScratch.size < count) floatScratch = FloatArray(count)
                             samples.get(floatScratch, 0, count)
-                            } else {
-                                val samples = out.asShortBuffer()
-                                count = samples.remaining()
-                                if (shortScratch.size < count) shortScratch = ShortArray(count)
-                                samples.get(shortScratch, 0, count)
-                            }
-                            var i = 0
-                            while (i + channels <= count) {
+                        } else {
+                            val samples = out.asShortBuffer()
+                            count = samples.remaining()
+                            if (shortScratch.size < count) shortScratch = ShortArray(count)
+                            samples.get(shortScratch, 0, count)
+                        }
+                        // Each sample goes to the frame its time falls in. What the codec decodes
+                        // from before the stretch (a seek lands on a sync point) is another's.
+                        val usPerSample = 1_000_000.0 / sampleRate
+                        var i = 0
+                        var n = 0
+                        while (i + channels <= count) {
+                            val t = info.presentationTimeUs + (n * usPerSample).toLong()
+                            if (t >= endUs) break
+                            if (t >= startUs) {
                                 var energy = 0f
                                 for (c in 0 until channels) {
                                     val v = if (floatPcm) floatScratch[i + c] else shortScratch[i + c] * (1f / 32768f)
                                     energy += v * v
                                 }
-                                i += channels
-                                frameSum += energy
-                                if (++frameCount == frameSize) {
-                                    energies += ln(1e-9 + frameSum / frameSize).toFloat()
-                                    frameSum = 0.0
-                                    frameCount = 0
+                                val f = (t / FRAME_US).toInt()
+                                if (f < frames) {
+                                    sums[f] += energy
+                                    counts[f]++
                                 }
                             }
+                            i += channels
+                            n++
+                        }
                         decoder.releaseOutputBuffer(outIndex, false)
                         if (info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) outputDone = true
                         progressed = true
@@ -337,15 +405,14 @@ object ClipAligner {
                         channels = output.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
                         floatPcm = output.containsKey(MediaFormat.KEY_PCM_ENCODING) &&
                             output.getInteger(MediaFormat.KEY_PCM_ENCODING) == AudioFormat.ENCODING_PCM_FLOAT
-                        frameSize = sampleRate * FRAME_MS / 1000
                     } else {
                         break
                     }
                 }
             }
-            FloatArray(energies.size) { i -> if (i == 0) 0f else max(0f, energies[i] - energies[i - 1]) }
+            PartialEnergy(sums, counts)
         } catch (e: Exception) {
-            Log.w(TAG, "Couldn't decode $path: $e")
+            Log.w(TAG, "Couldn't decode $path from ${startUs / 1_000_000} s: $e")
             null
         } finally {
             runCatching { codec?.stop() }
