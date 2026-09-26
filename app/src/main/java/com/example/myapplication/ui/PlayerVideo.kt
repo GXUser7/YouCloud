@@ -316,8 +316,15 @@ fun VideoSurface(state: PlayerVideoState, modifier: Modifier = Modifier) {
  * the video's own layer drawn again, so the glow moves with every frame at no decoding cost.
  */
 @Composable
-fun AmbientVideo(state: PlayerVideoState, top: androidx.compose.ui.unit.Dp, alpha: Float, modifier: Modifier = Modifier) {
+fun AmbientVideo(
+    state: PlayerVideoState,
+    top: androidx.compose.ui.unit.Dp,
+    bottom: androidx.compose.ui.unit.Dp,
+    alpha: Float,
+    modifier: Modifier = Modifier
+) {
     val topPx = with(LocalDensity.current) { top.toPx() }
+    val bottomPx = with(LocalDensity.current) { bottom.toPx() }
     Box(modifier = modifier.graphicsLayer { this.alpha = alpha }) {
         // Darkness to glow in: the cover goes out as the video comes in.
         Box(modifier = Modifier.matchParentSize().drawBehind { drawRect(Color.Black) })
@@ -333,7 +340,7 @@ fun AmbientVideo(state: PlayerVideoState, top: androidx.compose.ui.unit.Dp, alph
                     }
                     .drawBehind {
                         val layer = state.frameLayer ?: return@drawBehind
-                        val height = size.height - topPx
+                        val height = size.height - topPx - bottomPx
                         translate(0f, topPx) {
                             scale(glow.scale, glow.scale, pivot = Offset(size.width / 2, height / 2)) {
                                 drawLayer(layer)
@@ -343,19 +350,25 @@ fun AmbientVideo(state: PlayerVideoState, top: androidx.compose.ui.unit.Dp, alph
             )
         }
         }
-        val fadePx = with(LocalDensity.current) { VIDEO_EDGE_FADE.toPx() }
+        val topFadePx = with(LocalDensity.current) { VIDEO_EDGE_FADE.toPx() }
+        val bottomFadePx = with(LocalDensity.current) { VIDEO_BOTTOM_FADE.toPx() }
         VideoSurface(
             state = state,
             modifier = Modifier
                 .matchParentSize()
-                .padding(top = top)
-                // The video's top edge dissolves into its glow instead of ending on a line. The
+                .padding(top = top, bottom = bottom)
+                // The video's edges dissolve into its glow instead of ending on a line. The
                 // layer the glow is drawn from is recorded inside, whole.
                 .graphicsLayer { compositingStrategy = CompositingStrategy.Offscreen }
                 .drawWithContent {
                     drawContent()
                     drawRect(
-                        brush = Brush.verticalGradient(0f to Color.Transparent, fadePx / size.height to Color.Black),
+                        brush = Brush.verticalGradient(
+                            0f to Color.Transparent,
+                            topFadePx / size.height to Color.Black,
+                            1f - bottomFadePx / size.height to Color.Black,
+                            1f to Color.Transparent
+                        ),
                         blendMode = BlendMode.DstIn
                     )
                 }
@@ -364,6 +377,9 @@ fun AmbientVideo(state: PlayerVideoState, top: androidx.compose.ui.unit.Dp, alph
 }
 
 private val VIDEO_EDGE_FADE = 64.dp
+
+// Shorter at the bottom: the panel's straight edge covers it but for its rounded corners.
+private val VIDEO_BOTTOM_FADE = 28.dp
 
 private class Glow(val scale: Float, val blur: androidx.compose.ui.unit.Dp, val opacity: Float)
 
