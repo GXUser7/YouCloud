@@ -36,6 +36,10 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.navigationBars
+import androidx.compose.foundation.layout.ime
+import androidx.compose.foundation.layout.union
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -967,8 +971,14 @@ fun MusicScreen(viewModel: MusicViewModel) {
             }
 
             // On home the floating toolbar owns the bottom edge; the mini player sits on top of it.
+            val searchTabsShown = screen == AppScreen.SEARCH && selectedMix == null &&
+                searchOpenedPlaylist == null && (hasYandexToken || ytMusicAccount != null)
             val miniPlayerLift by animateDpAsState(
-                targetValue = if (screen == AppScreen.HOME && selectedMix == null) HomeToolbarClearance else 0.dp,
+                targetValue = when {
+                    screen == AppScreen.HOME && selectedMix == null -> HomeToolbarClearance
+                    searchTabsShown -> SearchTabsHeight + 8.dp
+                    else -> 0.dp
+                },
                 animationSpec = spring(dampingRatio = Spring.DampingRatioLowBouncy, stiffness = Spring.StiffnessMediumLow),
                 label = "miniPlayerLift"
             )
@@ -978,7 +988,14 @@ fun MusicScreen(viewModel: MusicViewModel) {
                 exit = slideOutVertically(targetOffsetY = { it }) + fadeOut(),
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
-                    .navigationBarsPadding()
+                    .then(
+                        // On search the tabs ride the keyboard, and the mini player rides them.
+                        if (searchTabsShown) {
+                            Modifier.windowInsetsPadding(WindowInsets.ime.union(WindowInsets.navigationBars))
+                        } else {
+                            Modifier.navigationBarsPadding()
+                        }
+                    )
                     .padding(start = 16.dp, top = 16.dp, end = 16.dp, bottom = 16.dp + miniPlayerLift)
             ) {
                 androidx.compose.runtime.CompositionLocalProvider(
@@ -3646,10 +3663,8 @@ private fun SearchScreen(
 ) {
     val focusRequester = remember { FocusRequester() }
     val haptic = LocalHapticFeedback.current
-    // Hoisted so that coming back from an album lands where the list was left.
-    val listState = rememberLazyListState()
-    val albumsRowState = rememberLazyListState()
-    val playlistsRowState = rememberLazyListState()
+    // Hoisted, one per service, so that coming back from an album lands where the list was left.
+    val listStates = remember { SearchSource.entries.associateWith { androidx.compose.foundation.lazy.LazyListState() } }
     val isFieldShown by rememberUpdatedState(openedPlaylist == null)
     LaunchedEffect(Unit) {
         kotlinx.coroutines.delay(100)
@@ -3680,108 +3695,201 @@ private fun SearchScreen(
         if (activeSource != source) onSearchSourceChanged(activeSource)
     }
     val ytPage = ytSearch.page
-    val activeQuery = when (activeSource) {
-        SearchSource.SOUNDCLOUD -> query
-        SearchSource.YANDEX -> yandexQuery
-        SearchSource.YOUTUBE -> ytSearch.query
+    fun resultsOf(of: SearchSource) = when (of) {
+        SearchSource.SOUNDCLOUD -> SearchResults(query, tracks, isLoading, errorMessage, albums, playlists, artists)
+        SearchSource.YANDEX -> SearchResults(
+            yandexQuery, yandexTracks, yandexLoading, yandexError, yandexAlbums, yandexPlaylists, yandexArtists
+        )
+        SearchSource.YOUTUBE -> SearchResults(
+            ytSearch.query,
+            ytPage?.tracks.orEmpty(),
+            ytSearch.loading,
+            ytSearch.error,
+            ytPage?.albums.orEmpty(),
+            ytPage?.playlists.orEmpty(),
+            ytPage?.artists.orEmpty()
+        )
     }
-    val activeTracks = when (activeSource) {
-        SearchSource.SOUNDCLOUD -> tracks
-        SearchSource.YANDEX -> yandexTracks
-        SearchSource.YOUTUBE -> ytPage?.tracks.orEmpty()
+    fun search(on: SearchSource, text: String) = when (on) {
+        SearchSource.SOUNDCLOUD -> onQueryChange(text)
+        SearchSource.YANDEX -> onYandexQueryChange(text)
+        SearchSource.YOUTUBE -> onYtQueryChange(text)
     }
-    val activeLoading = when (activeSource) {
-        SearchSource.SOUNDCLOUD -> isLoading
-        SearchSource.YANDEX -> yandexLoading
-        SearchSource.YOUTUBE -> ytSearch.loading
-    }
-    val activeError = when (activeSource) {
-        SearchSource.SOUNDCLOUD -> errorMessage
-        SearchSource.YANDEX -> yandexError
-        SearchSource.YOUTUBE -> ytSearch.error
-    }
-    val activeAlbums = when (activeSource) {
-        SearchSource.SOUNDCLOUD -> albums
-        SearchSource.YANDEX -> yandexAlbums
-        SearchSource.YOUTUBE -> ytPage?.albums.orEmpty()
-    }
-    val activePlaylists = when (activeSource) {
-        SearchSource.SOUNDCLOUD -> playlists
-        SearchSource.YANDEX -> yandexPlaylists
-        SearchSource.YOUTUBE -> ytPage?.playlists.orEmpty()
-    }
-    val activeArtists = when (activeSource) {
-        SearchSource.SOUNDCLOUD -> artists
-        SearchSource.YANDEX -> yandexArtists
-        SearchSource.YOUTUBE -> ytPage?.artists.orEmpty()
-    }
-    val topResult = remember(activeQuery, activeAlbums, activePlaylists) {
-        pickTopResult(activeQuery, activeAlbums, activePlaylists)
-    }
+    val activeQuery = resultsOf(activeSource).query
     val favoritesMap = remember(favorites) { favorites.associateBy { it.id } }
 
-    LazyColumn(
-        state = listState,
-        modifier = Modifier
-            .fillMaxSize()
-            .statusBarsPadding()
-            // The keyboard opens itself here, so without this the last result sits under it
-            // with no way to scroll to it.
-            .imePadding(),
-        // top = 0: the bar has to start at the same y as the home bar, or entering search
-        // shifts the title and back button downward and the transition reads as a jump.
-        // Rows of a group sit flush, so spacing between blocks is set per item instead.
-        contentPadding = PaddingValues(start = 16.dp, top = 0.dp, end = 16.dp, bottom = 120.dp)
-    ) {
-        item(key = "search-top-bar") {
-            TopBar(title = "Поиск", onBack = onBack)
+    // The services side by side, a page each; the one come to rest is the one searched.
+    val sourcePager = rememberPagerState(initialPage = sources.indexOf(activeSource).coerceAtLeast(0)) { sources.size }
+    val scope = rememberCoroutineScope()
+    LaunchedEffect(sourcePager.settledPage, sources) {
+        val settled = sources.getOrNull(sourcePager.settledPage) ?: return@LaunchedEffect
+        if (settled != activeSource) onSearchSourceChanged(settled)
+    }
+    LaunchedEffect(activeSource, sources) {
+        val index = sources.indexOf(activeSource)
+        if (index >= 0 && index != sourcePager.currentPage && !sourcePager.isScrollInProgress) {
+            sourcePager.scrollToPage(index)
         }
+    }
+    // The neighbours search what was typed too, once typing pauses, so a swipe finds their
+    // results already there.
+    LaunchedEffect(activeQuery, sources) {
+        kotlinx.coroutines.delay(700)
+        sources.filter { it != activeSource && resultsOf(it).query != activeQuery }.forEach { search(it, activeQuery) }
+    }
 
-        item(key = "search-field") {
+    val backdrop = LocalFrostSources.current
+    val results = rememberFrostSource()
+    val tabsShown = sources.size > 1
+    val playerShown = currentTrackId != null
+    // Room at the bottom of each list for what floats over its end: the tabs, the mini player.
+    val bottomRoom = 24.dp + (if (tabsShown) SearchTabsHeight + 12.dp else 0.dp) +
+        (if (playerShown) MiniPlayerHeight + 12.dp else 0.dp)
+
+    // Search stands on the moving backdrop: its fields, rows and tabs are glass.
+    androidx.compose.runtime.CompositionLocalProvider(LocalGlass provides true) {
+    Box(modifier = Modifier.fillMaxSize()) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .statusBarsPadding()
+        ) {
+            // top = 0: the bar has to start at the same y as the home bar, or entering search
+            // shifts the title and back button downward and the transition reads as a jump.
+            Box(modifier = Modifier.padding(horizontal = 16.dp)) {
+                TopBar(title = "Поиск", onBack = onBack)
+            }
             SearchField(
                 query = activeQuery,
-                onQueryChange = { newQuery ->
-                    when (activeSource) {
-                        SearchSource.SOUNDCLOUD -> onQueryChange(newQuery)
-                        SearchSource.YANDEX -> onYandexQueryChange(newQuery)
-                        SearchSource.YOUTUBE -> onYtQueryChange(newQuery)
-                    }
-                },
+                onQueryChange = { newQuery -> search(activeSource, newQuery) },
                 focusRequester = focusRequester,
-                modifier = Modifier.padding(top = 8.dp)
+                modifier = Modifier.padding(start = 16.dp, top = 8.dp, end = 16.dp)
             )
+            HorizontalPager(
+                state = sourcePager,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(1f)
+                    // Above the keyboard: without it the last result sits under it with no way
+                    // to scroll to it.
+                    .imePadding()
+                    // The results, recorded for the tabs floating over their end.
+                    .frostSource(results),
+                key = { sources[it] },
+                beyondViewportPageCount = 1,
+                flingBehavior = androidx.compose.foundation.pager.PagerDefaults.flingBehavior(
+                    state = sourcePager,
+                    snapPositionalThreshold = 0.3f,
+                    snapAnimationSpec = ServicePageSpring
+                )
+            ) { page ->
+                val pageSource = sources[page]
+                SearchResultsList(
+                    source = pageSource,
+                    results = resultsOf(pageSource),
+                    listState = listStates.getValue(pageSource),
+                    favoritesMap = favoritesMap,
+                    currentTrackId = currentTrackId,
+                    downloadProgress = downloadProgress,
+                    isPlaying = isPlaying,
+                    hasMore = hasMore && pageSource == activeSource,
+                    isLoadingMore = isLoadingMore && pageSource == activeSource,
+                    bottomRoom = bottomRoom,
+                    onPlayTrack = onPlayTrack,
+                    onFavoriteClick = onFavoriteClick,
+                    onOpenArtist = onOpenArtist,
+                    onOpenPlaylist = onOpenPlaylist,
+                    onLoadMore = onLoadMore,
+                    modifier = Modifier.graphicsLayer {
+                        // The page going sinks back a little, the one coming rises from it.
+                        val away = ((sourcePager.currentPage - page) + sourcePager.currentPageOffsetFraction)
+                            .absoluteValue.coerceIn(0f, 1f)
+                        val scale = 1f - 0.05f * away
+                        scaleX = scale
+                        scaleY = scale
+                        alpha = 1f - 0.4f * away
+                    }
+                )
+            }
         }
 
-        // Only when there is a choice: services not connected in settings aren't offered.
-        if (sources.size > 1) {
-            item(key = "search-source") {
-                SegmentedControl(
-                    items = sources.map { option ->
+        // Only when there is a choice: services not connected in settings aren't offered. On the
+        // keyboard's top edge while it is up, at the bottom of the screen when it isn't.
+        if (tabsShown) {
+            androidx.compose.runtime.CompositionLocalProvider(LocalFrostSources provides backdrop + results) {
+                SearchSourceTabs(
+                    labels = sources.map { option ->
                         when (option) {
                             SearchSource.SOUNDCLOUD -> "SoundCloud"
                             SearchSource.YANDEX -> if (sources.size > 2) "Яндекс" else "Яндекс Музыка"
                             SearchSource.YOUTUBE -> if (sources.size > 2) "YouTube" else "YouTube Music"
                         }
                     },
-                    selectedIndex = sources.indexOf(activeSource),
-                    onSelectedIndexChanged = { index ->
+                    pager = sourcePager,
+                    onSelect = { index ->
                         haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                        onSearchSourceChanged(sources[index])
+                        scope.launch { sourcePager.animateScrollToPage(index, animationSpec = ServicePageSpring) }
                     },
-                    modifier = Modifier.padding(top = 12.dp)
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .windowInsetsPadding(WindowInsets.ime.union(WindowInsets.navigationBars))
+                        .padding(horizontal = 16.dp, vertical = 12.dp)
                 )
             }
         }
+    }
+    }
+}
 
-        if (activeLoading) {
+/** One service's results, as a search page shows them. */
+private class SearchResults(
+    val query: String,
+    val tracks: List<SoundCloudTrack>,
+    val loading: Boolean,
+    val error: String?,
+    val albums: List<SoundCloudPlaylist>,
+    val playlists: List<SoundCloudPlaylist>,
+    val artists: List<SoundCloudUser>
+)
+
+/** A page of search: one service's best result, artists, albums, playlists and tracks. */
+@Composable
+private fun SearchResultsList(
+    source: SearchSource,
+    results: SearchResults,
+    listState: androidx.compose.foundation.lazy.LazyListState,
+    favoritesMap: Map<Long, FavoriteTrack>,
+    currentTrackId: Long?,
+    downloadProgress: Map<Long, Float>,
+    isPlaying: Boolean,
+    hasMore: Boolean,
+    isLoadingMore: Boolean,
+    bottomRoom: Dp,
+    onPlayTrack: (SoundCloudTrack) -> Unit,
+    onFavoriteClick: (SoundCloudTrack) -> Unit,
+    onOpenArtist: (SoundCloudUser) -> Unit,
+    onOpenPlaylist: (SoundCloudPlaylist) -> Unit,
+    onLoadMore: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val topResult = remember(results.query, results.albums, results.playlists) {
+        pickTopResult(results.query, results.albums, results.playlists)
+    }
+    LazyColumn(
+        state = listState,
+        modifier = modifier.fillMaxSize(),
+        // Rows of a group sit flush, so spacing between blocks is set per item instead.
+        contentPadding = PaddingValues(start = 16.dp, top = 0.dp, end = 16.dp, bottom = bottomRoom)
+    ) {
+        if (results.loading) {
             item(key = "search-loading") {
                 LoadingBlock(modifier = Modifier.padding(top = 16.dp), height = 120.dp)
             }
         }
 
-        if (activeError != null) {
+        if (results.error != null) {
             item(key = "search-error") {
-                Box(modifier = Modifier.padding(top = 16.dp)) { MessageCard(activeError) }
+                Box(modifier = Modifier.padding(top = 16.dp)) { MessageCard(results.error) }
             }
         }
 
@@ -3805,22 +3913,22 @@ private fun SearchScreen(
             }
         }
 
-        if (activeArtists.isNotEmpty()) {
+        if (results.artists.isNotEmpty()) {
             item(key = "search-artists-header") {
                 SectionTitle("Исполнители", modifier = Modifier.padding(top = 24.dp, bottom = 8.dp))
             }
             item(key = "search-artists") {
-                ArtistRow(artists = activeArtists, onOpen = onOpenArtist)
+                ArtistRow(artists = results.artists, onOpen = onOpenArtist)
             }
         }
 
-        if (activeAlbums.isNotEmpty()) {
+        if (results.albums.isNotEmpty()) {
             item(key = "search-albums-header") {
                 SectionTitle("Альбомы", modifier = Modifier.padding(top = 24.dp, bottom = 8.dp))
             }
             item(key = "search-albums") {
                 AlbumCarousel(
-                    albums = activeAlbums.map { album ->
+                    albums = results.albums.map { album ->
                         CarouselAlbum(
                             key = album.id,
                             title = album.title ?: "Без названия",
@@ -3834,7 +3942,7 @@ private fun SearchScreen(
             }
         }
 
-        if (activePlaylists.isNotEmpty()) {
+        if (results.playlists.isNotEmpty()) {
             item(key = "search-playlists-header") {
                 SectionTitle(
                     "Плейлисты и сборники",
@@ -3842,7 +3950,7 @@ private fun SearchScreen(
                 )
             }
             // Two to a row, up to three rows; the rest are a scroll of the search further on.
-            activePlaylists.take(6).chunked(2).forEachIndexed { rowIndex, pair ->
+            results.playlists.take(6).chunked(2).forEachIndexed { rowIndex, pair ->
                 item(key = "search-playlists-row-$rowIndex") {
                     Row(
                         modifier = Modifier
@@ -3853,7 +3961,11 @@ private fun SearchScreen(
                         pair.forEach { playlist ->
                             CompactCollectionCard(
                                 title = playlist.title ?: "Без названия",
-                                caption = plural(playlist.trackCount, "трек", "трека", "треков"),
+                                caption = if (playlist.trackCount > 0) {
+                                    plural(playlist.trackCount, "трек", "трека", "треков")
+                                } else {
+                                    setCaption(playlist)
+                                },
                                 artworkUrl = playlist.displayArtworkUrl,
                                 onClick = { onOpenPlaylist(playlist) },
                                 modifier = Modifier.weight(1f)
@@ -3865,19 +3977,19 @@ private fun SearchScreen(
             }
         }
 
-        if (activeTracks.isNotEmpty()) {
-            if (activeAlbums.isNotEmpty() || activePlaylists.isNotEmpty() || activeArtists.isNotEmpty() || topResult != null) {
+        if (results.tracks.isNotEmpty()) {
+            if (results.albums.isNotEmpty() || results.playlists.isNotEmpty() || results.artists.isNotEmpty() || topResult != null) {
                 item(key = "search-tracks-header") {
                     SectionTitle("Треки", modifier = Modifier.padding(top = 18.dp, bottom = 8.dp))
                 }
             } else {
                 item(key = "search-tracks-gap") { Spacer(modifier = Modifier.height(20.dp)) }
             }
-            val showLoadMore = hasMore && !activeLoading
-            val rowCount = activeTracks.size + if (showLoadMore) 1 else 0
+            val showLoadMore = hasMore && !results.loading
+            val rowCount = results.tracks.size + if (showLoadMore) 1 else 0
             itemsIndexed(
-                activeTracks,
-                key = { _, track -> "${activeSource.name}-search-${track.id}" }
+                results.tracks,
+                key = { _, track -> "${source.name}-search-${track.id}" }
             ) { index, track ->
                 val favorite = favoritesMap[track.id]
                 TrackCard(
@@ -3901,11 +4013,11 @@ private fun SearchScreen(
                     )
                 }
             }
-        } else if (!activeLoading && activeAlbums.isEmpty() && activePlaylists.isEmpty() && activeArtists.isEmpty()) {
+        } else if (!results.loading && results.albums.isEmpty() && results.playlists.isEmpty() && results.artists.isEmpty()) {
             item(key = "search-empty") {
                 Box(modifier = Modifier.padding(top = 20.dp)) {
                     EmptyState(
-                        if (activeQuery.isBlank()) "Напиши, что хочешь услышать."
+                        if (results.query.isBlank()) "Напиши, что хочешь услышать."
                         else "Ничего не нашлось."
                     )
                 }
@@ -3913,6 +4025,78 @@ private fun SearchScreen(
         }
     }
 }
+
+/**
+ * The services a search can ask, on a strip of glass at the bottom — over the keyboard while
+ * typing. The lit pill rides along with the pages as they are swiped.
+ */
+@Composable
+private fun SearchSourceTabs(
+    labels: List<String>,
+    pager: androidx.compose.foundation.pager.PagerState,
+    onSelect: (Int) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val spans = remember { mutableStateMapOf<Int, Pair<Float, Float>>() }
+    val density = LocalDensity.current
+    val accent = PanelColors.accent
+    Box(
+        modifier = modifier
+            .fillMaxWidth()
+            .height(SearchTabsHeight)
+            .frosted(CircleShape, PanelColors.container.copy(alpha = GlassAlpha))
+            .padding(6.dp)
+    ) {
+        // The pill, between the tabs the pages are between.
+        Box(
+            modifier = Modifier
+                .fillMaxHeight()
+                .drawBehind {
+                    val position = (pager.currentPage + pager.currentPageOffsetFraction)
+                        .coerceIn(0f, (labels.size - 1).toFloat())
+                    val from = spans[kotlin.math.floor(position).toInt()] ?: return@drawBehind
+                    val to = spans[kotlin.math.ceil(position).toInt()] ?: from
+                    val t = position - kotlin.math.floor(position)
+                    val left = from.first + (to.first - from.first) * t
+                    val width = from.second + (to.second - from.second) * t
+                    drawRoundRect(
+                        color = accent,
+                        topLeft = Offset(left, 0f),
+                        size = androidx.compose.ui.geometry.Size(width, size.height),
+                        cornerRadius = androidx.compose.ui.geometry.CornerRadius(size.height / 2f)
+                    )
+                }
+                .fillMaxWidth()
+        )
+        Row(modifier = Modifier.fillMaxSize()) {
+            labels.forEachIndexed { index, label ->
+                val lit = kotlin.math.abs(pager.currentPage + pager.currentPageOffsetFraction - index) < 0.5f
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxHeight()
+                        .onGloballyPositioned { spans[index] = it.positionInParent().x to it.size.width.toFloat() }
+                        .clip(CircleShape)
+                        .clickable { onSelect(index) },
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = label,
+                        style = MaterialTheme.typography.titleSmall,
+                        color = if (lit) PanelColors.onAccent else PanelColors.content,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+            }
+        }
+    }
+}
+
+private val SearchTabsHeight = 56.dp
+
+// The mini player's height, with its padding, for what must leave room for it.
+internal val MiniPlayerHeight = 72.dp
 
 /** Artists a search found: round portraits with a name, the way people show everywhere else. */
 @Composable
