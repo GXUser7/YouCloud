@@ -276,24 +276,27 @@ object ClipAligner {
             val info = MediaCodec.BufferInfo()
             var inputDone = false
             var outputDone = false
+            // Fed and drained as far as the codec lets, and only then waited on: a buffer in and
+            // a buffer out per turn, each with a wait, spent seconds just waiting on a song.
             while (!outputDone) {
-                if (!inputDone) {
-                    val inIndex = decoder.dequeueInputBuffer(1_000)
-                    if (inIndex >= 0) {
-                        val buffer = decoder.getInputBuffer(inIndex)!!
-                        val size = extractor.readSampleData(buffer, 0)
-                        if (size < 0 || extractor.sampleTime > MAX_DECODE_US) {
-                            decoder.queueInputBuffer(inIndex, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
-                            inputDone = true
-                        } else {
-                            decoder.queueInputBuffer(inIndex, 0, size, extractor.sampleTime, 0)
-                            extractor.advance()
-                        }
+                var progressed = false
+                while (!inputDone) {
+                    val inIndex = decoder.dequeueInputBuffer(0)
+                    if (inIndex < 0) break
+                    val buffer = decoder.getInputBuffer(inIndex)!!
+                    val size = extractor.readSampleData(buffer, 0)
+                    if (size < 0 || extractor.sampleTime > MAX_DECODE_US) {
+                        decoder.queueInputBuffer(inIndex, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
+                        inputDone = true
+                    } else {
+                        decoder.queueInputBuffer(inIndex, 0, size, extractor.sampleTime, 0)
+                        extractor.advance()
                     }
+                    progressed = true
                 }
-                val outIndex = decoder.dequeueOutputBuffer(info, 1_000)
-                when {
-                    outIndex >= 0 -> {
+                while (!outputDone) {
+                    val outIndex = decoder.dequeueOutputBuffer(info, if (progressed) 0L else 2_000L)
+                    if (outIndex >= 0) {
                         val out = decoder.getOutputBuffer(outIndex)!!.order(ByteOrder.nativeOrder())
                         out.position(info.offset)
                         out.limit(info.offset + info.size)
@@ -304,37 +307,39 @@ object ClipAligner {
                             count = samples.remaining()
                             if (floatScratch.size < count) floatScratch = FloatArray(count)
                             samples.get(floatScratch, 0, count)
-                        } else {
-                            val samples = out.asShortBuffer()
-                            count = samples.remaining()
-                            if (shortScratch.size < count) shortScratch = ShortArray(count)
-                            samples.get(shortScratch, 0, count)
-                        }
-                        var i = 0
-                        while (i + channels <= count) {
-                            var energy = 0f
-                            for (c in 0 until channels) {
-                                val v = if (floatPcm) floatScratch[i + c] else shortScratch[i + c] * (1f / 32768f)
-                                energy += v * v
+                            } else {
+                                val samples = out.asShortBuffer()
+                                count = samples.remaining()
+                                if (shortScratch.size < count) shortScratch = ShortArray(count)
+                                samples.get(shortScratch, 0, count)
                             }
-                            i += channels
-                            frameSum += energy
-                            if (++frameCount == frameSize) {
-                                energies += ln(1e-9 + frameSum / frameSize).toFloat()
-                                frameSum = 0.0
-                                frameCount = 0
+                            var i = 0
+                            while (i + channels <= count) {
+                                var energy = 0f
+                                for (c in 0 until channels) {
+                                    val v = if (floatPcm) floatScratch[i + c] else shortScratch[i + c] * (1f / 32768f)
+                                    energy += v * v
+                                }
+                                i += channels
+                                frameSum += energy
+                                if (++frameCount == frameSize) {
+                                    energies += ln(1e-9 + frameSum / frameSize).toFloat()
+                                    frameSum = 0.0
+                                    frameCount = 0
+                                }
                             }
-                        }
                         decoder.releaseOutputBuffer(outIndex, false)
                         if (info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) outputDone = true
-                    }
-                    outIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
+                        progressed = true
+                    } else if (outIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
                         val output = decoder.outputFormat
                         sampleRate = output.getInteger(MediaFormat.KEY_SAMPLE_RATE)
                         channels = output.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
                         floatPcm = output.containsKey(MediaFormat.KEY_PCM_ENCODING) &&
                             output.getInteger(MediaFormat.KEY_PCM_ENCODING) == AudioFormat.ENCODING_PCM_FLOAT
                         frameSize = sampleRate * FRAME_MS / 1000
+                    } else {
+                        break
                     }
                 }
             }

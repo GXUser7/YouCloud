@@ -3762,7 +3762,7 @@ class MusicViewModel(
         }
         val yandexId = track.urn.orEmpty().removePrefix("yandex:track:").substringBefore(':')
         val token = settingsRepository.yandexTokenValue().takeIf { it.isNotBlank() } ?: return null
-        return YandexMusicApi.resolveTrackStream(yandexId, token)?.let { ClipAligner.AudioSource(it) }
+        return YandexMusicApi.resolveTrackStream(yandexId, token, lightest = true)?.let { ClipAligner.AudioSource(it) }
     }
 
     fun loadAllArtistTracks(artistId: String, isYandex: Boolean) {

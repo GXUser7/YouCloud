@@ -158,11 +158,17 @@ object YandexMusicApi {
         return "https://$host/get-mp3/$md5Hash/$ts$path"
     }
 
-    suspend fun resolveTrackStream(trackId: String, token: String): String? {
+    /**
+     * @param lightest the smallest file rather than the best-sounding one: for when the sound is
+     *   only analysed, not listened to.
+     */
+    suspend fun resolveTrackStream(trackId: String, token: String, lightest: Boolean = false): String? {
         return try {
             val service = createService { token }
             val response = service.getDownloadInfo(trackId)
-            val bestItem = response.result.orEmpty().firstOrNull { it.codec == "mp3" } ?: response.result.orEmpty().firstOrNull()
+            val items = response.result.orEmpty()
+            val bestItem = (if (lightest) items.minByOrNull { it.bitrateInKbps } else null)
+                ?: items.firstOrNull { it.codec == "mp3" } ?: items.firstOrNull()
                 ?: return null
             
             val client = OkHttpClient()
