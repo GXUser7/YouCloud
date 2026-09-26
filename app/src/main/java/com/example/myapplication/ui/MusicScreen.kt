@@ -4945,7 +4945,8 @@ private fun TrackDetailScreen(
                 alpha = videoShown,
                 modifier = Modifier
                     .fillMaxSize()
-                    .blur(blurRadius)
+                    // Paused, the glow blurs with the video, or its near steps would stay sharper.
+                    .blur(blurRadius + pauseBlur)
             )
         }
         if (immersiveVideo != null) {
