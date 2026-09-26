@@ -73,14 +73,24 @@ private const val SYNC_INTERVAL_MS = 100L
 
 /** A muted player for [video], and what the screen needs to know about its picture. */
 @Stable
-class PlayerVideoState internal constructor(val video: TrackVideo, internal val player: ExoPlayer) {
+class PlayerVideoState internal constructor(video: TrackVideo, internal val player: ExoPlayer) {
+    /**
+     * The video as last known: the same stream, first while it is being lined up with the track,
+     * then with its map. Swapped in place, so the player keeps what it has buffered.
+     */
+    var video by mutableStateOf(video)
+        internal set
+
     /** The picture's size, once the decoder knows it. */
     var size by mutableStateOf(IntSize.Zero)
         internal set
 
-    /** A frame is up, and the video hasn't run out or failed. */
-    var showing by mutableStateOf(false)
-        internal set
+    // A frame is up, and the video hasn't run out or failed.
+    internal var rendering by mutableStateOf(false)
+
+    /** On screen: rendering, and lined up with the track. */
+    val showing: Boolean
+        get() = rendering && video.ready
 
     internal var firstFrame = false
 
@@ -106,7 +116,7 @@ class PlayerVideoState internal constructor(val video: TrackVideo, internal val 
 fun rememberPlayerVideoState(video: TrackVideo?, isPlaying: Boolean, trackPosition: () -> Long): PlayerVideoState? {
     if (video == null) return null
     val context = LocalContext.current
-    val state = remember(video) {
+    val state = remember(video.url) {
         val player = ExoPlayer.Builder(context)
             .setMediaSourceFactory(DefaultMediaSourceFactory(VideoCache.dataSourceFactory(context, video.userAgent)))
             .build()
@@ -121,6 +131,7 @@ fun rememberPlayerVideoState(video: TrackVideo?, isPlaying: Boolean, trackPositi
         player.prepare()
         PlayerVideoState(video, player)
     }
+    state.video = video
 
     state.frameLayer = rememberGraphicsLayer()
 
@@ -134,16 +145,16 @@ fun rememberPlayerVideoState(video: TrackVideo?, isPlaying: Boolean, trackPositi
 
             override fun onRenderedFirstFrame() {
                 state.firstFrame = true
-                state.showing = true
+                state.rendering = true
             }
 
             override fun onPlaybackStateChanged(playbackState: Int) {
-                state.showing = playbackState != Player.STATE_ENDED && state.firstFrame
+                state.rendering = playbackState != Player.STATE_ENDED && state.firstFrame
             }
 
             override fun onPlayerError(error: PlaybackException) {
                 Log.w(TAG, "${state.video.url}: ${error.errorCodeName}", error)
-                state.showing = false
+                state.rendering = false
             }
         }
         state.player.addListener(listener)

@@ -84,7 +84,7 @@ except Exception:
     pass
 
 KEEP = ("url", "ext", "format_id", "filesize", "filesize_approx", "http_headers")
-FORMAT_KEEP = ("format_id", "url", "vcodec", "acodec", "protocol")
+FORMAT_KEEP = ("format_id", "url", "vcodec", "acodec", "protocol", "abr")
 
 
 def main():
@@ -308,7 +308,8 @@ main()
             else -> null
         }
         val length = (field("filesize") ?: field("filesize_approx"))?.asLong ?: -1L
-        // A video's sound comes with the same answer: every format is listed, deciphered.
+        // A video's sound comes with the same answer: every format is listed, deciphered. It is
+        // only analysed ([ClipAligner]), so the smallest does.
         val audioUrl = if (kind != Kind.VIDEO) null else json.getAsJsonArray("formats")
             ?.map { it.asJsonObject }
             ?.filter { format ->
@@ -316,7 +317,7 @@ main()
                     format.get("acodec")?.takeUnless { it.isJsonNull }?.asString.let { it != null && it != "none" } &&
                     format.get("protocol")?.takeUnless { it.isJsonNull }?.asString == "https"
             }
-            ?.let { audio -> audio.firstOrNull { it.get("format_id")?.asString == "140" } ?: audio.firstOrNull() }
+            ?.minByOrNull { it.get("abr")?.takeUnless { abr -> abr.isJsonNull }?.asDouble ?: Double.MAX_VALUE }
             ?.get("url")?.asString
         return if (userAgent != null) {
             YouTubeStreams.Stream(url, mimeType, length, userAgent, audioUrl)

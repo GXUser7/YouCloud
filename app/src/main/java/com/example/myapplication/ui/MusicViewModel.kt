@@ -467,6 +467,13 @@ class MusicViewModel(
     private val _trackVideo = MutableStateFlow<TrackVideo?>(null)
     val trackVideo = _trackVideo.asStateFlow()
 
+    /**
+     * The playing track's music video while it is still being lined up with the track: the
+     * player buffers it meanwhile, unseen, so that it can show at once when it is ready.
+     */
+    private val _pendingTrackVideo = MutableStateFlow<TrackVideo?>(null)
+    val pendingTrackVideo = _pendingTrackVideo.asStateFlow()
+
     // Tracks looked up lately, with or without a video, so reopening the player doesn't ask again.
     private val videoLookups = java.util.concurrent.ConcurrentHashMap<Long, Pair<TrackVideo?, Long>>()
 
@@ -576,13 +583,17 @@ class MusicViewModel(
                 .distinctUntilChangedBy { it?.id }
                 .collectLatest { track ->
                     if (_trackVideo.value?.trackId != track?.id) _trackVideo.value = null
+                    if (_pendingTrackVideo.value?.trackId != track?.id) _pendingTrackVideo.value = null
                     if (track == null) return@collectLatest
                     val video = freshVideoLookup(track.id) ?: run {
                         // Flicking through the queue shouldn't start a lookup for every track passed.
                         delay(700)
                         videoLookup(track).await()
                     }
+                    // In this order, so that a pending video turning into the found one never
+                    // leaves a moment with neither, which would drop the player and its buffer.
                     _trackVideo.value = video?.first
+                    _pendingTrackVideo.value = null
                     // The next track's video, found while this one plays, shows as soon as it starts.
                     val nextIndex = musicPlayer.getNextMediaItemIndex()
                     _activeQueue.value.getOrNull(nextIndex)
@@ -3765,6 +3776,11 @@ class MusicViewModel(
                 async { trackOnsets(track, videoId, auth, workDir) }
             }
             val stream = YouTubeStreams.resolveVideo(context, video.videoId, auth) ?: return@coroutineScope null
+            if (_currentPlayingTrack.value?.id == track.id && trackOnsets != null) {
+                _pendingTrackVideo.value = TrackVideo(
+                    track.id, stream.url, loop = false, vertical = false, userAgent = stream.userAgent, ready = false
+                )
+            }
             val segments = if (trackOnsets == null) video.segments else {
                 val videoOnsets = stream.audioUrl?.let { sound ->
                     ClipAligner.onsetsOf(ClipAligner.AudioSource(sound, mapOf("User-Agent" to stream.userAgent)), workDir)

@@ -26,7 +26,10 @@ data class TrackVideo(
     val vertical: Boolean? = null,
     val userAgent: String? = null,
     // Empty: the video runs alongside the track one to one.
-    val segments: List<VideoSegment> = emptyList()
+    val segments: List<VideoSegment> = emptyList(),
+    // False while it is still being lined up: the player buffers it, in step as far as is known,
+    // but doesn't show it yet.
+    val ready: Boolean = true
 ) {
     /** Where the video should be while the track is at [trackMs]. */
     fun videoPositionFor(trackMs: Long): Long {

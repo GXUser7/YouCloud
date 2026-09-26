@@ -308,6 +308,7 @@ fun MusicScreen(viewModel: MusicViewModel) {
     val selectedTrack by viewModel.selectedTrack.collectAsState()
     val currentPlayingTrack by viewModel.currentPlayingTrack.collectAsState()
     val trackVideo by viewModel.trackVideo.collectAsState()
+    val pendingTrackVideo by viewModel.pendingTrackVideo.collectAsState()
     val currentTrackId by viewModel.currentTrackId.collectAsState()
     val favorites by viewModel.favorites.collectAsState()
     val downloadedFolderArtworkUri by viewModel.downloadedFolderArtworkUri.collectAsState()
@@ -988,7 +989,8 @@ fun MusicScreen(viewModel: MusicViewModel) {
                         positionMs = playbackPositionMs,
                         durationMs = max(playbackDurationMs, track.duration),
                         lyrics = lyrics?.takeIf { it.trackId == track.id }?.lines,
-                        video = trackVideo?.takeIf { it.trackId == track.id },
+                        video = trackVideo?.takeIf { it.trackId == track.id }
+                            ?: pendingTrackVideo?.takeIf { it.trackId == track.id },
                         livePosition = viewModel::livePositionMs,
                         onBack = {
                             haptic.performHapticFeedback(HapticFeedbackType.LongPress)
