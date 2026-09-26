@@ -486,6 +486,7 @@ private val FULL_SCREEN_GLOWS = listOf(
     Glow(scale = 1.3f, blur = 18.dp, opacity = 1f),
     Glow(scale = 1.12f, blur = 10.dp, opacity = 1f),
     Glow(scale = 1.04f, blur = 4.dp, opacity = 1f)
+)
 
 private class Glow(val scale: Float, val blur: androidx.compose.ui.unit.Dp, val opacity: Float)
 
