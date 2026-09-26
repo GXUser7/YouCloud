@@ -71,6 +71,8 @@ private const val MAX_SPEED_CHANGE = 0.25f
 private const val SEEK_DRIFT_MS = 1_000L
 private const val SEEK_COOLDOWN_MS = 2_000L
 private const val SEEK_LEAD_MS = 200L
+private const val FIRST_SEEK_LEAD_MS = 500L
+private const val CAUGHT_UP_MS = 150L
 private const val MAX_SEEK_LEAD_MS = 6_000L
 private const val MAX_HOLD_MS = 4_000L
 private const val SYNC_INTERVAL_MS = 100L
@@ -92,9 +94,13 @@ class PlayerVideoState internal constructor(video: TrackVideo, internal val play
     // A frame is up, and the video hasn't run out or failed.
     internal var rendering by mutableStateOf(false)
 
-    /** On screen: rendering, and lined up with the track. */
+    // Caught up with the track at least once. Until then the cover stays: a music video that is
+    // still catching up (loading, seeking, held) is better not seen.
+    internal var caughtUp by mutableStateOf(video.loop)
+
+    /** On screen: rendering, lined up with the track, and caught up with it. */
     val showing: Boolean
-        get() = rendering && video.ready
+        get() = rendering && video.ready && caughtUp
 
     internal var firstFrame = false
 
@@ -196,10 +202,10 @@ fun rememberPlayerVideoState(video: TrackVideo?, isPlaying: Boolean, trackPositi
         val player = state.player
         var lastLogAt = 0L
         var speed = 1f
-        // The first load counts as a seek: how long it takes says how far ahead to aim the next.
-        var lastSeekAt = SystemClock.elapsedRealtime()
-        var seekPending = true
-        var lead = SEEK_LEAD_MS
+        // The first load isn't measured: it opens the connection too, and seeks come quicker.
+        var lastSeekAt = 0L
+        var seekPending = false
+        var lead = FIRST_SEEK_LEAD_MS
         var measuredLoads = 0
         // Ahead of the track, the picture waits for it rather than going back and loading again.
         var holdUntil = 0L
@@ -218,6 +224,7 @@ fun rememberPlayerVideoState(video: TrackVideo?, isPlaying: Boolean, trackPositi
                 }
                 val target = state.video.videoPositionFor(position())
                 val drift = target - player.currentPosition
+                if (!state.caughtUp && !loading && now >= holdUntil && abs(drift) < CAUGHT_UP_MS) state.caughtUp = true
                 val wanted = when {
                     // Still loading where it was last sent. Seeking again would only start the
                     // load over, and a slow stream would never play, stuck on one frame.
