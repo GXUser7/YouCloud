@@ -989,8 +989,8 @@ fun MusicScreen(viewModel: MusicViewModel) {
                         positionMs = playbackPositionMs,
                         durationMs = max(playbackDurationMs, track.duration),
                         lyrics = lyrics?.takeIf { it.trackId == track.id }?.lines,
-                        video = trackVideo?.takeIf { it.trackId == track.id }
-                            ?: pendingTrackVideo?.takeIf { it.trackId == track.id },
+                        video = trackVideo?.takeIf { it.trackId == track.id },
+                        upcomingVideo = pendingTrackVideo?.takeIf { it.trackId == track.id },
                         livePosition = viewModel::livePositionMs,
                         onBack = {
                             haptic.performHapticFeedback(HapticFeedbackType.LongPress)
@@ -4841,6 +4841,7 @@ private fun TrackDetailScreen(
     durationMs: Long,
     lyrics: List<LyricLine>?,
     video: com.example.myapplication.data.TrackVideo?,
+    upcomingVideo: com.example.myapplication.data.TrackVideo?,
     livePosition: () -> Long,
     onBack: () -> Unit,
     onTogglePlay: () -> Unit,
@@ -4884,7 +4885,14 @@ private fun TrackDetailScreen(
 
     // A music video plays in the cover's place. A vertical one (Yandex's videoshots) fills the
     // whole player instead, and the panel turns to frosted glass over it.
-    val videoState = rememberPlayerVideoState(video, isPlaying, livePosition)
+    // The video on screen, and the one to take over from it, buffering unseen meanwhile. Keyed by
+    // stream, so the player that buffered it carries on when it takes over.
+    val shownVideo = video ?: upcomingVideo
+    var videoState: PlayerVideoState? = null
+    for (candidate in listOfNotNull(shownVideo, upcomingVideo?.takeIf { it.url != shownVideo?.url })) {
+        val state = androidx.compose.runtime.key(candidate.url) { rememberPlayerVideoState(candidate, isPlaying, livePosition) }
+        if (candidate === shownVideo) videoState = state
+    }
     val videoShown by animateFloatAsState(
         targetValue = if (videoState?.showing == true) 1f else 0f,
         animationSpec = tween(durationMillis = 500),

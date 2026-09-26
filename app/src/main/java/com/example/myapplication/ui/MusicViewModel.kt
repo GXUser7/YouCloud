@@ -3704,7 +3704,20 @@ class MusicViewModel(
         val urn = track.urn.orEmpty()
         val youTubeId = track.youTubeVideoId
         return when {
-            urn.startsWith("yandex:track:") -> yandexVideo(track) ?: youTubeVideo(track, null)
+            urn.startsWith("yandex:track:") -> {
+                val own = yandexVideo(track)
+                when {
+                    own == null -> youTubeVideo(track, null)
+                    // The videoshot: made for the player, and it fills it.
+                    own.vertical == true -> own
+                    // The clip's ten-second loop plays at once; a whole video from YouTube, lined
+                    // up with the track, takes over if one is found.
+                    else -> {
+                        if (_currentPlayingTrack.value?.id == track.id) _trackVideo.value = own
+                        youTubeVideo(track, null) ?: own
+                    }
+                }
+            }
             youTubeId != null -> youTubeVideo(track, youTubeId)
             else -> null
         }
