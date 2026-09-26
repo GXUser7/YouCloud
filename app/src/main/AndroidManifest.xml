@@ -39,9 +39,12 @@
             android:exported="true"
             android:grantUriPermissions="true" />
 
+        <!-- Turning the phone doesn't recreate the activity: Compose lays itself out again, and a
+             music video playing in the player carries on instead of starting to load over. -->
         <activity
             android:name=".MainActivity"
             android:exported="true"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden"
             android:label="@string/app_name"
             android:theme="@style/Theme.MyApplication">
             <intent-filter>

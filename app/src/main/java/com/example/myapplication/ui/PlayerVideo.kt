@@ -22,6 +22,7 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.drawWithContent
@@ -63,6 +64,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlin.math.abs
 import kotlin.math.max
+import kotlin.math.min
 import kotlin.math.roundToInt
 
 private const val TAG = "PlayerVideo"
@@ -268,11 +270,12 @@ fun rememberPlayerVideoState(video: TrackVideo?, isPlaying: Boolean, trackPositi
 }
 
 /**
- * The video's picture, cropped to fill [modifier]'s bounds as a cover is. It is drawn through
- * the state's layer, which [FrostedVideoGlass] draws a second time, blurred.
+ * The video's picture, cropped to fill [modifier]'s bounds as a cover is — or, with [fit], whole
+ * and centred, leaving the rest empty. It is drawn through the state's layer, which
+ * [FrostedVideoGlass] draws a second time, blurred.
  */
 @Composable
-fun VideoSurface(state: PlayerVideoState, modifier: Modifier = Modifier) {
+fun VideoSurface(state: PlayerVideoState, modifier: Modifier = Modifier, fit: Boolean = false) {
     val layer = state.frameLayer
     BoxWithConstraints(
         modifier = modifier
@@ -293,7 +296,9 @@ fun VideoSurface(state: PlayerVideoState, modifier: Modifier = Modifier) {
         val viewModifier = if (size == IntSize.Zero || !constraints.hasBoundedWidth || !constraints.hasBoundedHeight) {
             Modifier.fillMaxSize()
         } else {
-            val scale = max(constraints.maxWidth.toFloat() / size.width, constraints.maxHeight.toFloat() / size.height)
+            val widthScale = constraints.maxWidth.toFloat() / size.width
+            val heightScale = constraints.maxHeight.toFloat() / size.height
+            val scale = if (fit) min(widthScale, heightScale) else max(widthScale, heightScale)
             with(density) { Modifier.requiredSize((size.width * scale).toDp(), (size.height * scale).toDp()) }
         }
         // A view of its own per player: the factory runs once per view, so a player taking over
@@ -377,6 +382,60 @@ fun AmbientVideo(
 }
 
 private val VIDEO_EDGE_FADE = 64.dp
+
+/**
+ * The phone turned sideways with a video playing: the video alone on the whole screen, whole and
+ * centred, with the system bars out of the way. Where it doesn't reach the edges (a 20:9 screen
+ * around a 16:9 video) its glow fills in, steps of larger and softer copies as in the player.
+ */
+@Composable
+fun FullScreenVideo(state: PlayerVideoState, blur: androidx.compose.ui.unit.Dp) {
+    val view = androidx.compose.ui.platform.LocalView.current
+    DisposableEffect(view) {
+        val activity = generateSequence(view.context) { (it as? android.content.ContextWrapper)?.baseContext }
+            .filterIsInstance<android.app.Activity>()
+            .firstOrNull()
+        val controller = activity?.window?.let { androidx.core.view.WindowCompat.getInsetsController(it, view) }
+        controller?.systemBarsBehavior =
+            androidx.core.view.WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+        controller?.hide(androidx.core.view.WindowInsetsCompat.Type.systemBars())
+        onDispose { controller?.show(androidx.core.view.WindowInsetsCompat.Type.systemBars()) }
+    }
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .drawBehind { drawRect(Color.Black) }
+            .blur(blur)
+    ) {
+        for (glow in FULL_SCREEN_GLOWS) {
+            Box(
+                modifier = Modifier
+                    .matchParentSize()
+                    .graphicsLayer {
+                        val radius = glow.blur.toPx()
+                        renderEffect = BlurEffect(radius, radius, TileMode.Decal)
+                        this.alpha = glow.opacity
+                    }
+                    .drawBehind {
+                        val layer = state.frameLayer ?: return@drawBehind
+                        // The layer is the whole screen with the picture in its middle.
+                        scale(glow.scale, glow.scale, pivot = Offset(size.width / 2, size.height / 2)) {
+                            drawLayer(layer)
+                        }
+                    }
+            )
+        }
+        VideoSurface(state = state, modifier = Modifier.fillMaxSize(), fit = true)
+    }
+}
+
+// Widest and softest first. Enough to fill the sides a 16:9 video leaves on a 20:9 screen.
+private val FULL_SCREEN_GLOWS = listOf(
+    Glow(scale = 1.6f, blur = 28.dp, opacity = 1f),
+    Glow(scale = 1.3f, blur = 18.dp, opacity = 1f),
+    Glow(scale = 1.12f, blur = 10.dp, opacity = 1f),
+    Glow(scale = 1.04f, blur = 4.dp, opacity = 1f)
+)
 
 private class Glow(val scale: Float, val blur: androidx.compose.ui.unit.Dp, val opacity: Float)
 

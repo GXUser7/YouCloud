@@ -175,6 +175,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.font.FontWeight
@@ -262,6 +263,7 @@ import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.layout.Layout
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.ui.unit.DpSize
@@ -4921,6 +4923,13 @@ private fun TrackDetailScreen(
         { FrostedVideoGlass(state = shown, tint = PanelColors.container.copy(alpha = 0.42f)) }
     }
 
+    // Turned sideways with a video playing: the video alone, on the whole screen.
+    val landscape = LocalConfiguration.current.orientation == android.content.res.Configuration.ORIENTATION_LANDSCAPE
+    if (landscape && videoState != null && videoState.showing) {
+        FullScreenVideo(state = videoState, blur = pauseBlur)
+        return
+    }
+
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -4961,6 +4970,7 @@ private fun TrackDetailScreen(
                 .blur(blurRadius)
         ) {
             PlayerLayout(
+                landscape = landscape,
                 artwork = {
                     Box(modifier = Modifier.fillMaxSize()) {
                         Box(
@@ -4996,6 +5006,7 @@ private fun TrackDetailScreen(
                 },
                 panel = {
                     PlayerPanel(
+                        landscape = landscape,
                         glass = if (immersiveVideo != null && videoShown > 0f) {
                             {
                                 FrostedVideoGlass(
@@ -5043,7 +5054,8 @@ private fun TrackDetailScreen(
                     .fillMaxWidth()
                     .statusBarsPadding()
                     .padding(horizontal = 16.dp, vertical = 12.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
+                // Sideways both over the cover, clear of the panel's title.
+                horizontalArrangement = if (landscape) Arrangement.spacedBy(12.dp) else Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 OverArtworkButton(
@@ -5127,7 +5139,9 @@ private fun TrackDetailScreen(
 @Composable
 private fun PlayerLayout(
     artwork: @Composable () -> Unit,
-    panel: @Composable () -> Unit
+    panel: @Composable () -> Unit,
+    // Sideways: the cover on the left, as tall as the screen, the panel beside it.
+    landscape: Boolean = false
 ) {
     val overlap = 44.dp
     Layout(
@@ -5139,6 +5153,16 @@ private fun PlayerLayout(
     ) { measurables, constraints ->
         val width = constraints.maxWidth
         val height = constraints.maxHeight
+        if (landscape) {
+            val artWidth = minOf(height, width / 2)
+            val overlapPx = overlap.roundToPx()
+            val artPlaceable = measurables[0].measure(Constraints.fixed(artWidth, height))
+            val panelPlaceable = measurables[1].measure(Constraints.fixed(width - artWidth + overlapPx, height))
+            return@Layout layout(width, height) {
+                artPlaceable.place(0, 0)
+                panelPlaceable.place(artWidth - overlapPx, 0)
+            }
+        }
         val panelPlaceable = measurables[1].measure(
             Constraints(minWidth = width, maxWidth = width, maxHeight = height)
         )
@@ -5286,6 +5310,7 @@ private fun OverArtworkButton(
 @Composable
 private fun PlayerPanel(
     glass: (@Composable BoxScope.() -> Unit)? = null,
+    landscape: Boolean = false,
     track: SoundCloudTrack,
     activeQueue: List<SoundCloudTrack>,
     isFavorite: Boolean,
@@ -5313,18 +5338,33 @@ private fun PlayerPanel(
     val onPanel = PanelColors.content
 
     Surface(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(topStart = 44.dp, topEnd = 44.dp),
+        modifier = if (landscape) Modifier.fillMaxSize() else Modifier.fillMaxWidth(),
+        // Rounded toward the cover: above it upright, beside it sideways.
+        shape = if (landscape) {
+            RoundedCornerShape(topStart = 44.dp, bottomStart = 44.dp)
+        } else {
+            RoundedCornerShape(topStart = 44.dp, topEnd = 44.dp)
+        },
         color = if (glass != null) Color.Transparent else PanelColors.container,
         contentColor = onPanel
     ) {
         Box {
             glass?.invoke(this)
             Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .navigationBarsPadding()
-                    .padding(start = 24.dp, top = 24.dp, end = 24.dp, bottom = 16.dp)
+                modifier = if (landscape) {
+                    // A phone on its side is short: what doesn't fit scrolls.
+                    Modifier
+                        .fillMaxSize()
+                        .verticalScroll(rememberScrollState())
+                        .statusBarsPadding()
+                        .navigationBarsPadding()
+                        .padding(start = 24.dp, top = 16.dp, end = 24.dp, bottom = 16.dp)
+                } else {
+                    Modifier
+                        .fillMaxWidth()
+                        .navigationBarsPadding()
+                        .padding(start = 24.dp, top = 24.dp, end = 24.dp, bottom = 16.dp)
+                }
             ) {
                 OnPanelChip(
                     text = buildString {
