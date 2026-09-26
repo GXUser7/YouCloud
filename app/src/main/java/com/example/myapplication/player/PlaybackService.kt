@@ -30,6 +30,9 @@ class PlaybackService : MediaLibraryService() {
     private var equalizer: Equalizer? = null
     private lateinit var preferences: SharedPreferences
 
+    // One at a time, so a prefetch never holds up the track that is actually starting.
+    private val youTubePrefetch = java.util.concurrent.Executors.newSingleThreadExecutor()
+
     private val prefListener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
         if (key == null) return@OnSharedPreferenceChangeListener
         val eq = equalizer ?: return@OnSharedPreferenceChangeListener
@@ -80,7 +83,7 @@ class PlaybackService : MediaLibraryService() {
                             if (local != null) {
                                 return dataSpec.buildUpon().setUri(android.net.Uri.parse(local)).build()
                             }
-                            val audio = com.example.myapplication.data.YouTubeStreams.resolve(videoId, youTubeAuth())
+                            val audio = com.example.myapplication.data.YouTubeStreams.resolve(this@PlaybackService, videoId, youTubeAuth())
                             if (audio != null) {
                                 // Keyed by the video, not the URL: a fresh URL for the same track
                                 // still finds what the cache already holds. Fetched as the client
@@ -122,6 +125,10 @@ class PlaybackService : MediaLibraryService() {
                 if (audioSessionId != C.AUDIO_SESSION_ID_UNSET) {
                     initEqualizer(audioSessionId)
                 }
+            }
+
+            override fun onMediaItemTransition(mediaItem: androidx.media3.common.MediaItem?, reason: Int) {
+                prefetchNextYouTubeTrack(player)
             }
         })
 
@@ -269,6 +276,22 @@ class PlaybackService : MediaLibraryService() {
             visitorData = preferences.getString("ytmusic_visitor_data", null),
             authUser = preferences.getString("ytmusic_auth_user", null) ?: "0"
         )
+    }
+
+    /**
+     * Finding a YouTube track's audio takes yt-dlp several seconds. For the next track in the queue
+     * that happens while this one plays, so skipping to it starts at once.
+     */
+    private fun prefetchNextYouTubeTrack(player: Player) {
+        val next = player.nextMediaItemIndex.takeIf { it != C.INDEX_UNSET } ?: return
+        val uri = player.getMediaItemAt(next).localConfiguration?.uri ?: return
+        if (uri.scheme != "ytmusic") return
+        val videoId = uri.lastPathSegment ?: return
+        if (downloadedYouTubeTrack(videoId) != null) return
+        val auth = youTubeAuth()
+        youTubePrefetch.execute {
+            com.example.myapplication.data.YouTubeStreams.resolve(this, videoId, auth)
+        }
     }
 
     /** A YouTube track saved in "Скачанное" or with a liked playlist, as a `file://` URL. */
@@ -451,6 +474,7 @@ class PlaybackService : MediaLibraryService() {
     }
 
     override fun onDestroy() {
+        youTubePrefetch.shutdownNow()
         preferences.unregisterOnSharedPreferenceChangeListener(prefListener)
         equalizer?.release()
         equalizer = null

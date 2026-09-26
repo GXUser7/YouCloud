@@ -15,6 +15,7 @@ import com.example.myapplication.data.YT_ARTIST_REF
 import com.example.myapplication.data.YT_ID_BASE
 import com.example.myapplication.data.YouTubeMusicClient
 import com.example.myapplication.data.YouTubeStreams
+import com.example.myapplication.data.YtDlp
 import com.example.myapplication.data.YtAuth
 import com.example.myapplication.data.YtShelf
 import com.example.myapplication.data.isProgressiveSource
@@ -1316,6 +1317,9 @@ class MusicViewModel(
 
     fun loadYtHome() {
         if (settingsRepository.ytMusicAuth() == null || _ytHomeLoading.value) return
+        // yt-dlp plays these tracks; unpacking it and fetching the current release takes a while
+        // the first time, better spent now than on the first track.
+        YtDlp.warmUp(context)
         viewModelScope.launch {
             _ytHomeLoading.value = true
             _ytHomeError.value = null
@@ -2578,7 +2582,7 @@ class MusicViewModel(
         val youTubeId = track.youTubeVideoId
         try {
             val stored: String? = if (youTubeId != null) {
-                withContext(Dispatchers.IO) { YouTubeStreams.resolve(youTubeId, settingsRepository.ytMusicAuth()) }?.let { audio ->
+                withContext(Dispatchers.IO) { YouTubeStreams.resolve(context, youTubeId, settingsRepository.ytMusicAuth()) }?.let { audio ->
                     val path = withContext(Dispatchers.IO) {
                         offlineMusicStore.downloadProgressive(audio.url, "pl_yt_$youTubeId", extension = "m4a", chunked = true, userAgent = audio.userAgent) { progress ->
                             updateDownloadProgress(track.id, progress)
@@ -3343,7 +3347,7 @@ class MusicViewModel(
 
         try {
             val youTubeAudio = youTubeId?.let { id ->
-                withContext(Dispatchers.IO) { YouTubeStreams.resolve(id, settingsRepository.ytMusicAuth()) }
+                withContext(Dispatchers.IO) { YouTubeStreams.resolve(context, id, settingsRepository.ytMusicAuth()) }
             }
             val streamUrl = if (youTubeId != null) {
                 youTubeAudio?.url

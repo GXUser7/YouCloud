@@ -61,6 +61,22 @@ android {
         )
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+
+        // yt-dlp's Python and QuickJS are native builds, 15 MB an ABI. 64-bit ARM only: what
+        // nearly every phone on Android 14, the minimum here, is.
+        ndk {
+            abiFilters += "arm64-v8a"
+        }
+    }
+
+    // Python and QuickJS run as programs from the app's native library directory, so they must
+    // be unpacked there on install rather than read straight out of the APK.
+    packaging {
+        jniLibs {
+            useLegacyPackaging = true
+            // Python's standard library, zipped; named like a library only to ship among them.
+            keepDebugSymbols += "**/libpython.zip.so"
+        }
     }
 
     signingConfigs {
@@ -118,6 +134,7 @@ dependencies {
     implementation(libs.coil.compose)
     implementation(libs.material.color.utilities)
     implementation(libs.newpipe.extractor)
+    implementation(libs.youtubedl.android)
     testImplementation(libs.junit)
     androidTestImplementation(platform(libs.androidx.compose.bom))
     androidTestImplementation(libs.androidx.compose.ui.test.junit4)

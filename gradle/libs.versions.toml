@@ -22,6 +22,8 @@ coil = "2.7.0"
 materialColorUtilities = "3.0.1"
 # TeamNewPipe's extractor: finds a YouTube video's audio streams, deciphering the player script.
 newpipeExtractor = "v0.26.5"
+# yt-dlp for Android: Python, yt-dlp and QuickJS, run as a process. Plays YouTube Music tracks.
+youtubedlAndroid = "0.18.1"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
@@ -49,6 +51,7 @@ okhttp = { group = "com.squareup.okhttp3", name = "okhttp", version.ref = "okhtt
 coil-compose = { group = "io.coil-kt", name = "coil-compose", version.ref = "coil" }
 material-color-utilities = { group = "com.materialkolor", name = "material-color-utilities", version.ref = "materialColorUtilities" }
 newpipe-extractor = { group = "com.github.teamnewpipe", name = "NewPipeExtractor", version.ref = "newpipeExtractor" }
+youtubedl-android = { group = "io.github.junkfood02.youtubedl-android", name = "library", version.ref = "youtubedlAndroid" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }
