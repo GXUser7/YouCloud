@@ -28,6 +28,13 @@ interface SoundCloudService {
         @Query("offset") offset: Int = 0
     ): SoundCloudPlaylistsResponse
 
+    @GET("search/users")
+    suspend fun searchUsers(
+        @Query("q") query: String,
+        @Query("client_id") clientId: String,
+        @Query("limit") limit: Int = 10
+    ): SoundCloudUsersResponse
+
     // Plain `search/playlists` mixes albums back in; this one keeps the two rows from repeating.
     @GET("search/playlists_without_albums")
     suspend fun searchPlaylists(

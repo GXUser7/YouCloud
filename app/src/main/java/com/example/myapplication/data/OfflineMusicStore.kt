@@ -49,9 +49,21 @@ class OfflineMusicStore private constructor(context: Context) {
         HlsDownloader(mediaItem, cacheDataSourceFactory).remove()
     }
 
-    fun downloadProgressive(url: String, trackId: String, onProgress: (Float) -> Unit = {}): String? {
-        val tempFile = File(downloadDirectory, "track_${trackId}.mp3.tmp")
-        val finalFile = File(downloadDirectory, "track_${trackId}.mp3")
+    /**
+     * @param chunked fetch in [CHUNK_BYTES] ranges. YouTube serves a whole file at barely more than
+     *   playback speed and a ranged request at full speed, so its audio comes down in pieces.
+     */
+    fun downloadProgressive(
+        url: String,
+        trackId: String,
+        extension: String = "mp3",
+        chunked: Boolean = false,
+        userAgent: String? = null,
+        onProgress: (Float) -> Unit = {}
+    ): String? {
+        val tempFile = File(downloadDirectory, "track_${trackId}.$extension.tmp")
+        val finalFile = File(downloadDirectory, "track_${trackId}.$extension")
+        if (chunked) return downloadInChunks(url, tempFile, finalFile, userAgent, onProgress)
         return try {
             val client = OkHttpClient()
             val request = okhttp3.Request.Builder().url(url).build()
@@ -97,6 +109,52 @@ class OfflineMusicStore private constructor(context: Context) {
             }
             null
         }
+    }
+
+    private fun downloadInChunks(
+        url: String,
+        tempFile: File,
+        finalFile: File,
+        userAgent: String?,
+        onProgress: (Float) -> Unit
+    ): String? = try {
+        val client = OkHttpClient()
+        var position = 0L
+        var total = -1L
+        tempFile.outputStream().use { output ->
+            while (total < 0 || position < total) {
+                val request = okhttp3.Request.Builder()
+                    .url(url)
+                    .header("Range", "bytes=$position-${position + CHUNK_BYTES - 1}")
+                    .apply { if (userAgent != null) header("User-Agent", userAgent) }
+                    .build()
+                client.newCall(request).execute().use { response ->
+                    if (response.code != 206 && response.code != 200) {
+                        throw java.io.IOException("HTTP ${response.code} at byte $position")
+                    }
+                    val bytes = response.body?.bytes() ?: ByteArray(0)
+                    if (total < 0) {
+                        total = response.header("Content-Range")?.substringAfter('/')?.toLongOrNull()
+                            ?: bytes.size.toLong()
+                    }
+                    // A server that ignores Range sends everything at once.
+                    if (response.code == 200) total = bytes.size.toLong()
+                    if (bytes.isEmpty()) throw java.io.IOException("Empty chunk at byte $position")
+                    output.write(bytes)
+                    position += bytes.size
+                }
+                if (total > 0) onProgress((position.toFloat() / total).coerceIn(0f, 1f))
+            }
+        }
+        if (tempFile.length() <= 0L || tempFile.length() != total) {
+            throw java.io.IOException("Got ${tempFile.length()} of $total bytes")
+        }
+        if (!tempFile.renameTo(finalFile)) throw java.io.IOException("Failed to rename temp file")
+        finalFile.absolutePath
+    } catch (e: Exception) {
+        Log.e("OfflineMusicStore", "Failed to download track in chunks", e)
+        tempFile.delete()
+        null
     }
 
     /** Where the cached cover for [trackId] lives, whether or not it has been fetched yet. */
@@ -178,6 +236,8 @@ class OfflineMusicStore private constructor(context: Context) {
     }
 
     companion object {
+        private const val CHUNK_BYTES = 1L shl 20
+
         private const val MAX_ARTWORK_PX = 640
 
         @Volatile

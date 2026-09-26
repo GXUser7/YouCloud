@@ -55,7 +55,13 @@ object SoundCloudApi {
                 // Only when a provider was supplied. Callers that omit it are verifying one
                 // specific credential pair — silently healing their request would report a dead
                 // pair as working and break the recovery ladder that depends on the answer.
-                if ((response.code == 401 || response.code == 403) && usedClientId.isNotEmpty()) {
+                //
+                // A DataDome block is also a 403 but has nothing to do with the id: re-scraping
+                // can't lift it, and every extra blocked request raises the network's bot score.
+                if ((response.code == 401 || response.code == 403) &&
+                    usedClientId.isNotEmpty() &&
+                    !isAntiBotBlock(response)
+                ) {
                     val fresh = runBlocking {
                         refreshClientId(usedClientId, clientIdProvider, onClientIdRefreshed)
                     }
@@ -95,6 +101,15 @@ object SoundCloudApi {
             .build()
             .create(SoundCloudService::class.java)
     }
+
+    /**
+     * SoundCloud's bot protection (DataDome) refused the request: a 403 with an `x-dd-b` header
+     * and a captcha link. It guards writes such as likes — not reads, and not the `DELETE` of an
+     * unlike — from addresses it distrusts, VPN exits especially; those go through
+     * [SoundCloudWebRequests] instead.
+     */
+    private fun isAntiBotBlock(response: okhttp3.Response): Boolean =
+        response.code == 403 && response.header("x-dd-b") != null
 
     /**
      * Applies the browser-ish headers SoundCloud's private API expects, and forces [clientId] onto

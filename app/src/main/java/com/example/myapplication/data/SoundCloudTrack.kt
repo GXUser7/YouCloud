@@ -106,6 +106,10 @@ data class SoundCloudPlaylistsResponse(
     @SerializedName("next_href") val nextHref: String? = null
 )
 
+data class SoundCloudUsersResponse(
+    val collection: List<SoundCloudUser> = emptyList()
+)
+
 data class SoundCloudStreamUserResponse(
     val collection: List<SoundCloudStreamItem> = emptyList(),
     @SerializedName("next_href") val nextHref: String? = null

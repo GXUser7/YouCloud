@@ -64,6 +64,57 @@ class SettingsRepository(
         preferences.edit().putStringSet(KEY_HIDDEN_YANDEX_PLAYLISTS, updated).apply()
     }
 
+    // YouTube Music: the site's session after signing in through the login page.
+    private val _ytMusicAccount = MutableStateFlow(
+        preferences.getString(KEY_YTM_ACCOUNT, null)?.takeIf { preferences.contains(KEY_YTM_COOKIE) }
+    )
+    /** The signed-in account's name, or null when YouTube Music isn't connected. */
+    val ytMusicAccount = _ytMusicAccount.asStateFlow()
+
+    fun ytMusicAuth(): YtAuth? {
+        val cookie = preferences.getString(KEY_YTM_COOKIE, null)?.takeIf { it.isNotBlank() } ?: return null
+        return YtAuth(
+            cookie = cookie,
+            visitorData = preferences.getString(KEY_YTM_VISITOR, null),
+            authUser = preferences.getString(KEY_YTM_AUTH_USER, null) ?: "0"
+        )
+    }
+
+    fun saveYtMusicAuth(auth: YtAuth, accountName: String?) {
+        preferences.edit()
+            .putString(KEY_YTM_COOKIE, auth.cookie)
+            .putString(KEY_YTM_VISITOR, auth.visitorData)
+            .putString(KEY_YTM_AUTH_USER, auth.authUser)
+            .putString(KEY_YTM_ACCOUNT, accountName ?: "YouTube Music")
+            .apply()
+        _ytMusicAccount.value = accountName ?: "YouTube Music"
+    }
+
+    fun resetYtMusicAuth() {
+        preferences.edit()
+            .remove(KEY_YTM_COOKIE)
+            .remove(KEY_YTM_VISITOR)
+            .remove(KEY_YTM_AUTH_USER)
+            .remove(KEY_YTM_ACCOUNT)
+            .apply()
+        _ytMusicAccount.value = null
+    }
+
+    // SoundCloud likes that didn't go through — typically refused by its bot protection while
+    // the phone is on a VPN. The track is downloaded regardless; the like is sent again later.
+    fun pendingSoundCloudLikes(): Set<Long> =
+        preferences.getStringSet(KEY_PENDING_SOUNDCLOUD_LIKES, emptySet()).orEmpty()
+            .mapNotNull { it.toLongOrNull() }
+            .toSet()
+
+    fun setSoundCloudLikePending(trackId: Long, pending: Boolean) {
+        val current = preferences.getStringSet(KEY_PENDING_SOUNDCLOUD_LIKES, emptySet()).orEmpty()
+        val updated = if (pending) current + trackId.toString() else current - trackId.toString()
+        if (updated != current) {
+            preferences.edit().putStringSet(KEY_PENDING_SOUNDCLOUD_LIKES, updated).apply()
+        }
+    }
+
     val showDebugPercentage = MutableStateFlow(preferences.getBoolean(KEY_SHOW_DEBUG_PERCENTAGE, false))
 
     fun setShowDebugPercentage(enabled: Boolean) {
@@ -243,6 +294,11 @@ class SettingsRepository(
         const val KEY_EQ_PRESET = "equalizer_preset"
         const val KEY_HOME_SELECTED_TAB = "home_selected_tab"
         const val KEY_HIDDEN_YANDEX_PLAYLISTS = "hidden_yandex_playlists"
+        const val KEY_PENDING_SOUNDCLOUD_LIKES = "pending_soundcloud_likes"
+        const val KEY_YTM_COOKIE = "ytmusic_cookie"
+        const val KEY_YTM_VISITOR = "ytmusic_visitor_data"
+        const val KEY_YTM_AUTH_USER = "ytmusic_auth_user"
+        const val KEY_YTM_ACCOUNT = "ytmusic_account"
         const val KEY_SHOW_DEBUG_PERCENTAGE = "show_debug_percentage"
         const val KEY_BACKGROUND_MOTION = "background_motion"
         const val KEY_PLAYER_COVER_COLORS = "player_cover_colors"

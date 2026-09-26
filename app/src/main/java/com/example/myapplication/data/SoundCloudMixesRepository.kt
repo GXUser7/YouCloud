@@ -14,15 +14,15 @@ class SoundCloudMixesRepository(
     private val prefs = context.getSharedPreferences("soundcloud_mixes_cache", Context.MODE_PRIVATE)
     private val gson = Gson()
 
-    fun fetchHomeSectionsFlow(clientId: String): Flow<Pair<MixSection?, MixSection?>> = flow {
-        val cacheKey = "home_sections"
+    fun fetchHomeSectionsFlow(clientId: String): Flow<HomeSections> = flow {
+        // v2: the cache used to be a pair of sections, before trending joined them.
+        val cacheKey = "home_sections_v2"
         val cachedJson = prefs.getString(cacheKey, null)
 
-        var cachedData: Pair<MixSection?, MixSection?>? = null
+        var cachedData: HomeSections? = null
         if (cachedJson != null) {
             try {
-                val type = object : TypeToken<Pair<MixSection?, MixSection?>>() {}.type
-                cachedData = gson.fromJson(cachedJson, type)
+                cachedData = gson.fromJson(cachedJson, HomeSections::class.java)
                 if (cachedData != null) {
                     emit(cachedData)
                 }
@@ -36,15 +36,7 @@ class SoundCloudMixesRepository(
 
             // Clean up cached track data for mixes that are no longer present
             if (cachedData != null) {
-                val cachedMixIds = mutableSetOf<String>()
-                cachedData.first?.mixes?.map { it.id }?.let { cachedMixIds.addAll(it) }
-                cachedData.second?.mixes?.map { it.id }?.let { cachedMixIds.addAll(it) }
-
-                val networkMixIds = mutableSetOf<String>()
-                networkData.first?.mixes?.map { it.id }?.let { networkMixIds.addAll(it) }
-                networkData.second?.mixes?.map { it.id }?.let { networkMixIds.addAll(it) }
-
-                val removedMixIds = cachedMixIds - networkMixIds
+                val removedMixIds = cachedData.mixIds - networkData.mixIds
                 if (removedMixIds.isNotEmpty()) {
                     val editor = prefs.edit()
                     for (mixId in removedMixIds) {
@@ -70,9 +62,10 @@ class SoundCloudMixesRepository(
         }
     }
 
-    private suspend fun fetchHomeSectionsNetwork(clientId: String): Pair<MixSection?, MixSection?> {
+    private suspend fun fetchHomeSectionsNetwork(clientId: String): HomeSections {
         val response = service.getMixedSelections(
             clientId = clientId,
+            // Trending sits fourth in the list; ten leaves room if SoundCloud reorders it.
             limit = 10,
             offset = 0,
             linkedPartitioning = 1,
@@ -97,7 +90,16 @@ class SoundCloudMixesRepository(
             if (stations.isNotEmpty()) MixSection(selection.title?.takeIf { it.isNotBlank() } ?: "Discover with Station", stations) else null
         }
 
-        return Pair(moodsSection, stationsSection)
+        // Each genre is a system playlist carrying its chart as track stubs, the same shape as a
+        // mix, so it opens through [loadMixTracks] like one.
+        val trendingSection = response.collection
+            .firstOrNull { it.trackingFeatureName == "trending-by-genre-playlists" }
+            ?.let { selection ->
+                val genres = selection.items?.collection?.mapNotNull(SoundCloudMixPlaylist::toMix).orEmpty()
+                if (genres.isNotEmpty()) MixSection(selection.title?.takeIf { it.isNotBlank() } ?: "Trending by genre", genres) else null
+            }
+
+        return HomeSections(moods = moodsSection, stations = stationsSection, trending = trendingSection)
     }
 
     suspend fun loadMixTracks(mix: SoundCloudMix, clientId: String): List<SoundCloudTrack> {

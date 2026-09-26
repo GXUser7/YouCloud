@@ -44,6 +44,18 @@ import kotlinx.coroutines.withContext
 /** What a cover is made of. [accent] is null for a greyscale cover. */
 private data class CoverColors(val dominant: Int, val accent: Int?)
 
+/**
+ * Covers already read, by URL. The player composes afresh each time it opens, and without this it
+ * started in the app's colours and faded to the cover's all over again.
+ */
+private val coverColorsCache = android.util.LruCache<String, CoverColors>(64)
+
+/** Reads [url]'s colours ahead of time, so the player opens already in them. */
+internal suspend fun prefetchCoverColors(context: Context, url: String) {
+    if (coverColorsCache.get(url) != null) return
+    runCatching { coverColors(context, url) }.getOrNull()?.let { coverColorsCache.put(url, it) }
+}
+
 /** A scheme built from a cover, plus the panel roles that carry the accent itself. */
 private class CoverPalette(val scheme: ColorScheme, val panel: PanelColorRoles)
 
@@ -66,12 +78,17 @@ internal fun CoverTheme(
     val darkTheme = isSystemInDarkTheme()
     // Keeps the previous cover's colours while the next one loads, so the player never flashes
     // back to the app's colours between two tracks.
-    val colors by produceState<CoverColors?>(initialValue = null, artworkUrl) {
+    val colors by produceState(initialValue = artworkUrl?.let { coverColorsCache.get(it) }, artworkUrl) {
         if (artworkUrl.isNullOrBlank()) {
             value = null
             return@produceState
         }
+        coverColorsCache.get(artworkUrl)?.let {
+            value = it
+            return@produceState
+        }
         value = runCatching { coverColors(context, artworkUrl) }.getOrNull()
+            ?.also { coverColorsCache.put(artworkUrl, it) }
     }
     val appScheme = MaterialTheme.colorScheme
     val appPanel = AppTheme.panel
@@ -122,11 +139,26 @@ private class Swatch(val argb: Int, val hct: Hct, val share: Float)
  * wallpaper; on a cover it picks the sepia of a face over the red bar the design is built around.
  * So a clearly vivid colour holding a real share of the picture wins, and area only decides
  * between colours of similar strength. Null when nothing is vivid enough: a greyscale cover.
+ *
+ * The share is its hue family's, not the swatch's own. Crayon, grain, film and JPEG noise split
+ * one colour into dozens of near-identical swatches: a cover a third pink came out as ninety
+ * pinks of 1–3% each, none past the bar alone, and the player went grey on it.
  */
-private fun vividAccent(swatches: List<Swatch>): Int? = swatches
-    .filter { it.hct.chroma >= 24.0 && it.share >= 0.02f && it.hct.tone in 20.0..90.0 }
-    .maxByOrNull { it.hct.chroma * Math.pow(it.share.toDouble(), 0.35) }
-    ?.argb
+private fun vividAccent(swatches: List<Swatch>): Int? {
+    val vivid = swatches.filter { it.hct.chroma >= 24.0 && it.hct.tone in 20.0..90.0 }
+    fun familyShare(center: Swatch) = vivid
+        .filter { hueDistance(it.hct.hue, center.hct.hue) <= 20.0 }
+        .sumOf { it.share.toDouble() }
+    return vivid
+        .map { it to familyShare(it) }
+        .filter { (_, share) -> share >= 0.02 }
+        .maxByOrNull { (swatch, share) -> swatch.hct.chroma * Math.pow(share, 0.35) }
+        ?.first
+        ?.argb
+}
+
+/** Degrees between two hues, the short way round. */
+private fun hueDistance(a: Double, b: Double): Double = Math.abs(((a - b) % 360.0 + 540.0) % 360.0 - 180.0)
 
 private fun coverPalette(colors: CoverColors, darkTheme: Boolean): CoverPalette {
     val dominant = Hct.fromInt(colors.dominant)

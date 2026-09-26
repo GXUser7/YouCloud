@@ -55,12 +55,17 @@ class MusicPlayer(context: Context) {
     private val _isBuffering = MutableStateFlow(false)
     val isBuffering = _isBuffering.asStateFlow()
 
+    /** Set once the controller is connected, so [queueSnapshot] tells the truth. */
+    private val _connected = MutableStateFlow(false)
+    val connected = _connected.asStateFlow()
+
     init {
         controllerFuture.addListener(
             {
                 controller = runCatching { controllerFuture.get() }.getOrNull()
                 controller?.addListener(playerListener)
                 syncState()
+                _connected.value = controller != null
                 pendingQueueRequest?.let(::playQueue)
                 pendingQueueRequest = null
             },
@@ -207,6 +212,25 @@ class MusicPlayer(context: Context) {
         return controller?.nextMediaItemIndex ?: -1
     }
 
+    /**
+     * The playback service's queue as it stands. It outlives the screen: reopened while music
+     * plays, the app finds its queue here rather than starting from nothing.
+     */
+    fun queueSnapshot(): List<QueueItem> {
+        val player = controller ?: return emptyList()
+        return (0 until player.mediaItemCount).mapNotNull { index ->
+            val item = player.getMediaItemAt(index)
+            val id = item.mediaId.toLongOrNull() ?: return@mapNotNull null
+            QueueItem(
+                id = id,
+                uri = item.localConfiguration?.uri?.toString(),
+                title = item.mediaMetadata.title?.toString(),
+                artist = item.mediaMetadata.artist?.toString(),
+                artworkUrl = item.mediaMetadata.artworkUri?.toString()
+            )
+        }
+    }
+
     fun release() {
         scope.cancel()
         controller?.removeListener(playerListener)
@@ -278,6 +302,14 @@ class MusicPlayer(context: Context) {
         val url: String,
         val title: String,
         val artist: String,
+        val artworkUrl: String?
+    )
+
+    data class QueueItem(
+        val id: Long,
+        val uri: String?,
+        val title: String?,
+        val artist: String?,
         val artworkUrl: String?
     )
 

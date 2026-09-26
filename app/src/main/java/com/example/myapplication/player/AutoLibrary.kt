@@ -107,6 +107,8 @@ object AutoLibrary {
         }
         return if (track.urn.startsWith("yandex:track:")) {
             "yandex://track/${track.urn.removePrefix("yandex:track:")}"
+        } else if (track.urn.startsWith(com.example.myapplication.data.YT_TRACK_URN)) {
+            "ytmusic://track/${track.urn.removePrefix(com.example.myapplication.data.YT_TRACK_URN)}"
         } else {
             "soundcloud://track/${track.id}"
         }

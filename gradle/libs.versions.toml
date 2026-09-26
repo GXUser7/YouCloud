@@ -20,6 +20,8 @@ coil = "2.7.0"
 # it for the player. The core module only, without material-kolor's Compose layer, so it cannot
 # drag the Compose versions forward. 3.0.x is built on Kotlin 2.2, which this compiler reads.
 materialColorUtilities = "3.0.1"
+# TeamNewPipe's extractor: finds a YouTube video's audio streams, deciphering the player script.
+newpipeExtractor = "v0.26.5"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
@@ -46,6 +48,7 @@ retrofit-gson = { group = "com.squareup.retrofit2", name = "converter-gson", ver
 okhttp = { group = "com.squareup.okhttp3", name = "okhttp", version.ref = "okhttp" }
 coil-compose = { group = "io.coil-kt", name = "coil-compose", version.ref = "coil" }
 material-color-utilities = { group = "com.materialkolor", name = "material-color-utilities", version.ref = "materialColorUtilities" }
+newpipe-extractor = { group = "com.github.teamnewpipe", name = "NewPipeExtractor", version.ref = "newpipeExtractor" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }

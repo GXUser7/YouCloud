@@ -73,6 +73,25 @@ class PlaybackService : MediaLibraryService() {
                                 return dataSpec.buildUpon().setUri(android.net.Uri.parse(resolvedUri)).build()
                             }
                         }
+                    } else if (uri.scheme == "ytmusic") {
+                        val videoId = uri.lastPathSegment
+                        if (videoId != null) {
+                            val local = downloadedYouTubeTrack(videoId)
+                            if (local != null) {
+                                return dataSpec.buildUpon().setUri(android.net.Uri.parse(local)).build()
+                            }
+                            val audio = com.example.myapplication.data.YouTubeStreams.resolve(videoId, youTubeAuth())
+                            if (audio != null) {
+                                // Keyed by the video, not the URL: a fresh URL for the same track
+                                // still finds what the cache already holds. Fetched as the client
+                                // the URL was issued to.
+                                return dataSpec.buildUpon()
+                                    .setUri(android.net.Uri.parse(audio.url))
+                                    .setKey("ytmusic:$videoId")
+                                    .setHttpRequestHeaders(dataSpec.httpRequestHeaders + ("User-Agent" to audio.userAgent))
+                                    .build()
+                            }
+                        }
                     } else if (uri.scheme == "yandex") {
                         val trackId = uri.lastPathSegment
                         if (trackId != null) {
@@ -240,6 +259,30 @@ class PlaybackService : MediaLibraryService() {
         private fun xmlTagRegex(tag: String): Regex {
             return XML_TAG_REGEXES.getOrPut(tag) { "<$tag>(.*?)</$tag>".toRegex() }
         }
+    }
+
+    /** The YouTube Music session the app signed in with; see SettingsRepository. */
+    private fun youTubeAuth(): com.example.myapplication.data.YtAuth? {
+        val cookie = preferences.getString("ytmusic_cookie", null)?.takeIf { it.isNotBlank() } ?: return null
+        return com.example.myapplication.data.YtAuth(
+            cookie = cookie,
+            visitorData = preferences.getString("ytmusic_visitor_data", null),
+            authUser = preferences.getString("ytmusic_auth_user", null) ?: "0"
+        )
+    }
+
+    /** A YouTube track saved in "Скачанное" or with a liked playlist, as a `file://` URL. */
+    private fun downloadedYouTubeTrack(videoId: String): String? {
+        val trackId = com.example.myapplication.data.youTubeTrackId(videoId)
+        val saved = lazyFavoritesRepository.get(trackId)
+            ?.takeIf { it.downloadState == com.example.myapplication.data.DownloadState.DOWNLOADED }
+            ?.streamUrl
+            ?: lazyPlaylistsRepository.playlists.value
+                .flatMap { it.tracks }
+                .firstOrNull { it.id == trackId && it.downloadState == com.example.myapplication.data.DownloadState.DOWNLOADED }
+                ?.streamUrl
+        val path = saved?.takeIf { it.isNotBlank() } ?: return null
+        return if (path.startsWith("/")) "file://$path" else path
     }
 
     private fun resolveSoundCloudTrack(trackId: Long): String? {

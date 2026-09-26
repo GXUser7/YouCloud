@@ -17,6 +17,11 @@ import androidx.compose.animation.core.tween
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.fadeIn
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.TransformOrigin
+import androidx.compose.ui.graphics.BlendMode
+import androidx.compose.ui.graphics.CompositingStrategy
+import androidx.compose.ui.draw.drawWithContent
+import kotlin.math.roundToInt
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
@@ -60,6 +65,19 @@ import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
+import androidx.compose.foundation.interaction.collectIsDraggedAsState
+import androidx.compose.foundation.layout.asPaddingValues
+import androidx.compose.foundation.layout.statusBars
+import androidx.compose.material.icons.automirrored.filled.TrendingUp
+import androidx.compose.material.icons.filled.Lyrics
+import androidx.compose.runtime.snapshotFlow
+import com.example.myapplication.data.LyricLine
+import com.example.myapplication.data.YtAuth
+import com.example.myapplication.data.YtShelf
+import com.example.myapplication.data.youTubeTrackId
+import com.example.myapplication.data.youTubeVideoId
+import androidx.compose.material.icons.filled.SmartDisplay
+import kotlinx.coroutines.flow.first
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.material.icons.rounded.SkipPrevious
@@ -94,6 +112,7 @@ import androidx.compose.material.icons.filled.Shuffle
 import androidx.compose.material.icons.filled.BugReport
 import androidx.compose.material.icons.filled.CleaningServices
 import androidx.compose.material.icons.filled.CloudSync
+import androidx.compose.material.icons.filled.CloudUpload
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.automirrored.filled.PlaylistAdd
 import androidx.compose.material.icons.filled.Refresh
@@ -189,7 +208,9 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.automirrored.filled.QueueMusic
 import kotlin.math.max
+import android.annotation.SuppressLint
 import android.webkit.CookieManager
+import android.webkit.JavascriptInterface
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
 import android.webkit.WebView
@@ -293,6 +314,13 @@ fun MusicScreen(viewModel: MusicViewModel) {
     val oauthToken by viewModel.oauthToken.collectAsState()
     val mixSection by viewModel.mixSection.collectAsState()
     val stationSection by viewModel.stationSection.collectAsState()
+    val trendingSection by viewModel.trendingSection.collectAsState()
+    val lyrics by viewModel.lyrics.collectAsState()
+    val ytHome by viewModel.ytHome.collectAsState()
+    val ytHomeLoading by viewModel.ytHomeLoading.collectAsState()
+    val ytHomeError by viewModel.ytHomeError.collectAsState()
+    val ytMusicAccount by viewModel.ytMusicAccount.collectAsState()
+    val ytLoginOpen by viewModel.ytLoginOpen.collectAsState()
     val mixesLoading by viewModel.mixesLoading.collectAsState()
     val loadingMixId by viewModel.loadingMixId.collectAsState()
     val selectedMix by viewModel.selectedMix.collectAsState()
@@ -315,10 +343,19 @@ fun MusicScreen(viewModel: MusicViewModel) {
     val backgroundMotion by viewModel.settingsRepo.backgroundMotion.collectAsState()
     val playerCoverColors by viewModel.settingsRepo.playerCoverColors.collectAsState()
 
+    // The playing track's cover colours are worked out before the player opens, so it opens in
+    // them instead of fading over from the app's own every time.
+    val coverContext = LocalContext.current
+    LaunchedEffect(playerCoverColors, currentPlayingTrack?.artworkUrl) {
+        val url = currentPlayingTrack?.artworkUrl
+        if (playerCoverColors && !url.isNullOrBlank()) prefetchCoverColors(coverContext, url)
+    }
+
     val yandexPlaylists by viewModel.yandexPlaylists.collectAsState()
     val yandexToken by viewModel.yandexToken.collectAsState()
     val hasYandexToken = yandexToken.isNotEmpty()
     val yandexLoginUrl by viewModel.yandexLoginUrl.collectAsState()
+    val antiBotCaptchaUrl by viewModel.antiBotCaptchaUrl.collectAsState()
 
     val searchOpenedPlaylist by viewModel.searchOpenedPlaylist.collectAsState()
 
@@ -356,6 +393,7 @@ fun MusicScreen(viewModel: MusicViewModel) {
             AppScreen.MIX_DETAIL -> viewModel.closeMix()
             AppScreen.PLAYLIST_DETAIL -> viewModel.closePlaylist()
             AppScreen.YANDEX_PLAYLIST_DETAIL -> viewModel.deselectYandexPlaylist()
+            AppScreen.YTM_SET_DETAIL -> viewModel.closeYtSet()
             AppScreen.ARTIST_DETAIL -> viewModel.closeArtist()
             AppScreen.HOME -> Unit
         }
@@ -374,6 +412,21 @@ fun MusicScreen(viewModel: MusicViewModel) {
                 onDismiss = {
                     viewModel.cancelYandexLogin()
                 }
+            )
+        }
+
+        antiBotCaptchaUrl?.let { url ->
+            AntiBotCaptchaDialog(
+                captchaUrl = url,
+                onSolved = viewModel::onAntiBotCaptchaSolved,
+                onDismiss = viewModel::dismissAntiBotCaptcha
+            )
+        }
+
+        if (ytLoginOpen) {
+            YtMusicLoginDialog(
+                onCaptured = viewModel::onYtMusicLoginCaptured,
+                onDismiss = viewModel::cancelYtMusicLogin
             )
         }
 
@@ -398,8 +451,11 @@ fun MusicScreen(viewModel: MusicViewModel) {
                 transitionSpec = {
                     // Screens share the top-bar geometry now, so a soft fade+scale makes the bar
                     // look like it stays put while only the content beneath it swaps.
-                    (fadeIn(tween(240)) + scaleIn(initialScale = 0.97f, animationSpec = tween(240))) togetherWith
-                        (fadeOut(tween(160)) + scaleOut(targetScale = 1.02f, animationSpec = tween(160)))
+                    // No size animation: every screen fills the window, and animating the size only
+                    // ever showed when a screen drew nothing for a moment — it then grew out of the
+                    // top-left corner.
+                    ((fadeIn(tween(240)) + scaleIn(initialScale = 0.97f, animationSpec = tween(240))) togetherWith
+                        (fadeOut(tween(160)) + scaleOut(targetScale = 1.02f, animationSpec = tween(160)))) using null
                 },
                 label = "screenTransition"
             ) { screen ->
@@ -407,6 +463,20 @@ fun MusicScreen(viewModel: MusicViewModel) {
                     AppScreen.HOME -> HomeScreen(
                         mixSection = mixSection,
                         stationSection = stationSection,
+                        trendingSection = trendingSection,
+                        ytShelves = ytHome,
+                        ytConnected = ytMusicAccount != null,
+                        ytLoading = ytHomeLoading,
+                        ytError = ytHomeError,
+                        onOpenYtSet = { set ->
+                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                            viewModel.openYtSet(set)
+                        },
+                        onYtLogin = {
+                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                            viewModel.openYtMusicLogin()
+                        },
+                        onReloadYt = viewModel::loadYtHome,
                         mixesLoading = mixesLoading,
                         loadingMixId = loadingMixId,
                         hasOauthToken = oauthToken.isNotBlank(),
@@ -481,6 +551,10 @@ fun MusicScreen(viewModel: MusicViewModel) {
                         val yandexLoadingMore by viewModel.yandexLoadingMore.collectAsState()
                         val searchAlbums by viewModel.searchAlbums.collectAsState()
                         val searchPlaylists by viewModel.searchPlaylists.collectAsState()
+                        val searchArtists by viewModel.searchArtists.collectAsState()
+                        val yandexSearchAlbums by viewModel.yandexSearchAlbums.collectAsState()
+                        val yandexSearchPlaylists by viewModel.yandexSearchPlaylists.collectAsState()
+                        val yandexSearchArtists by viewModel.yandexSearchArtists.collectAsState()
                         val searchHasMore by viewModel.searchHasMore.collectAsState()
                         val searchLoadingMore by viewModel.searchLoadingMore.collectAsState()
                         val searchPlaylistLoading by viewModel.searchPlaylistLoading.collectAsState()
@@ -521,6 +595,14 @@ fun MusicScreen(viewModel: MusicViewModel) {
                             },
                             albums = searchAlbums,
                             playlists = searchPlaylists,
+                            artists = searchArtists,
+                            yandexAlbums = yandexSearchAlbums,
+                            yandexPlaylists = yandexSearchPlaylists,
+                            yandexArtists = yandexSearchArtists,
+                            onOpenArtist = { artist ->
+                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                viewModel.openArtistFromSearch(artist)
+                            },
                             hasMore = if (searchInYandex) yandexHasMore else searchHasMore,
                             isLoadingMore = if (searchInYandex) yandexLoadingMore else searchLoadingMore,
                             onLoadMore = {
@@ -572,9 +654,13 @@ fun MusicScreen(viewModel: MusicViewModel) {
                     AppScreen.SETTINGS -> {
                         val soundcloudLikesSyncStatus by viewModel.soundcloudLikesSyncStatus.collectAsState()
                         val yandexLikesSyncStatus by viewModel.yandexLikesSyncStatus.collectAsState()
+                        val likesPushStatus by viewModel.likesPushStatus.collectAsState()
                         SettingsScreen(
                             settingsRepository = viewModel.settingsRepo,
                             soundcloudLikesSyncStatus = soundcloudLikesSyncStatus,
+                            likesPushStatus = likesPushStatus,
+                            pushLikesToSoundCloud = viewModel::pushLikesToSoundCloud,
+                            resetLikesPushStatus = viewModel::resetLikesPushStatus,
                             yandexLikesSyncStatus = yandexLikesSyncStatus,
                             startSoundCloudLikesSync = viewModel::startSoundCloudLikesSync,
                             startYandexLikesSync = viewModel::startYandexLikesSync,
@@ -597,6 +683,15 @@ fun MusicScreen(viewModel: MusicViewModel) {
                             onYandexLogoutClick = {
                                 haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                                 viewModel.logoutYandex()
+                            },
+                            ytMusicAccount = ytMusicAccount,
+                            onYtMusicLoginClick = {
+                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                viewModel.openYtMusicLogin()
+                            },
+                            onYtMusicLogoutClick = {
+                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                viewModel.logoutYtMusic()
                             },
                             updates = viewModel.updates
                         )
@@ -679,6 +774,41 @@ fun MusicScreen(viewModel: MusicViewModel) {
                         }
                     }
 
+                    AppScreen.YTM_SET_DETAIL -> {
+                        val ytOpenedSet by viewModel.ytOpenedSet.collectAsState()
+                        val ytSetLoading by viewModel.ytSetLoading.collectAsState()
+                        val ytSetError by viewModel.ytSetError.collectAsState()
+                        val set = ytOpenedSet
+                        if (set != null) {
+                            SetDetailContent(
+                                playlist = set,
+                                subtitle = set.user?.username.orEmpty(),
+                                isLoading = ytSetLoading,
+                                error = ytSetError,
+                                favorites = favorites,
+                                currentTrackId = currentTrackId,
+                                isPlaying = isPlaying,
+                                downloadProgress = downloadProgress,
+                                onBack = {
+                                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                    viewModel.closeYtSet()
+                                },
+                                onPlayTrack = { track ->
+                                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                    viewModel.playQueuedTrack(track, set.tracks)
+                                },
+                                onFavoriteClick = { track ->
+                                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                    viewModel.toggleFavorite(track)
+                                }
+                            )
+                        } else {
+                            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                                AppLoadingIndicator()
+                            }
+                        }
+                    }
+
                     AppScreen.ARTIST_DETAIL -> {
                         val currentArtist by viewModel.currentArtist.collectAsState()
                         val currentArtistTracks by viewModel.currentArtistTracks.collectAsState()
@@ -729,6 +859,11 @@ fun MusicScreen(viewModel: MusicViewModel) {
                                     viewModel.playShuffled(currentArtistTracks)
                                 }
                             )
+                        }
+                        if (currentArtist == null) {
+                            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                                AppLoadingIndicator()
+                            }
                         }
                     }
 
@@ -833,6 +968,7 @@ fun MusicScreen(viewModel: MusicViewModel) {
                         shuffleEnabled = shuffleEnabled,
                         positionMs = playbackPositionMs,
                         durationMs = max(playbackDurationMs, track.duration),
+                        lyrics = lyrics?.takeIf { it.trackId == track.id }?.lines,
                         onBack = {
                             haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                             viewModel.closeTrack()
@@ -911,18 +1047,66 @@ fun MusicScreen(viewModel: MusicViewModel) {
             },
             onRedownload = {
                 viewModel.redownloadTrack(capturedTrack)
+            },
+            onRadio = if (capturedTrack.youTubeVideoId != null) {
+                { viewModel.playYtRadio(capturedTrack) }
+            } else {
+                null
             }
         )
     }
 }
 
-/** The four places home switches between, in the order the floating toolbar shows them. */
+/** The places home switches between, in the order the floating toolbar shows them. */
 private enum class HomeCategory(val title: String, val icon: ImageVector) {
     Mixes("Миксы", Icons.AutoMirrored.Filled.QueueMusic),
     Stations("Станции", Icons.Default.Radio),
+    Trending("Тренды", Icons.AutoMirrored.Filled.TrendingUp),
+    YouTube("YouTube Music", Icons.Default.SmartDisplay),
     Library("Медиатека", Icons.Default.LibraryMusic),
     MyMusic("Моя музыка", Icons.Default.Download)
 }
+
+/**
+ * YouTube Music's home as hero tiles: each row of songs becomes one tile that opens with those
+ * songs ("Быстрый выбор"), and each playlist, mix or album is a tile of its own, captioned with
+ * the row it came from.
+ */
+private fun ytHeroItems(shelves: List<YtShelf>, onOpen: (SoundCloudPlaylist) -> Unit): List<HeroItem> =
+    shelves.flatMap { shelf ->
+        buildList {
+            if (shelf.tracks.isNotEmpty()) {
+                val row = SoundCloudPlaylist(
+                    id = youTubeTrackId("shelf:" + shelf.title),
+                    title = shelf.title,
+                    tracks = shelf.tracks,
+                    trackCount = shelf.tracks.size,
+                    artworkUrl = shelf.tracks.first().artworkUrl,
+                    user = SoundCloudUser(username = "YouTube Music")
+                )
+                add(
+                    HeroItem(
+                        key = "yt-row-${row.id}",
+                        title = shelf.title,
+                        subtitle = plural(shelf.tracks.size, "трек", "трека", "треков"),
+                        artworkUrl = row.artworkUrl,
+                        onClick = { onOpen(row) }
+                    )
+                )
+            }
+            shelf.sets.forEach { set ->
+                add(
+                    HeroItem(
+                        key = "yt-set-${set.id}",
+                        title = set.title ?: "Без названия",
+                        subtitle = shelf.title,
+                        artworkUrl = set.artworkUrl,
+                        onClick = { onOpen(set) }
+                    )
+                )
+            }
+        }
+    }.distinctBy { it.key }.take(40)
 
 /** What home's floating toolbar takes off the bottom edge, including its gap to the mini player. */
 private val HomeToolbarClearance = 64.dp + 12.dp
@@ -931,6 +1115,14 @@ private val HomeToolbarClearance = 64.dp + 12.dp
 private fun HomeScreen(
     mixSection: MixSection?,
     stationSection: MixSection?,
+    trendingSection: MixSection?,
+    ytShelves: List<YtShelf>,
+    ytConnected: Boolean,
+    ytLoading: Boolean,
+    ytError: String?,
+    onOpenYtSet: (SoundCloudPlaylist) -> Unit,
+    onYtLogin: () -> Unit,
+    onReloadYt: () -> Unit,
     mixesLoading: Boolean,
     loadingMixId: String?,
     hasOauthToken: Boolean,
@@ -980,6 +1172,8 @@ private fun HomeScreen(
 
     val mixes = mixSection?.mixes.orEmpty()
     val stations = stationSection?.mixes.orEmpty()
+    val trending = trendingSection?.mixes.orEmpty()
+    val ytItems = remember(ytShelves) { ytHeroItems(ytShelves, onOpenYtSet) }
     val subtitles = mapOf(
         HomeCategory.Mixes to if (mixes.isEmpty()) {
             "Подборки для тебя"
@@ -990,6 +1184,16 @@ private fun HomeScreen(
             "Станции по артистам"
         } else {
             plural(stations.size, "станция", "станции", "станций")
+        },
+        HomeCategory.Trending to if (trending.isEmpty()) {
+            "Чарты SoundCloud по жанрам"
+        } else {
+            "Чарты: " + plural(trending.size, "жанр", "жанра", "жанров")
+        },
+        HomeCategory.YouTube to when {
+            !ytConnected -> "Твои миксы и рекомендации"
+            ytItems.isEmpty() -> "Подборки для тебя"
+            else -> plural(ytItems.size, "подборка", "подборки", "подборок") + " для тебя"
         },
         HomeCategory.Library to if (yandexPlaylists.isEmpty()) {
             "Плейлисты Яндекс Музыки"
@@ -1075,14 +1279,18 @@ private fun HomeScreen(
                     .weight(1f)
             ) { page ->
                 when (categories[page]) {
-                    HomeCategory.Mixes, HomeCategory.Stations -> {
-                        val isStations = categories[page] == HomeCategory.Stations
+                    HomeCategory.Mixes, HomeCategory.Stations, HomeCategory.Trending -> {
+                        val category = categories[page]
                         MixCarousel(
-                            mixes = if (isStations) stations else mixes,
-                            isStations = isStations,
+                            mixes = when (category) {
+                                HomeCategory.Stations -> stations
+                                HomeCategory.Trending -> trending
+                                else -> mixes
+                            },
+                            kind = category,
                             isLoading = mixesLoading,
                             hasOauthToken = hasOauthToken,
-                            errorMessage = if (isStations) null else mixesError,
+                            errorMessage = if (category == HomeCategory.Mixes) mixesError else null,
                             loadingMixId = loadingMixId,
                             playingMixId = playingMixId,
                             isPlaying = isPlaying,
@@ -1090,6 +1298,26 @@ private fun HomeScreen(
                             onReload = onReloadMixes,
                             onOpenSettings = onOpenSettings
                         )
+                    }
+
+                    HomeCategory.YouTube -> when {
+                        !ytConnected -> CarouselMessage(
+                            text = "Войди в YouTube Music, чтобы здесь были твои миксы и рекомендации.",
+                            actionLabel = "Войти",
+                            onAction = onYtLogin
+                        )
+                        ytItems.isEmpty() && ytError != null -> CarouselMessage(
+                            text = ytError,
+                            actionLabel = "Повторить",
+                            onAction = onReloadYt
+                        )
+                        ytItems.isEmpty() && ytLoading -> CarouselSkeleton()
+                        ytItems.isEmpty() -> CarouselMessage(
+                            text = "Подборки YouTube Music пока не загрузились.",
+                            actionLabel = "Обновить",
+                            onAction = onReloadYt
+                        )
+                        else -> HomeHeroCarousel(items = ytItems)
                     }
 
                     HomeCategory.Library -> {
@@ -1217,8 +1445,9 @@ private fun HomeScreen(
 }
 
 /**
- * Material 3 Expressive's floating toolbar: the categories on the panel tone, the chosen one
- * opening into a labelled accent pill, and search beside it as its own floating button.
+ * Material 3 Expressive's floating toolbar: the categories on the panel tone, the chosen one an
+ * accent pill, and search beside it as its own floating button. Icons only: six labelled pills
+ * don't fit a phone's width, and the title above the carousel already names the chosen one.
  */
 @Composable
 private fun HomeToolbar(
@@ -1302,16 +1531,6 @@ private fun HomeToolbarItem(category: HomeCategory, selected: Boolean, onClick: 
             verticalAlignment = Alignment.CenterVertically
         ) {
             Icon(category.icon, contentDescription = category.title, modifier = Modifier.size(24.dp))
-            if (selected) {
-                Spacer(modifier = Modifier.width(6.dp))
-                Text(
-                    text = category.title,
-                    style = MaterialTheme.typography.labelLarge,
-                    maxLines = 1,
-                    softWrap = false,
-                    overflow = TextOverflow.Ellipsis
-                )
-            }
         }
     }
 }
@@ -1637,7 +1856,7 @@ private data class HeroItem(
 @Composable
 private fun MixCarousel(
     mixes: List<SoundCloudMix>,
-    isStations: Boolean,
+    kind: HomeCategory,
     isLoading: Boolean,
     hasOauthToken: Boolean,
     errorMessage: String?,
@@ -1648,6 +1867,8 @@ private fun MixCarousel(
     onReload: () -> Unit,
     onOpenSettings: () -> Unit
 ) {
+    val isStations = kind == HomeCategory.Stations
+    val isTrending = kind == HomeCategory.Trending
     if (!hasOauthToken) {
         CarouselMessage(
             text = "Добавь OAuth-токен в настройках, чтобы увидеть персональные миксы.",
@@ -1666,7 +1887,11 @@ private fun MixCarousel(
             )
             isLoading -> CarouselSkeleton()
             else -> CarouselMessage(
-                text = if (isStations) "Станции пока не загрузились." else "Подборка пока не загрузилась.",
+                text = when {
+                    isStations -> "Станции пока не загрузились."
+                    isTrending -> "Тренды пока не загрузились."
+                    else -> "Подборка пока не загрузилась."
+                },
                 actionLabel = "Обновить",
                 onAction = onReload
             )
@@ -1678,10 +1903,19 @@ private fun MixCarousel(
         items = mixes.map { mix ->
             HeroItem(
                 key = mix.id,
-                title = if (isStations) mix.title else localizedMixTitle(mix.title),
+                title = when {
+                    isStations -> mix.title
+                    isTrending -> localizedGenre(mix.title)
+                    else -> localizedMixTitle(mix.title)
+                },
                 // Mixes ship their artist list in `description`. Stations put "Artist station"
-                // there, which is not a caption — the station's artist is its title.
-                subtitle = if (isStations) "Станция" else mix.description?.takeIf { it.isNotBlank() },
+                // there, which is not a caption — the station's artist is its title. A genre's
+                // description is an English sentence about the chart.
+                subtitle = when {
+                    isStations -> "Станция"
+                    isTrending -> "Чарт недели"
+                    else -> mix.description?.takeIf { it.isNotBlank() }
+                },
                 artworkUrl = artworkUrlForSize(mix.artworkUrl, 500.dp),
                 isPlaying = playingMixId == mix.id && isPlaying,
                 isLoading = loadingMixId == mix.id,
@@ -2130,6 +2364,9 @@ private fun PlaylistsScreen(
 private fun SettingsScreen(
     settingsRepository: SettingsRepository,
     soundcloudLikesSyncStatus: LikesSyncStatus,
+    likesPushStatus: LikesPushStatus,
+    pushLikesToSoundCloud: () -> Unit,
+    resetLikesPushStatus: () -> Unit,
     yandexLikesSyncStatus: LikesSyncStatus,
     startSoundCloudLikesSync: () -> Unit,
     startYandexLikesSync: () -> Unit,
@@ -2141,6 +2378,9 @@ private fun SettingsScreen(
     onClearCache: () -> Unit,
     onYandexLoginClick: () -> Unit,
     onYandexLogoutClick: () -> Unit,
+    ytMusicAccount: String?,
+    onYtMusicLoginClick: () -> Unit,
+    onYtMusicLogoutClick: () -> Unit,
     updates: com.example.myapplication.data.UpdateRepository
 ) {
     val yandexToken by settingsRepository.yandexToken.collectAsState()
@@ -2371,6 +2611,112 @@ private fun SettingsScreen(
                                     ) {
                                         Text("Сбросить")
                                     }
+                                }
+                            }
+                        }
+
+                        HorizontalDivider(
+                            color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.25f),
+                            modifier = Modifier.padding(vertical = 4.dp)
+                        )
+
+                        // The other direction: downloaded tracks whose like never reached SoundCloud.
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(14.dp)
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(42.dp)
+                                    .background(AppTheme.brand.soundCloud.container, CircleShape),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.CloudUpload,
+                                    contentDescription = null,
+                                    tint = AppTheme.brand.soundCloud.onContainer,
+                                    modifier = Modifier.size(22.dp)
+                                )
+                            }
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = "Лайки на SoundCloud",
+                                    style = MaterialTheme.typography.titleMedium
+                                )
+                                Text(
+                                    text = "Лайкнуть на SoundCloud скачанные треки, чьи лайки туда не дошли",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+
+                        val pushBusy = likesPushStatus.state == LikesPushState.CHECKING ||
+                            likesPushStatus.state == LikesPushState.SENDING
+                        if (likesPushStatus.state != LikesPushState.IDLE) {
+                            val statusText = when (likesPushStatus.state) {
+                                LikesPushState.CHECKING -> "Сверяю с лайками SoundCloud..."
+                                LikesPushState.SENDING -> "Отправлено ${likesPushStatus.sent} из ${likesPushStatus.total}"
+                                LikesPushState.PAUSED -> "Отправлено ${likesPushStatus.sent} из ${likesPushStatus.total}, пауза"
+                                LikesPushState.COMPLETED -> likesPushStatus.message
+                                    ?: "Готово: отправлено ${likesPushStatus.sent} из ${likesPushStatus.total}"
+                                LikesPushState.FAILED -> "Ошибка: ${likesPushStatus.message}"
+                                LikesPushState.IDLE -> ""
+                            }
+                            Text(
+                                text = statusText,
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = FontWeight.Medium,
+                                color = if (likesPushStatus.state == LikesPushState.FAILED) MaterialTheme.colorScheme.error else AppTheme.brand.soundCloud.color
+                            )
+                            if (likesPushStatus.state == LikesPushState.PAUSED && likesPushStatus.message != null) {
+                                Text(
+                                    text = likesPushStatus.message,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            if ((likesPushStatus.state == LikesPushState.SENDING || likesPushStatus.state == LikesPushState.PAUSED) &&
+                                likesPushStatus.total > 0
+                            ) {
+                                AppLinearProgress(
+                                    progress = likesPushStatus.sent.toFloat() / likesPushStatus.total,
+                                    color = AppTheme.brand.soundCloud.color,
+                                    trackColor = AppTheme.brand.soundCloud.container,
+                                    modifier = Modifier.fillMaxWidth()
+                                )
+                            }
+                        }
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            Button(
+                                onClick = pushLikesToSoundCloud,
+                                enabled = !pushBusy,
+                                modifier = Modifier.weight(1f),
+                                shape = MaterialTheme.shapes.large,
+                                colors = androidx.compose.material3.ButtonDefaults.buttonColors(
+                                    containerColor = AppTheme.brand.soundCloud.color,
+                                    contentColor = AppTheme.brand.soundCloud.onColor
+                                )
+                            ) {
+                                Text(
+                                    text = when (likesPushStatus.state) {
+                                        LikesPushState.PAUSED -> "Продолжить"
+                                        LikesPushState.COMPLETED, LikesPushState.FAILED -> "Проверить снова"
+                                        else -> "Отправить лайки"
+                                    }
+                                )
+                            }
+                            if (likesPushStatus.state == LikesPushState.COMPLETED || likesPushStatus.state == LikesPushState.FAILED) {
+                                FilledTonalButton(
+                                    onClick = resetLikesPushStatus,
+                                    modifier = Modifier.weight(1f),
+                                    shape = MaterialTheme.shapes.large
+                                ) {
+                                    Text("Сбросить")
                                 }
                             }
                         }
@@ -2619,6 +2965,67 @@ private fun SettingsScreen(
                                 }
                             }
                         }
+
+                        HorizontalDivider(
+                            color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.25f),
+                            modifier = Modifier.padding(vertical = 2.dp)
+                        )
+
+                        // YouTube Music Account
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(14.dp)
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(42.dp)
+                                    .background(MaterialTheme.colorScheme.tertiaryContainer, CircleShape),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.SmartDisplay,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.onTertiaryContainer,
+                                    modifier = Modifier.size(22.dp)
+                                )
+                            }
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = "YouTube Music",
+                                    style = MaterialTheme.typography.titleMedium
+                                )
+                                Text(
+                                    text = ytMusicAccount ?: "Не подключен",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+                            if (ytMusicAccount != null) {
+                                FilledTonalButton(
+                                    onClick = onYtMusicLogoutClick,
+                                    shape = MaterialTheme.shapes.medium,
+                                    colors = androidx.compose.material3.ButtonDefaults.filledTonalButtonColors(
+                                        containerColor = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.6f),
+                                        contentColor = MaterialTheme.colorScheme.error
+                                    )
+                                ) {
+                                    Text("Выйти")
+                                }
+                            } else {
+                                Button(
+                                    onClick = onYtMusicLoginClick,
+                                    shape = MaterialTheme.shapes.medium,
+                                    colors = androidx.compose.material3.ButtonDefaults.buttonColors(
+                                        containerColor = MaterialTheme.colorScheme.primary,
+                                        contentColor = MaterialTheme.colorScheme.onPrimary
+                                    )
+                                ) {
+                                    Text("Войти")
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -2833,6 +3240,11 @@ private fun SearchScreen(
     onOpenSettings: () -> Unit,
     albums: List<SoundCloudPlaylist> = emptyList(),
     playlists: List<SoundCloudPlaylist> = emptyList(),
+    artists: List<SoundCloudUser> = emptyList(),
+    yandexAlbums: List<SoundCloudPlaylist> = emptyList(),
+    yandexPlaylists: List<SoundCloudPlaylist> = emptyList(),
+    yandexArtists: List<SoundCloudUser> = emptyList(),
+    onOpenArtist: (SoundCloudUser) -> Unit = {},
     hasMore: Boolean = false,
     isLoadingMore: Boolean = false,
     onLoadMore: () -> Unit = {},
@@ -2877,8 +3289,9 @@ private fun SearchScreen(
     val activeTracks = if (searchInYandex) yandexTracks else tracks
     val activeLoading = if (searchInYandex) yandexLoading else isLoading
     val activeError = if (searchInYandex) yandexError else errorMessage
-    val activeAlbums = if (searchInYandex) emptyList() else albums
-    val activePlaylists = if (searchInYandex) emptyList() else playlists
+    val activeAlbums = if (searchInYandex) yandexAlbums else albums
+    val activePlaylists = if (searchInYandex) yandexPlaylists else playlists
+    val activeArtists = if (searchInYandex) yandexArtists else artists
     val topResult = remember(activeQuery, activeAlbums, activePlaylists) {
         pickTopResult(activeQuery, activeAlbums, activePlaylists)
     }
@@ -2989,6 +3402,15 @@ private fun SearchScreen(
             }
         }
 
+        if (activeArtists.isNotEmpty()) {
+            item(key = "search-artists-header") {
+                SectionTitle("Исполнители", modifier = Modifier.padding(top = 24.dp, bottom = 8.dp))
+            }
+            item(key = "search-artists") {
+                ArtistRow(artists = activeArtists, onOpen = onOpenArtist)
+            }
+        }
+
         if (activeAlbums.isNotEmpty()) {
             item(key = "search-albums-header") {
                 SectionTitle("Альбомы", modifier = Modifier.padding(top = 24.dp, bottom = 8.dp))
@@ -3041,7 +3463,7 @@ private fun SearchScreen(
         }
 
         if (activeTracks.isNotEmpty()) {
-            if (activeAlbums.isNotEmpty() || activePlaylists.isNotEmpty() || topResult != null) {
+            if (activeAlbums.isNotEmpty() || activePlaylists.isNotEmpty() || activeArtists.isNotEmpty() || topResult != null) {
                 item(key = "search-tracks-header") {
                     SectionTitle("Треки", modifier = Modifier.padding(top = 18.dp, bottom = 8.dp))
                 }
@@ -3076,12 +3498,48 @@ private fun SearchScreen(
                     )
                 }
             }
-        } else if (!activeLoading && activeAlbums.isEmpty() && activePlaylists.isEmpty()) {
+        } else if (!activeLoading && activeAlbums.isEmpty() && activePlaylists.isEmpty() && activeArtists.isEmpty()) {
             item(key = "search-empty") {
                 Box(modifier = Modifier.padding(top = 20.dp)) {
                     EmptyState(
                         if (activeQuery.isBlank()) "Напиши, что хочешь услышать."
                         else "Ничего не нашлось."
+                    )
+                }
+            }
+        }
+    }
+}
+
+/** Artists a search found: round portraits with a name, the way people show everywhere else. */
+@Composable
+private fun ArtistRow(artists: List<SoundCloudUser>, onOpen: (SoundCloudUser) -> Unit) {
+    LazyRow(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+        items(artists, key = { "artist-" + (it.permalinkUrl ?: it.id.toString()) }) { artist ->
+            Column(
+                modifier = Modifier
+                    .width(96.dp)
+                    .clip(RoundedCornerShape(20.dp))
+                    .clickable { onOpen(artist) }
+                    .padding(vertical = 6.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                CoverImage(url = artworkUrlForSize(artist.avatarUrl, 96.dp), size = 84.dp, shape = CircleShape)
+                Spacer(modifier = Modifier.height(8.dp))
+                Text(
+                    text = artist.username.orEmpty(),
+                    style = MaterialTheme.typography.titleSmall,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                val caption = artist.followersCount?.takeIf { it > 0 }?.let { compactCount(it) }
+                    ?: artist.trackCount?.takeIf { it > 0 }?.let { plural(it, "трек", "трека", "треков") }
+                if (caption != null) {
+                    Text(
+                        text = caption,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1
                     )
                 }
             }
@@ -3508,6 +3966,11 @@ private fun localizedSectionTitle(raw: String?): String = when {
 }
 
 private val YourMixPattern = Regex("""^Your Mix\s*(\d+)$""", RegexOption.IGNORE_CASE)
+
+private fun localizedGenre(raw: String): String = when (raw.trim().lowercase()) {
+    "all genres", "all music genres" -> "Все жанры"
+    else -> raw
+}
 
 private fun localizedMixTitle(raw: String): String =
     YourMixPattern.find(raw.trim())?.let { "Твой микс ${it.groupValues[1]}" } ?: raw
@@ -4314,6 +4777,7 @@ private fun TrackDetailScreen(
     shuffleEnabled: Boolean,
     positionMs: Long,
     durationMs: Long,
+    lyrics: List<LyricLine>?,
     onBack: () -> Unit,
     onTogglePlay: () -> Unit,
     onSeek: (Long) -> Unit,
@@ -4338,6 +4802,8 @@ private fun TrackDetailScreen(
     }
     val haptic = LocalHapticFeedback.current
     var showQueue by remember { mutableStateOf(false) }
+    var showLyrics by remember(track.id) { mutableStateOf(false) }
+    val lyricsShown = showLyrics && !lyrics.isNullOrEmpty()
     val showLoading = (downloadState != DownloadState.DOWNLOADED) &&
         (isBuffering || isLoading || (positionMs == 0L && !isPlaying))
     val blurRadius by animateDpAsState(
@@ -4369,13 +4835,35 @@ private fun TrackDetailScreen(
         ) {
             PlayerLayout(
                 artwork = {
-                    PlayerArtwork(
-                        track = track,
-                        isPlaying = isPlaying,
-                        showLoading = showLoading,
-                        vibrator = vibrator,
-                        onLongPress = onLongPressCover
+                    // Lyrics take the cover's place: it blurs into a backdrop behind them.
+                    val coverBlur by animateDpAsState(
+                        targetValue = if (lyricsShown) 28.dp else 0.dp,
+                        animationSpec = tween(durationMillis = 350),
+                        label = "lyricsCoverBlur"
                     )
+                    Box(modifier = Modifier.fillMaxSize()) {
+                        Box(modifier = Modifier.fillMaxSize().blur(coverBlur)) {
+                            PlayerArtwork(
+                                track = track,
+                                isPlaying = isPlaying,
+                                showLoading = showLoading,
+                                vibrator = vibrator,
+                                onLongPress = onLongPressCover
+                            )
+                        }
+                        AnimatedVisibility(
+                            visible = lyricsShown,
+                            enter = fadeIn(animationSpec = tween(350)),
+                            exit = fadeOut(animationSpec = tween(250)),
+                            modifier = Modifier.fillMaxSize()
+                        ) {
+                            LyricsOverlay(
+                                lines = lyrics.orEmpty(),
+                                positionMs = positionMs,
+                                onSeek = onSeek
+                            )
+                        }
+                    }
                 },
                 panel = {
                     PlayerPanel(
@@ -4397,6 +4885,12 @@ private fun TrackDetailScreen(
                         onRepeat = onRepeat,
                         onShuffle = onShuffle,
                         onArtistClick = onArtistClick,
+                        lyricsAvailable = !lyrics.isNullOrEmpty(),
+                        lyricsShown = lyricsShown,
+                        onToggleLyrics = {
+                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                            showLyrics = !showLyrics
+                        },
                         onOpenQueue = {
                             haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                             showQueue = true
@@ -4611,8 +5105,11 @@ private fun OverArtworkButton(
         onClick = onClick,
         modifier = Modifier.size(48.dp),
         shape = RoundedCornerShape(16.dp),
-        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.62f),
-        contentColor = MaterialTheme.colorScheme.onSurface
+        // The same accent as the playing badge across from it, so the two corners match — the
+        // cover's own colour, or white/black for a greyscale cover. Solid: over a busy cover,
+        // or lyrics scrolling beneath it, a see-through button blurred into what was behind it.
+        color = PanelColors.accent,
+        contentColor = PanelColors.onAccent
     ) {
         Box(contentAlignment = Alignment.Center) {
             Icon(icon, contentDescription = contentDescription, modifier = Modifier.size(26.dp))
@@ -4641,6 +5138,9 @@ private fun PlayerPanel(
     onRepeat: () -> Unit,
     onShuffle: () -> Unit,
     onArtistClick: (SoundCloudUser) -> Unit,
+    lyricsAvailable: Boolean,
+    lyricsShown: Boolean,
+    onToggleLyrics: () -> Unit,
     onOpenQueue: () -> Unit
 ) {
     val haptic = LocalHapticFeedback.current
@@ -4658,10 +5158,15 @@ private fun PlayerPanel(
                 .navigationBarsPadding()
                 .padding(start = 24.dp, top = 24.dp, end = 24.dp, bottom = 16.dp)
         ) {
-            val isYandex = track.urn?.startsWith("yandex:") == true
             OnPanelChip(
                 text = buildString {
-                    append(if (isYandex) "Яндекс Музыка" else "SoundCloud")
+                    append(
+                        when {
+                            track.urn?.startsWith("yandex:") == true -> "Яндекс Музыка"
+                            track.youTubeVideoId != null -> "YouTube Music"
+                            else -> "SoundCloud"
+                        }
+                    )
                     if (downloadState == DownloadState.DOWNLOADED) append(" · на устройстве")
                 }
             )
@@ -4775,6 +5280,9 @@ private fun PlayerPanel(
                 QueuePeek(
                     nextTrack = nextTrack,
                     queueSize = activeQueue.size,
+                    lyricsAvailable = lyricsAvailable,
+                    lyricsShown = lyricsShown,
+                    onToggleLyrics = onToggleLyrics,
                     onClick = onOpenQueue,
                     modifier = Modifier.weight(1f)
                 )
@@ -4931,11 +5439,17 @@ private fun PanelPlayButton(isPlaying: Boolean, onClick: () -> Unit) {
     }
 }
 
-/** "Далее": the next track in the queue; tapping it opens the queue. */
+/**
+ * "Далее": the next track in the queue; tapping it opens the queue. When the track has synced
+ * lyrics, its end holds their switch instead of the arrow.
+ */
 @Composable
 private fun QueuePeek(
     nextTrack: SoundCloudTrack?,
     queueSize: Int,
+    lyricsAvailable: Boolean,
+    lyricsShown: Boolean,
+    onToggleLyrics: () -> Unit,
     onClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -4977,10 +5491,178 @@ private fun QueuePeek(
                     overflow = TextOverflow.Ellipsis
                 )
             }
-            Icon(Icons.Default.KeyboardArrowUp, contentDescription = "Открыть очередь")
+            if (lyricsAvailable) {
+                val container by animateColorAsState(
+                    targetValue = if (lyricsShown) PanelColors.accent else onPanel.copy(alpha = 0.12f),
+                    animationSpec = tween(250),
+                    label = "lyricsButtonContainer"
+                )
+                val content by animateColorAsState(
+                    targetValue = if (lyricsShown) PanelColors.onAccent else onPanel,
+                    animationSpec = tween(250),
+                    label = "lyricsButtonContent"
+                )
+                Surface(
+                    onClick = onToggleLyrics,
+                    modifier = Modifier.size(44.dp),
+                    shape = RoundedCornerShape(14.dp),
+                    color = container,
+                    contentColor = content
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Icon(
+                            Icons.Default.Lyrics,
+                            contentDescription = if (lyricsShown) "Скрыть текст" else "Текст песни",
+                            modifier = Modifier.size(24.dp)
+                        )
+                    }
+                }
+            } else {
+                Icon(Icons.Default.KeyboardArrowUp, contentDescription = "Открыть очередь")
+            }
         }
     }
 }
+
+/**
+ * Synced lyrics over the blurred cover, in the player's colours. The line being sung is lit,
+ * grows and thickens, and sits right under the buttons at the top; the lines already sung
+ * dissolve into a fade above it, and the lines to come fade out the same way at the bottom,
+ * where the panel begins. A tap on a line seeks to it. Scrolling by hand pauses the following
+ * for a few seconds, so reading ahead isn't yanked back.
+ */
+@Composable
+private fun LyricsOverlay(
+    lines: List<LyricLine>,
+    positionMs: Long,
+    onSeek: (Long) -> Unit
+) {
+    val haptic = LocalHapticFeedback.current
+    val listState = rememberLazyListState()
+    // The position arrives twice a second; leading it a little keeps lines from lighting late.
+    val current = remember(lines, positionMs) { lines.indexOfLast { it.timeMs <= positionMs + 300 } }
+    val isDragged by listState.interactionSource.collectIsDraggedAsState()
+    var lastUserScrollAt by remember { mutableStateOf(0L) }
+    LaunchedEffect(isDragged) {
+        if (isDragged || lastUserScrollAt != 0L) lastUserScrollAt = System.currentTimeMillis()
+    }
+
+    // Where the lit line's top sits: just below the collapse button (status bar, the button
+    // row's 12dp padding, the 48dp button) with a little air. The list's top padding is exactly
+    // this, so scrolling a line to the list's start puts it here.
+    val anchor = WindowInsets.statusBars.asPaddingValues().calculateTopPadding() + 12.dp + 48.dp + 16.dp
+
+    // Opens on the current line rather than scrolling there from the top.
+    LaunchedEffect(Unit) {
+        snapshotFlow { listState.layoutInfo.viewportSize.height }.first { it > 0 }
+        if (current > 0) listState.scrollToItem(current)
+    }
+    LaunchedEffect(current) {
+        if (current < 0 || isDragged) return@LaunchedEffect
+        if (System.currentTimeMillis() - lastUserScrollAt < 3_000) return@LaunchedEffect
+        listState.animateScrollToItem(current)
+    }
+
+    val lit = MaterialTheme.colorScheme.onSurface
+    BoxWithConstraints(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(MaterialTheme.colorScheme.background.copy(alpha = 0.38f))
+    ) {
+        LazyColumn(
+            state = listState,
+            modifier = Modifier
+                .fillMaxSize()
+                // Fades the text out at both ends: drawn offscreen, then masked by a gradient
+                // that is clear above the fade, solid between the two fades, and clear again
+                // where the panel covers the cover.
+                .graphicsLayer { compositingStrategy = CompositingStrategy.Offscreen }
+                .drawWithContent {
+                    drawContent()
+                    val h = size.height
+                    val topSolid = (anchor - 6.dp).toPx()
+                    val topClear = (topSolid - LyricsFade.toPx()).coerceAtLeast(0f)
+                    val bottomClear = h - PlayerPanelOverlap.toPx()
+                    val bottomSolid = (bottomClear - LyricsFade.toPx()).coerceAtLeast(topSolid)
+                    drawRect(
+                        brush = Brush.verticalGradient(
+                            0f to Color.Transparent,
+                            topClear / h to Color.Transparent,
+                            topSolid / h to Color.Black,
+                            bottomSolid / h to Color.Black,
+                            bottomClear / h to Color.Transparent,
+                            1f to Color.Transparent
+                        ),
+                        blendMode = BlendMode.DstIn
+                    )
+                },
+            contentPadding = PaddingValues(
+                start = 28.dp,
+                end = 28.dp,
+                top = anchor,
+                // Enough room below the last line for it, too, to be scrolled up to the anchor.
+                bottom = (maxHeight - anchor - 48.dp).coerceAtLeast(PlayerPanelOverlap + LyricsFade)
+            ),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            itemsIndexed(lines, key = { index, _ -> index }) { index, line ->
+                val color by animateColorAsState(
+                    targetValue = when {
+                        index == current -> lit
+                        index < current -> lit.copy(alpha = 0.32f)
+                        else -> lit.copy(alpha = 0.5f)
+                    },
+                    animationSpec = tween(300),
+                    label = "lyricLineColor"
+                )
+                // 0 → 1 as the line becomes the sung one; the spring lets it settle with a slight
+                // overshoot, and it eases back as the next line takes over.
+                val emphasis by animateFloatAsState(
+                    targetValue = if (index == current) 1f else 0f,
+                    animationSpec = spring(
+                        dampingRatio = Spring.DampingRatioLowBouncy,
+                        stiffness = Spring.StiffnessMediumLow
+                    ),
+                    label = "lyricLineEmphasis"
+                )
+                Text(
+                    text = line.text.ifBlank { "♪" },
+                    style = MaterialTheme.typography.headlineSmall,
+                    // Medium to extra bold, in hundreds: the system font has a weight per
+                    // hundred and nothing between, so finer steps would only re-lay the text out
+                    // each frame for nothing. The scale below is what reads as smooth.
+                    fontWeight = FontWeight(500 + 100 * (3 * emphasis.coerceIn(0f, 1f)).roundToInt()),
+                    color = color,
+                    modifier = Modifier
+                        // Wraps short of the edge: the lit line grows by LyricsLitScale to the
+                        // right, and a full-width one would run off the screen.
+                        .fillMaxWidth(1f / LyricsLitScale)
+                        .graphicsLayer {
+                            val scale = 1f + (LyricsLitScale - 1f) * emphasis
+                            scaleX = scale
+                            scaleY = scale
+                            transformOrigin = TransformOrigin(0f, 0.5f)
+                        }
+                        .clip(RoundedCornerShape(12.dp))
+                        .clickable {
+                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                            onSeek(line.timeMs)
+                        }
+                        .padding(vertical = 4.dp)
+                )
+            }
+        }
+    }
+}
+
+// How much bigger the lit lyric line is than the rest.
+private const val LyricsLitScale = 1.16f
+
+// Height of the fades lyrics dissolve into, above the lit line and above the panel.
+private val LyricsFade = 64.dp
+
+// How far the player's panel reaches up over the cover (see PlayerLayout).
+private val PlayerPanelOverlap = 44.dp
 
 private val AUTO_SCROLL_EDGE = 170.dp
 private val AUTO_SCROLL_SPEED = 6.dp
@@ -7064,7 +7746,9 @@ fun TrackActionsDialog(
     onAddToPlaylist: (Playlist) -> Unit,
     onCreatePlaylist: (String) -> Unit,
     onShare: () -> Unit,
-    onRedownload: () -> Unit = {}
+    onRedownload: () -> Unit = {},
+    // Only for tracks with a radio to start — YouTube Music's.
+    onRadio: (() -> Unit)? = null
 ) {
     // A real M3 modal bottom sheet rather than a Dialog imitating one: this brings the
     // spec scrim, drag handle, swipe-to-dismiss, predictive back and inset handling.
@@ -7173,6 +7857,32 @@ fun TrackActionsDialog(
                                     modifier = Modifier.padding(horizontal = 16.dp),
                                     color = MaterialTheme.colorScheme.outlineVariant
                                 )
+
+                                if (onRadio != null) {
+                                    ListItem(
+                                        headlineContent = { Text("Радио по треку") },
+                                        supportingContent = { Text("Трек и то, что YouTube Music поставит за ним") },
+                                        leadingContent = {
+                                            SheetActionIcon(
+                                                icon = Icons.Default.Radio,
+                                                container = MaterialTheme.colorScheme.tertiaryContainer,
+                                                content = MaterialTheme.colorScheme.onTertiaryContainer
+                                            )
+                                        },
+                                        colors = ListItemDefaults.colors(
+                                            containerColor = MaterialTheme.colorScheme.surfaceContainer
+                                        ),
+                                        modifier = Modifier.clickable {
+                                            onRadio()
+                                            dismissSheet()
+                                        }
+                                    )
+
+                                    HorizontalDivider(
+                                        modifier = Modifier.padding(horizontal = 16.dp),
+                                        color = MaterialTheme.colorScheme.outlineVariant
+                                    )
+                                }
 
                                 ListItem(
                                     headlineContent = { Text("Перескачать трек") },
@@ -7349,6 +8059,232 @@ fun TrackActionsDialog(
                     }
                 )
             }
+    }
+}
+
+/**
+ * The captcha SoundCloud's bot protection (DataDome) answers a like with from a network it
+ * distrusts. The page is DataDome's own: once solved it calls `window.android.onCaptchaSuccess`
+ * with the cookie that lets further requests through — the hook DataDome's Android SDK uses.
+ */
+@SuppressLint("SetJavaScriptEnabled", "JavascriptInterface")
+@Composable
+fun AntiBotCaptchaDialog(
+    captchaUrl: String,
+    onSolved: (cookie: String) -> Unit,
+    onDismiss: () -> Unit
+) {
+    var isWebViewLoading by remember { mutableStateOf(true) }
+    val currentOnSolved by rememberUpdatedState(onSolved)
+
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(
+            usePlatformDefaultWidth = false,
+            dismissOnBackPress = true,
+            dismissOnClickOutside = false
+        )
+    ) {
+        Surface(
+            modifier = Modifier.fillMaxSize(),
+            color = MaterialTheme.colorScheme.background
+        ) {
+            Column(modifier = Modifier.fillMaxSize()) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .statusBarsPadding()
+                        .padding(horizontal = 16.dp, vertical = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    IconButton(onClick = onDismiss) {
+                        Icon(
+                            imageVector = Icons.Default.Close,
+                            contentDescription = "Close"
+                        )
+                    }
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = "Проверка SoundCloud",
+                        style = MaterialTheme.typography.titleLarge
+                    )
+                }
+                Text(
+                    text = "SoundCloud не принимает лайки с этого адреса, пока не пройдена проверка. " +
+                        "После неё лайк отправится сам.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(horizontal = 24.dp, vertical = 4.dp)
+                )
+
+                Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
+                    AndroidView(
+                        factory = { ctx ->
+                            WebView(ctx).apply {
+                                layoutParams = ViewGroup.LayoutParams(
+                                    ViewGroup.LayoutParams.MATCH_PARENT,
+                                    ViewGroup.LayoutParams.MATCH_PARENT
+                                )
+                                // The user agent is left alone: DataDome binds the solved
+                                // captcha to this browser, and the likes that follow go out from
+                                // another WebView of the same app, which must look identical.
+                                settings.apply {
+                                    javaScriptEnabled = true
+                                    domStorageEnabled = true
+                                }
+                                var delivered = false
+                                addJavascriptInterface(
+                                    object {
+                                        @JavascriptInterface
+                                        fun onCaptchaSuccess(cookie: String) {
+                                            // Called on a WebView thread.
+                                            post {
+                                                if (!delivered && cookie.isNotBlank()) {
+                                                    delivered = true
+                                                    currentOnSolved(cookie)
+                                                }
+                                            }
+                                        }
+                                    },
+                                    "android"
+                                )
+                                webViewClient = object : WebViewClient() {
+                                    override fun onPageFinished(view: WebView?, url: String?) {
+                                        super.onPageFinished(view, url)
+                                        isWebViewLoading = false
+                                    }
+                                }
+                                loadUrl(captchaUrl)
+                            }
+                        },
+                        onRelease = { it.destroy() },
+                        modifier = Modifier.fillMaxSize()
+                    )
+
+                    if (isWebViewLoading) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .background(MaterialTheme.colorScheme.background),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            AppLoadingIndicator()
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Signing in to YouTube Music on its own site, as Metrolist does it: Google's sign-in page, then
+ * music.youtube.com. Once there with a session, its cookies and the page's visitor id and account
+ * index are what [com.example.myapplication.data.YouTubeMusicClient] signs requests with. The
+ * WebView keeps its own user agent: Google refuses sign-ins from browsers pretending to be others.
+ */
+@SuppressLint("SetJavaScriptEnabled")
+@Composable
+fun YtMusicLoginDialog(
+    onCaptured: (YtAuth) -> Unit,
+    onDismiss: () -> Unit
+) {
+    var isWebViewLoading by remember { mutableStateOf(true) }
+    val currentOnCaptured by rememberUpdatedState(onCaptured)
+
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(
+            usePlatformDefaultWidth = false,
+            dismissOnBackPress = true,
+            dismissOnClickOutside = false
+        )
+    ) {
+        Surface(
+            modifier = Modifier.fillMaxSize(),
+            color = MaterialTheme.colorScheme.background
+        ) {
+            Column(modifier = Modifier.fillMaxSize()) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .statusBarsPadding()
+                        .padding(horizontal = 16.dp, vertical = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    IconButton(onClick = onDismiss) {
+                        Icon(imageVector = Icons.Default.Close, contentDescription = "Close")
+                    }
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(text = "Вход в YouTube Music", style = MaterialTheme.typography.titleLarge)
+                }
+
+                Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
+                    AndroidView(
+                        factory = { ctx ->
+                            WebView(ctx).apply {
+                                layoutParams = ViewGroup.LayoutParams(
+                                    ViewGroup.LayoutParams.MATCH_PARENT,
+                                    ViewGroup.LayoutParams.MATCH_PARENT
+                                )
+                                settings.javaScriptEnabled = true
+                                settings.domStorageEnabled = true
+                                val cookies = CookieManager.getInstance()
+                                cookies.setAcceptCookie(true)
+                                cookies.setAcceptThirdPartyCookies(this, true)
+                                var delivered = false
+                                webViewClient = object : WebViewClient() {
+                                    override fun onPageFinished(view: WebView?, url: String?) {
+                                        super.onPageFinished(view, url)
+                                        isWebViewLoading = false
+                                        val page = view ?: return
+                                        if (delivered || android.net.Uri.parse(url.orEmpty()).host != "music.youtube.com") return
+                                        val cookie = cookies.getCookie("https://music.youtube.com").orEmpty()
+                                        if ("SAPISID=" !in cookie) return
+                                        page.evaluateJavascript(
+                                            "(function(){var c=window.yt&&window.yt.config_;" +
+                                                "return JSON.stringify({v:c?c.VISITOR_DATA:null,u:c?String(c.SESSION_INDEX||0):'0'});})()"
+                                        ) { result ->
+                                            if (delivered) return@evaluateJavascript
+                                            delivered = true
+                                            cookies.flush()
+                                            // The value comes back JSON-encoded: a string holding the object.
+                                            val config = runCatching {
+                                                com.google.gson.JsonParser.parseString(
+                                                    com.google.gson.JsonParser.parseString(result).asString
+                                                ).asJsonObject
+                                            }.getOrNull()
+                                            currentOnCaptured(
+                                                YtAuth(
+                                                    cookie = cookie,
+                                                    visitorData = config?.get("v")?.takeUnless { it.isJsonNull }?.asString,
+                                                    authUser = config?.get("u")?.takeUnless { it.isJsonNull }?.asString
+                                                        ?.filter(Char::isDigit)?.ifBlank { null } ?: "0"
+                                                )
+                                            )
+                                        }
+                                    }
+                                }
+                                loadUrl("https://accounts.google.com/ServiceLogin?continue=https%3A%2F%2Fmusic.youtube.com")
+                            }
+                        },
+                        onRelease = { it.destroy() },
+                        modifier = Modifier.fillMaxSize()
+                    )
+
+                    if (isWebViewLoading) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .background(MaterialTheme.colorScheme.background),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            AppLoadingIndicator()
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 

@@ -1,6 +1,7 @@
 package com.example.myapplication.data
 
 import retrofit2.http.GET
+import retrofit2.http.Headers
 import retrofit2.http.POST
 import retrofit2.http.Path
 import retrofit2.http.Query
@@ -20,6 +21,30 @@ interface YandexMusicService {
         @Query("type") type: String = "track",
         @Query("page") page: Int = 0
     ): YandexSearchResponse
+
+    /** Everything at once — tracks, albums, artists, playlists — for a query's first page. */
+    @GET("search")
+    suspend fun searchAll(
+        @Query("text") text: String,
+        @Query("type") type: String = "all",
+        @Query("page") page: Int = 0,
+        @Query("nocorrect") noCorrect: Boolean = false,
+        @Query("playlist-in-best") playlistInBest: Boolean = true
+    ): YandexSearchResponse
+
+    /**
+     * Where to download a track's lyrics. `format=LRC` gives them with line timings. Signed
+     * like the Android app signs it (see [YandexMusicApi.lyricsSign]), and the server only checks
+     * that signature for the Android client, so the request has to say it is one.
+     */
+    @GET("tracks/{trackId}/lyrics")
+    @Headers("X-Yandex-Music-Client: YandexMusicAndroid/24023621")
+    suspend fun getLyrics(
+        @Path("trackId") trackId: String,
+        @Query("format") format: String,
+        @Query("timeStamp") timeStamp: Long,
+        @Query("sign") sign: String
+    ): YandexLyricsResponse
 
     @GET("tracks/{trackId}/download-info")
     suspend fun getDownloadInfo(
@@ -86,6 +111,17 @@ interface YandexMusicService {
 object YandexMusicApi {
     private const val BASE_URL = "https://api.music.yandex.net/"
     private const val SALT = "XGRlBW9FXlekgbPrRHuSiA"
+
+    // The Android app's key for signed requests (MarshalX/yandex-music-api, utils/sign_request.py).
+    private const val SIGN_KEY = "p93jhgh689SBReK6ghtw62"
+
+    /** HMAC-SHA256 of the numeric track id followed by [timestamp], base64. */
+    fun lyricsSign(trackId: String, timestamp: Long): String {
+        val mac = javax.crypto.Mac.getInstance("HmacSHA256")
+        mac.init(javax.crypto.spec.SecretKeySpec(SIGN_KEY.toByteArray(), "HmacSHA256"))
+        val digest = mac.doFinal("${trackId.substringBefore(':')}$timestamp".toByteArray())
+        return android.util.Base64.encodeToString(digest, android.util.Base64.NO_WRAP)
+    }
 
     fun createService(tokenProvider: () -> String): YandexMusicService {
         val client = OkHttpClient.Builder()

@@ -60,6 +60,17 @@ data class MixSection(
     val mixes: List<SoundCloudMix>
 )
 
+/** What home shows from SoundCloud's `mixed-selections`. */
+data class HomeSections(
+    val moods: MixSection? = null,
+    val stations: MixSection? = null,
+    // "Trending by genre": a chart per genre, opened like a mix.
+    val trending: MixSection? = null
+) {
+    val isEmpty get() = moods == null && stations == null && trending == null
+    val mixIds get() = listOfNotNull(moods, stations, trending).flatMap { it.mixes }.map { it.id }.toSet()
+}
+
 data class SoundCloudSystemPlaylist(
     val title: String?,
     val tracks: List<SoundCloudTrack>? = null

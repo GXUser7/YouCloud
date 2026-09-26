@@ -7,8 +7,21 @@ data class YandexSearchResponse(
 )
 
 data class YandexSearchResult(
-    val tracks: YandexSearchTracks?
+    val tracks: YandexSearchTracks?,
+    val albums: YandexSearchAlbums? = null,
+    val artists: YandexSearchArtists? = null,
+    val playlists: YandexSearchPlaylists? = null
 )
+
+data class YandexSearchAlbums(val results: List<YandexAlbum>? = emptyList())
+
+data class YandexSearchArtists(val results: List<YandexArtistDetail>? = emptyList())
+
+data class YandexSearchPlaylists(val results: List<YandexPlaylist>? = emptyList())
+
+data class YandexLyricsResponse(val result: YandexLyricsResult?)
+
+data class YandexLyricsResult(val downloadUrl: String?)
 
 data class YandexSearchTracks(
     val results: List<YandexTrack>? = emptyList(),
@@ -111,6 +124,18 @@ data class YandexArtistDetail(
     val counts: YandexArtistCounts? = null
 )
 
+/** As the artist screen expects it: [SoundCloudUser.permalinkUrl] names a Yandex artist. */
+fun YandexArtistDetail.toArtistUser(): SoundCloudUser? {
+    val artistId = id?.takeIf { it.isNotBlank() } ?: return null
+    return SoundCloudUser(
+        id = artistId.toLongOrNull() ?: 0L,
+        username = name,
+        avatarUrl = cover?.getCoverUrl("400x400"),
+        trackCount = counts?.tracks,
+        permalinkUrl = "yandex:artist:$artistId"
+    )
+}
+
 data class YandexArtistCounts(
     val tracks: Int = 0,
     @SerializedName("directAlbums") val directAlbums: Int = 0,
@@ -145,8 +170,28 @@ data class YandexPlaylist(
     val title: String?,
     val trackCount: Int = 0,
     val cover: YandexCover?,
-    val owner: YandexPlaylistOwner?
+    val owner: YandexPlaylistOwner?,
+    val ogImage: String? = null
 ) {
+    /**
+     * Someone else's playlist, found by search: opened by owner and kind, so both go in the
+     * permalink. The id only has to be unique among results, and is kept negative so it can't
+     * meet an album's.
+     */
+    fun toSearchPlaylist(): SoundCloudPlaylist? {
+        val ownerUid = owner?.uid ?: return null
+        val artwork = cover?.getCoverUrl("400x400")
+            ?: ogImage?.let { "https://" + it.replace("%%", "400x400") }
+        return SoundCloudPlaylist(
+            id = -(ownerUid * 100_000L + kind),
+            title = title ?: "Без названия",
+            trackCount = trackCount,
+            artworkUrl = artwork,
+            permalinkUrl = "yandex:playlist:$ownerUid:$kind",
+            user = SoundCloudUser(username = owner.name)
+        )
+    }
+
     fun toSoundCloudPlaylist(): SoundCloudPlaylist {
         return SoundCloudPlaylist(
             id = kind,
@@ -186,8 +231,20 @@ data class YandexAlbum(
     val title: String?,
     val trackCount: Int = 0,
     val coverUri: String?,
-    val artists: List<YandexArtist>? = emptyList()
+    val artists: List<YandexArtist>? = emptyList(),
+    val year: Int? = null,
+    // "single", "compilation", … — null for a regular album.
+    val type: String? = null
 ) {
+    /** For search: carries what the album row and its caption show. */
+    fun toSearchAlbum(): SoundCloudPlaylist = toSoundCloudPlaylist().copy(
+        artworkUrl = coverUri?.let { "https://" + it.replace("%%", "400x400") },
+        user = artists?.firstOrNull()?.name?.let { SoundCloudUser(username = it) },
+        isAlbum = true,
+        setType = type ?: "album",
+        releaseDate = year?.toString()
+    )
+
     fun toSoundCloudPlaylist(): SoundCloudPlaylist {
         val artwork = coverUri?.let { "https://" + it.replace("%%", "200x200") }
         // Offset album IDs by 10_000_000 to avoid collision with playlist kind IDs
