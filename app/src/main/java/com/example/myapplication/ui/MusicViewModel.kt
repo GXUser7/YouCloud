@@ -1452,7 +1452,7 @@ class MusicViewModel(
         if (settingsRepository.ytMusicAuth() == null || _ytHomeLoading.value) return
         // yt-dlp plays these tracks; unpacking it and fetching the current release takes a while
         // the first time, better spent now than on the first track.
-        YtDlp.warmUp(context)
+        YtDlp.warmUp(context, settingsRepository.ytMusicAuth())
         viewModelScope.launch {
             _ytHomeLoading.value = true
             _ytHomeError.value = null
@@ -3700,8 +3700,8 @@ class MusicViewModel(
     }
 
     /**
-     * Yandex's own: the ten-second loop of the track's music video that its player shows in the
-     * cover's place, else the track's videoshot, a vertical loop made to play behind the player.
+     * Yandex's own: the track's videoshot, a vertical loop made to play behind the player, else
+     * the ten-second loop of its music video that Yandex's player shows in the cover's place.
      */
     private suspend fun yandexVideo(track: SoundCloudTrack): TrackVideo? {
         val trackId = track.urn.orEmpty().removePrefix("yandex:track:").substringBefore(':')
@@ -3727,9 +3727,10 @@ class MusicViewModel(
             "Yandex $trackId \"${track.title}\": clips of the artist ${clips.map { it.title }}, this track's: ${clip?.id}, " +
                 "videoshot: ${details.backgroundVideoUri != null}"
         )
-        clip?.let { return TrackVideo(track.id, it.cover!!.videoUrl!!, loop = true, vertical = false) }
-        return details.backgroundVideoUri?.takeIf { it.isNotBlank() }
-            ?.let { TrackVideo(track.id, it, loop = true, vertical = true) }
+        // The videoshot first: made for the player, it fills it; the clip's loop only the cover.
+        details.backgroundVideoUri?.takeIf { it.isNotBlank() }
+            ?.let { return TrackVideo(track.id, it, loop = true, vertical = true) }
+        return clip?.let { TrackVideo(track.id, it.cover!!.videoUrl!!, loop = true, vertical = false) }
     }
 
     /** Lower case, letters and digits only. */

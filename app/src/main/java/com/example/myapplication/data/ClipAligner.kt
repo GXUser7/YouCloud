@@ -41,7 +41,11 @@ object ClipAligner {
     private const val WINDOW_FRAMES = 1_000 // ten seconds of the track per anchor
     private const val REFINE_FRAMES = 4
     private const val MIN_CORRELATION = 0.45f
-    private const val MIN_MATCHED_SHARE = 0.4f
+    private const val MIN_MATCHED_SHARE = 0.25f
+    private const val MIN_AGREEING_SHARE = 0.6f
+    private const val AGREEING_FRAMES = 10
+    private const val NEAR_FRAMES = 50
+    private const val CONTINUITY_SLACK = 0.15f
     private const val SAME_OFFSET_FRAMES = 3
     private const val MAX_DECODE_US = 10 * 60 * 1_000_000L
 
@@ -141,9 +145,10 @@ object ClipAligner {
 
         val anchors = mutableListOf<Anchor>()
         var start = 0
+        var previous: Anchor? = null
         while (start + WINDOW_FRAMES <= a.size) {
             val (coarseLag, coarseScore) = bestLag(coarseA, start / 2, coarseWindow, coarseB, statsB, 0, coarseB.size - coarseWindow)
-            val (lag, score) = if (coarseScore < MIN_CORRELATION) {
+            val (globalLag, globalScore) = if (coarseScore < MIN_CORRELATION) {
                 coarseLag * 2 to coarseScore
             } else {
                 bestLag(
@@ -152,7 +157,18 @@ object ClipAligner {
                     (coarseLag * 2 + REFINE_FRAMES).coerceAtMost(b.size - WINDOW_FRAMES)
                 )
             }
-            anchors += Anchor(start, lag - start, score)
+            // A chorus comes round more than once, and the next one can match as well as the
+            // right one. Where the video carries on from the last stretch nearly as well, it's
+            // taken to carry on.
+            val chosen = previous?.takeIf { it.score >= MIN_CORRELATION }?.let { last ->
+                val from = (start + last.offset - NEAR_FRAMES).coerceIn(0, b.size - WINDOW_FRAMES)
+                val to = (start + last.offset + NEAR_FRAMES).coerceIn(0, b.size - WINDOW_FRAMES)
+                val (nearLag, nearScore) = bestLag(a, start, WINDOW_FRAMES, b, fineStatsB, from, to)
+                if (nearScore >= globalScore - CONTINUITY_SLACK) nearLag to nearScore else null
+            } ?: (globalLag to globalScore)
+            val anchor = Anchor(start, chosen.first - start, chosen.second)
+            anchors += anchor
+            if (anchor.score >= MIN_CORRELATION) previous = anchor
             start += WINDOW_FRAMES
         }
 
@@ -163,7 +179,16 @@ object ClipAligner {
                 "(${anchors.joinToString(" ") { "%.2f@%d".format(it.score, it.offset * FRAME_MS / 1000) }}) " +
                 "in ${System.currentTimeMillis() - started} ms"
         )
-        if (matched.isEmpty() || matched.size < anchors.size * MIN_MATCHED_SHARE) return null
+        // A video with sound of its own over the music (effects, lines) matches weakly in
+        // places, yet its stretches still point to the same spots; another song's point anywhere.
+        val agreeing = anchors.count { anchor ->
+            matched.any { kotlin.math.abs(it.offset - anchor.offset) <= AGREEING_FRAMES }
+        }
+        if (matched.size < max(2, (anchors.size * MIN_MATCHED_SHARE).toInt()) ||
+            agreeing < anchors.size * MIN_AGREEING_SHARE
+        ) {
+            return null
+        }
 
         // A stretch that matched nothing keeps the offset of the one before it.
         val segments = mutableListOf<VideoSegment>()
