@@ -83,8 +83,8 @@ try:
 except Exception:
     pass
 
-KEEP = ("url", "ext", "format_id", "filesize", "filesize_approx", "http_headers")
-FORMAT_KEEP = ("format_id", "url", "vcodec", "acodec", "protocol", "abr")
+KEEP = ("url", "ext", "format_id", "filesize", "filesize_approx", "http_headers", "vcodec", "height", "fps")
+FORMAT_KEEP = ("format_id", "url", "vcodec", "acodec", "protocol", "abr", "height", "fps")
 
 
 def main():
@@ -303,6 +303,19 @@ main()
         }
     }
 
+    // A video format in a word, for the log: "136 avc1.4d401f 720p24".
+    private fun describe(format: JsonObject): String {
+        fun field(name: String) = format.get(name)?.takeUnless { it.isJsonNull }?.asString
+        return "${field("format_id")} ${field("vcodec")} ${field("height")}p${field("fps")}"
+    }
+
+    private fun videoFormats(info: JsonObject): String =
+        info.getAsJsonArray("formats")
+            ?.map { it.asJsonObject }
+            ?.filter { it.get("vcodec")?.takeUnless { v -> v.isJsonNull }?.asString.let { v -> v != null && v != "none" } }
+            ?.joinToString(", ") { describe(it) }
+            .orEmpty()
+
     /** yt-dlp's answer for one format, as a stream: `--dump-json`'s, or a server's. */
     private fun streamFrom(json: JsonObject, kind: Kind): YouTubeStreams.Stream? {
         fun field(name: String) = json.get(name)?.takeUnless { it.isJsonNull }
@@ -418,9 +431,11 @@ main()
             Log.w(TAG, "$videoId: ${error.asString.trim().lines().takeLast(3).joinToString(" | ")}")
             return ServerAnswer.Failed
         }
-        val stream = reply.getAsJsonObject("info")?.let { streamFrom(it, kind) } ?: return ServerAnswer.Failed
+        val info = reply.getAsJsonObject("info")
+        val stream = info?.let { streamFrom(it, kind) } ?: return ServerAnswer.Failed
         Log.i(TAG, "$videoId: ${kind.name.lowercase()} ${stream.mimeType} in ${System.currentTimeMillis() - started} ms, " +
             "signed in: ${auth != null}")
+        if (kind == Kind.VIDEO) Log.d(TAG, "$videoId: picked ${describe(info)}; had ${videoFormats(info)}")
         return ServerAnswer.Found(stream)
     }
 

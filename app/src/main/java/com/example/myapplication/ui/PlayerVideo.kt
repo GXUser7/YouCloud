@@ -118,6 +118,11 @@ class PlayerVideoState internal constructor(video: TrackVideo, internal val play
 
     internal var firstFrame = false
 
+    // Frames by the time since the one before, as the file has them: under 50 ms, under 100,
+    // under 150, longer. For the log.
+    internal val frameGaps = java.util.concurrent.atomic.AtomicIntegerArray(4)
+    internal var lastFrameUs = -1L
+
     // The picture as drawn, for the glass to draw again; and where on screen it is drawn.
     internal var frameLayer: GraphicsLayer? = null
     internal var frameOrigin: Offset? by mutableStateOf(null)
@@ -195,7 +200,17 @@ fun rememberPlayerVideoState(video: TrackVideo?, isPlaying: Boolean, trackPositi
             }
         }
         state.player.addListener(listener)
+        val frames = androidx.media3.exoplayer.video.VideoFrameMetadataListener { presentationTimeUs, _, _, _ ->
+            val last = state.lastFrameUs
+            state.lastFrameUs = presentationTimeUs
+            val gap = presentationTimeUs - last
+            if (last >= 0 && gap > 0 && gap < 1_000_000) {
+                state.frameGaps.incrementAndGet(min(3, (gap / 50_000).toInt()))
+            }
+        }
+        state.player.setVideoFrameMetadataListener(frames)
         onDispose {
+            state.player.clearVideoFrameMetadataListener(frames)
             state.player.removeListener(listener)
             state.player.release()
         }
@@ -273,7 +288,8 @@ fun rememberPlayerVideoState(video: TrackVideo?, isPlaying: Boolean, trackPositi
                 }
                 if (now - lastLogAt > 10_000L && playing) {
                     lastLogAt = now
-                    Log.d(TAG, "drift ${drift} ms, speed $speed; ${frameCounts(player)}")
+                    val gaps = (0 until 4).map { state.frameGaps.getAndSet(it, 0) }
+                    Log.d(TAG, "drift ${drift} ms, speed $speed; ${frameCounts(player)}; frame gaps <50/<100/<150/more ms: $gaps")
                 }
             }
             delay(SYNC_INTERVAL_MS)
