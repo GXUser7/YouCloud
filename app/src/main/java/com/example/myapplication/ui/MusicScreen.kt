@@ -6875,10 +6875,25 @@ private fun LyricsOverlay(
     }
 
     val lit = MaterialTheme.colorScheme.onSurface
+    val scrim = MaterialTheme.colorScheme.background.copy(alpha = 0.38f)
     BoxWithConstraints(
         modifier = Modifier
             .fillMaxSize()
-            .background(MaterialTheme.colorScheme.background.copy(alpha = 0.38f))
+            // The shade behind the lines fades out as they do, by the panel's top edge: it used
+            // to run on under the panel and stop there in a hard line across it.
+            .drawBehind {
+                val h = size.height
+                val clear = h - PlayerPanelOverlap.toPx()
+                val solid = (clear - LyricsFade.toPx()).coerceAtLeast(0f)
+                drawRect(
+                    Brush.verticalGradient(
+                        0f to scrim,
+                        solid / h to scrim,
+                        clear / h to Color.Transparent,
+                        1f to Color.Transparent
+                    )
+                )
+            }
     ) {
         LazyColumn(
             state = listState,
