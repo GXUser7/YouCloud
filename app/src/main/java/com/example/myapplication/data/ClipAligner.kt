@@ -53,9 +53,10 @@ object ClipAligner {
     // by range at full speed: yt-dlp downloads YouTube in pieces for the same reason.
     private const val CHUNK_BYTES = 1L * 1024 * 1024
     private val http = OkHttpClient.Builder()
-        .connectTimeout(15, TimeUnit.SECONDS)
-        .readTimeout(30, TimeUnit.SECONDS)
+        .connectTimeout(10, TimeUnit.SECONDS)
+        .readTimeout(10, TimeUnit.SECONDS)
         .build()
+    private const val RANGE_ATTEMPTS = 3
 
     /**
      * How [source]'s sound rises, ten milliseconds at a time. The stream is fetched to [workDir]
@@ -118,6 +119,19 @@ object ClipAligner {
      * range (null: it sent everything at once, which is then what came back).
      */
     private fun range(source: AudioSource, offset: Long): Pair<ByteArray, Long?> {
+        // googlevideo now and then leaves a request hanging; asked again, it answers.
+        var failure: java.io.IOException? = null
+        repeat(RANGE_ATTEMPTS) {
+            try {
+                return rangeOnce(source, offset)
+            } catch (e: java.io.IOException) {
+                failure = e
+            }
+        }
+        throw failure!!
+    }
+
+    private fun rangeOnce(source: AudioSource, offset: Long): Pair<ByteArray, Long?> {
         val request = Request.Builder()
             .url(source.url)
             .header("Range", "bytes=$offset-${offset + CHUNK_BYTES - 1}")
