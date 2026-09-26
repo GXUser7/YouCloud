@@ -27,22 +27,29 @@ import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.BlurEffect
 import androidx.compose.ui.graphics.CompositingStrategy
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.TileMode
+import androidx.compose.ui.graphics.TransformOrigin
+import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.scale
 import androidx.compose.ui.graphics.drawscope.translate
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.layer.GraphicsLayer
 import androidx.compose.ui.graphics.layer.drawLayer
 import androidx.compose.ui.graphics.rememberGraphicsLayer
+import androidx.compose.ui.layout.layout
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.unit.Constraints
+import androidx.compose.ui.unit.Density
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -347,13 +354,8 @@ fun AmbientVideo(
             Box(
                 modifier = Modifier
                     .matchParentSize()
-                    .graphicsLayer {
-                        val radius = glow.blur.toPx()
-                        renderEffect = BlurEffect(radius, radius, TileMode.Decal)
-                        this.alpha = glow.opacity
-                    }
-                    .drawBehind {
-                        val layer = state.frameLayer ?: return@drawBehind
+                    .blurredDrawing(glow.blur, alpha = glow.opacity) { size ->
+                        val layer = state.frameLayer ?: return@blurredDrawing
                         val height = size.height - topPx - bottomPx
                         translate(0f, topPx) {
                             scale(glow.scale, glow.scale, pivot = Offset(size.width / 2, height / 2)) {
@@ -406,14 +408,9 @@ fun VideoBackdrop(state: PlayerVideoState, alpha: Float, modifier: Modifier = Mo
             Box(
                 modifier = Modifier
                     .matchParentSize()
-                    .graphicsLayer {
-                        val radius = glow.blur.toPx()
-                        renderEffect = BlurEffect(radius, radius, TileMode.Decal)
-                        this.alpha = glow.opacity
-                    }
-                    .drawBehind {
-                        val layer = state.frameLayer ?: return@drawBehind
-                        val origin = state.frameOrigin ?: return@drawBehind
+                    .blurredDrawing(glow.blur, alpha = glow.opacity) {
+                        val layer = state.frameLayer ?: return@blurredDrawing
+                        val origin = state.frameOrigin ?: return@blurredDrawing
                         val width = layer.size.width.toFloat()
                         val height = layer.size.height.toFloat()
                         translate(origin.x, origin.y) {
@@ -468,13 +465,8 @@ fun FullScreenVideo(state: PlayerVideoState, blur: androidx.compose.ui.unit.Dp) 
             Box(
                 modifier = Modifier
                     .matchParentSize()
-                    .graphicsLayer {
-                        val radius = glow.blur.toPx()
-                        renderEffect = BlurEffect(radius, radius, TileMode.Decal)
-                        this.alpha = glow.opacity
-                    }
-                    .drawBehind {
-                        val layer = state.frameLayer ?: return@drawBehind
+                    .blurredDrawing(glow.blur, alpha = glow.opacity) { size ->
+                        val layer = state.frameLayer ?: return@blurredDrawing
                         // The layer is the whole screen with the picture in its middle.
                         scale(glow.scale, glow.scale, pivot = Offset(size.width / 2, size.height / 2)) {
                             drawLayer(layer)
@@ -495,6 +487,57 @@ private val FULL_SCREEN_GLOWS = listOf(
 )
 
 private class Glow(val scale: Float, val blur: androidx.compose.ui.unit.Dp, val opacity: Float)
+
+/**
+ * Fills the box with [draw] (given the box's size), blurred by [blur] — the blur made at a
+ * fraction of the screen's resolution and stretched back over the box. A picture blurred that
+ * much loses nothing by it, and it is what lets the glow keep up with the video: blurring every
+ * step at full resolution, on every frame, took the GPU longer than a frame lasts, and the video
+ * stuttered along at under 20 frames a second.
+ */
+private fun Modifier.blurredDrawing(
+    blur: Dp,
+    alpha: Float = 1f,
+    tileMode: TileMode = TileMode.Decal,
+    draw: DrawScope.(Size) -> Unit
+): Modifier = this
+    // Laid out small, and scaled up to the box's size as it is drawn.
+    .layout { measurable, constraints ->
+        val shrink = shrinkFor(blur)
+        val placeable = measurable.measure(
+            Constraints.fixed(
+                (constraints.maxWidth + shrink - 1) / shrink,
+                (constraints.maxHeight + shrink - 1) / shrink
+            )
+        )
+        layout(constraints.maxWidth, constraints.maxHeight) { placeable.place(0, 0) }
+    }
+    .graphicsLayer {
+        val shrink = shrinkFor(blur).toFloat()
+        scaleX = shrink
+        scaleY = shrink
+        transformOrigin = TransformOrigin(0f, 0f)
+        val radius = blur.toPx() / shrink
+        renderEffect = BlurEffect(radius, radius, tileMode)
+        this.alpha = alpha
+        clip = tileMode == TileMode.Clamp
+    }
+    .drawBehind {
+        val shrink = shrinkFor(blur).toFloat()
+        scale(1f / shrink, 1f / shrink, pivot = Offset.Zero) {
+            draw(Size(size.width * shrink, size.height * shrink))
+        }
+    }
+
+/**
+ * How many times smaller a blur of [blur] is made: as small as leaves it a few pixels still, so
+ * that stretched back it stays smooth.
+ */
+private fun Density.shrinkFor(blur: Dp): Int =
+    (blur.toPx() / MIN_SHRUNK_BLUR_PX).toInt().coerceIn(1, MAX_BLUR_SHRINK)
+
+private const val MIN_SHRUNK_BLUR_PX = 6f
+private const val MAX_BLUR_SHRINK = 8
 
 // Widest and softest first, so each nearer one lies over it. Close steps in size, so that over
 // the line each shows as a band of its own, softer the further out — at the video's own
@@ -522,14 +565,9 @@ fun BoxScope.FrostedVideoGlass(state: PlayerVideoState, tint: Color) {
         modifier = Modifier
             .matchParentSize()
             .onGloballyPositioned { origin = it.positionInRoot() }
-            .graphicsLayer {
-                val radius = 32.dp.toPx()
-                renderEffect = BlurEffect(radius, radius, TileMode.Clamp)
-                clip = true
-            }
-            .drawBehind {
-                val layer = state.frameLayer ?: return@drawBehind
-                val at = state.frameOrigin ?: return@drawBehind
+            .blurredDrawing(32.dp, tileMode = TileMode.Clamp) {
+                val layer = state.frameLayer ?: return@blurredDrawing
+                val at = state.frameOrigin ?: return@blurredDrawing
                 translate(at.x - origin.x, at.y - origin.y) { drawLayer(layer) }
             }
     )
