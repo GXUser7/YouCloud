@@ -1,5 +1,6 @@
 package com.example.myapplication.ui
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.Stable
@@ -125,7 +126,20 @@ private class FrostOrigin {
 fun Modifier.glassOr(shape: Shape, color: Color, glassAlpha: Float = GlassAlpha): Modifier =
     if (LocalGlass.current) frosted(shape, color.copy(alpha = color.alpha * glassAlpha)) else this
 
+/** A solid fill's colour, or none where the box is glass instead. */
+@Composable
+fun glassFill(color: Color): Color = if (LocalGlass.current) Color.Transparent else color
+
+/**
+ * A whole page as glass: the backdrop blurred behind it under most of the page's own colour, so
+ * the shapes still move, faintly, behind whatever the page shows.
+ */
+@Composable
+fun Modifier.pageGlass(color: Color): Modifier =
+    if (LocalGlass.current) frosted(RectangleShape, color.copy(alpha = PageGlassAlpha), rim = false) else background(color)
+
 internal val FrostBlur = 28.dp
+internal const val PageGlassAlpha = 0.68f
 internal const val GlassAlpha = 0.58f
 private const val MIN_SHRUNK_BLUR_PX = 6f
 private const val MAX_SHRINK = 8

@@ -488,6 +488,9 @@ fun MusicScreen(viewModel: MusicViewModel) {
             LocalFrostSources provides listOf(backdropFrost)
         ) {
             Box(modifier = Modifier.fillMaxSize().frostSource(screensFrost)) {
+            // Every screen stands on the moving backdrop: their pages, panels, buttons and cards
+            // are glass. (Not the full player, which draws its own backdrop.)
+            androidx.compose.runtime.CompositionLocalProvider(LocalGlass provides true) {
             AnimatedContent(
                 targetState = screen,
                 transitionSpec = {
@@ -711,6 +714,10 @@ fun MusicScreen(viewModel: MusicViewModel) {
                             viewModel.deleteDownloadedTrack(track)
                         },
                         onImportTracks = viewModel::importLocalTracks,
+                        onShuffle = {
+                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                            viewModel.playDownloadsShuffled()
+                        },
                         showDebugPercentage = showDebugPercentage,
                         downloadedPercentages = downloadedPercentages
                     )
@@ -968,6 +975,7 @@ fun MusicScreen(viewModel: MusicViewModel) {
                         }
                     )
                 }
+            }
             }
             }
 
@@ -1428,11 +1436,12 @@ private fun HomeScreen(
                         alpha = 1f - 0.45f * away
                     }
             ) {
-                Row(
+                Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(start = 20.dp, top = 12.dp, end = 16.dp),
-                    verticalAlignment = Alignment.Top
+                        .padding(start = 20.dp, top = 12.dp, end = 20.dp)
+                        .heightIn(min = 64.dp),
+                    contentAlignment = Alignment.Center
                 ) {
                     AnimatedContent(
                         targetState = sections.getOrElse(sectionPager.currentPage) { sections.first() },
@@ -1443,26 +1452,18 @@ private fun HomeScreen(
                                 (slideOutVertically { h -> if (forward) -h / 2 else h / 2 } + fadeOut())
                         },
                         contentKey = { it.key },
-                        modifier = Modifier.weight(1f),
+                        modifier = Modifier.fillMaxWidth(),
                         label = "homeTitle"
                     ) { section ->
-                        Column {
-                            Text(
-                                text = section.title,
-                                style = MaterialTheme.typography.displaySmall,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                            Text(
-                                text = section.subtitle,
-                                style = MaterialTheme.typography.labelLarge,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                        }
+                        Text(
+                            text = section.title,
+                            style = MaterialTheme.typography.displaySmall,
+                            textAlign = TextAlign.Center,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.fillMaxWidth()
+                        )
                     }
-                    Spacer(modifier = Modifier.width(14.dp + 48.dp))
                 }
 
                 if (hasWarning) {
@@ -1483,11 +1484,14 @@ private fun HomeScreen(
                     modifier = Modifier.padding(start = 16.dp, top = 8.dp, end = 16.dp)
                 )
 
-                VerticalPager(
-                    state = sectionPager,
+                Box(
                     modifier = Modifier
                         .fillMaxWidth()
                         .weight(1f)
+                ) {
+                VerticalPager(
+                    state = sectionPager,
+                    modifier = Modifier.fillMaxSize()
                 ) { page ->
                     val section = sections.getOrElse(page) { sections.first() }
                     when (section.category) {
@@ -1594,29 +1598,39 @@ private fun HomeScreen(
                         )
                     }
                 }
+                    if (sections.size > 1) {
+                        SectionIndicator(
+                            pager = sectionPager,
+                            modifier = Modifier
+                                .align(Alignment.CenterEnd)
+                                .padding(end = 5.dp)
+                        )
+                    }
+                }
+
+                // The section below (or, at the last, back to the first): says the page goes on
+                // downward, and takes you there.
+                if (sections.size > 1) {
+                    val current = sectionPager.currentPage
+                    val atEnd = current >= sections.lastIndex
+                    NextSectionHint(
+                        title = if (atEnd) sections.first().title else sections[current + 1].title,
+                        upward = atEnd,
+                        onClick = {
+                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                            serviceScope.launch {
+                                sectionPager.animateScrollToPage(if (atEnd) 0 else current + 1)
+                            }
+                        }
+                    )
+                }
 
                 Spacer(
                     modifier = Modifier.height(
-                        16.dp + HomeToolbarClearance + if (playerVisible) 72.dp + 12.dp else 0.dp
+                        8.dp + HomeToolbarClearance + if (playerVisible) 72.dp + 12.dp else 0.dp
                     )
                 )
             }
-        }
-
-        Box(
-            modifier = Modifier
-                .align(Alignment.TopEnd)
-                .statusBarsPadding()
-                .padding(top = 12.dp, end = 16.dp)
-        ) {
-            HomeIconButton(
-                icon = Icons.Default.Settings,
-                contentDescription = "Настройки",
-                onClick = {
-                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                    onOpenSettings()
-                }
-            )
         }
 
         HomeToolbar(
@@ -1629,6 +1643,10 @@ private fun HomeScreen(
             onSearch = {
                 haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                 onOpenSearch()
+            },
+            onSettings = {
+                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                onOpenSettings()
             },
             modifier = Modifier
                 .align(Alignment.BottomCenter)
@@ -1672,6 +1690,74 @@ private fun HomeScreen(
     }
 }
 
+/**
+ * Where among a service's sections the page is: a short rail at the screen's edge with a thumb
+ * that slides along it as the sections are swiped — a list that goes on downward, at a glance.
+ */
+@Composable
+private fun SectionIndicator(pager: androidx.compose.foundation.pager.PagerState, modifier: Modifier = Modifier) {
+    val count = pager.pageCount
+    val rail = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.16f)
+    val thumb = PanelColors.accent
+    Box(
+        modifier = modifier
+            .width(4.dp)
+            .height((count * 14).coerceIn(28, 96).dp)
+            .drawBehind {
+                val corner = androidx.compose.ui.geometry.CornerRadius(size.width / 2f)
+                drawRoundRect(color = rail, cornerRadius = corner)
+                val length = (size.height / count).coerceAtLeast(8.dp.toPx())
+                val position = (pager.currentPage + pager.currentPageOffsetFraction).coerceIn(0f, (count - 1).toFloat())
+                val top = if (count > 1) (size.height - length) * position / (count - 1) else 0f
+                drawRoundRect(
+                    color = thumb,
+                    topLeft = Offset(0f, top),
+                    size = androidx.compose.ui.geometry.Size(size.width, length),
+                    cornerRadius = corner
+                )
+            }
+    )
+}
+
+/** The next section's name under the carousel, with a nudging chevron: the page goes on below. */
+@Composable
+private fun NextSectionHint(title: String, upward: Boolean, onClick: () -> Unit) {
+    val nudge = rememberInfiniteTransition(label = "nextSectionNudge")
+    val shift by nudge.animateFloat(
+        initialValue = 0f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(tween(900, easing = FastOutSlowInEasing), RepeatMode.Reverse),
+        label = "nextSectionShift"
+    )
+    Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+        Row(
+            modifier = Modifier
+                .clip(CircleShape)
+                .clickable(onClick = onClick)
+                .padding(horizontal = 14.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.labelLarge,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.widthIn(max = 240.dp)
+            )
+            Icon(
+                imageVector = if (upward) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
+                contentDescription = null,
+                tint = PanelColors.accent,
+                modifier = Modifier
+                    .size(20.dp)
+                    .graphicsLayer { translationY = (if (upward) -3f else 3f) * shift * density }
+            )
+        }
+    }
+}
+
 // A sideways swipe on home moves to the next service once it is this long — or, a flick, this fast
 // and at least this long.
 private val SERVICE_SWIPE_DISTANCE = 40.dp
@@ -1689,17 +1775,16 @@ private fun HomeToolbar(
     selected: HomeService,
     onSelect: (HomeService) -> Unit,
     onSearch: () -> Unit,
+    onSettings: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     Row(
         modifier = modifier.fillMaxWidth(),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.SpaceBetween
+        verticalAlignment = Alignment.CenterVertically
     ) {
         val glass = LocalGlass.current
         Surface(
             modifier = Modifier
-                .weight(1f, fill = false)
                 .padding(end = 8.dp)
                 .height(64.dp)
                 .glassOr(CircleShape, PanelColors.container),
@@ -1754,6 +1839,22 @@ private fun HomeToolbar(
             }
         }
         val searchFill = androidx.compose.ui.graphics.lerp(PanelColors.container, PanelColors.content, 0.08f)
+        Spacer(modifier = Modifier.weight(1f))
+        Surface(
+            onClick = onSettings,
+            modifier = Modifier
+                .size(64.dp)
+                .glassOr(RoundedCornerShape(20.dp), searchFill),
+            shape = RoundedCornerShape(20.dp),
+            color = if (glass) Color.Transparent else searchFill,
+            contentColor = PanelColors.accent,
+            shadowElevation = if (glass) 0.dp else 6.dp
+        ) {
+            Box(contentAlignment = Alignment.Center) {
+                Icon(Icons.Default.Settings, contentDescription = "Настройки", modifier = Modifier.size(26.dp))
+            }
+        }
+        Spacer(modifier = Modifier.width(8.dp))
         Surface(
             onClick = onSearch,
             modifier = Modifier
@@ -2743,10 +2844,12 @@ private fun SettingsScreen(
                     modifier = Modifier.padding(start = 12.dp)
                 )
                 Card(
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .glassOr(MaterialTheme.shapes.extraLarge, MaterialTheme.colorScheme.surfaceContainer),
                     shape = MaterialTheme.shapes.extraLarge,
                     colors = CardDefaults.cardColors(
-                        containerColor = MaterialTheme.colorScheme.surfaceContainer
+                        containerColor = glassFill(MaterialTheme.colorScheme.surfaceContainer)
                     )
                 ) {
                     Column(modifier = Modifier.padding(vertical = 4.dp)) {
@@ -2788,10 +2891,12 @@ private fun SettingsScreen(
                     modifier = Modifier.padding(start = 12.dp)
                 )
                 Card(
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .glassOr(MaterialTheme.shapes.extraLarge, MaterialTheme.colorScheme.surfaceContainer),
                     shape = MaterialTheme.shapes.extraLarge,
                     colors = CardDefaults.cardColors(
-                        containerColor = MaterialTheme.colorScheme.surfaceContainer
+                        containerColor = glassFill(MaterialTheme.colorScheme.surfaceContainer)
                     )
                 ) {
                     Column(modifier = Modifier.padding(vertical = 4.dp)) {
@@ -2860,10 +2965,12 @@ private fun SettingsScreen(
                     modifier = Modifier.padding(start = 12.dp)
                 )
                 Card(
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .glassOr(MaterialTheme.shapes.extraLarge, MaterialTheme.colorScheme.surfaceContainer),
                     shape = MaterialTheme.shapes.extraLarge,
                     colors = CardDefaults.cardColors(
-                        containerColor = MaterialTheme.colorScheme.surfaceContainer
+                        containerColor = glassFill(MaterialTheme.colorScheme.surfaceContainer)
                     )
                 ) {
                     Column(modifier = Modifier.padding(vertical = 4.dp)) {
@@ -2895,10 +3002,12 @@ private fun SettingsScreen(
                 )
 
                 Card(
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .glassOr(MaterialTheme.shapes.extraLarge, MaterialTheme.colorScheme.surfaceContainer),
                     shape = MaterialTheme.shapes.extraLarge,
                     colors = CardDefaults.cardColors(
-                        containerColor = MaterialTheme.colorScheme.surfaceContainer
+                        containerColor = glassFill(MaterialTheme.colorScheme.surfaceContainer)
                     )
                 ) {
                     Column(
@@ -3269,10 +3378,12 @@ private fun SettingsScreen(
                 )
 
                 Card(
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .glassOr(MaterialTheme.shapes.extraLarge, MaterialTheme.colorScheme.surfaceContainer),
                     shape = MaterialTheme.shapes.extraLarge,
                     colors = CardDefaults.cardColors(
-                        containerColor = MaterialTheme.colorScheme.surfaceContainer
+                        containerColor = glassFill(MaterialTheme.colorScheme.surfaceContainer)
                     )
                 ) {
                     Column(
@@ -3451,10 +3562,12 @@ private fun SettingsScreen(
                 )
 
                 Card(
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .glassOr(MaterialTheme.shapes.extraLarge, MaterialTheme.colorScheme.surfaceContainer),
                     shape = MaterialTheme.shapes.extraLarge,
                     colors = CardDefaults.cardColors(
-                        containerColor = MaterialTheme.colorScheme.surfaceContainer
+                        containerColor = glassFill(MaterialTheme.colorScheme.surfaceContainer)
                     )
                 ) {
                     Row(
@@ -3534,10 +3647,12 @@ private fun SettingsScreen(
 
                 val showDebugPercentageVal by settingsRepository.showDebugPercentage.collectAsState()
                 Card(
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .glassOr(MaterialTheme.shapes.extraLarge, MaterialTheme.colorScheme.surfaceContainer),
                     shape = MaterialTheme.shapes.extraLarge,
                     colors = CardDefaults.cardColors(
-                        containerColor = MaterialTheme.colorScheme.surfaceContainer
+                        containerColor = glassFill(MaterialTheme.colorScheme.surfaceContainer)
                     )
                 ) {
                     Row(
@@ -4203,6 +4318,7 @@ private fun DownloadsScreen(
     onPlayTrack: (FavoriteTrack) -> Unit,
     onDeleteDownload: (FavoriteTrack) -> Unit,
     onImportTracks: (List<android.net.Uri>) -> Unit,
+    onShuffle: () -> Unit = {},
     showDebugPercentage: Boolean = false,
     downloadedPercentages: Map<Long, Int> = emptyMap()
 ) {
@@ -4229,30 +4345,24 @@ private fun DownloadsScreen(
         }
     }
 
-    Column(
+    val albumLibrary = LocalAlbumLibrary.current
+    val isActive = currentTrackId != null && tracks.any { it.id == currentTrackId }
+    val listState = rememberLazyListState()
+    val collapsed = rememberCollapsed(listState, MixCoverHeight - 140.dp)
+
+    // A folder, opened as a mix is: its cover across the top, the big play button, the tracks.
+    Box(
         modifier = Modifier
             .fillMaxSize()
-            .statusBarsPadding()
+            .pageGlass(MaterialTheme.colorScheme.background)
     ) {
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 8.dp)
-        ) {
-            // No title here: the hero right below already carries it.
-            TopBar(title = "", onBack = onBack)
-        }
-
         LazyColumn(
+            state = listState,
             modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(start = 16.dp, top = 4.dp, end = 16.dp, bottom = 120.dp)
+            contentPadding = PaddingValues(bottom = 120.dp)
         ) {
             item(key = "downloads-hero") {
-                CollectionHero(
-                    title = "Скачанное",
-                    kicker = "На устройстве",
-                    subtitle = plural(tracks.size, "трек", "трека", "треков") + " доступны офлайн",
-                    onArtworkClick = { imagePicker.launch(arrayOf("image/*")) },
+                CoverHeader(
                     artwork = {
                         if (!folderArtworkUri.isNullOrBlank()) {
                             AsyncImage(
@@ -4265,50 +4375,66 @@ private fun DownloadsScreen(
                             IconCover(icon = Icons.Default.Download)
                         }
                     },
-                    actions = {
-                        if (tracks.isNotEmpty()) {
-                            PanelPrimaryButton(
-                                text = "Слушать",
-                                icon = Icons.Default.PlayArrow,
-                                onClick = { onPlayTrack(tracks.first()) }
-                            )
+                    kicker = "Папка · на устройстве",
+                    title = "Скачанное",
+                    subtitle = "Играет без сети",
+                    isActive = isActive,
+                    isPlaying = isPlaying,
+                    onPlay = if (tracks.isEmpty()) null else {
+                        {
+                            if (isActive && albumLibrary != null) albumLibrary.onTogglePlay() else onPlayTrack(tracks.first())
                         }
-                        PanelIconButton(
-                            icon = Icons.Default.Image,
-                            contentDescription = "Сменить обложку",
-                            onClick = { imagePicker.launch(arrayOf("image/*")) }
-                        )
-                        PanelIconButton(
-                            icon = Icons.Default.Add,
-                            contentDescription = "Импортировать треки с устройства",
-                            onClick = { audioPicker.launch(arrayOf("audio/*")) }
-                        )
-                    }
+                    },
+                    onShuffle = if (tracks.size < 2) null else onShuffle,
+                    onArtworkClick = { imagePicker.launch(arrayOf("image/*")) }
                 )
             }
 
-            item(key = "downloads-gap") { Spacer(modifier = Modifier.height(20.dp)) }
-
-            if (tracks.isEmpty()) {
-                item(key = "downloads-empty") {
-                    EmptyState("Здесь появятся треки, которые ты сохранишь на устройство.")
-                }
-            } else {
-                itemsIndexed(tracks, key = { _, track -> "downloaded-${track.id}" }) { index, track ->
-                    DownloadedTrackCard(
-                        track = track,
-                        isSelected = track.id == currentTrackId,
-                        progress = downloadProgress[track.id],
-                        isPlaying = isPlaying,
-                        onClick = { onPlayTrack(track) },
-                        onDeleteDownload = { onDeleteDownload(track) },
-                        showDebugPercentage = showDebugPercentage,
-                        debugPercentage = downloadedPercentages[track.id],
-                        position = groupPosition(index, tracks.size)
+            item(key = "downloads-count") {
+                CountRule(if (tracks.isEmpty()) "Нет треков" else plural(tracks.size, "трек", "трека", "треков")) {
+                    PanelIconButton(
+                        icon = Icons.Default.Image,
+                        contentDescription = "Сменить обложку",
+                        onClick = { imagePicker.launch(arrayOf("image/*")) },
+                        size = RuleButtonSize,
+                        iconSize = RuleIconSize
+                    )
+                    PanelIconButton(
+                        icon = Icons.Default.Add,
+                        contentDescription = "Импортировать треки с устройства",
+                        onClick = { audioPicker.launch(arrayOf("audio/*")) },
+                        size = RuleButtonSize,
+                        iconSize = RuleIconSize
                     )
                 }
             }
+
+            if (tracks.isEmpty()) {
+                item(key = "downloads-empty") {
+                    Box(modifier = Modifier.padding(horizontal = 16.dp)) {
+                        EmptyState("Здесь появятся треки, которые ты сохранишь на устройство.")
+                    }
+                }
+            } else {
+                itemsIndexed(tracks, key = { _, track -> "downloaded-${track.id}" }) { _, track ->
+                    Box(modifier = Modifier.padding(horizontal = 8.dp)) {
+                        DownloadedTrackCard(
+                            track = track,
+                            isSelected = track.id == currentTrackId,
+                            progress = downloadProgress[track.id],
+                            isPlaying = isPlaying,
+                            onClick = { onPlayTrack(track) },
+                            onDeleteDownload = { onDeleteDownload(track) },
+                            showDebugPercentage = showDebugPercentage,
+                            debugPercentage = downloadedPercentages[track.id],
+                            flat = true
+                        )
+                    }
+                }
+            }
         }
+
+        CollapsingTopBar(title = "Скачанное", collapsed = collapsed, onBack = onBack)
     }
 }
 
@@ -4723,21 +4849,48 @@ private fun CollapsingTopBar(
         animationSpec = tween(220),
         label = "collapsingBar"
     )
+    val glass = LocalGlass.current
+    val barShown by animateFloatAsState(if (collapsed) 1f else 0f, tween(220), label = "collapsingBarGlass")
     Box(
         modifier = Modifier
             .fillMaxWidth()
-            .background(barColor)
+            .then(if (glass) Modifier else Modifier.background(barColor))
+    ) {
+        if (glass) {
+            // Only drawn once there is a bar to show: glass under a see-through bar would blur
+            // the picture it lies over.
+            Box(
+                modifier = Modifier
+                    .matchParentSize()
+                    .graphicsLayer { alpha = barShown }
+                    .then(
+                        if (barShown > 0f) {
+                            Modifier.frosted(tint = MaterialTheme.colorScheme.background.copy(alpha = PageGlassAlpha), rim = false)
+                        } else {
+                            Modifier
+                        }
+                    )
+            )
+        }
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
             .statusBarsPadding()
             .height(72.dp)
             .padding(horizontal = 16.dp),
         contentAlignment = Alignment.CenterStart
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
+            val backFill = if (collapsed) PanelColors.container else MaterialTheme.colorScheme.background.copy(alpha = 0.55f)
             Surface(
                 onClick = onBack,
-                modifier = Modifier.size(48.dp),
+                modifier = Modifier
+                    .size(48.dp)
+                    // Over the picture it stays see-through: glass there would blur the backdrop
+                    // behind the page, not the picture under the button.
+                    .then(if (collapsed) Modifier.glassOr(RoundedCornerShape(16.dp), backFill) else Modifier),
                 shape = RoundedCornerShape(16.dp),
-                color = if (collapsed) PanelColors.container else MaterialTheme.colorScheme.background.copy(alpha = 0.55f),
+                color = if (collapsed) glassFill(backFill) else backFill,
                 contentColor = if (collapsed) PanelColors.accent else MaterialTheme.colorScheme.onSurface
             ) {
                 Box(contentAlignment = Alignment.Center) {
@@ -4761,6 +4914,7 @@ private fun CollapsingTopBar(
             }
             trailing?.invoke()
         }
+    }
     }
 }
 
@@ -4799,11 +4953,14 @@ private fun PlayShuffleGroup(onPlay: () -> Unit, onShuffle: () -> Unit) {
                 Text("Слушать", style = MaterialTheme.typography.titleMedium)
             }
         }
+        val shuffleShape = RoundedCornerShape(topStart = 8.dp, bottomStart = 8.dp, topEnd = 28.dp, bottomEnd = 28.dp)
         Surface(
             onClick = onShuffle,
-            modifier = Modifier.size(width = 64.dp, height = 56.dp),
-            shape = RoundedCornerShape(topStart = 8.dp, bottomStart = 8.dp, topEnd = 28.dp, bottomEnd = 28.dp),
-            color = PanelColors.container,
+            modifier = Modifier
+                .size(width = 64.dp, height = 56.dp)
+                .glassOr(shuffleShape, PanelColors.container),
+            shape = shuffleShape,
+            color = glassFill(PanelColors.container),
             contentColor = PanelColors.accent
         ) {
             Box(contentAlignment = Alignment.Center) {
@@ -4838,6 +4995,7 @@ private fun ArtistPortraitHeader(
             modifier = Modifier
                 .fillMaxWidth()
                 .height(ArtistPortraitHeight)
+                .fadedDownward(PortraitFade)
                 .background(MaterialTheme.colorScheme.surfaceContainerHigh)
         ) {
             if (!artist.avatarUrl.isNullOrBlank()) {
@@ -4850,18 +5008,15 @@ private fun ArtistPortraitHeader(
             } else {
                 IconCover(icon = Icons.Default.Person, iconSize = 120.dp)
             }
-            // Dark at the top for the status bar and the back button, then the portrait sinks into
-            // the backdrop so the name below it sits on something calm.
+            // Dark at the top for the status bar and the back button; the portrait fades into the
+            // page below, so the name sits on something calm.
             Box(
                 modifier = Modifier
                     .fillMaxSize()
                     .background(
                         Brush.verticalGradient(
                             0f to Color.Black.copy(alpha = 0.35f),
-                            0.18f to Color.Transparent,
-                            0.45f to Color.Transparent,
-                            0.78f to backdrop.copy(alpha = 0.82f),
-                            1f to backdrop
+                            0.18f to Color.Transparent
                         )
                     )
             )
@@ -4958,22 +5113,21 @@ private fun CoverHeader(
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .background(MaterialTheme.colorScheme.surfaceContainerHigh)
-                .then(if (onArtworkClick != null) Modifier.clickable(onClick = onArtworkClick) else Modifier),
+                .then(if (onArtworkClick != null) Modifier.clickable(onClick = onArtworkClick) else Modifier)
+                // Covers often carry lettering low down (a station's name, "STATION") right where
+                // the title goes, so the cover is all but gone by then or the two overprint.
+                .fadedDownward(CoverFade)
+                .background(MaterialTheme.colorScheme.surfaceContainerHigh),
             content = artwork
         )
+        // The status bar and the back button stay legible on a bright cover.
         Box(
             modifier = Modifier
                 .fillMaxSize()
                 .background(
-                    // Covers often carry lettering low down (a station's name, "STATION") right where
-                    // the title goes, so the fade is nearly opaque by then or the two overprint.
                     Brush.verticalGradient(
                         0f to Color.Black.copy(alpha = 0.35f),
-                        0.2f to Color.Transparent,
-                        0.36f to backdrop.copy(alpha = 0.3f),
-                        0.6f to backdrop.copy(alpha = 0.9f),
-                        0.72f to backdrop
+                        0.2f to Color.Transparent
                     )
                 )
         )
@@ -5012,9 +5166,11 @@ private fun CoverHeader(
                     if (onShuffle != null) {
                         Surface(
                             onClick = onShuffle,
-                            modifier = Modifier.size(48.dp),
+                            modifier = Modifier
+                                .size(48.dp)
+                                .glassOr(CircleShape, PanelColors.container),
                             shape = CircleShape,
-                            color = PanelColors.container,
+                            color = glassFill(PanelColors.container),
                             contentColor = PanelColors.accent
                         ) {
                             Box(contentAlignment = Alignment.Center) {
@@ -5030,6 +5186,25 @@ private fun CoverHeader(
 }
 
 private val MixCoverHeight = 420.dp
+
+// Where a picture at the top of a page is whole, and where it has faded out into the page.
+private val CoverFade = 0.34f to 0.74f
+private val PortraitFade = 0.45f to 1f
+
+/** Fades what this box draws out downward, between [fade]'s two fractions of its height. */
+private fun Modifier.fadedDownward(fade: Pair<Float, Float>): Modifier = this
+    .graphicsLayer { compositingStrategy = CompositingStrategy.Offscreen }
+    .drawWithContent {
+        drawContent()
+        drawRect(
+            brush = Brush.verticalGradient(
+                0f to Color.Black,
+                fade.first to Color.Black,
+                fade.second to Color.Transparent
+            ),
+            blendMode = BlendMode.DstIn
+        )
+    }
 
 /**
  * The line between a collection's cover and its list: how many tracks, a rule, and what else can
@@ -5132,7 +5307,7 @@ private fun MixDetailScreen(
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(MaterialTheme.colorScheme.background)
+            .pageGlass(MaterialTheme.colorScheme.background)
     ) {
         LazyColumn(
             state = listState,
@@ -8164,7 +8339,7 @@ private fun PlaylistDetailScreen(
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(MaterialTheme.colorScheme.background)
+            .pageGlass(MaterialTheme.colorScheme.background)
     ) {
         LazyColumn(
             state = listState,
@@ -8403,7 +8578,7 @@ private fun YandexPlaylistDetailScreen(
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(MaterialTheme.colorScheme.background)
+            .pageGlass(MaterialTheme.colorScheme.background)
     ) {
         LazyColumn(
             state = listState,
@@ -8559,7 +8734,7 @@ private fun ArtistDetailScreen(
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(MaterialTheme.colorScheme.background)
+            .pageGlass(MaterialTheme.colorScheme.background)
     ) {
         LazyColumn(
             state = listState,
@@ -8711,7 +8886,7 @@ private fun SetDetailContent(
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(MaterialTheme.colorScheme.background)
+            .pageGlass(MaterialTheme.colorScheme.background)
     ) {
         LazyColumn(
             state = listState,

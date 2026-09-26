@@ -2949,6 +2949,15 @@ class MusicViewModel(
         if (fromMix) playMixTrack(start) else playQueuedTrack(start, queue)
     }
 
+    /** Everything downloaded, shuffled. */
+    fun playDownloadsShuffled() {
+        val start = favoritesRepository.favorites.value
+            .filter { it.downloadState == DownloadState.DOWNLOADED && it.streamUrl != null }
+            .randomOrNull() ?: return
+        if (!musicPlayer.shuffleEnabled.value) musicPlayer.toggleShuffle()
+        playFavorite(start)
+    }
+
     /** Same, for a saved playlist, whose tracks may already be on the device. */
     fun playPlaylistShuffled(playlist: Playlist) {
         val start = playlist.tracks.randomOrNull() ?: return
