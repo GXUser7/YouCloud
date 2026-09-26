@@ -60,11 +60,12 @@ object ClipAligner {
     /**
      * How [source]'s sound rises, ten milliseconds at a time. The stream is fetched to [workDir]
      * first, in ranges: decoding straight off the network read it at the pace googlevideo trickles
-     * a whole file out, over a minute for one track.
+     * a whole file out, over a minute for one track. [onFetched] is told when the network is free.
      */
-    suspend fun onsetsOf(source: AudioSource, workDir: File): FloatArray? = withContext(Dispatchers.IO) {
+    suspend fun onsetsOf(source: AudioSource, workDir: File, onFetched: () -> Unit = {}): FloatArray? = withContext(Dispatchers.IO) {
         workDir.mkdirs()
         val file = fetch(source, workDir) ?: return@withContext null
+        onFetched()
         try {
             onsets(file.path)
         } finally {

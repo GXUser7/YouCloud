@@ -3776,14 +3776,22 @@ class MusicViewModel(
                 async { trackOnsets(track, videoId, auth, workDir) }
             }
             val stream = YouTubeStreams.resolveVideo(context, video.videoId, auth) ?: return@coroutineScope null
-            if (_currentPlayingTrack.value?.id == track.id && trackOnsets != null) {
-                _pendingTrackVideo.value = TrackVideo(
-                    track.id, stream.url, loop = false, vertical = false, userAgent = stream.userAgent, ready = false
-                )
+            // Buffered unseen while the sound is compared, but only once the sound is in: over a
+            // VPN the two downloads side by side each took as long as both.
+            val startBuffering = {
+                if (_currentPlayingTrack.value?.id == track.id && trackOnsets != null) {
+                    _pendingTrackVideo.value = TrackVideo(
+                        track.id, stream.url, loop = false, vertical = false, userAgent = stream.userAgent, ready = false
+                    )
+                }
             }
             val segments = if (trackOnsets == null) video.segments else {
                 val videoOnsets = stream.audioUrl?.let { sound ->
-                    ClipAligner.onsetsOf(ClipAligner.AudioSource(sound, mapOf("User-Agent" to stream.userAgent)), workDir)
+                    ClipAligner.onsetsOf(
+                        ClipAligner.AudioSource(sound, mapOf("User-Agent" to stream.userAgent)),
+                        workDir,
+                        onFetched = startBuffering
+                    )
                 }
                 val ownOnsets = trackOnsets.await()
                 val aligned = if (videoOnsets != null && ownOnsets != null) {

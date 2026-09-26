@@ -316,8 +316,8 @@ main()
         }
         val length = (field("filesize") ?: field("filesize_approx"))?.asLong ?: -1L
         // A video's sound comes with the same answer: every format is listed, deciphered. It is
-        // only analysed ([ClipAligner]), so the smallest does — in AAC when there is one, which
-        // decodes faster than Opus.
+        // only analysed ([ClipAligner]), so the smallest does: over a VPN the download, not the
+        // decoding, is what takes the time.
         val audioUrl = if (kind != Kind.VIDEO) null else json.getAsJsonArray("formats")
             ?.map { it.asJsonObject }
             ?.filter { format ->
@@ -325,10 +325,7 @@ main()
                     format.get("acodec")?.takeUnless { it.isJsonNull }?.asString.let { it != null && it != "none" } &&
                     format.get("protocol")?.takeUnless { it.isJsonNull }?.asString == "https"
             }
-            ?.minWithOrNull(
-                compareBy<JsonObject> { it.get("acodec")?.asString?.startsWith("mp4a") != true }
-                    .thenBy { it.get("abr")?.takeUnless { abr -> abr.isJsonNull }?.asDouble ?: Double.MAX_VALUE }
-            )
+            ?.minByOrNull { it.get("abr")?.takeUnless { abr -> abr.isJsonNull }?.asDouble ?: Double.MAX_VALUE }
             ?.get("url")?.asString
         return if (userAgent != null) {
             YouTubeStreams.Stream(url, mimeType, length, userAgent, audioUrl)
