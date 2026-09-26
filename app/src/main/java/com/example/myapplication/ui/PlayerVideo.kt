@@ -71,6 +71,8 @@ private const val MAX_SPEED_CHANGE = 0.25f
 private const val SEEK_DRIFT_MS = 1_000L
 private const val SEEK_COOLDOWN_MS = 2_000L
 private const val SEEK_LEAD_MS = 200L
+private const val MAX_SEEK_LEAD_MS = 6_000L
+private const val MAX_HOLD_MS = 4_000L
 private const val SYNC_INTERVAL_MS = 100L
 
 /** A muted player for [video], and what the screen needs to know about its picture. */
@@ -192,22 +194,49 @@ fun rememberPlayerVideoState(video: TrackVideo?, isPlaying: Boolean, trackPositi
 
     LaunchedEffect(state) {
         val player = state.player
-        var lastSeekAt = 0L
         var lastLogAt = 0L
         var speed = 1f
+        // The first load counts as a seek: how long it takes says how far ahead to aim the next.
+        var lastSeekAt = SystemClock.elapsedRealtime()
+        var seekPending = true
+        var lead = SEEK_LEAD_MS
+        var measuredLoads = 0
+        // Ahead of the track, the picture waits for it rather than going back and loading again.
+        var holdUntil = 0L
         while (isActive) {
-            player.playWhenReady = playing
+            val now = SystemClock.elapsedRealtime()
+            player.playWhenReady = playing && now >= holdUntil
             if (!state.video.loop) {
-                val now = SystemClock.elapsedRealtime()
+                val loading = player.playbackState == Player.STATE_BUFFERING || player.playbackState == Player.STATE_IDLE
+                if (seekPending && !loading) {
+                    // A stream that loads slowly is sent further ahead, so it arrives where the
+                    // track is by then rather than where it was. Averaged, so that one slow load
+                    // doesn't send the next one far past the track.
+                    val took = (now - lastSeekAt).coerceIn(SEEK_LEAD_MS, MAX_SEEK_LEAD_MS)
+                    lead = if (measuredLoads++ == 0) took else (lead + took) / 2
+                    seekPending = false
+                }
                 val target = state.video.videoPositionFor(position())
                 val drift = target - player.currentPosition
                 val wanted = when {
-                    abs(drift) > SEEK_DRIFT_MS && now - lastSeekAt > SEEK_COOLDOWN_MS -> {
-                        player.seekTo(target + if (playing) SEEK_LEAD_MS else 0L)
-                        lastSeekAt = now
+                    // Still loading where it was last sent. Seeking again would only start the
+                    // load over, and a slow stream would never play, stuck on one frame.
+                    loading || now < holdUntil -> 1f
+                    playing && -drift in SEEK_DRIFT_MS..MAX_HOLD_MS -> {
+                        Log.d(TAG, "drift $drift ms: holding the picture")
+                        holdUntil = now - drift
+                        player.playWhenReady = false
                         1f
                     }
-                    playing && player.playbackState == Player.STATE_READY && abs(drift) > IN_STEP_MS ->
+                    abs(drift) > SEEK_DRIFT_MS && now - lastSeekAt > SEEK_COOLDOWN_MS -> {
+                        val ahead = if (playing) lead else 0L
+                        Log.d(TAG, "drift $drift ms: seeking $ahead ms ahead")
+                        player.seekTo(target + ahead)
+                        lastSeekAt = now
+                        seekPending = true
+                        1f
+                    }
+                    playing && abs(drift) > IN_STEP_MS ->
                         1f + (drift * SPEED_PER_MS).coerceIn(-MAX_SPEED_CHANGE, MAX_SPEED_CHANGE)
                     else -> 1f
                 }
