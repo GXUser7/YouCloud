@@ -322,7 +322,8 @@ fun AmbientVideo(
     bottom: androidx.compose.ui.unit.Dp,
     alpha: Float,
     modifier: Modifier = Modifier,
-    // A [VideoBackdrop] lies behind: the glow shines over it rather than over black.
+    // A [VideoBackdrop] lies behind and draws the glow, over the whole screen: here only the
+    // video itself.
     overBackdrop: Boolean = false
 ) {
     val topPx = with(LocalDensity.current) { top.toPx() }
@@ -330,7 +331,7 @@ fun AmbientVideo(
     Box(modifier = modifier.graphicsLayer { this.alpha = alpha }) {
         // Darkness to glow in: the cover goes out as the video comes in.
         if (!overBackdrop) Box(modifier = Modifier.matchParentSize().drawBehind { drawRect(Color.Black) })
-        Box(modifier = Modifier.matchParentSize()) {
+        if (!overBackdrop) Box(modifier = Modifier.matchParentSize()) {
         for (glow in AMBIENT_GLOWS) {
             Box(
                 modifier = Modifier
@@ -381,33 +382,31 @@ fun AmbientVideo(
 private val VIDEO_EDGE_FADE = 64.dp
 
 /**
- * The whole player's background while a music video plays in the cover's place: copies of the
- * video cascading down from it to the bottom of the screen, each mirrored from the one above so
- * that they meet without a seam, and each softer than the last. The panel stands on them as on
- * frosted glass. They are the video's own layer drawn again, and move with every frame.
+ * The whole player's background while a music video plays in the cover's place: its glow, the
+ * same steps of larger and softer copies as around the video, carried on out to the edges of the
+ * screen, so that the panel stands on them as on frosted glass. They are the video's own layer
+ * drawn again, centred on the video, and move with every frame.
  */
 @Composable
 fun VideoBackdrop(state: PlayerVideoState, alpha: Float, modifier: Modifier = Modifier) {
     Box(modifier = modifier.graphicsLayer { this.alpha = alpha }) {
         Box(modifier = Modifier.matchParentSize().drawBehind { drawRect(Color.Black) })
-        BACKDROP_BLURS.forEachIndexed { index, blur ->
+        for (glow in BACKDROP_GLOWS) {
             Box(
                 modifier = Modifier
                     .matchParentSize()
                     .graphicsLayer {
-                        val radius = blur.toPx()
-                        renderEffect = BlurEffect(radius, radius, TileMode.Clamp)
+                        val radius = glow.blur.toPx()
+                        renderEffect = BlurEffect(radius, radius, TileMode.Decal)
+                        this.alpha = glow.opacity
                     }
                     .drawBehind {
                         val layer = state.frameLayer ?: return@drawBehind
                         val origin = state.frameOrigin ?: return@drawBehind
                         val width = layer.size.width.toFloat()
                         val height = layer.size.height.toFloat()
-                        if (height <= 0f) return@drawBehind
-                        // Copy after copy below the video, down past the bottom of the screen.
-                        translate(origin.x, origin.y + height * (index + 1)) {
-                            // Mirrored every other time: the copy's top meets the bottom above.
-                            scale(1f, if (index % 2 == 0) -1f else 1f, pivot = Offset(width / 2, height / 2)) {
+                        translate(origin.x, origin.y) {
+                            scale(glow.scale, glow.scale, pivot = Offset(width / 2, height / 2)) {
                                 drawLayer(layer)
                             }
                         }
@@ -417,8 +416,18 @@ fun VideoBackdrop(state: PlayerVideoState, alpha: Float, modifier: Modifier = Mo
     }
 }
 
-// From the copy right below the video downward: ever softer, as it moves away from the picture.
-private val BACKDROP_BLURS = listOf(28.dp, 44.dp, 60.dp)
+// The steps around the video, and more beyond them, larger and softer each, out past the bottom
+// of the screen. Widest first, so each nearer one lies over it.
+// Lazy: the steps around the video are declared further down, and top-level values are made in
+// the order they are written.
+private val BACKDROP_GLOWS by lazy {
+    listOf(
+        Glow(scale = 4.8f, blur = 48.dp, opacity = 1f),
+        Glow(scale = 3.3f, blur = 40.dp, opacity = 1f),
+        Glow(scale = 2.4f, blur = 32.dp, opacity = 1f),
+        Glow(scale = 1.75f, blur = 26.dp, opacity = 1f)
+    ) + AMBIENT_GLOWS
+}
 
 private class Glow(val scale: Float, val blur: androidx.compose.ui.unit.Dp, val opacity: Float)
 
