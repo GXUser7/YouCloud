@@ -27,6 +27,8 @@ class ChunkedDataSource(private val upstream: DataSource, private val chunkSize:
     private var end = C.LENGTH_UNSET.toLong()
     private var chunkLeft = 0L
     private var upstreamOpen = false
+    // Nothing read from the chunk yet: if it ends right away, so does the stream.
+    private var freshChunk = false
 
     override fun addTransferListener(transferListener: TransferListener) {
         upstream.addTransferListener(transferListener)
@@ -48,6 +50,7 @@ class ChunkedDataSource(private val upstream: DataSource, private val chunkSize:
         val length = if (end != C.LENGTH_UNSET.toLong()) min(chunkSize, end - position) else chunkSize
         val opened = upstream.open(spec.buildUpon().setPosition(position).setLength(length).build())
         upstreamOpen = true
+        freshChunk = true
         chunkLeft = if (opened != C.LENGTH_UNSET.toLong()) opened else length
     }
 
@@ -76,9 +79,10 @@ class ChunkedDataSource(private val upstream: DataSource, private val chunkSize:
         val read = upstream.read(buffer, offset, min(length.toLong(), chunkLeft).toInt())
         if (read == C.RESULT_END_OF_INPUT) {
             chunkLeft = 0L
-            if (end == C.LENGTH_UNSET.toLong() || position >= end) return C.RESULT_END_OF_INPUT
+            if (freshChunk || end == C.LENGTH_UNSET.toLong() || position >= end) return C.RESULT_END_OF_INPUT
             return read(buffer, offset, length)
         }
+        freshChunk = false
         position += read
         chunkLeft -= read
         return read
