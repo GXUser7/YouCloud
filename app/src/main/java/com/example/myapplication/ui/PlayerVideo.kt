@@ -273,13 +273,24 @@ fun rememberPlayerVideoState(video: TrackVideo?, isPlaying: Boolean, trackPositi
                 }
                 if (now - lastLogAt > 10_000L && playing) {
                     lastLogAt = now
-                    Log.d(TAG, "drift ${drift} ms, speed $speed")
+                    Log.d(TAG, "drift ${drift} ms, speed $speed; ${frameCounts(player)}")
                 }
             }
             delay(SYNC_INTERVAL_MS)
         }
     }
     return state
+}
+
+// How many of the video's frames were shown, and how many the player threw away as late.
+@OptIn(UnstableApi::class)
+private fun frameCounts(player: ExoPlayer): String {
+    val counters = player.videoDecoderCounters ?: return "no decoder"
+    counters.ensureUpdated()
+    val format = player.videoFormat
+    return "rendered ${counters.renderedOutputBufferCount}, dropped ${counters.droppedBufferCount} " +
+        "(${counters.maxConsecutiveDroppedBufferCount} in a row), skipped ${counters.skippedOutputBufferCount}; " +
+        "${format?.width}x${format?.height} ${format?.frameRate} fps ${format?.codecs}"
 }
 
 /**
@@ -402,7 +413,15 @@ private val VIDEO_EDGE_FADE = 64.dp
  */
 @Composable
 fun VideoBackdrop(state: PlayerVideoState, alpha: Float, modifier: Modifier = Modifier) {
-    Box(modifier = modifier.graphicsLayer { this.alpha = alpha }) {
+    Box(
+        modifier = modifier.graphicsLayer {
+            this.alpha = alpha
+            // All the steps in one layer, made again only when the video's frame changes: the
+            // panel over them moves on every frame (the progress, the visualiser), and laying
+            // eight screens of glow on the screen again each time kept the GPU busy all through.
+            compositingStrategy = CompositingStrategy.Offscreen
+        }
+    ) {
         Box(modifier = Modifier.matchParentSize().drawBehind { drawRect(Color.Black) })
         for (glow in BACKDROP_GLOWS) {
             Box(
