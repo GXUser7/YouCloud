@@ -2584,6 +2584,9 @@ class MusicViewModel(
                 settingsRepository.saveUserId(userIdString)
 
                 _isLoggingIn.value = false
+                // Signed in afresh: whatever the old session's failures had set — the "sign in
+                // again" warning, the recovery ladder — is over, and home loads with the new one.
+                onAuthRecovered()
             } catch (e: Exception) {
                 Log.e("MusicViewModel", "Failed to login with captured credentials", e)
                 _loginError.value = "Ошибка при получении профиля SoundCloud. Попробуйте еще раз."
@@ -2594,6 +2597,11 @@ class MusicViewModel(
 
     fun logout() {
         viewModelScope.launch {
+            authRecoveryJob?.cancel()
+            authRecoveryAttempts = 0
+            lastAuthRecoveryAt = 0L
+            _needsRelogin.value = false
+            _isClientIdExpired.value = false
             settingsRepository.resetClientId()
             settingsRepository.resetOauthToken()
             settingsRepository.resetUserId()
