@@ -225,6 +225,10 @@ import android.webkit.WebChromeClient
 import android.os.Message
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.drag
@@ -481,6 +485,10 @@ fun MusicScreen(viewModel: MusicViewModel) {
                         onOpenYtSet = { set ->
                             haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                             viewModel.openYtSet(set)
+                        },
+                        onPlayYtTrack = { track, queue ->
+                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                            viewModel.playQueuedTrack(track, queue)
                         },
                         onYtLogin = {
                             haptic.performHapticFeedback(HapticFeedbackType.LongPress)
@@ -1106,46 +1114,48 @@ private enum class HomeCategory(val title: String, val service: HomeService) {
     MyMusic("Моя музыка", HomeService.Downloads)
 }
 
+/** A page of home's vertical pager: one of a service's sections. */
+private class HomeSection(
+    val key: String,
+    val category: HomeCategory,
+    val title: String,
+    val subtitle: String,
+    // A YouTube Music section is a row of its home, one of many.
+    val shelf: YtShelf? = null
+)
+
 /**
- * YouTube Music's home as hero tiles: each row of songs becomes one tile that opens with those
- * songs ("Быстрый выбор"), and each playlist, mix or album is a tile of its own, captioned with
- * the row it came from.
+ * A row of YouTube Music's home as hero tiles: each song its own tile, playing with the row's
+ * songs after it, and each playlist, mix or album a tile that opens it.
  */
-private fun ytHeroItems(shelves: List<YtShelf>, onOpen: (SoundCloudPlaylist) -> Unit): List<HeroItem> =
-    shelves.flatMap { shelf ->
-        buildList {
-            if (shelf.tracks.isNotEmpty()) {
-                val row = SoundCloudPlaylist(
-                    id = youTubeTrackId("shelf:" + shelf.title),
-                    title = shelf.title,
-                    tracks = shelf.tracks,
-                    trackCount = shelf.tracks.size,
-                    artworkUrl = shelf.tracks.first().artworkUrl,
-                    user = SoundCloudUser(username = "YouTube Music")
-                )
-                add(
-                    HeroItem(
-                        key = "yt-row-${row.id}",
-                        title = shelf.title,
-                        subtitle = plural(shelf.tracks.size, "трек", "трека", "треков"),
-                        artworkUrl = row.artworkUrl,
-                        onClick = { onOpen(row) }
-                    )
-                )
-            }
-            shelf.sets.forEach { set ->
-                add(
-                    HeroItem(
-                        key = "yt-set-${set.id}",
-                        title = set.title ?: "Без названия",
-                        subtitle = shelf.title,
-                        artworkUrl = set.artworkUrl,
-                        onClick = { onOpen(set) }
-                    )
-                )
-            }
-        }
-    }.distinctBy { it.key }.take(40)
+private fun ytShelfItems(
+    shelf: YtShelf,
+    onOpen: (SoundCloudPlaylist) -> Unit,
+    onPlay: (SoundCloudTrack, List<SoundCloudTrack>) -> Unit
+): List<HeroItem> = buildList {
+    shelf.tracks.forEach { track ->
+        add(
+            HeroItem(
+                key = "yt-track-${track.id}",
+                title = track.title ?: "Без названия",
+                subtitle = track.user?.username,
+                artworkUrl = track.artworkUrl,
+                onClick = { onPlay(track, shelf.tracks) }
+            )
+        )
+    }
+    shelf.sets.forEach { set ->
+        add(
+            HeroItem(
+                key = "yt-set-${set.id}",
+                title = set.title ?: "Без названия",
+                subtitle = set.user?.username,
+                artworkUrl = set.artworkUrl,
+                onClick = { onOpen(set) }
+            )
+        )
+    }
+}.distinctBy { it.key }
 
 /** What home's floating toolbar takes off the bottom edge, including its gap to the mini player. */
 private val HomeToolbarClearance = 64.dp + 12.dp
@@ -1161,6 +1171,7 @@ private fun HomeScreen(
     ytLoading: Boolean,
     ytError: String?,
     onOpenYtSet: (SoundCloudPlaylist) -> Unit,
+    onPlayYtTrack: (SoundCloudTrack, List<SoundCloudTrack>) -> Unit,
     onYtLogin: () -> Unit,
     onReloadYt: () -> Unit,
     mixesLoading: Boolean,
@@ -1207,151 +1218,229 @@ private fun HomeScreen(
     var pickedService by remember { mutableStateOf(savedCategory?.service ?: HomeService.SoundCloud) }
     // Signed out of the service meanwhile: SoundCloud's page instead.
     val service = pickedService.takeIf { it in services } ?: HomeService.SoundCloud
-    // Where each service was left, so coming back to it lands there.
-    val lastCategory = remember { mutableStateMapOf<HomeService, HomeCategory>() }
-    // The service's own sections stack vertically: a swipe up or down moves between them.
-    val categories = remember(service) { HomeCategory.entries.filter { it.service == service } }
-    val selectedIndex = categories.indexOf(savedCategory).coerceAtLeast(0)
-    val categoryPager = key(service) { rememberPagerState(initialPage = selectedIndex) { categories.size } }
-    val scope = rememberCoroutineScope()
+    // Where each service was left (its section's key), so coming back to it lands there.
+    val lastSection = remember { mutableStateMapOf<HomeService, String>() }
+    // The toolbar tapped on the service already shown: back to its first section.
+    var reselected by remember { mutableIntStateOf(0) }
     var showCreatePlaylistDialog by remember { mutableStateOf(false) }
     var playlistNameInput by remember { mutableStateOf("") }
-
-    // Only a page the pager has come to rest on is remembered. Reporting every page it passes
-    // made a jump from "Моя музыка" to "Миксы" save "Медиатека" on the way, and the saved tab then
-    // pulled the pager back there mid-flight.
-    LaunchedEffect(categoryPager, categoryPager.settledPage) {
-        val settled = categories.getOrNull(categoryPager.settledPage) ?: return@LaunchedEffect
-        lastCategory[settled.service] = settled
-        if (settled.ordinal != selectedTab) {
-            onTabSelected(settled.ordinal)
-        }
-    }
-    // A row appearing or leaving shifts the pages; stay on the same category.
-    LaunchedEffect(categories) {
-        if (categoryPager.currentPage != selectedIndex) categoryPager.scrollToPage(selectedIndex)
-    }
 
     val mixes = mixSection?.mixes.orEmpty()
     val stations = stationSection?.mixes.orEmpty()
     val trending = trendingSection?.mixes.orEmpty()
-    val ytItems = remember(ytShelves) { ytHeroItems(ytShelves, onOpenYtSet) }
-    val subtitles = mapOf(
-        HomeCategory.Mixes to if (mixes.isEmpty()) {
-            "Подборки для тебя"
-        } else {
-            plural(mixes.size, "подборка", "подборки", "подборок") + " для тебя"
-        },
-        HomeCategory.Stations to if (stations.isEmpty()) {
-            "Станции по артистам"
-        } else {
-            plural(stations.size, "станция", "станции", "станций")
-        },
-        HomeCategory.Trending to if (trending.isEmpty()) {
-            "Чарты SoundCloud по жанрам"
-        } else {
-            "Чарты: " + plural(trending.size, "жанр", "жанра", "жанров")
-        },
-        HomeCategory.YouTube to when {
-            ytItems.isEmpty() -> "Подборки для тебя"
-            else -> plural(ytItems.size, "подборка", "подборки", "подборок") + " для тебя"
-        },
-        HomeCategory.Library to if (yandexPlaylists.isEmpty()) {
-            "Плейлисты Яндекс Музыки"
-        } else {
-            plural(yandexPlaylists.size, "плейлист", "плейлиста", "плейлистов") + " Яндекс Музыки"
-        },
-        HomeCategory.MyMusic to plural(downloadedCount, "трек", "трека", "треков") + " на устройстве"
-    )
+    val ytRows = remember(ytShelves) { ytShelves.filter { it.tracks.isNotEmpty() || it.sets.isNotEmpty() } }
+
+    fun sectionsOf(shown: HomeService): List<HomeSection> = when (shown) {
+        HomeService.SoundCloud -> listOf(
+            HomeSection(
+                key = "mixes",
+                category = HomeCategory.Mixes,
+                title = HomeCategory.Mixes.title,
+                subtitle = if (mixes.isEmpty()) {
+                    "Подборки для тебя"
+                } else {
+                    plural(mixes.size, "подборка", "подборки", "подборок") + " для тебя"
+                }
+            ),
+            HomeSection(
+                key = "stations",
+                category = HomeCategory.Stations,
+                title = HomeCategory.Stations.title,
+                subtitle = if (stations.isEmpty()) "Станции по артистам" else plural(stations.size, "станция", "станции", "станций")
+            ),
+            HomeSection(
+                key = "trending",
+                category = HomeCategory.Trending,
+                title = HomeCategory.Trending.title,
+                subtitle = if (trending.isEmpty()) {
+                    "Чарты SoundCloud по жанрам"
+                } else {
+                    "Чарты: " + plural(trending.size, "жанр", "жанра", "жанров")
+                }
+            )
+        )
+        HomeService.Yandex -> listOf(
+            HomeSection(
+                key = "library",
+                category = HomeCategory.Library,
+                title = HomeCategory.Library.title,
+                subtitle = if (yandexPlaylists.isEmpty()) {
+                    "Плейлисты Яндекс Музыки"
+                } else {
+                    plural(yandexPlaylists.size, "плейлист", "плейлиста", "плейлистов") + " Яндекс Музыки"
+                }
+            )
+        )
+        // Each row of YouTube Music's home a section of its own, as on the site.
+        HomeService.YouTube -> ytRows.map { shelf ->
+            HomeSection(
+                key = "yt-" + shelf.title,
+                category = HomeCategory.YouTube,
+                title = shelf.title,
+                subtitle = listOfNotNull(
+                    shelf.tracks.size.takeIf { it > 0 }?.let { plural(it, "трек", "трека", "треков") },
+                    shelf.sets.size.takeIf { it > 0 }?.let { plural(it, "подборка", "подборки", "подборок") }
+                ).joinToString(" · "),
+                shelf = shelf
+            )
+        }.ifEmpty {
+            listOf(HomeSection("yt", HomeCategory.YouTube, "YouTube Music", "Подборки для тебя"))
+        }
+        HomeService.Downloads -> listOf(
+            HomeSection(
+                key = "mine",
+                category = HomeCategory.MyMusic,
+                title = HomeCategory.MyMusic.title,
+                subtitle = plural(downloadedCount, "трек", "трека", "треков") + " на устройстве"
+            )
+        )
+    }
+
+    fun switchTo(picked: HomeService) {
+        if (picked == service) return
+        pickedService = picked
+        val target = sectionsOf(picked).firstOrNull { it.key == lastSection[picked] } ?: sectionsOf(picked).first()
+        onTabSelected(target.category.ordinal)
+    }
+
     val hasWarning = clientId.isBlank() || needsRelogin || isClientIdExpired
 
     Box(modifier = Modifier.fillMaxSize()) {
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .statusBarsPadding()
-                .navigationBarsPadding()
-        ) {
-            Row(
+        // A service's page slides in from the side it sits on in the toolbar.
+        AnimatedContent(
+            targetState = service,
+            transitionSpec = {
+                val forward = services.indexOf(targetState) > services.indexOf(initialState)
+                (slideInHorizontally { w -> if (forward) w else -w } + fadeIn()) togetherWith
+                    (slideOutHorizontally { w -> if (forward) -w / 3 else w / 3 } + fadeOut())
+            },
+            modifier = Modifier.fillMaxSize(),
+            label = "homeService"
+        ) { shown ->
+            val sections = sectionsOf(shown)
+            val initialPage = sections.indexOfFirst { it.key == lastSection[shown] }.takeIf { it >= 0 }
+                ?: sections.indexOfFirst { it.category == savedCategory }.coerceAtLeast(0)
+            val sectionPager = rememberPagerState(initialPage = initialPage) { sections.size }
+
+            // Only a page the pager has come to rest on is remembered: reporting every page it
+            // passes pulled the pager back to one of them mid-flight.
+            LaunchedEffect(sectionPager, sectionPager.settledPage) {
+                val settled = sections.getOrNull(sectionPager.settledPage) ?: return@LaunchedEffect
+                lastSection[shown] = settled.key
+                if (shown == service && settled.category.ordinal != selectedTab) onTabSelected(settled.category.ordinal)
+            }
+            LaunchedEffect(reselected) {
+                if (reselected > 0 && shown == service) sectionPager.animateScrollToPage(0)
+            }
+
+            Column(
                 modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(start = 20.dp, top = 12.dp, end = 16.dp),
-                verticalAlignment = Alignment.Top
+                    .fillMaxSize()
+                    .statusBarsPadding()
+                    .navigationBarsPadding()
+                    // A sideways swipe anywhere the carousels don't take it moves to the next
+                    // service: the room under them, the title, the edges.
+                    .pointerInput(services, shown) {
+                        var dragged = 0f
+                        detectHorizontalDragGestures(
+                            onDragStart = { dragged = 0f },
+                            onDragEnd = {
+                                if (kotlin.math.abs(dragged) > 64.dp.toPx()) {
+                                    val next = services.indexOf(shown) + if (dragged < 0) 1 else -1
+                                    services.getOrNull(next)?.let { target ->
+                                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                        switchTo(target)
+                                    }
+                                }
+                            },
+                            onHorizontalDrag = { change, amount ->
+                                dragged += amount
+                                change.consume()
+                            }
+                        )
+                    }
             ) {
-                AnimatedContent(
-                    targetState = categories.getOrElse(categoryPager.currentPage) { categories.first() },
-                    transitionSpec = {
-                        val forward = targetState.ordinal > initialState.ordinal
-                        (slideInVertically { h -> if (forward) h / 2 else -h / 2 } + fadeIn()) togetherWith
-                            (slideOutVertically { h -> if (forward) -h / 2 else h / 2 } + fadeOut())
-                    },
-                    modifier = Modifier.weight(1f),
-                    label = "homeTitle"
-                ) { category ->
-                    Column {
-                        Text(
-                            text = category.title,
-                            style = MaterialTheme.typography.displaySmall,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                        Text(
-                            text = subtitles[category].orEmpty(),
-                            style = MaterialTheme.typography.labelLarge,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(start = 20.dp, top = 12.dp, end = 16.dp),
+                    verticalAlignment = Alignment.Top
+                ) {
+                    AnimatedContent(
+                        targetState = sections.getOrElse(sectionPager.currentPage) { sections.first() },
+                        transitionSpec = {
+                            val forward = sections.indexOfFirst { it.key == targetState.key } >
+                                sections.indexOfFirst { it.key == initialState.key }
+                            (slideInVertically { h -> if (forward) h / 2 else -h / 2 } + fadeIn()) togetherWith
+                                (slideOutVertically { h -> if (forward) -h / 2 else h / 2 } + fadeOut())
+                        },
+                        contentKey = { it.key },
+                        modifier = Modifier.weight(1f),
+                        label = "homeTitle"
+                    ) { section ->
+                        Column {
+                            Text(
+                                text = section.title,
+                                style = MaterialTheme.typography.displaySmall,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            Text(
+                                text = section.subtitle,
+                                style = MaterialTheme.typography.labelLarge,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                    }
+                    Spacer(modifier = Modifier.width(14.dp))
+                    HomeIconButton(
+                        icon = Icons.Default.Settings,
+                        contentDescription = "Настройки",
+                        onClick = {
+                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                            onOpenSettings()
+                        }
+                    )
+                }
+
+                if (hasWarning) {
+                    Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
+                        when {
+                            clientId.isBlank() -> ClientIdWarningCard(onOpenSettings = onOpenSettings)
+                            needsRelogin -> ReloginRequiredCard(onRelogin = onRelogin)
+                            else -> ClientIdExpiredWarningCard(
+                                onOpenSettings = onOpenSettings,
+                                onAutoRefresh = onAutoRefreshClientId
+                            )
+                        }
                     }
                 }
-                Spacer(modifier = Modifier.width(14.dp))
-                HomeIconButton(
-                    icon = Icons.Default.Settings,
-                    contentDescription = "Настройки",
-                    onClick = {
-                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                        onOpenSettings()
-                    }
+
+                UpdateBanner(
+                    updates = updates,
+                    modifier = Modifier.padding(start = 16.dp, top = 8.dp, end = 16.dp)
                 )
-            }
 
-            if (hasWarning) {
-                Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
-                    when {
-                        clientId.isBlank() -> ClientIdWarningCard(onOpenSettings = onOpenSettings)
-                        needsRelogin -> ReloginRequiredCard(onRelogin = onRelogin)
-                        else -> ClientIdExpiredWarningCard(
-                            onOpenSettings = onOpenSettings,
-                            onAutoRefresh = onAutoRefreshClientId
-                        )
-                    }
-                }
-            }
-
-            UpdateBanner(
-                updates = updates,
-                modifier = Modifier.padding(start = 16.dp, top = 8.dp, end = 16.dp)
-            )
-
-            VerticalPager(
-                state = categoryPager,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .weight(1f)
-            ) { page ->
-                when (categories.getOrElse(page) { categories.first() }) {
-                    HomeCategory.Mixes, HomeCategory.Stations, HomeCategory.Trending -> {
-                        val category = categories[page]
-                        MixCarousel(
-                            mixes = when (category) {
+                VerticalPager(
+                    state = sectionPager,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f)
+                ) { page ->
+                    val section = sections.getOrElse(page) { sections.first() }
+                    when (section.category) {
+                        HomeCategory.Mixes, HomeCategory.Stations, HomeCategory.Trending -> MixCarousel(
+                            mixes = when (section.category) {
                                 HomeCategory.Stations -> stations
                                 HomeCategory.Trending -> trending
                                 else -> mixes
                             },
-                            kind = category,
+                            kind = section.category,
                             isLoading = mixesLoading,
                             hasOauthToken = hasOauthToken,
-                            errorMessage = if (category == HomeCategory.Mixes) mixesError else null,
+                            errorMessage = if (section.category == HomeCategory.Mixes) mixesError else null,
                             loadingMixId = loadingMixId,
                             playingMixId = playingMixId,
                             isPlaying = isPlaying,
@@ -1359,94 +1448,99 @@ private fun HomeScreen(
                             onReload = onReloadMixes,
                             onOpenSettings = onOpenSettings
                         )
-                    }
 
-                    HomeCategory.YouTube -> when {
-                        ytItems.isEmpty() && ytError != null -> CarouselMessage(
-                            text = ytError,
-                            actionLabel = "Повторить",
-                            onAction = onReloadYt
-                        )
-                        ytItems.isEmpty() && ytLoading -> CarouselSkeleton()
-                        ytItems.isEmpty() -> CarouselMessage(
-                            text = "Подборки YouTube Music пока не загрузились.",
-                            actionLabel = "Обновить",
-                            onAction = onReloadYt
-                        )
-                        else -> HomeHeroCarousel(items = ytItems)
-                    }
-
-                    HomeCategory.Library -> {
-                        if (yandexPlaylists.isEmpty()) {
-                            CarouselEmptyText("Плейлисты Яндекс Музыки пока не загрузились.")
-                        } else {
-                            HomeHeroCarousel(
-                                items = yandexPlaylists.map { playlist ->
-                                    HeroItem(
-                                        key = "yandex-${playlist.id}",
-                                        title = playlist.title ?: "Без названия",
-                                        subtitle = plural(playlist.trackCount, "трек", "трека", "треков"),
-                                        artworkUrl = playlist.artworkUrl,
-                                        icon = if (playlist.id == -100L) Icons.Rounded.Favorite else Icons.Default.Album,
-                                        onClick = { onOpenYandexPlaylist(playlist) }
-                                    )
-                                }
-                            )
-                        }
-                    }
-
-                    HomeCategory.MyMusic -> HomeHeroCarousel(
-                        items = buildList {
-                            add(
-                                HeroItem(
-                                    key = "downloads",
-                                    title = "Скачанное",
-                                    subtitle = plural(downloadedCount, "трек", "трека", "треков"),
-                                    artworkUrl = downloadedFolderArtworkUri,
-                                    icon = Icons.Default.Download,
-                                    onClick = onOpenDownloads
+                        HomeCategory.YouTube -> {
+                            val shelf = section.shelf
+                            when {
+                                shelf != null -> HomeHeroCarousel(
+                                    items = remember(shelf) { ytShelfItems(shelf, onOpenYtSet, onPlayYtTrack) }
                                 )
-                            )
-                            // Liked albums sit right next to "Скачанное", newest first; hand-made
-                            // playlists follow.
-                            playlists.sortedByDescending { it.isLikedAlbum }.forEach { playlist ->
-                                val count = plural(playlist.tracks.size, "трек", "трека", "треков")
+                                ytError != null -> CarouselMessage(
+                                    text = ytError,
+                                    actionLabel = "Повторить",
+                                    onAction = onReloadYt
+                                )
+                                ytLoading -> CarouselSkeleton()
+                                else -> CarouselMessage(
+                                    text = "Подборки YouTube Music пока не загрузились.",
+                                    actionLabel = "Обновить",
+                                    onAction = onReloadYt
+                                )
+                            }
+                        }
+
+                        HomeCategory.Library -> {
+                            if (yandexPlaylists.isEmpty()) {
+                                CarouselEmptyText("Плейлисты Яндекс Музыки пока не загрузились.")
+                            } else {
+                                HomeHeroCarousel(
+                                    items = yandexPlaylists.map { playlist ->
+                                        HeroItem(
+                                            key = "yandex-${playlist.id}",
+                                            title = playlist.title ?: "Без названия",
+                                            subtitle = plural(playlist.trackCount, "трек", "трека", "треков"),
+                                            artworkUrl = playlist.artworkUrl,
+                                            icon = if (playlist.id == -100L) Icons.Rounded.Favorite else Icons.Default.Album,
+                                            onClick = { onOpenYandexPlaylist(playlist) }
+                                        )
+                                    }
+                                )
+                            }
+                        }
+
+                        HomeCategory.MyMusic -> HomeHeroCarousel(
+                            items = buildList {
                                 add(
                                     HeroItem(
-                                        key = "local-${playlist.id}",
-                                        title = playlist.name,
-                                        subtitle = if (playlist.isLikedAlbum) {
-                                            listOfNotNull(playlist.artist?.takeIf { it.isNotBlank() }, count)
-                                                .joinToString(" · ")
-                                        } else {
-                                            count
-                                        },
-                                        artworkUrl = playlist.artworkUrl,
-                                        icon = if (playlist.isLikedAlbum) Icons.Default.Album else Icons.AutoMirrored.Filled.QueueMusic,
-                                        onClick = { onOpenPlaylist(playlist) }
+                                        key = "downloads",
+                                        title = "Скачанное",
+                                        subtitle = plural(downloadedCount, "трек", "трека", "треков"),
+                                        artworkUrl = downloadedFolderArtworkUri,
+                                        icon = Icons.Default.Download,
+                                        onClick = onOpenDownloads
+                                    )
+                                )
+                                // Liked albums sit right next to "Скачанное", newest first;
+                                // hand-made playlists follow.
+                                playlists.sortedByDescending { it.isLikedAlbum }.forEach { playlist ->
+                                    val count = plural(playlist.tracks.size, "трек", "трека", "треков")
+                                    add(
+                                        HeroItem(
+                                            key = "local-${playlist.id}",
+                                            title = playlist.name,
+                                            subtitle = if (playlist.isLikedAlbum) {
+                                                listOfNotNull(playlist.artist?.takeIf { it.isNotBlank() }, count)
+                                                    .joinToString(" · ")
+                                            } else {
+                                                count
+                                            },
+                                            artworkUrl = playlist.artworkUrl,
+                                            icon = if (playlist.isLikedAlbum) Icons.Default.Album else Icons.AutoMirrored.Filled.QueueMusic,
+                                            onClick = { onOpenPlaylist(playlist) }
+                                        )
+                                    )
+                                }
+                                add(
+                                    HeroItem(
+                                        key = "create",
+                                        title = "Создать плейлист",
+                                        subtitle = "Своя подборка",
+                                        artworkUrl = null,
+                                        icon = Icons.Default.Add,
+                                        onClick = { showCreatePlaylistDialog = true }
                                     )
                                 )
                             }
-                            add(
-                                HeroItem(
-                                    key = "create",
-                                    title = "Создать плейлист",
-                                    subtitle = "Своя подборка",
-                                    artworkUrl = null,
-                                    icon = Icons.Default.Add,
-                                    onClick = { showCreatePlaylistDialog = true }
-                                )
-                            )
-                        }
-                    )
+                        )
+                    }
                 }
-            }
 
-            Spacer(
-                modifier = Modifier.height(
-                    16.dp + HomeToolbarClearance + if (playerVisible) 72.dp + 12.dp else 0.dp
+                Spacer(
+                    modifier = Modifier.height(
+                        16.dp + HomeToolbarClearance + if (playerVisible) 72.dp + 12.dp else 0.dp
+                    )
                 )
-            )
+            }
         }
 
         HomeToolbar(
@@ -1454,14 +1548,7 @@ private fun HomeScreen(
             selected = service,
             onSelect = { picked ->
                 haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                if (picked == service) {
-                    // Again on the service in view: back to its first section.
-                    scope.launch { categoryPager.animateScrollToPage(0) }
-                } else {
-                    val target = lastCategory[picked] ?: HomeCategory.entries.first { it.service == picked }
-                    pickedService = picked
-                    onTabSelected(target.ordinal)
-                }
+                if (picked == service) reselected++ else switchTo(picked)
             },
             onSearch = {
                 haptic.performHapticFeedback(HapticFeedbackType.LongPress)
