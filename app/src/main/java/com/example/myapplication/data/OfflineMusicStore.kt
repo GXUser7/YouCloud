@@ -26,10 +26,47 @@ class OfflineMusicStore private constructor(context: Context) {
     // and threads each time, kept alive for minutes after — a hundred of them for a playlist.
     private val http by lazy { OkHttpClient() }
 
+    // What downloads are written through.
     val cacheDataSourceFactory: CacheDataSource.Factory = CacheDataSource.Factory()
         .setCache(cache)
         .setUpstreamDataSourceFactory(DefaultDataSource.Factory(context))
         .setFlags(CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR)
+
+    /**
+     * What playback reads through: a file on the phone as it is; a download kept here, without
+     * writing anything to it; anything else through the [StreamCache]. Played through the
+     * downloads' cache, every track heard from the internet was written into it and never left.
+     * Lazy: the stream cache shares this store's database, so it can't be made while this is.
+     */
+    val playbackDataSourceFactory: androidx.media3.datasource.DataSource.Factory by lazy {
+        LocalOrCachedDataSource.Factory(
+            cached = CacheDataSource.Factory()
+                .setCache(cache)
+                .setCacheWriteDataSinkFactory(null)
+                .setUpstreamDataSourceFactory(StreamCache.dataSourceFactory(appContext))
+                .setFlags(CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR),
+            local = DefaultDataSource.Factory(appContext)
+        )
+    }
+    private val appContext = context.applicationContext
+
+    /**
+     * Takes out of the downloads' cache what playback left in it that is surely no download: YouTube
+     * tracks (kept as files when downloaded), Yandex's links (so are they), files on the phone
+     * copied in. What SoundCloud streamed stays: it can't be told from SoundCloud downloads.
+     */
+    fun dropStreamedLeftovers() {
+        val leftovers = cache.keys.filter { key ->
+            key.startsWith("ytmusic:") || key.contains("/get-mp3/") ||
+                key.startsWith("file:") || key.startsWith("content:")
+        }
+        var freed = 0L
+        for (key in leftovers) {
+            freed += cache.getCachedBytes(key, 0, Long.MAX_VALUE)
+            cache.removeResource(key)
+        }
+        Log.d("OfflineMusicStore", "Dropped ${leftovers.size} streamed leftovers, ${freed / 1024 / 1024} MB")
+    }
 
     fun downloadHls(streamUrl: String, onProgress: (Float) -> Unit = {}) {
         val mediaItem = MediaItem.Builder()
