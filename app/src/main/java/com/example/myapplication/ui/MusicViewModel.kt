@@ -3009,6 +3009,8 @@ class MusicViewModel(
 
         // The Yandex radio asks for more once fewer tracks than this are left after the one playing.
         const val RADIO_AHEAD = 3
+        // "Моя волна": the listener's own taste, as Rotor's seed.
+        const val YANDEX_WAVE_SEED = "user:onyourwave"
 
         // A radio track that stopped this close to its end was heard to the end, not skipped.
         const val RADIO_FINISHED_SLACK_MS = 5_000L
@@ -4084,15 +4086,8 @@ class MusicViewModel(
     private val _yandexWaveOn = MutableStateFlow(false)
     val yandexWaveOn = _yandexWaveOn.asStateFlow()
 
-    // What the wave can be tuned by, once asked; and what is picked: a seed per setting, and an
-    // occasion.
-    private val _yandexWaveSettings = MutableStateFlow<com.example.myapplication.data.YandexWaveSettings?>(null)
-    val yandexWaveSettings = _yandexWaveSettings.asStateFlow()
-    private val _yandexWavePicks = MutableStateFlow<Map<String, String>>(emptyMap())
-    val yandexWavePicks = _yandexWavePicks.asStateFlow()
     private val _yandexWaveStarting = MutableStateFlow(false)
     val yandexWaveStarting = _yandexWaveStarting.asStateFlow()
-    private var waveSettingsJob: kotlinx.coroutines.Job? = null
 
     // The track playing as the radio saw it, and how far into it playback got: when it gives way
     // the radio hears whether it was finished or skipped.
@@ -4132,36 +4127,7 @@ class MusicViewModel(
         }
     }
 
-    /** Asks once what the wave can be tuned by; until it answers, or if it doesn't, the Yandex app's own choices. */
-    fun loadYandexWaveSettings() {
-        if (_yandexWaveSettings.value != null || waveSettingsJob?.isActive == true) return
-        waveSettingsJob = viewModelScope.launch {
-            val settings = try {
-                val json = yandexService.rotorWaveSettings()
-                Log.d("MusicViewModel", "Yandex wave settings: ${json.toString().take(1500)}")
-                com.example.myapplication.data.YandexWave.parse(json)
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                Log.w("MusicViewModel", "Yandex wave settings failed", e)
-                com.example.myapplication.data.YandexWave.DEFAULT
-            }
-            _yandexWaveSettings.value = settings
-        }
-    }
-
-    /**
-     * Picks [seed] for the wave's setting [key] (an occasion's key is "occasion"), or with null, or
-     * the one picked already, leaves it to the wave. A wave playing starts over, tuned so.
-     */
-    fun pickYandexWave(key: String, seed: String?) {
-        val picks = _yandexWavePicks.value.toMutableMap()
-        if (seed == null || picks[key] == seed) picks.remove(key) else picks[key] = seed
-        _yandexWavePicks.value = picks
-        if (_yandexWaveOn.value) playYandexWave()
-    }
-
-    /** "Моя волна" tuned as picked: played, or paused and played on where it is when it is the one playing. */
+    /** "Моя волна": played, or paused and played on where it is when it is the one playing. */
     fun toggleYandexWave() {
         if (_yandexWaveOn.value && yandexRadio != null) {
             musicPlayer.togglePlayPause()
@@ -4171,12 +4137,11 @@ class MusicViewModel(
     }
 
     /**
-     * Plays "Моя волна": a session from the listener's own seed and what is picked, its first batch
-     * as the queue, more whenever it runs low — the same radio as [playYandexRadio], without a track
-     * to start from.
+     * Plays "Моя волна": a session from the listener's own seed, its first batch as the queue, more
+     * whenever it runs low — the same radio as [playYandexRadio], without a track to start from.
      */
     fun playYandexWave() {
-        val seeds = listOf(com.example.myapplication.data.YandexWave.SEED) + _yandexWavePicks.value.values
+        val seeds = listOf(YANDEX_WAVE_SEED)
         _yandexWaveStarting.value = true
         viewModelScope.launch {
             try {

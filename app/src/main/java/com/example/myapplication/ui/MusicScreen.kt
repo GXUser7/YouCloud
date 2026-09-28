@@ -407,8 +407,6 @@ fun MusicScreen(viewModel: MusicViewModel) {
     }
 
     val yandexPlaylists by viewModel.yandexPlaylists.collectAsState()
-    val yandexWaveSettings by viewModel.yandexWaveSettings.collectAsState()
-    val yandexWavePicks by viewModel.yandexWavePicks.collectAsState()
     val yandexWaveOn by viewModel.yandexWaveOn.collectAsState()
     val yandexWaveStarting by viewModel.yandexWaveStarting.collectAsState()
     val yandexToken by viewModel.yandexToken.collectAsState()
@@ -576,19 +574,12 @@ fun MusicScreen(viewModel: MusicViewModel) {
                         playlists = playlists,
                         yandexPlaylists = yandexPlaylists,
                         wave = HomeWave(
-                            settings = yandexWaveSettings,
-                            picks = yandexWavePicks,
                             on = yandexWaveOn,
                             starting = yandexWaveStarting,
                             onToggle = {
                                 haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                                 viewModel.toggleYandexWave()
-                            },
-                            onPick = { key, seed ->
-                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                viewModel.pickYandexWave(key, seed)
-                            },
-                            onAppear = viewModel::loadYandexWaveSettings
+                            }
                         ),
                         onOpenPlaylist = viewModel::openPlaylist,
                         onOpenYandexPlaylist = { playlist ->
@@ -1246,13 +1237,9 @@ private enum class HomeCategory(val title: String, val service: HomeService) {
 
 /** Yandex's wave as home shows it, as "Моя форма"; see [MyWavePage]. */
 private class HomeWave(
-    val settings: com.example.myapplication.data.YandexWaveSettings?,
-    val picks: Map<String, String>,
     val on: Boolean,
     val starting: Boolean,
-    val onToggle: () -> Unit,
-    val onPick: (key: String, seed: String) -> Unit,
-    val onAppear: () -> Unit
+    val onToggle: () -> Unit
 )
 
 /** A page of home's vertical pager: one of a service's sections. */
@@ -1622,16 +1609,12 @@ private fun HomeScreen(
                         }
 
                         HomeCategory.MyWave -> MyWavePage(
-                            settings = wave.settings,
-                            picks = wave.picks,
                             waveOn = wave.on,
                             isPlaying = isPlaying,
                             starting = wave.starting,
                             // Clear of the floating toolbar, and of the mini player over it.
                             bottomClearance = HomeToolbarClearance + if (playerVisible) 80.dp else 8.dp,
-                            onToggle = wave.onToggle,
-                            onPick = wave.onPick,
-                            onAppear = wave.onAppear
+                            onToggle = wave.onToggle
                         )
 
                         HomeCategory.Library -> {

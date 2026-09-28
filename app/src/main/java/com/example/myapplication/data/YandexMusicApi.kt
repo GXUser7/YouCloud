@@ -132,12 +132,6 @@ interface YandexMusicService {
         @Path("sessionId") sessionId: String,
         @Body feedback: YandexRotorFeedback
     ): com.google.gson.JsonObject
-
-    /** What "Моя волна" can be tuned by; read by [YandexWave.parse]. */
-    @GET("rotor/wave/settings")
-    suspend fun rotorWaveSettings(
-        @Query("seeds") seeds: String = YandexWave.SEED
-    ): com.google.gson.JsonObject
 }
 
 object YandexMusicApi {
