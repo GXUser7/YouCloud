@@ -1241,10 +1241,10 @@ private enum class HomeCategory(val title: String, val service: HomeService) {
     YouTube("YouTube Music", HomeService.YouTube),
     Library("Медиатека", HomeService.Yandex),
     MyMusic("Моя музыка", HomeService.Downloads),
-    MyWave("Моя волна", HomeService.Yandex)
+    MyWave("Моя форма", HomeService.Yandex)
 }
 
-/** "Моя волна" as home shows it; see [MyWavePage]. */
+/** Yandex's wave as home shows it, as "Моя форма"; see [MyWavePage]. */
 private class HomeWave(
     val settings: com.example.myapplication.data.YandexWaveSettings?,
     val picks: Map<String, String>,
