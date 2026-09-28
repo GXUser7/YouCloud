@@ -17,6 +17,7 @@ import android.content.Intent
 import android.os.Bundle
 import com.example.myapplication.MainActivity
 import com.example.myapplication.data.OfflineMusicStore
+import com.example.myapplication.data.StreamCache
 import com.google.common.collect.ImmutableList
 import com.google.common.util.concurrent.Futures
 import com.google.common.util.concurrent.ListenableFuture
@@ -32,6 +33,9 @@ class PlaybackService : MediaLibraryService() {
 
     // One at a time, so a prefetch never holds up the track that is actually starting.
     private val youTubePrefetch = java.util.concurrent.Executors.newSingleThreadExecutor()
+
+    // Fetches the next tracks in the queue into the stream cache while one plays.
+    private var prefetcher: StreamPrefetcher? = null
 
     private val prefListener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
         if (key == null) return@OnSharedPreferenceChangeListener
@@ -62,10 +66,16 @@ class PlaybackService : MediaLibraryService() {
         preferences = getSharedPreferences("app_settings", Context.MODE_PRIVATE)
         preferences.registerOnSharedPreferenceChangeListener(prefListener)
 
-        val baseFactory = OfflineMusicStore.getInstance(this).cacheDataSourceFactory
-        val resolvingFactory = androidx.media3.datasource.ResolvingDataSource.Factory(
-            baseFactory,
-            object : androidx.media3.datasource.ResolvingDataSource.Resolver {
+        val offlineStore = OfflineMusicStore.getInstance(this)
+        if (!preferences.getBoolean(KEY_STREAM_LEFTOVERS_DROPPED, false)) {
+            Thread {
+                runCatching { offlineStore.dropStreamedLeftovers() }
+                    .onFailure { Log.w("PlaybackService", "Couldn't drop streamed leftovers", it) }
+                preferences.edit().putBoolean(KEY_STREAM_LEFTOVERS_DROPPED, true).apply()
+            }.start()
+        }
+        val baseFactory = offlineStore.playbackDataSourceFactory
+        val resolver = object : androidx.media3.datasource.ResolvingDataSource.Resolver {
                 override fun resolveDataSpec(dataSpec: androidx.media3.datasource.DataSpec): androidx.media3.datasource.DataSpec {
                     val uri = dataSpec.uri
                     if (uri.scheme == "soundcloud") {
@@ -83,6 +93,12 @@ class PlaybackService : MediaLibraryService() {
                             if (local != null) {
                                 return dataSpec.buildUpon().setUri(android.net.Uri.parse(local)).build()
                             }
+                            // Heard or fetched ahead whole: played from the cache at once, without
+                            // the seconds yt-dlp takes to find it, and without the network.
+                            val key = "ytmusic:$videoId"
+                            if (StreamCache.isFullyCached(this@PlaybackService, key)) {
+                                return dataSpec.buildUpon().setKey(key).build()
+                            }
                             val audio = com.example.myapplication.data.YouTubeStreams.resolve(this@PlaybackService, videoId, youTubeAuth())
                             if (audio != null) {
                                 // Keyed by the video, not the URL: a fresh URL for the same track
@@ -98,16 +114,25 @@ class PlaybackService : MediaLibraryService() {
                     } else if (uri.scheme == "yandex") {
                         val trackId = uri.lastPathSegment
                         if (trackId != null) {
+                            // Kept under the track, not its link, which is signed anew each time.
+                            val key = StreamCache.KEY_PREFIX + "yandex:" + trackId.substringBefore(':')
+                            val downloaded = downloadedYandexTrack(trackId)
+                            if (downloaded != null) {
+                                return dataSpec.buildUpon().setUri(android.net.Uri.parse(downloaded)).build()
+                            }
+                            if (StreamCache.isFullyCached(this@PlaybackService, key)) {
+                                return dataSpec.buildUpon().setKey(key).build()
+                            }
                             val resolvedUri = resolveYandexTrack(trackId)
                             if (resolvedUri != null) {
-                                return dataSpec.buildUpon().setUri(android.net.Uri.parse(resolvedUri)).build()
+                                return dataSpec.buildUpon().setUri(android.net.Uri.parse(resolvedUri)).setKey(key).build()
                             }
                         }
                     }
                     return dataSpec
                 }
             }
-        )
+        val resolvingFactory = androidx.media3.datasource.ResolvingDataSource.Factory(baseFactory, resolver)
 
         val player = ExoPlayer.Builder(this)
             .setMediaSourceFactory(DefaultMediaSourceFactory(resolvingFactory))
@@ -133,6 +158,7 @@ class PlaybackService : MediaLibraryService() {
                 prefetchNextYouTubeTrack(player)
             }
         })
+        prefetcher = StreamPrefetcher(this, player, resolver).also(player::addListener)
 
         val intent = Intent(this, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_SINGLE_TOP
@@ -264,6 +290,9 @@ class PlaybackService : MediaLibraryService() {
 
     // Cached regex patterns (#34: avoid recompilation on each call)
     companion object {
+        // Set once what playback had left in the downloads' cache has been cleared out.
+        private const val KEY_STREAM_LEFTOVERS_DROPPED = "stream_leftovers_dropped"
+
         private val XML_TAG_REGEXES = mutableMapOf<String, Regex>()
         private fun xmlTagRegex(tag: String): Regex {
             return XML_TAG_REGEXES.getOrPut(tag) { "<$tag>(.*?)</$tag>".toRegex() }
@@ -382,6 +411,23 @@ class PlaybackService : MediaLibraryService() {
         }
     }
 
+    /** A Yandex track downloaded to the phone, as a `file://` URL. */
+    private fun downloadedYandexTrack(trackId: String): String? {
+        val rawTrackId = trackId.substringBefore(":")
+        val numericId = rawTrackId.toLongOrNull()
+        val generatedId = if (numericId != null) {
+            -(numericId + 1_000_000_000L)
+        } else {
+            val hash = rawTrackId.hashCode().toLong()
+            -(if (hash == Int.MIN_VALUE.toLong()) Int.MAX_VALUE.toLong() else kotlin.math.abs(hash)) - 1_000_000_000L
+        }
+        val fav = lazyFavoritesRepository.get(generatedId)
+            ?.takeIf { it.downloadState == com.example.myapplication.data.DownloadState.DOWNLOADED }
+            ?: return null
+        val localPath = fav.streamUrl?.takeIf { it.isNotBlank() } ?: return null
+        return if (localPath.startsWith("/")) "file://$localPath" else localPath
+    }
+
     private fun resolveYandexTrack(trackId: String): String? {
         val rawTrackId = trackId.substringBefore(":")
         // Match ID generation from YandexMusicModels.kt (#6)
@@ -477,6 +523,8 @@ class PlaybackService : MediaLibraryService() {
 
     override fun onDestroy() {
         youTubePrefetch.shutdownNow()
+        prefetcher?.release()
+        prefetcher = null
         preferences.unregisterOnSharedPreferenceChangeListener(prefListener)
         equalizer?.release()
         equalizer = null

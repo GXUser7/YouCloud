@@ -27,6 +27,7 @@ import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.BlurEffect
 import androidx.compose.ui.graphics.CompositingStrategy
@@ -74,6 +75,7 @@ import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
+import com.example.myapplication.data.GlowStyle
 import com.example.myapplication.data.TrackVideo
 import com.example.myapplication.data.VideoCache
 import kotlinx.coroutines.delay
@@ -433,9 +435,8 @@ fun VideoSurface(state: PlayerVideoState, modifier: Modifier = Modifier, fit: Bo
 
 /**
  * A music video in the cover's place, from [top] down, cropped at the sides to fill that height,
- * with its own light around it: copies of it, each a little larger and more blurred than the
- * last, glow behind it and up under the status bar — YouTube's "ambient mode", in layers. They are
- * the video's own layer drawn again, so the glow moves with every frame at no decoding cost.
+ * with its own light around it, behind it and up under the status bar — YouTube's "ambient mode".
+ * The light is drawn from the video's own layer, so it moves with every frame at no decoding cost.
  */
 @Composable
 fun AmbientVideo(
@@ -455,24 +456,14 @@ fun AmbientVideo(
     val bottomPx = with(LocalDensity.current) { bottom.toPx() }
     Box(modifier = modifier.graphicsLayer { this.alpha = alpha }) {
         // Darkness to glow in: the cover goes out as the video comes in.
-        if (!overBackdrop) Box(modifier = Modifier.matchParentSize().drawBehind { drawRect(Color.Black) })
-        if (!overBackdrop) Box(modifier = Modifier.matchParentSize()) {
-        for (glow in AMBIENT_GLOWS) {
-            Box(
-                modifier = Modifier
-                    .matchParentSize()
-                    .blurredDrawing(glow.blur, alpha = glow.opacity) { size ->
-                        val layer = state.frameLayer ?: return@blurredDrawing
-                        val height = size.height - topPx - bottomPx
-                        translate(0f, topPx) {
-                            scale(glow.scale, glow.scale, pivot = Offset(size.width / 2, height / 2)) {
-                                drawLayer(layer)
-                            }
-                        }
-                    }
-            )
-        }
-        }
+        if (!overBackdrop) Box(
+            modifier = Modifier
+                .matchParentSize()
+                .ambientGlow(BackdropSpread) { size ->
+                    val layer = state.frameLayer ?: return@ambientGlow false
+                    show(layer, Offset(0f, topPx), Rect(0f, topPx, size.width, size.height - bottomPx))
+                }
+        )
         val topFadePx = with(LocalDensity.current) { VIDEO_EDGE_FADE.toPx() }
         val bottomFadePx = topFadePx
         VideoSurface(
@@ -506,55 +497,66 @@ fun AmbientVideo(
 private val VIDEO_EDGE_FADE = 64.dp
 
 /**
- * The whole player's background while a music video plays in the cover's place: its glow, the
- * same steps of larger and softer copies as around the video, carried on out to the edges of the
- * screen, so that the panel stands on them as on frosted glass. They are the video's own layer
- * drawn again, centred on the video, and move with every frame.
+ * The whole player's background while a music video or the cover is up: its glow, carried out to
+ * the edges of the screen, so that the panel stands on it as on frosted glass. Drawn from the
+ * picture's own layer, it moves with every frame. As [style] has it: the picture's light spread
+ * out as Ambilight spreads it, or steps of larger and softer copies of it, out past the bottom.
  */
 @Composable
 fun VideoBackdrop(
     state: GlowSource,
     alpha: Float,
     modifier: Modifier = Modifier,
+    style: GlowStyle = GlowStyle.Ambilight,
     // While true the glow stays where the picture last was: swiped aside, the picture moves on
     // every frame with the finger, and the glow, going out meanwhile, was blurred all over again
     // on each of them — the swipe crawled on a phone of a few years ago.
     held: () -> Boolean = { false }
 ) {
     val hold = remember { GlowHold() }
-    Box(
-        modifier = modifier.graphicsLayer {
-            this.alpha = alpha
-            // All the steps in one layer, made again only when the video's frame changes: the
-            // panel over them moves on every frame (the progress, the visualiser), and laying
-            // eight screens of glow on the screen again each time kept the GPU busy all through.
-            compositingStrategy = CompositingStrategy.Offscreen
-        }
-    ) {
-        Box(modifier = Modifier.matchParentSize().drawBehind { drawRect(Color.Black) })
-        for (glow in BACKDROP_GLOWS) {
-            Box(
-                modifier = Modifier
-                    .matchParentSize()
-                    .blurredDrawing(glow.blur, alpha = glow.opacity) {
-                        val layer = state.frameLayer ?: return@blurredDrawing
-                        val isHeld = held()
-                        // Held, the picture's place isn't read, so its moving draws nothing again.
-                        val origin = hold.origin.takeIf { isHeld } ?: state.frameOrigin ?: return@blurredDrawing
-                        val frame = hold.size.takeIf { isHeld } ?: state.frameSize ?: return@blurredDrawing
-                        if (!isHeld) {
-                            hold.origin = origin
-                            hold.size = frame
-                        }
-                        val width = frame.width.toFloat()
-                        val height = frame.height.toFloat()
-                        translate(origin.x, origin.y) {
-                            scale(glow.scale, glow.scale, pivot = Offset(width / 2, height / 2)) {
-                                drawLayer(layer)
+    when (style) {
+        GlowStyle.Ambilight -> Box(
+            modifier = modifier
+                .graphicsLayer {
+                    this.alpha = alpha
+                    // One opaque layer is all there is: fading it needs no screen-sized copy.
+                    compositingStrategy = CompositingStrategy.ModulateAlpha
+                }
+                .ambientGlow(BackdropSpread) {
+                    val layer = state.frameLayer ?: return@ambientGlow false
+                    if (!hold.follow(state, held())) return@ambientGlow false
+                    val origin = hold.origin ?: return@ambientGlow false
+                    val frame = hold.size ?: return@ambientGlow false
+                    show(layer, origin, Rect(origin, Size(frame.width.toFloat(), frame.height.toFloat())))
+                }
+        )
+        GlowStyle.Copies -> Box(
+            modifier = modifier.graphicsLayer {
+                this.alpha = alpha
+                // All the steps in one layer, made again only when the video's frame changes: the
+                // panel over them moves on every frame (the progress, the visualiser), and laying
+                // eight screens of glow on the screen again each time kept the GPU busy all through.
+                compositingStrategy = CompositingStrategy.Offscreen
+            }
+        ) {
+            Box(modifier = Modifier.matchParentSize().drawBehind { drawRect(Color.Black) })
+            for (glow in BACKDROP_GLOWS) {
+                Box(
+                    modifier = Modifier
+                        .matchParentSize()
+                        .blurredDrawing(glow.blur, alpha = glow.opacity) {
+                            val layer = state.frameLayer ?: return@blurredDrawing
+                            if (!hold.follow(state, held())) return@blurredDrawing
+                            val origin = hold.origin ?: return@blurredDrawing
+                            val frame = hold.size ?: return@blurredDrawing
+                            translate(origin.x, origin.y) {
+                                scale(glow.scale, glow.scale, pivot = Offset(frame.width / 2f, frame.height / 2f)) {
+                                    drawLayer(layer)
+                                }
                             }
                         }
-                    }
-            )
+                )
+            }
         }
     }
 }
@@ -563,6 +565,18 @@ fun VideoBackdrop(
 private class GlowHold {
     var origin: Offset? = null
     var size: IntSize? = null
+
+    /**
+     * Takes the picture's place from [state] — unless [held], when the place it last had is kept
+     * and the state isn't read, so the picture moving draws nothing again. False while it has none.
+     */
+    fun follow(state: GlowSource, held: Boolean): Boolean {
+        if (!held || origin == null || size == null) {
+            origin = state.frameOrigin ?: return false
+            size = state.frameSize ?: return false
+        }
+        return true
+    }
 }
 
 // The steps around the video, and more beyond them, larger and softer each, out past the bottom
@@ -581,10 +595,15 @@ private val BACKDROP_GLOWS by lazy {
 /**
  * The phone turned sideways with a video playing: the video alone on the whole screen, whole and
  * centred, with the system bars out of the way. Where it doesn't reach the edges (a 20:9 screen
- * around a 16:9 video) its glow fills in, steps of larger and softer copies as in the player.
+ * around a 16:9 video) its glow fills in, of the [glowStyle] the player's has.
  */
 @Composable
-fun FullScreenVideo(state: PlayerVideoState, blur: () -> Dp, glow: Boolean = true) {
+fun FullScreenVideo(
+    state: PlayerVideoState,
+    blur: () -> Dp,
+    glow: Boolean = true,
+    glowStyle: GlowStyle = GlowStyle.Ambilight
+) {
     val view = androidx.compose.ui.platform.LocalView.current
     DisposableEffect(view) {
         val activity = generateSequence(view.context) { (it as? android.content.ContextWrapper)?.baseContext }
@@ -603,7 +622,20 @@ fun FullScreenVideo(state: PlayerVideoState, blur: () -> Dp, glow: Boolean = tru
             .lightBlur(blur)
     ) {
         // Without its glow the sides stay black.
-        for (step in if (glow) FULL_SCREEN_GLOWS else emptyList()) {
+        if (glow && glowStyle == GlowStyle.Ambilight) Box(
+            modifier = Modifier
+                .matchParentSize()
+                .ambientGlow(SidesSpread) { size ->
+                    val layer = state.frameLayer ?: return@ambientGlow false
+                    // The layer is the whole screen, with the picture whole in its middle.
+                    val video = state.size.takeIf { it != IntSize.Zero } ?: return@ambientGlow false
+                    val fit = min(size.width / video.width, size.height / video.height)
+                    val picture = Size(video.width * fit, video.height * fit)
+                    val at = Offset((size.width - picture.width) / 2, (size.height - picture.height) / 2)
+                    show(layer, Offset.Zero, Rect(at, picture))
+                }
+        )
+        for (step in if (glow && glowStyle == GlowStyle.Copies) FULL_SCREEN_GLOWS else emptyList()) {
             Box(
                 modifier = Modifier
                     .matchParentSize()
