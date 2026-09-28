@@ -568,7 +568,6 @@ fun MusicScreen(viewModel: MusicViewModel) {
                         isPlaying = isPlaying,
                         isClientIdExpired = isClientIdExpired,
                         needsRelogin = needsRelogin,
-                        playerVisible = currentTrackTitle != null,
                         downloadedCount = downloadedTracks.size,
                         downloadedFolderArtworkUri = downloadedFolderArtworkUri,
                         playlists = playlists,
@@ -1311,7 +1310,6 @@ private fun HomeScreen(
     isPlaying: Boolean,
     isClientIdExpired: Boolean,
     needsRelogin: Boolean,
-    playerVisible: Boolean,
     downloadedCount: Int,
     downloadedFolderArtworkUri: String?,
     playlists: List<Playlist>,
@@ -1612,8 +1610,6 @@ private fun HomeScreen(
                             waveOn = wave.on,
                             isPlaying = isPlaying,
                             starting = wave.starting,
-                            // Clear of the floating toolbar, and of the mini player over it.
-                            bottomClearance = HomeToolbarClearance + if (playerVisible) 80.dp else 8.dp,
                             onToggle = wave.onToggle
                         )
 
@@ -1709,11 +1705,10 @@ private fun HomeScreen(
                     )
                 }
 
-                Spacer(
-                    modifier = Modifier.height(
-                        8.dp + HomeToolbarClearance + if (playerVisible) 72.dp + 12.dp else 0.dp
-                    )
-                )
+                // Room for the toolbar and the mini player over it, whether that is up or not: made
+                // only when it came up, the room shrank the page, and all that is centred on it (a
+                // carousel, the wave's shape) jumped up as a track started.
+                Spacer(modifier = Modifier.height(8.dp + HomeToolbarClearance + 72.dp + 12.dp))
             }
         }
 
