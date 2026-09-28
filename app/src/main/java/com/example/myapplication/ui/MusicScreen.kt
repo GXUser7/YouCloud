@@ -1689,20 +1689,28 @@ private fun HomeScreen(
                 }
 
                 // The section below (or, at the last, back to the first): says the page goes on
-                // downward, and takes you there.
-                if (sections.size > 1) {
-                    val current = sectionPager.currentPage
-                    val atEnd = current >= sections.lastIndex
-                    NextSectionHint(
-                        title = if (atEnd) sections.first().title else sections[current + 1].title,
-                        upward = atEnd,
-                        onClick = {
-                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                            serviceScope.launch {
-                                sectionPager.animateScrollToPage(if (atEnd) 0 else current + 1)
+                // downward, and takes you there. Its room is kept where there is no section to go
+                // to, so that every page's middle, where its carousel sits, is at the same height.
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(NextSectionHintHeight),
+                    contentAlignment = Alignment.Center
+                ) {
+                    if (sections.size > 1) {
+                        val current = sectionPager.currentPage
+                        val atEnd = current >= sections.lastIndex
+                        NextSectionHint(
+                            title = if (atEnd) sections.first().title else sections[current + 1].title,
+                            upward = atEnd,
+                            onClick = {
+                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                serviceScope.launch {
+                                    sectionPager.animateScrollToPage(if (atEnd) 0 else current + 1)
+                                }
                             }
-                        }
-                    )
+                        )
+                    }
                 }
 
                 // Room for the toolbar and the mini player over it, whether that is up or not: made
@@ -1797,6 +1805,8 @@ private fun SectionIndicator(pager: androidx.compose.foundation.pager.PagerState
             }
     )
 }
+
+private val NextSectionHintHeight = 36.dp
 
 /** The next section's name under the carousel, with a nudging chevron: the page goes on below. */
 @Composable
@@ -2443,26 +2453,30 @@ private fun HomeHeroCarousel(items: List<HeroItem>) {
 
     BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
         val captionHeight = 88.dp
+        val captionGap = 16.dp
         val margin = 16.dp
         val coverWidth = maxWidth - (margin + HeroStrip + HeroGap) * 2
         val sidePadding = (maxWidth - coverWidth) / 2
-        // Close to square: a little taller than wide at most, and never taller than the room left.
-        val carouselHeight = (maxHeight - captionHeight - 24.dp).coerceIn(160.dp, coverWidth * 1.08f)
+        // Close to square: a little taller than wide at most, and never taller than leaves room for
+        // the caption under it with the covers in the middle of the page.
+        val carouselHeight = (maxHeight - (captionHeight + captionGap) * 2).coerceIn(160.dp, coverWidth * 1.08f)
+        val carouselTop = (maxHeight - carouselHeight) / 2
         val density = LocalDensity.current
         val coverPx = with(density) { coverWidth.toPx() }
         val stripPx = with(density) { HeroStrip.toPx() }
         val radiusPx = with(density) { 32.dp.toPx() }
 
-        Column(
-            modifier = Modifier.fillMaxSize(),
-            verticalArrangement = Arrangement.Center
-        ) {
+        // The covers in the middle of the page by themselves, the caption hanging under them:
+        // centred along with it, the covers stood off the middle the rest of home keeps (the wave's
+        // shape), and higher or lower from one page to the next.
+        Box(modifier = Modifier.fillMaxSize()) {
             HorizontalPager(
                 state = pagerState,
                 pageSize = androidx.compose.foundation.pager.PageSize.Fixed(coverWidth),
                 contentPadding = PaddingValues(horizontal = sidePadding),
                 pageSpacing = HeroGap,
                 modifier = Modifier
+                    .align(Alignment.Center)
                     .fillMaxWidth()
                     .height(carouselHeight)
                     // What the carousel doesn't use of a swipe, at its first or last cover, isn't
@@ -2556,14 +2570,15 @@ private fun HomeHeroCarousel(items: List<HeroItem>) {
                 }
             }
 
-            Spacer(modifier = Modifier.height(16.dp))
-
             val current = items.getOrNull(pagerState.currentPage) ?: items.first()
             AnimatedContent(
                 targetState = current,
                 transitionSpec = { fadeIn(tween(220)) togetherWith fadeOut(tween(120)) },
                 contentKey = { it.key },
-                label = "heroCaption"
+                label = "heroCaption",
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .padding(top = carouselTop + carouselHeight + captionGap)
             ) { item ->
                 Column(
                     modifier = Modifier
