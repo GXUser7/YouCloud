@@ -37,7 +37,9 @@ data class YandexTrack(
     val coverUri: String?,
     val albums: List<YandexAlbum>? = emptyList(),
     // A "videoshot": a short vertical loop Yandex plays behind the player, as an MP4.
-    val backgroundVideoUri: String? = null
+    val backgroundVideoUri: String? = null,
+    // False for a track that can't be played (withdrawn, not licensed here); absent otherwise.
+    val available: Boolean? = null
 ) {
     fun getCoverUrl(size: String = "200x200"): String? {
         if (coverUri == null) return null
@@ -363,4 +365,45 @@ data class YandexArtistTracksResponse(
 
 data class YandexArtistTracksResult(
     val tracks: List<YandexTrack>? = emptyList()
+)
+
+// Rotor: Yandex Music's radio. A session is started from seeds ("track:123") and hands out
+// batches of tracks; what is heard, skipped or finished is fed back to it and steers what comes.
+
+data class YandexRotorSessionRequest(
+    val seeds: List<String>,
+    // Tracks already heard ("id" or "id:albumId"), so the radio doesn't offer them again.
+    val queue: List<String> = emptyList(),
+    val includeTracksInResponse: Boolean = true
+)
+
+data class YandexRotorQueueRequest(val queue: List<String>)
+
+data class YandexRotorSessionResponse(val result: YandexRotorSession?)
+
+data class YandexRotorSession(
+    val radioSessionId: String? = null,
+    val batchId: String? = null,
+    val sequence: List<YandexRotorItem>? = emptyList(),
+    val terminated: Boolean? = null,
+    val unknownSession: Boolean? = null
+)
+
+data class YandexRotorItem(
+    val type: String? = null,
+    val track: YandexTrack? = null
+)
+
+data class YandexRotorFeedback(
+    val event: YandexRotorEvent,
+    val batchId: String? = null
+)
+
+data class YandexRotorEvent(
+    // radioStarted, trackStarted, trackFinished, skip.
+    val type: String,
+    // ISO 8601 in UTC, with milliseconds.
+    val timestamp: String,
+    val trackId: String? = null,
+    val totalPlayedSeconds: Double? = null
 )

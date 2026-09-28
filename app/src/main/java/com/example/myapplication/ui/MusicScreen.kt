@@ -1166,10 +1166,19 @@ fun MusicScreen(viewModel: MusicViewModel) {
             onRedownload = {
                 viewModel.redownloadTrack(capturedTrack)
             },
-            onRadio = if (capturedTrack.youTubeVideoId != null) {
-                { viewModel.playYtRadio(capturedTrack) }
+            onRadio = when {
+                capturedTrack.youTubeVideoId != null -> {
+                    { viewModel.playYtRadio(capturedTrack) }
+                }
+                capturedTrack.urn?.startsWith("yandex:track:") == true -> {
+                    { viewModel.playYandexRadio(capturedTrack) }
+                }
+                else -> null
+            },
+            radioDescription = if (capturedTrack.youTubeVideoId != null) {
+                "Трек и то, что YouTube Music поставит за ним"
             } else {
-                null
+                "Трек, а за ним радио Яндекс Музыки — без конца, под то, что слушаешь"
             }
         )
     }
@@ -9289,7 +9298,8 @@ fun TrackActionsDialog(
     onShare: () -> Unit,
     onRedownload: () -> Unit = {},
     // Only for tracks with a radio to start — YouTube Music's.
-    onRadio: (() -> Unit)? = null
+    onRadio: (() -> Unit)? = null,
+    radioDescription: String = "Трек и то, что YouTube Music поставит за ним"
 ) {
     // A real M3 modal bottom sheet rather than a Dialog imitating one: this brings the
     // spec scrim, drag handle, swipe-to-dismiss, predictive back and inset handling.
@@ -9402,7 +9412,7 @@ fun TrackActionsDialog(
                                 if (onRadio != null) {
                                     ListItem(
                                         headlineContent = { Text("Радио по треку") },
-                                        supportingContent = { Text("Трек и то, что YouTube Music поставит за ним") },
+                                        supportingContent = { Text(radioDescription) },
                                         leadingContent = {
                                             SheetActionIcon(
                                                 icon = Icons.Default.Radio,
