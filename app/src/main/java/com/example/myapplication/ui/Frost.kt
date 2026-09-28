@@ -22,11 +22,19 @@ import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.TileMode
 import androidx.compose.ui.graphics.drawscope.scale
 import androidx.compose.ui.graphics.drawscope.translate
+import androidx.compose.ui.graphics.layer.CompositingStrategy
 import androidx.compose.ui.graphics.layer.GraphicsLayer
 import androidx.compose.ui.graphics.layer.drawLayer
 import androidx.compose.ui.graphics.rememberGraphicsLayer
+import androidx.compose.ui.graphics.drawscope.ContentDrawScope
+import androidx.compose.ui.layout.LayoutCoordinates
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInRoot
+import androidx.compose.ui.node.DrawModifierNode
+import androidx.compose.ui.node.GlobalPositionAwareModifierNode
+import androidx.compose.ui.node.ModifierNodeElement
+import androidx.compose.ui.node.invalidateDraw
+import androidx.compose.ui.platform.InspectorInfo
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
@@ -55,7 +63,14 @@ class FrostSource internal constructor(internal val layer: GraphicsLayer, intern
 @Composable
 fun rememberFrostSource(soft: Boolean = false): FrostSource {
     val layer = rememberGraphicsLayer()
-    return remember(layer) { FrostSource(layer, soft) }
+    return remember(layer) {
+        // A soft source — the backdrop — is drawn again by every piece of glass over it, on every
+        // frame: kept as one picture, redrawn only when it changes, rather than its ground and its
+        // two blurred layers each time over. It is opaque, so it looks just the same. On a phone
+        // of a few years ago this halved the frames that stuttered while search scrolled.
+        if (soft) layer.compositingStrategy = CompositingStrategy.Offscreen
+        FrostSource(layer, soft)
+    }
 }
 
 /** What glass here shows through, back to front. Never a record the glass is inside of. */
@@ -89,24 +104,17 @@ fun Modifier.frosted(
     rim: Boolean = true
 ): Modifier {
     val sources = LocalFrostSources.current
-    val here = remember { FrostOrigin() }
     // Blurring is only worth it over something sharp: a list scrolling under a bar, a screen
     // under the mini player. Over the backdrop alone (blurred already) the glass draws it as it
     // is under a wash of colour — which still hides whatever else passes behind, a list under a
     // bar, as glass does.
     if (sources.all { it.soft }) {
         return this
-            .onGloballyPositioned { here.value = it.positionInRoot() }
             .clip(shape)
-            .drawBehind {
-                val at = here.value
-                for (source in sources) {
-                    translate(source.origin.x - at.x, source.origin.y - at.y) { drawLayer(source.layer) }
-                }
-                drawRect(tint)
-            }
+            .then(SoftFrostElement(sources, tint))
             .then(if (rim) Modifier.border(1.dp, Color.White.copy(alpha = 0.07f), shape) else Modifier)
     }
+    val here = remember { FrostOrigin() }
     return this
         .onGloballyPositioned { here.value = it.positionInRoot() }
         .clip(shape)
@@ -135,6 +143,47 @@ fun Modifier.frosted(
             }
         }
         .then(if (rim) Modifier.border(1.dp, Color.White.copy(alpha = 0.07f), shape) else Modifier)
+}
+
+/**
+ * Glass over soft sources only: the part of them under the box, under [tint]. Where the box is
+ * kept in the node, not in state: a list of glass rows scrolling wrote every row's position into
+ * state on every frame, when all it needed was the row redrawn.
+ */
+private data class SoftFrostElement(val sources: List<FrostSource>, val tint: Color) :
+    ModifierNodeElement<SoftFrostNode>() {
+    override fun create() = SoftFrostNode(sources, tint)
+
+    override fun update(node: SoftFrostNode) {
+        node.sources = sources
+        node.tint = tint
+        node.invalidateDraw()
+    }
+
+    override fun InspectorInfo.inspectableProperties() {
+        name = "softFrost"
+    }
+}
+
+private class SoftFrostNode(var sources: List<FrostSource>, var tint: Color) :
+    Modifier.Node(), DrawModifierNode, GlobalPositionAwareModifierNode {
+    private var at = Offset.Zero
+
+    override fun onGloballyPositioned(coordinates: LayoutCoordinates) {
+        val position = coordinates.positionInRoot()
+        if (position != at) {
+            at = position
+            invalidateDraw()
+        }
+    }
+
+    override fun ContentDrawScope.draw() {
+        for (source in sources) {
+            translate(source.origin.x - at.x, source.origin.y - at.y) { drawLayer(source.layer) }
+        }
+        drawRect(tint)
+        drawContent()
+    }
 }
 
 // Where a glass box is, read only while drawing: moving it redraws the glass, not the screen.

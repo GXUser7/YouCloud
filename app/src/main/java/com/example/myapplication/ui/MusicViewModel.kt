@@ -20,6 +20,11 @@ import com.example.myapplication.data.TrackVideo
 import com.example.myapplication.data.ClipAligner
 import com.example.myapplication.data.YT_SET_REF
 import com.example.myapplication.data.YT_TRACK_URN
+import com.example.myapplication.data.YandexRotorEvent
+import com.example.myapplication.data.YandexRotorFeedback
+import com.example.myapplication.data.YandexRotorItem
+import com.example.myapplication.data.YandexRotorQueueRequest
+import com.example.myapplication.data.YandexRotorSessionRequest
 import com.example.myapplication.data.YtAuth
 import com.example.myapplication.data.YtShelf
 import com.example.myapplication.data.isProgressiveSource
@@ -65,6 +70,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import retrofit2.HttpException
 import kotlinx.coroutines.Dispatchers
@@ -212,9 +218,15 @@ class MusicViewModel(
     private val _downloadProgress = MutableStateFlow<Map<Long, Float>>(emptyMap())
     val downloadProgress = _downloadProgress.asStateFlow()
 
+    // Called from the download threads, once for every 8 KB read: each call used to launch a
+    // coroutine and rebuild the screens, hundreds of times a second on a fast connection. Now the
+    // map changes only once a track's progress moves on by a thousandth — under a pixel of any
+    // progress bar — and in place, with no coroutine.
     fun updateDownloadProgress(trackId: Long, progress: Float) {
-        viewModelScope.launch {
-            _downloadProgress.value = _downloadProgress.value + (trackId to progress)
+        _downloadProgress.update { current ->
+            val shown = current[trackId]
+            if (shown != null && (shown * 1000f).toInt() == (progress * 1000f).toInt()) current
+            else current + (trackId to progress)
         }
     }
 
@@ -2538,7 +2550,9 @@ class MusicViewModel(
             val pending = favoritesRepository.downloadedWithoutArtwork()
             if (pending.isEmpty()) return@launch
             for (fav in pending) {
-                val source = ArtworkUrls.highRes(fav.artworkUrl) ?: continue
+                // Only a cover on the web can be fetched: a track imported from the phone has its
+                // own file for one, and asking for that path failed on every start.
+                val source = ArtworkUrls.highRes(fav.artworkUrl)?.takeIf { it.startsWith("http") } ?: continue
                 val path = withContext(Dispatchers.IO) {
                     offlineMusicStore.downloadArtwork(source, fav.id)
                 }
@@ -2933,7 +2947,7 @@ class MusicViewModel(
             playlistsRepository.updateTrackDownload(playlistId, track.id, DownloadState.FAILED)
             return false
         } finally {
-            _downloadProgress.value = _downloadProgress.value - track.id
+            _downloadProgress.update { it - track.id }
         }
     }
 
@@ -2992,6 +3006,12 @@ class MusicViewModel(
 
     private companion object {
         const val AUTH_RECOVERY_COOLDOWN_MS = 30_000L
+
+        // The Yandex radio asks for more once fewer tracks than this are left after the one playing.
+        const val RADIO_AHEAD = 3
+
+        // A radio track that stopped this close to its end was heard to the end, not skipped.
+        const val RADIO_FINISHED_SLACK_MS = 5_000L
         const val MAX_AUTH_RECOVERY_ATTEMPTS = 2
         const val SESSION_CHECK_INTERVAL_MS = 15 * 60_000L
 
@@ -3769,7 +3789,7 @@ class MusicViewModel(
             _errorMessage.value = readableMessage(e, isYandex = isYandex)
             return false
         } finally {
-            _downloadProgress.value = _downloadProgress.value - track.id
+            _downloadProgress.update { it - track.id }
         }
     }
 
@@ -4030,4 +4050,205 @@ class MusicViewModel(
     fun playYandexTrack(track: SoundCloudTrack, customQueue: List<SoundCloudTrack>? = null) {
         playQueuedTrack(track, customQueue)
     }
+
+    // region Yandex radio
+
+    /**
+     * Yandex Music's radio (Rotor) playing from a track: the session, which batch each queued
+     * track came in (the feedback names it), and every track it has given, so none comes twice.
+     */
+    private class YandexRadio(var sessionId: String, val seed: String) {
+        val batchOf = HashMap<Long, String>()
+        val given = LinkedHashSet<String>()
+        private val givenRaw = HashSet<String>()
+        // The last track the radio put in the queue: while it is still there, the queue is the
+        // radio's; once another queue has replaced it, the radio stops.
+        var tailId: Long? = null
+        var refilling = false
+
+        /** Takes [id] ("id" or "id:albumId") as given; false if it was already. */
+        fun give(id: String): Boolean {
+            if (!givenRaw.add(id.substringBefore(':'))) return false
+            given += id
+            return true
+        }
+    }
+
+    private var yandexRadio: YandexRadio? = null
+
+    // The track playing as the radio saw it, and how far into it playback got: when it gives way
+    // the radio hears whether it was finished or skipped.
+    private var radioPlayingId: Long? = null
+    private var radioPlayedMs = 0L
+
+    /**
+     * Plays Yandex Music's radio from [track], as the Yandex app's "track radio" does: the track,
+     * then what the radio puts after it, and more whenever the queue runs low, for as long as it
+     * plays. What is heard, skipped or finished goes back to the radio and steers what comes next.
+     */
+    fun playYandexRadio(track: SoundCloudTrack) {
+        val urn = track.urn?.takeIf { it.startsWith("yandex:track:") } ?: return
+        val trackId = urn.removePrefix("yandex:track:")
+        val seed = "track:" + trackId.substringBefore(':')
+        viewModelScope.launch {
+            try {
+                // The seed goes in as heard: it plays first, and the radio shouldn't offer it again.
+                val session = yandexService.rotorSessionNew(
+                    YandexRotorSessionRequest(seeds = listOf(seed), queue = listOf(trackId))
+                ).result
+                val sessionId = session?.radioSessionId ?: throw IllegalStateException("радио не запустилось")
+                val radio = YandexRadio(sessionId, seed).apply { give(trackId) }
+                val batch = acceptRadioBatch(radio, session.batchId, session.sequence).filterNot { it.id == track.id }
+                if (batch.isEmpty()) throw IllegalStateException("радио ничего не предложило")
+                radio.tailId = batch.last().id
+                yandexRadio = radio
+                Log.d("MusicViewModel", "Yandex radio from $seed: session $sessionId, ${batch.size} tracks")
+                playQueuedTrack(track, listOf(track) + batch)
+                sendRadioFeedback(radio, YandexRotorEvent(type = "radioStarted", timestamp = rotorNow()), session.batchId)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.e("MusicViewModel", "Yandex radio from $seed failed", e)
+                android.widget.Toast.makeText(context, "Не удалось запустить радио: ${readableMessage(e)}", android.widget.Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
+    /** A batch's tracks the radio hasn't given before, as the app's tracks, each tagged with the batch. */
+    private fun acceptRadioBatch(radio: YandexRadio, batchId: String?, sequence: List<YandexRotorItem>?): List<SoundCloudTrack> =
+        sequence.orEmpty()
+            .mapNotNull { it.track }
+            .filter { it.available != false }
+            .mapNotNull { yandexTrack ->
+                val track = yandexTrack.toSoundCloudTrack()
+                val id = track.urn?.removePrefix("yandex:track:") ?: return@mapNotNull null
+                if (!radio.give(id)) return@mapNotNull null
+                if (batchId != null) radio.batchOf[track.id] = batchId
+                track
+            }
+
+    /**
+     * Asks the radio for more once fewer than [RADIO_AHEAD] tracks are left after [index], and adds
+     * them to the end of the queue. A session the radio no longer knows is started again from the
+     * same seed, with everything given so far as heard.
+     */
+    private fun refillYandexRadio(index: Int) {
+        val radio = yandexRadio ?: return
+        val queue = _activeQueue.value
+        if (queue.none { it.id == radio.tailId }) {
+            // Another queue has taken over: the radio is over.
+            yandexRadio = null
+            return
+        }
+        if (radio.refilling || queue.size - 1 - index >= RADIO_AHEAD) return
+        radio.refilling = true
+        viewModelScope.launch {
+            try {
+                var answer = yandexService.rotorSessionTracks(radio.sessionId, YandexRotorQueueRequest(radio.given.toList())).result
+                if (answer == null || answer.unknownSession == true || answer.terminated == true) {
+                    answer = yandexService.rotorSessionNew(
+                        YandexRotorSessionRequest(seeds = listOf(radio.seed), queue = radio.given.toList())
+                    ).result
+                    answer?.radioSessionId?.let { radio.sessionId = it }
+                }
+                val more = acceptRadioBatch(radio, answer?.batchId, answer?.sequence)
+                if (more.isEmpty() || yandexRadio !== radio) return@launch
+                queueMutex.withLock {
+                    val current = _activeQueue.value
+                    if (current.none { it.id == radio.tailId }) return@launch
+                    val fresh = more.filter { track -> current.none { it.id == track.id } }
+                    if (fresh.isEmpty()) return@launch
+                    val extended = current + fresh
+                    _activeQueue.value = extended
+                    originalQueue = originalQueue + fresh
+                    // The items already queued are left as they are; the new ones are added after them.
+                    musicPlayer.updateQueue(extended.map { t ->
+                        t.toQueueTrack(localStreamUrl(t.id) ?: resolvedUrls[t.id] ?: placeholderStreamUrl(t))
+                    })
+                    radio.tailId = fresh.last().id
+                    Log.d("MusicViewModel", "Yandex radio: ${fresh.size} more tracks, ${extended.size} queued")
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.w("MusicViewModel", "Yandex radio couldn't get more tracks", e)
+            } finally {
+                radio.refilling = false
+            }
+        }
+    }
+
+    /**
+     * Follows playback for the radio: how far the playing track gets, and each change of track —
+     * the one left is reported finished or skipped, the new one started, and the queue topped up.
+     */
+    private fun followYandexRadio() {
+        viewModelScope.launch {
+            // The furthest it got: moving to the next track, the player sets the position back to
+            // nought a moment before it names the new track, and a track heard to the end would
+            // otherwise be reported skipped at its first second.
+            musicPlayer.positionMs.collect { position ->
+                if (musicPlayer.currentTrackId.value == radioPlayingId) radioPlayedMs = maxOf(radioPlayedMs, position)
+            }
+        }
+        viewModelScope.launch {
+            musicPlayer.currentTrackId.collect { trackId ->
+                val radio = yandexRadio
+                val left = radioPlayingId
+                if (radio != null && left != null && left != trackId) {
+                    val batch = radio.batchOf[left]
+                    val track = _activeQueue.value.firstOrNull { it.id == left }
+                    val id = track?.urn?.removePrefix("yandex:track:")
+                    if (batch != null && id != null) {
+                        val duration = track.duration
+                        val finished = duration > 0 && radioPlayedMs >= duration - RADIO_FINISHED_SLACK_MS
+                        sendRadioFeedback(
+                            radio,
+                            YandexRotorEvent(
+                                type = if (finished) "trackFinished" else "skip",
+                                timestamp = rotorNow(),
+                                trackId = id,
+                                totalPlayedSeconds = radioPlayedMs / 1000.0
+                            ),
+                            batch
+                        )
+                    }
+                }
+                radioPlayingId = trackId
+                radioPlayedMs = 0L
+                if (radio == null || trackId == null) return@collect
+                val index = _activeQueue.value.indexOfFirst { it.id == trackId }
+                if (index < 0) return@collect
+                val batch = radio.batchOf[trackId]
+                val id = _activeQueue.value[index].urn?.removePrefix("yandex:track:")
+                if (batch != null && id != null) {
+                    sendRadioFeedback(radio, YandexRotorEvent(type = "trackStarted", timestamp = rotorNow(), trackId = id), batch)
+                }
+                refillYandexRadio(index)
+            }
+        }
+    }
+
+    private fun sendRadioFeedback(radio: YandexRadio, event: YandexRotorEvent, batchId: String?) {
+        viewModelScope.launch {
+            try {
+                yandexService.rotorSessionFeedback(radio.sessionId, YandexRotorFeedback(event, batchId))
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.w("MusicViewModel", "Yandex radio feedback ${event.type} failed", e)
+            }
+        }
+    }
+
+    /** Now, as Rotor's events want it: ISO 8601 in UTC with milliseconds. */
+    private fun rotorNow(): String =
+        java.time.Instant.now().truncatedTo(java.time.temporal.ChronoUnit.MILLIS).toString()
+
+    init {
+        // Last in the class, so everything it touches is there by the time it runs.
+        followYandexRadio()
+    }
+
+    // endregion
 }

@@ -75,6 +75,11 @@ import androidx.compose.foundation.layout.statusBars
 import androidx.compose.material.icons.automirrored.filled.TrendingUp
 import androidx.compose.material.icons.filled.Lyrics
 import androidx.compose.runtime.snapshotFlow
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.core.MutableTransitionState
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.runtime.derivedStateOf
+import androidx.compose.ui.input.pointer.PointerEventPass
 import com.example.myapplication.data.LyricLine
 import com.example.myapplication.data.YtAuth
 import com.example.myapplication.data.YtShelf
@@ -286,6 +291,7 @@ import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
 import androidx.compose.ui.input.nestedscroll.NestedScrollSource
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.layout.Layout
+import androidx.compose.ui.layout.layout
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.verticalScroll
@@ -324,7 +330,9 @@ fun MusicScreen(viewModel: MusicViewModel) {
     val isLoggedOut by viewModel.isLoggedOut.collectAsState(initial = false)
     val tracks by viewModel.tracks.collectAsState()
     val searchQuery by viewModel.searchQuery.collectAsState()
-    val downloadProgress by viewModel.downloadProgress.collectAsState()
+    // Looked up by the progress bars themselves as they draw: see [DownloadProgressOf].
+    val downloadProgressMap = viewModel.downloadProgress.collectAsState()
+    val downloadProgress = remember { DownloadProgressOf { downloadProgressMap.value[it] } }
     val isLoading by viewModel.isLoading.collectAsState()
     val errorMessage by viewModel.errorMessage.collectAsState()
     val isPlaying by viewModel.isPlaying.collectAsState()
@@ -355,7 +363,9 @@ fun MusicScreen(viewModel: MusicViewModel) {
     val selectedMix by viewModel.selectedMix.collectAsState()
     val playingMixId by viewModel.playingMixId.collectAsState()
     val mixTracks by viewModel.mixTracks.collectAsState()
-    val playbackPositionMs by viewModel.playbackPositionMs.collectAsState()
+    // Held, not read: it changes twice a second while a track plays, and read here it rebuilt this
+    // whole screen each time. Only the seek bar, the lyrics and the mini player's progress read it.
+    val playbackPosition = viewModel.playbackPositionMs.collectAsState()
     val playbackDurationMs by viewModel.playbackDurationMs.collectAsState()
     val screen by viewModel.screen.collectAsState()
     val activeQueue by viewModel.activeQueue.collectAsState()
@@ -366,6 +376,19 @@ fun MusicScreen(viewModel: MusicViewModel) {
     val needsRelogin by viewModel.needsRelogin.collectAsState()
     val homeSelectedTab by viewModel.homeSelectedTab.collectAsState()
     var showTrackActionsDialog by remember { mutableStateOf(false) }
+    // The full player pulled off its place: see TrackDetailScreen's onPulledChange.
+    var playerPulled by remember { mutableStateOf(false) }
+    // A finger on the full player, which may be about to pull it down.
+    var playerTouched by remember { mutableStateOf(false) }
+    val playerShown = remember { MutableTransitionState(false) }
+    playerShown.targetState = selectedTrack != null
+    // The full player, opaque, covers the whole screen: the backdrop and the screens under it
+    // aren't drawn meanwhile. With a video in the player they were painted again on every frame
+    // of it, unseen — half of what the phone's graphics had to do. A finger on the player draws
+    // them again at once, so that a pull finds them there.
+    val playerCovers by remember {
+        derivedStateOf { playerShown.isIdle && playerShown.currentState && !playerPulled && !playerTouched }
+    }
     val showDebugPercentage by viewModel.showDebugPercentage.collectAsState()
     val downloadedPercentages by viewModel.downloadedPercentages.collectAsState()
     val isAllArtistTracksLoaded by viewModel.isAllArtistTracksLoaded.collectAsState()
@@ -435,9 +458,10 @@ fun MusicScreen(viewModel: MusicViewModel) {
     val backdropFrost = rememberFrostSource(soft = true)
     val screensFrost = rememberFrostSource()
     Box(modifier = Modifier.fillMaxSize()) {
-        // The full player is opaque; nothing behind it needs a frame, or the accelerometer.
-        Box(modifier = Modifier.fillMaxSize().frostSource(backdropFrost)) {
-            ExpressiveBackground(motionEnabled = backgroundMotion, animated = selectedTrack == null)
+        // The full player is opaque, and so is the sign-in screen; nothing behind them needs a
+        // frame, or the accelerometer.
+        Box(modifier = Modifier.fillMaxSize().drawWithContent { if (!playerCovers) drawContent() }.frostSource(backdropFrost)) {
+            ExpressiveBackground(motionEnabled = backgroundMotion, animated = selectedTrack == null && !isLoggedOut)
         }
 
         yandexLoginUrl?.let { url ->
@@ -491,7 +515,7 @@ fun MusicScreen(viewModel: MusicViewModel) {
             LocalAlbumLibrary provides albumLibrary,
             LocalFrostSources provides listOf(backdropFrost)
         ) {
-            Box(modifier = Modifier.fillMaxSize().frostSource(screensFrost)) {
+            Box(modifier = Modifier.fillMaxSize().drawWithContent { if (!playerCovers) drawContent() }.frostSource(screensFrost)) {
             // Every screen stands on the moving backdrop: their pages, panels, buttons and cards
             // are glass. (Not the full player, which draws its own backdrop.)
             androidx.compose.runtime.CompositionLocalProvider(LocalGlass provides true) {
@@ -994,9 +1018,12 @@ fun MusicScreen(viewModel: MusicViewModel) {
                 animationSpec = spring(dampingRatio = Spring.DampingRatioLowBouncy, stiffness = Spring.StiffnessMediumLow),
                 label = "miniPlayerLift"
             )
+            // Under a player being pulled down it is there already, in its place and without
+            // coming in: the player folds away onto it, rather than it rising after the player
+            // has gone.
             AnimatedVisibility(
-                visible = currentTrackTitle != null && selectedTrack == null,
-                enter = slideInVertically(initialOffsetY = { it }) + fadeIn(),
+                visible = currentTrackTitle != null && (selectedTrack == null || playerPulled),
+                enter = if (selectedTrack != null) EnterTransition.None else slideInVertically(initialOffsetY = { it }) + fadeIn(),
                 exit = slideOutVertically(targetOffsetY = { it }) + fadeOut(),
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
@@ -1019,11 +1046,13 @@ fun MusicScreen(viewModel: MusicViewModel) {
                     artist = currentPlayingTrack?.user?.username.orEmpty(),
                     artworkUrl = currentPlayingTrack?.artworkUrl,
                     isPlaying = isPlaying,
-                    progress = if (playbackDurationMs > 0L) {
-                        playbackPositionMs.coerceIn(0L, playbackDurationMs).toFloat() /
-                            playbackDurationMs.toFloat()
-                    } else {
-                        0f
+                    progress = {
+                        if (playbackDurationMs > 0L) {
+                            playbackPosition.value.coerceIn(0L, playbackDurationMs).toFloat() /
+                                playbackDurationMs.toFloat()
+                        } else {
+                            0f
+                        }
                     },
                     onTogglePlay = {
                         haptic.performHapticFeedback(HapticFeedbackType.LongPress)
@@ -1038,7 +1067,7 @@ fun MusicScreen(viewModel: MusicViewModel) {
             }
 
             AnimatedVisibility(
-                visible = selectedTrack != null,
+                visibleState = playerShown,
                 enter = slideInVertically(initialOffsetY = { it }) + fadeIn(),
                 exit = slideOutVertically(targetOffsetY = { it }) + fadeOut()
             ) {
@@ -1060,7 +1089,7 @@ fun MusicScreen(viewModel: MusicViewModel) {
                         isLoading = isLoading,
                         repeatMode = repeatMode,
                         shuffleEnabled = shuffleEnabled,
-                        positionMs = playbackPositionMs,
+                        positionMs = { playbackPosition.value },
                         durationMs = max(playbackDurationMs, track.duration),
                         lyrics = lyrics?.takeIf { it.trackId == track.id }?.lines,
                         video = trackVideo?.takeIf { it.trackId == track.id },
@@ -1115,7 +1144,9 @@ fun MusicScreen(viewModel: MusicViewModel) {
                                 username = artist.username,
                                 trackUrn = track.urn
                             )
-                        }
+                        },
+                        onPulledChange = { playerPulled = it },
+                        onTouchedChange = { playerTouched = it }
                     )
                     }
                 }
@@ -1151,10 +1182,19 @@ fun MusicScreen(viewModel: MusicViewModel) {
             onRedownload = {
                 viewModel.redownloadTrack(capturedTrack)
             },
-            onRadio = if (capturedTrack.youTubeVideoId != null) {
-                { viewModel.playYtRadio(capturedTrack) }
+            onRadio = when {
+                capturedTrack.youTubeVideoId != null -> {
+                    { viewModel.playYtRadio(capturedTrack) }
+                }
+                capturedTrack.urn?.startsWith("yandex:track:") == true -> {
+                    { viewModel.playYandexRadio(capturedTrack) }
+                }
+                else -> null
+            },
+            radioDescription = if (capturedTrack.youTubeVideoId != null) {
+                "Трек и то, что YouTube Music поставит за ним"
             } else {
-                null
+                "Трек, а за ним радио Яндекс Музыки — без конца, под то, что слушаешь"
             }
         )
     }
@@ -1436,7 +1476,9 @@ private fun HomeScreen(
                         val scale = 1f - 0.06f * away
                         scaleX = scale
                         scaleY = scale
-                        alpha = 1f - 0.45f * away
+                        // Entirely off to the side it isn't drawn at all: dimmed, the page was
+                        // painted into a picture of its own on every frame, out of sight.
+                        alpha = if (away >= 1f) 0f else 1f - 0.45f * away
                     }
             ) {
                 Box(
@@ -1725,13 +1767,7 @@ private fun SectionIndicator(pager: androidx.compose.foundation.pager.PagerState
 /** The next section's name under the carousel, with a nudging chevron: the page goes on below. */
 @Composable
 private fun NextSectionHint(title: String, upward: Boolean, onClick: () -> Unit) {
-    val nudge = rememberInfiniteTransition(label = "nextSectionNudge")
-    val shift by nudge.animateFloat(
-        initialValue = 0f,
-        targetValue = 1f,
-        animationSpec = infiniteRepeatable(tween(900, easing = FastOutSlowInEasing), RepeatMode.Reverse),
-        label = "nextSectionShift"
-    )
+    val clock = rememberLoopClock()
     Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
         Row(
             modifier = Modifier
@@ -1755,7 +1791,7 @@ private fun NextSectionHint(title: String, upward: Boolean, onClick: () -> Unit)
                 tint = PanelColors.accent,
                 modifier = Modifier
                     .size(20.dp)
-                    .graphicsLayer { translationY = (if (upward) -3f else 3f) * shift * density }
+                    .graphicsLayer { translationY = (if (upward) -3f else 3f) * loopValue(clock.longValue, 900, 0f, 1f) * density }
             )
         }
     }
@@ -2006,7 +2042,7 @@ private fun PagedTrackList(
     favorites: List<FavoriteTrack>,
     currentTrackId: Long?,
     isPlaying: Boolean,
-    downloadProgress: Map<Long, Float>,
+    downloadProgress: DownloadProgressOf,
     onPlayTrack: (SoundCloudTrack) -> Unit,
     onFavoriteClick: (SoundCloudTrack) -> Unit,
     perPage: Int = 4,
@@ -2043,7 +2079,7 @@ private fun PagedTrackList(
                         isFavorite = favorite != null,
                         isSelected = track.id == currentTrackId,
                         downloadState = favorite?.downloadState,
-                        progress = downloadProgress[track.id],
+                        progress = { downloadProgress[track.id] },
                         isPlaying = isPlaying,
                         onClick = { onPlayTrack(track) },
                         onFavoriteClick = { onFavoriteClick(track) },
@@ -2554,22 +2590,8 @@ private fun NowPlayingBadge(
     onClick: (() -> Unit)? = null,
     glass: (@Composable BoxScope.() -> Unit)? = null
 ) {
-    val transition = rememberInfiniteTransition(label = "nowPlaying")
+    val clock = rememberLoopClock()
     val barCount = 4
-    val heights = List(barCount) { index ->
-        transition.animateFloat(
-            initialValue = 0.30f,
-            targetValue = 1f,
-            animationSpec = infiniteRepeatable(
-                animation = tween(
-                    durationMillis = 420 + index * 130,
-                    easing = FastOutSlowInEasing
-                ),
-                repeatMode = RepeatMode.Reverse
-            ),
-            label = "bar$index"
-        )
-    }
 
     Surface(
         modifier = if (onClick != null) {
@@ -2591,11 +2613,11 @@ private fun NowPlayingBadge(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 val barColor = LocalContentColor.current
-                heights.forEach { height ->
+                repeat(barCount) { index ->
                     Box(
                         modifier = Modifier
                             .width(3.dp)
-                            .height(16.dp * height.value)
+                            .animatedHeight(16.dp) { loopValue(clock.longValue, 420 + index * 130, 0.3f, 1f) }
                             .clip(CircleShape)
                             .background(barColor)
                     )
@@ -3750,7 +3772,7 @@ private fun SearchScreen(
     tracks: List<SoundCloudTrack>,
     favorites: List<FavoriteTrack>,
     currentTrackId: Long?,
-    downloadProgress: Map<Long, Float> = emptyMap(),
+    downloadProgress: DownloadProgressOf = NoDownloadProgress,
     isPlaying: Boolean = false,
     isLoading: Boolean,
     errorMessage: String?,
@@ -3924,7 +3946,8 @@ private fun SearchScreen(
                         val scale = 1f - 0.05f * away
                         scaleX = scale
                         scaleY = scale
-                        alpha = 1f - 0.4f * away
+                        // Off to the side, not drawn: see the pages of home.
+                        alpha = if (away >= 1f) 0f else 1f - 0.4f * away
                     }
                 )
             }
@@ -3984,7 +4007,7 @@ private fun SearchResultsList(
     listState: androidx.compose.foundation.lazy.LazyListState,
     favoritesMap: Map<Long, FavoriteTrack>,
     currentTrackId: Long?,
-    downloadProgress: Map<Long, Float>,
+    downloadProgress: DownloadProgressOf,
     isPlaying: Boolean,
     hasMore: Boolean,
     isLoadingMore: Boolean,
@@ -4121,7 +4144,7 @@ private fun SearchResultsList(
                     isFavorite = favorite != null,
                     isSelected = track.id == currentTrackId,
                     downloadState = favorite?.downloadState,
-                    progress = downloadProgress[track.id],
+                    progress = { downloadProgress[track.id] },
                     isPlaying = isPlaying,
                     onClick = { onPlayTrack(track) },
                     onFavoriteClick = { onFavoriteClick(track) },
@@ -4191,7 +4214,12 @@ private fun SearchSourceTabs(
         )
         Row(modifier = Modifier.fillMaxSize()) {
             labels.forEachIndexed { index, label ->
-                val lit = kotlin.math.abs(pager.currentPage + pager.currentPageOffsetFraction - index) < 0.5f
+                // Derived: read straight, the swipe's every frame composed the tabs again.
+                val lit by remember(pager, index) {
+                    androidx.compose.runtime.derivedStateOf {
+                        kotlin.math.abs(pager.currentPage + pager.currentPageOffsetFraction - index) < 0.5f
+                    }
+                }
                 Box(
                     modifier = Modifier
                         .weight(1f)
@@ -4317,7 +4345,7 @@ private fun DownloadsScreen(
     tracks: List<FavoriteTrack>,
     folderArtworkUri: String?,
     currentTrackId: Long?,
-    downloadProgress: Map<Long, Float> = emptyMap(),
+    downloadProgress: DownloadProgressOf = NoDownloadProgress,
     isPlaying: Boolean = false,
     onBack: () -> Unit,
     onChangeArtwork: (String?) -> Unit,
@@ -4355,6 +4383,9 @@ private fun DownloadsScreen(
     val isActive = currentTrackId != null && tracks.any { it.id == currentTrackId }
     val listState = rememberLazyListState()
     val collapsed = rememberCollapsed(listState, MixCoverHeight - 140.dp)
+    // The track whose bin was tapped, until the deletion is confirmed or called off: one stray
+    // tap on a row's bin used to throw a download away.
+    var pendingDelete by remember { mutableStateOf<FavoriteTrack?>(null) }
 
     // A folder, opened as a mix is: its cover across the top, the big play button, the tracks.
     Box(
@@ -4427,10 +4458,10 @@ private fun DownloadsScreen(
                         DownloadedTrackCard(
                             track = track,
                             isSelected = track.id == currentTrackId,
-                            progress = downloadProgress[track.id],
+                            progress = { downloadProgress[track.id] },
                             isPlaying = isPlaying,
                             onClick = { onPlayTrack(track) },
-                            onDeleteDownload = { onDeleteDownload(track) },
+                            onDeleteDownload = { pendingDelete = track },
                             showDebugPercentage = showDebugPercentage,
                             debugPercentage = downloadedPercentages[track.id],
                             flat = true
@@ -4441,6 +4472,31 @@ private fun DownloadsScreen(
         }
 
         CollapsingTopBar(title = "Скачанное", collapsed = collapsed, onBack = onBack)
+    }
+
+    pendingDelete?.let { track ->
+        AlertDialog(
+            onDismissRequest = { pendingDelete = null },
+            title = { Text("Удалить с устройства?") },
+            text = {
+                Text("«${track.title}» — ${track.displayArtist}. Скачанный файл удалится с телефона, в любимых трек останется.")
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        pendingDelete = null
+                        onDeleteDownload(track)
+                    }
+                ) {
+                    Text("Удалить")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingDelete = null }) {
+                    Text("Отмена")
+                }
+            }
+        )
     }
 }
 
@@ -5292,7 +5348,7 @@ private fun MixDetailScreen(
     tracks: List<SoundCloudTrack>,
     currentTrackId: Long?,
     favorites: List<FavoriteTrack>,
-    downloadProgress: Map<Long, Float> = emptyMap(),
+    downloadProgress: DownloadProgressOf = NoDownloadProgress,
     isPlaying: Boolean = false,
     isActive: Boolean = false,
     onBack: () -> Unit,
@@ -5350,7 +5406,7 @@ private fun MixDetailScreen(
                             isFavorite = favorite != null,
                             isSelected = track.id == currentTrackId,
                             downloadState = favorite?.downloadState,
-                            progress = downloadProgress[track.id],
+                            progress = { downloadProgress[track.id] },
                             isPlaying = isPlaying,
                             onClick = { onPlayTrack(track) },
                             onFavoriteClick = { onFavoriteClick(track) },
@@ -5446,31 +5502,71 @@ private fun TrackRowArtwork(artworkUrl: String?, isCurrent: Boolean, isPlaying: 
 
 @Composable
 private fun EqualizerBars(animate: Boolean, color: Color, modifier: Modifier = Modifier) {
-    val transition = rememberInfiniteTransition(label = "rowBars")
+    val clock = rememberLoopClock(running = animate)
     Row(
         modifier = modifier,
         horizontalArrangement = Arrangement.spacedBy(3.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         repeat(4) { index ->
-            val height by transition.animateFloat(
-                initialValue = 0.3f,
-                targetValue = 1f,
-                animationSpec = infiniteRepeatable(
-                    animation = tween(durationMillis = 420 + index * 130, easing = FastOutSlowInEasing),
-                    repeatMode = RepeatMode.Reverse
-                ),
-                label = "rowBar$index"
-            )
             Box(
                 modifier = Modifier
                     .width(3.dp)
-                    .height(18.dp * (if (animate) height else 0.45f))
+                    .animatedHeight(18.dp) { if (animate) loopValue(clock.longValue, 420 + index * 130, 0.3f, 1f) else 0.45f }
                     .clip(CircleShape)
                     .background(color)
             )
         }
     }
+}
+
+/**
+ * Milliseconds since the loop began, moved on sixty times a second at most: the clock of the small
+ * looping animations (the playing bars, the chevron under home's carousel). Each of their frames
+ * repaints the whole screen, backdrop and glass and all, and on a 90 or 120 Hz screen the frames
+ * past sixty were that much more work for a movement no one can tell from it — the backdrop has
+ * kept to sixty for the same reason.
+ */
+@Composable
+private fun rememberLoopClock(running: Boolean = true): androidx.compose.runtime.MutableLongState {
+    val clock = remember { androidx.compose.runtime.mutableLongStateOf(0L) }
+    LaunchedEffect(running) {
+        if (!running) return@LaunchedEffect
+        var start = 0L
+        var shown = 0L
+        while (true) {
+            withFrameNanos { now ->
+                if (start == 0L) start = now - clock.longValue * 1_000_000L
+                if (now - shown >= LoopFrameNanos) {
+                    shown = now
+                    clock.longValue = (now - start) / 1_000_000L
+                }
+            }
+        }
+    }
+    return clock
+}
+
+private const val LoopFrameNanos = 15_000_000L
+
+/**
+ * What `infiniteRepeatable(tween(durationMs, FastOutSlowInEasing), RepeatMode.Reverse)` from [from]
+ * to [to] gives at [timeMs]: there and back, eased both ways.
+ */
+private fun loopValue(timeMs: Long, durationMs: Int, from: Float, to: Float): Float {
+    val cycle = timeMs % (2L * durationMs)
+    val t = if (cycle < durationMs) cycle / durationMs.toFloat() else (2L * durationMs - cycle) / durationMs.toFloat()
+    return from + (to - from) * FastOutSlowInEasing.transform(t)
+}
+
+/**
+ * `height(max * fraction())`, with the fraction read while laying out rather than while composing:
+ * bars that move on every frame are measured again then, not composed again with all around them.
+ */
+private fun Modifier.animatedHeight(max: Dp, fraction: () -> Float): Modifier = layout { measurable, constraints ->
+    val height = (max * fraction()).roundToPx().coerceAtLeast(0).coerceIn(constraints.minHeight, constraints.maxHeight)
+    val placeable = measurable.measure(constraints.copy(minHeight = height, maxHeight = height))
+    layout(placeable.width, placeable.height) { placeable.placeRelative(0, 0) }
 }
 
 private fun SoundCloudTrack.artistLine(): String =
@@ -5488,7 +5584,7 @@ private fun TrackCard(
     isFavorite: Boolean,
     isSelected: Boolean = false,
     downloadState: DownloadState? = null,
-    progress: Float? = null,
+    progress: () -> Float? = NoProgress,
     isPlaying: Boolean = false,
     onClick: () -> Unit,
     onFavoriteClick: () -> Unit,
@@ -5554,7 +5650,7 @@ private fun TrackCard(
 private fun DownloadedTrackCard(
     track: FavoriteTrack,
     isSelected: Boolean = false,
-    progress: Float? = null,
+    progress: () -> Float? = NoProgress,
     isPlaying: Boolean = false,
     onClick: () -> Unit,
     onDeleteDownload: () -> Unit,
@@ -5631,7 +5727,8 @@ private fun TrackDetailScreen(
     isLoading: Boolean,
     repeatMode: Int,
     shuffleEnabled: Boolean,
-    positionMs: Long,
+    // Read where it is shown, not here: see MusicScreen.
+    positionMs: () -> Long,
     durationMs: Long,
     lyrics: List<LyricLine>?,
     video: com.example.myapplication.data.TrackVideo?,
@@ -5652,7 +5749,12 @@ private fun TrackDetailScreen(
     onShuffle: () -> Unit,
     onDeleteDownload: (FavoriteTrack) -> Unit,
     onLongPressCover: () -> Unit,
-    onArtistClick: (SoundCloudUser) -> Unit
+    onArtistClick: (SoundCloudUser) -> Unit,
+    // Whether the player has been pulled off its place: the screen keeps the mini player ready
+    // under it meanwhile, so a pull that folds the player away ends on it.
+    onPulledChange: (Boolean) -> Unit = {},
+    // Whether a finger is on the player: the screen draws what lies under it again, ready for a pull.
+    onTouchedChange: (Boolean) -> Unit = {}
 ) {
     val context = LocalContext.current
     val vibrator = remember {
@@ -5676,7 +5778,8 @@ private fun TrackDetailScreen(
     val dragQueue: (Float) -> Float = { dy ->
         val before = queueHidden.value
         val after = (before + dy / queueHeightPx).coerceIn(0f, 1f)
-        queueScope.launch { queueHidden.snapTo(after) }
+        // Undispatched: moved in this very frame, not the next, or it trails the finger.
+        queueScope.launch(start = kotlinx.coroutines.CoroutineStart.UNDISPATCHED) { queueHidden.snapTo(after) }
         (after - before) * queueHeightPx
     }
     // Where the sheet was when the finger took it: a fifth of the way from there is enough.
@@ -5695,15 +5798,49 @@ private fun TrackDetailScreen(
     val setQueueOpen: (Boolean) -> Unit = { open ->
         queueScope.launch { queueHidden.animateTo(if (open) 0f else 1f, QueueSpring) }
     }
+    // Pulled down, the whole player follows the finger — shrinking back, its corners rounding,
+    // the screen it was opened from showing above it — and, let go far or fast enough, folds
+    // away into the mini player; otherwise it springs back.
+    val collapse = remember { Animatable(0f) }
+    var playerHeightPx by remember { mutableFloatStateOf(1f) }
+    val currentOnBack by rememberUpdatedState(onBack)
+    val collapseProgress: () -> Float = { (collapse.value / playerHeightPx).coerceIn(0f, 1f) }
+    val currentOnPulledChange by rememberUpdatedState(onPulledChange)
+    LaunchedEffect(collapse) {
+        snapshotFlow { collapse.value > 0f }.collect { currentOnPulledChange(it) }
+    }
+    val currentOnTouchedChange by rememberUpdatedState(onTouchedChange)
+    DisposableEffect(Unit) {
+        onDispose {
+            currentOnPulledChange(false)
+            currentOnTouchedChange(false)
+        }
+    }
+    val releaseCollapse: (Float) -> Unit = { velocity ->
+        val away = if (kotlin.math.abs(velocity) > flingPx) velocity > 0f else collapseProgress() > CollapseMeantFraction
+        queueScope.launch {
+            if (away) {
+                // On at the finger's own speed: a fixed curve that set off slowly made a flick
+                // stall the moment it was let go, and then the player dropped away.
+                collapse.animateTo(playerHeightPx, CollapseSpring, initialVelocity = velocity)
+                currentOnBack()
+            } else {
+                collapse.animateTo(0f, QueueSpring, initialVelocity = velocity)
+            }
+        }
+    }
     var showLyrics by remember(track.id) { mutableStateOf(false) }
     val lyricsShown = showLyrics && !lyrics.isNullOrEmpty()
+    val atStart by remember(positionMs) { androidx.compose.runtime.derivedStateOf { positionMs() == 0L } }
     val showLoading = (downloadState != DownloadState.DOWNLOADED) &&
-        (isBuffering || isLoading || (positionMs == 0L && !isPlaying))
+        (isBuffering || isLoading || (atStart && !isPlaying))
     // Nothing is blurred under the queue any more: a scrim that follows the sheet dims the player,
     // and a full-screen blur changing on every frame of a drag cost more than it gave.
     val blurRadius = 0.dp
     // Lyrics take the cover's place: it blurs into a backdrop behind them.
-    val coverBlur by animateDpAsState(
+    // Held, not read: the blurs read them as they draw (see lightBlur), so that while they move
+    // only the blur is drawn again, not the player composed again on every frame.
+    val coverBlur = animateDpAsState(
         targetValue = if (lyricsShown) 28.dp else 0.dp,
         animationSpec = tween(durationMillis = 350),
         label = "lyricsCoverBlur"
@@ -5730,7 +5867,7 @@ private fun TrackDetailScreen(
     val coverVideo = videoState?.takeIf { !it.isPortrait }
     val backdropVideo = coverVideo?.takeIf { videoGlow }
     // Paused, a video blurs, as if it had stopped to wait.
-    val pauseBlur by animateDpAsState(
+    val pauseBlur = animateDpAsState(
         targetValue = if (!isPlaying && videoState?.showing == true) 24.dp else 0.dp,
         animationSpec = tween(durationMillis = 400),
         label = "videoPauseBlur"
@@ -5755,6 +5892,8 @@ private fun TrackDetailScreen(
     // back — not by how far it has been dragged; they return once it has settled.
     val swipeActive = remember { Animatable(0f) }
     val swipeProgress: () -> Float = { swipeActive.value }
+    // Whether the picture is swiped aside at all: only changes at the start and the end of a swipe.
+    val swiping by remember { derivedStateOf { swipeActive.value > 0f } }
 
     // Over a video the buttons at the top turn to frosted glass as well, like the panel.
     val buttonGlass: (@Composable BoxScope.() -> Unit)? = videoState?.takeIf { it.showing }?.let { shown ->
@@ -5774,36 +5913,109 @@ private fun TrackDetailScreen(
         null
     }
     if (landscape && videoState != null && videoState.showing) {
-        FullScreenVideo(state = videoState, blur = pauseBlur, glow = videoGlow)
+        FullScreenVideo(state = videoState, blur = { pauseBlur.value }, glow = videoGlow)
         return
     }
 
     Box(
         modifier = Modifier
             .fillMaxSize()
-            // Drawn over the app's own screens, so the player owns its whole backdrop.
-            .background(MaterialTheme.colorScheme.background)
-            .onSizeChanged { queueHeightPx = it.height * QueueHeightFraction }
-            // A swipe up anywhere nothing else takes it pulls the queue up after the finger.
+            .onSizeChanged {
+                queueHeightPx = it.height * QueueHeightFraction
+                playerHeightPx = it.height.toFloat()
+            }
+            // Watches for a finger without taking anything from what it touches.
+            .pointerInput(Unit) {
+                awaitEachGesture {
+                    awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+                    currentOnTouchedChange(true)
+                    do {
+                        val event = awaitPointerEvent(PointerEventPass.Initial)
+                    } while (event.changes.any { it.pressed })
+                    currentOnTouchedChange(false)
+                }
+            }
+            // A swipe anywhere nothing else takes it: up pulls the queue after the finger, down
+            // pulls the player itself down. The first movement decides which; a queue already
+            // out is what a pull down moves. On a box that stays put, so that the player moving
+            // under the finger doesn't eat into the finger's own movement.
             .pointerInput(Unit) {
                 val velocity = VelocityTracker()
+                var pulling = PlayerPull.Undecided
                 detectVerticalDragGestures(
                     onDragStart = {
                         velocity.resetTracking()
                         queueDragFrom = queueHidden.value
-                        queueScope.launch { queueHidden.stop() }
+                        pulling = when {
+                            queueHidden.value < 1f -> PlayerPull.Queue
+                            collapse.value > 0f -> PlayerPull.Player
+                            else -> PlayerPull.Undecided
+                        }
+                        queueScope.launch(start = kotlinx.coroutines.CoroutineStart.UNDISPATCHED) { queueHidden.stop() }
+                        queueScope.launch(start = kotlinx.coroutines.CoroutineStart.UNDISPATCHED) { collapse.stop() }
                     },
                     onVerticalDrag = { change, dy ->
                         velocity.addPosition(change.uptimeMillis, change.position)
-                        if (dy < 0f || queueHidden.value < 1f) {
-                            change.consume()
-                            dragQueue(dy)
+                        if (pulling == PlayerPull.Undecided) {
+                            pulling = if (dy < 0f) PlayerPull.Queue else PlayerPull.Player
+                        }
+                        change.consume()
+                        when (pulling) {
+                            PlayerPull.Queue -> dragQueue(dy)
+                            PlayerPull.Player -> queueScope.launch(start = kotlinx.coroutines.CoroutineStart.UNDISPATCHED) {
+                                collapse.snapTo((collapse.value + dy).coerceAtLeast(0f))
+                            }
+                            PlayerPull.Undecided -> Unit
                         }
                     },
-                    onDragEnd = { releaseQueue(velocity.calculateVelocity().y) },
-                    onDragCancel = { releaseQueue(0f) }
+                    onDragEnd = {
+                        val speed = velocity.calculateVelocity().y
+                        when (pulling) {
+                            PlayerPull.Queue -> releaseQueue(speed)
+                            PlayerPull.Player -> releaseCollapse(speed)
+                            PlayerPull.Undecided -> Unit
+                        }
+                    },
+                    onDragCancel = {
+                        when (pulling) {
+                            PlayerPull.Queue -> releaseQueue(0f)
+                            PlayerPull.Player -> releaseCollapse(0f)
+                            PlayerPull.Undecided -> Unit
+                        }
+                    }
                 )
             }
+            // The screen it was opened from, dimmed under the player as it starts coming down and
+            // clearing as it goes: a card lifted off the screen, not a hole cut in it.
+            .drawBehind {
+                val pulled = collapseProgress()
+                if (pulled > 0f) drawRect(Color.Black.copy(alpha = PulledScrim * (1f - pulled)))
+            }
+    ) {
+    val glowSpace = remember { GlowSpace() }
+    androidx.compose.runtime.CompositionLocalProvider(LocalGlowSpace provides glowSpace) {
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .graphicsLayer {
+                val pulled = collapseProgress()
+                translationY = collapse.value
+                // Narrowing to about the mini player's width by the bottom.
+                val scale = 1f - 0.08f * pulled
+                scaleX = scale
+                scaleY = scale
+                transformOrigin = TransformOrigin(0.5f, 0f)
+                if (pulled > 0f) {
+                    // Rounded almost as soon as it moves, as a card lifted off the screen.
+                    shape = RoundedCornerShape(PulledCorner * (pulled / 0.15f).coerceAtMost(1f))
+                    clip = true
+                }
+                // The last of the way down it fades into the mini player waiting under it.
+                alpha = 1f - ((pulled - CollapseFadeFrom) / (1f - CollapseFadeFrom)).coerceIn(0f, 1f)
+            }
+            .glowSpace(glowSpace)
+            // Drawn over the app's own screens, so the player owns its whole backdrop.
+            .background(MaterialTheme.colorScheme.background)
     ) {
         if (coverGlowMode) {
             VideoBackdrop(
@@ -5811,10 +6023,21 @@ private fun TrackDetailScreen(
                 alpha = 1f,
                 modifier = Modifier
                     .fillMaxSize()
-                    .graphicsLayer { alpha = 1f - swipeProgress() }
+                    .graphicsLayer {
+                        // Under a video's glow, which is opaque, it isn't drawn at all: it shows
+                        // only while that glow comes in, or goes out for a swipe. It was painted
+                        // unseen on every frame, and again in all its steps each time the cover
+                        // under the video settled back for a pause.
+                        alpha = if (backdropVideo != null && videoShown >= 1f && swipeProgress() == 0f) {
+                            0f
+                        } else {
+                            1f - swipeProgress()
+                        }
+                    }
                     // Under the lyrics the glow blurs with the cover, or its near steps would
                     // stay sharper than the cover they come from.
-                    .blur(blurRadius + coverBlur)
+                    .lightBlur({ blurRadius + coverBlur.value }),
+                held = { swiping }
             )
         }
         if (backdropVideo != null) {
@@ -5826,7 +6049,8 @@ private fun TrackDetailScreen(
                     .graphicsLayer { alpha = 1f - swipeProgress() }
                     // Paused, or under the lyrics, the glow blurs with the video, or its near steps
                     // would stay sharper than the video they come from.
-                    .blur(blurRadius + pauseBlur + coverBlur)
+                    .lightBlur({ blurRadius + pauseBlur.value + coverBlur.value }),
+                held = { swiping }
             )
         }
         if (immersiveVideo != null) {
@@ -5837,7 +6061,7 @@ private fun TrackDetailScreen(
                         alpha = videoShown
                         swiped(swipe.value, swipeProgress(), rounded = false)
                     }
-                    .blur(coverBlur + blurRadius + pauseBlur)
+                    .lightBlur({ coverBlur.value + blurRadius + pauseBlur.value })
             ) {
                 VideoSurface(state = immersiveVideo, modifier = Modifier.fillMaxSize())
                 // Keeps the status bar and the buttons over the video legible.
@@ -5922,7 +6146,7 @@ private fun TrackDetailScreen(
                                 .graphicsLayer { alpha = if (immersiveVideo != null) 1f - videoShown else 1f }
                                 // Unbounded: cut at the edge of its box, which reaches under the
                                 // panel, the blur left a hard line across the panel's top.
-                                .blur(coverBlur + pauseBlur, androidx.compose.ui.draw.BlurredEdgeTreatment.Unbounded)
+                                .lightBlur({ coverBlur.value + pauseBlur.value }, unbounded = true)
                         ) {
                             PlayerArtwork(
                                 track = track,
@@ -6109,7 +6333,22 @@ private fun TrackDetailScreen(
             )
         }
     }
+    }
+    }
 }
+
+/** What a vertical drag on the player moves, decided by its first movement. */
+private enum class PlayerPull { Undecided, Queue, Player }
+
+// Pulled down this far (of its height), or flung, the player folds away; its corners round to this.
+private const val CollapseMeantFraction = 0.22f
+private val PulledCorner = 36.dp
+// Folding away: no bounce, quick, and it takes up the fling's speed.
+private val CollapseSpring = spring<Float>(dampingRatio = 1f, stiffness = 900f, visibilityThreshold = 1f)
+// How dark the screen behind is as the player starts coming down.
+private const val PulledScrim = 0.45f
+// From this far down the player fades into the mini player.
+private const val CollapseFadeFrom = 0.7f
 
 /**
  * Cover on top, panel at the bottom. The panel is measured first and keeps its natural height;
@@ -6239,6 +6478,7 @@ private fun PlayerArtwork(
                     bottom = PlayerPanelOverlap + 36.dp,
                     overBackdrop = true,
                     alpha = videoShown,
+                    edgeFade = { 1f - swipeProgress() },
                     modifier = Modifier
                         .fillMaxSize()
                         .graphicsLayer { swiped(swipeOffset(), swipeProgress(), rounded = false) }
@@ -6327,7 +6567,7 @@ private fun GlowingCover(
                 // Swiped, it goes with the finger; the glow, out meanwhile, is drawn from where
                 // it is.
                 .graphicsLayer { swiped(swipeOffset(), swipeProgress(), rounded = false) }
-                .glowSource(glow)
+                .glowSource(glow, LocalGlowSpace.current)
                 .graphicsLayer {
                     val s = scale()
                     scaleX = s
@@ -6415,7 +6655,7 @@ private fun PlayerPanel(
     isPlaying: Boolean,
     repeatMode: Int,
     shuffleEnabled: Boolean,
-    positionMs: Long,
+    positionMs: () -> Long,
     durationMs: Long,
     vibrator: android.os.Vibrator?,
     onTogglePlay: () -> Unit,
@@ -6620,11 +6860,12 @@ private fun PlayerPanel(
 @Composable
 private fun PlayerSeekBar(
     trackId: Long,
-    positionMs: Long,
+    positionMs: () -> Long,
     durationMs: Long,
     vibrator: android.os.Vibrator?,
     onSeek: (Long) -> Unit
 ) {
+    val positionMs = positionMs()
     val onPanel = PanelColors.content
     var sliderProgress by remember { mutableStateOf<Float?>(null) }
     var lastVibratedRatio by remember(trackId) { mutableStateOf(0f) }
@@ -6845,13 +7086,16 @@ private fun QueuePeek(
 @Composable
 private fun LyricsOverlay(
     lines: List<LyricLine>,
-    positionMs: Long,
+    positionMs: () -> Long,
     onSeek: (Long) -> Unit
 ) {
     val haptic = LocalHapticFeedback.current
     val listState = rememberLazyListState()
     // The position arrives twice a second; leading it a little keeps lines from lighting late.
-    val current = remember(lines, positionMs) { lines.indexOfLast { it.timeMs <= positionMs + 300 } }
+    // Derived, so the lyrics are composed again only when the line changes, not on every tick.
+    val current by remember(lines, positionMs) {
+        androidx.compose.runtime.derivedStateOf { lines.indexOfLast { it.timeMs <= positionMs() + 300 } }
+    }
     val isDragged by listState.interactionSource.collectIsDraggedAsState()
     var lastUserScrollAt by remember { mutableStateOf(0L) }
     LaunchedEffect(isDragged) {
@@ -7430,48 +7674,40 @@ private fun TrackArtwork(
     useMorphing: Boolean = true,
     fallbackShape: Shape? = null
 ) {
-    val clipShape = if (useMorphing) {
-        val morphProgress by animateFloatAsState(
+    val stillShape = fallbackShape ?: RoundedCornerShape(if (size > 100.dp) 36.dp else 18.dp)
+    // Read as the cover is drawn, not composed: its morph and its turn moved on every frame of the
+    // screen, 120 a second on some, and each composed the row again. The turn is a loop clock's
+    // (sixty a second at most), from nought whenever playing starts, as it was.
+    val morphProgress = if (useMorphing) {
+        animateFloatAsState(
             targetValue = if (isPlaying) 1f else 0f,
             animationSpec = tween(durationMillis = 600, easing = FastOutSlowInEasing),
             label = "morphProgress"
         )
-        val infiniteTransition = rememberInfiniteTransition(label = "rotation")
-        val rotationPhase by if (isPlaying) {
-            infiniteTransition.animateFloat(
-                initialValue = 0f,
-                targetValue = (2f * Math.PI).toFloat(),
-                animationSpec = infiniteRepeatable(
-                    animation = tween(durationMillis = 16000, easing = LinearEasing),
-                    repeatMode = RepeatMode.Restart
-                ),
-                label = "rotationPhase"
-            )
-        } else {
-            remember { mutableStateOf(0f) }
-        }
-
-        if (morphProgress <= 0.001f) {
-            // Not morphing — so don't pay for a morphing shape. MorphingArtworkShape rebuilds a
-            // 72-segment path every time its outline is invalidated, and with useMorphing
-            // defaulting to true that ran for every row of every list, playing or not. It was
-            // the dominant cost while scrolling.
-            fallbackShape ?: RoundedCornerShape(if (size > 100.dp) 36.dp else 18.dp)
-        } else {
-            remember(morphProgress, rotationPhase) {
-                MorphingArtworkShape(morphProgress, rotationPhase)
-            }
-        }
     } else {
-        fallbackShape ?: RoundedCornerShape(if (size > 100.dp) 36.dp else 18.dp)
+        null
     }
+    val clock = rememberLoopClock(running = useMorphing && isPlaying)
+    LaunchedEffect(isPlaying) { if (!isPlaying) clock.longValue = 0L }
 
     AsyncImage(
         model = artworkUrlForSize(artworkUrl, size),
         contentDescription = null,
         modifier = Modifier
             .size(size)
-            .clip(clipShape)
+            .graphicsLayer {
+                val progress = morphProgress?.value ?: 0f
+                // Not morphing — so don't pay for a morphing shape. MorphingArtworkShape builds a
+                // 72-segment path each time, and with useMorphing defaulting to true that ran for
+                // every row of every list, playing or not.
+                shape = if (progress <= 0.001f) {
+                    stillShape
+                } else {
+                    val phase = if (isPlaying) (clock.longValue % 16_000L) / 16_000f * (2f * Math.PI.toFloat()) else 0f
+                    MorphingArtworkShape(progress, phase)
+                }
+                clip = true
+            }
             .background(MaterialTheme.colorScheme.surfaceVariant),
         contentScale = ContentScale.Crop
     )
@@ -7555,7 +7791,8 @@ private fun PlayerBar(
     artist: String,
     artworkUrl: String?,
     isPlaying: Boolean,
-    progress: Float,
+    // Read by the indicator as it draws: the bar isn't composed again as the track plays.
+    progress: () -> Float,
     onTogglePlay: () -> Unit,
     onOpen: () -> Unit
 ) {
@@ -7599,7 +7836,7 @@ private fun PlayerBar(
                 )
                 // Waves while playing, lies flat while paused.
                 LinearWavyProgressIndicator(
-                    progress = { progress.coerceIn(0f, 1f) },
+                    progress = { progress().coerceIn(0f, 1f) },
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(top = 4.dp),
@@ -8402,7 +8639,7 @@ private fun PlaylistCard(playlist: Playlist, onClick: () -> Unit, onDelete: () -
 private fun PlaylistDetailScreen(
     playlist: Playlist,
     currentTrackId: Long?,
-    downloadProgress: Map<Long, Float> = emptyMap(),
+    downloadProgress: DownloadProgressOf = NoDownloadProgress,
     isPlaying: Boolean = false,
     onBack: () -> Unit,
     onPlayTrack: (FavoriteTrack) -> Unit,
@@ -8500,7 +8737,7 @@ private fun PlaylistDetailScreen(
                         DownloadedTrackCard(
                             track = track,
                             isSelected = track.id == currentTrackId,
-                            progress = downloadProgress[track.id],
+                            progress = { downloadProgress[track.id] },
                             isPlaying = isPlaying,
                             onClick = { onPlayTrack(track) },
                             onDeleteDownload = { onRemoveTrack(track) },
@@ -8640,7 +8877,7 @@ private fun YandexPlaylistDetailScreen(
     playlist: SoundCloudPlaylist,
     isLoading: Boolean,
     currentTrackId: Long?,
-    downloadProgress: Map<Long, Float> = emptyMap(),
+    downloadProgress: DownloadProgressOf = NoDownloadProgress,
     isPlaying: Boolean = false,
     favorites: List<FavoriteTrack>,
     onBack: () -> Unit,
@@ -8745,7 +8982,7 @@ private fun YandexPlaylistDetailScreen(
                             isFavorite = favorite != null,
                             isSelected = track.id == currentTrackId,
                             downloadState = favorite?.downloadState,
-                            progress = downloadProgress[track.id],
+                            progress = { downloadProgress[track.id] },
                             isPlaying = isPlaying,
                             onClick = { onPlayTrack(track) },
                             onFavoriteClick = { onFavoriteClick(track) },
@@ -8779,7 +9016,7 @@ private fun ArtistDetailScreen(
     isLoading: Boolean,
     error: String?,
     currentTrackId: Long?,
-    downloadProgress: Map<Long, Float> = emptyMap(),
+    downloadProgress: DownloadProgressOf = NoDownloadProgress,
     isPlaying: Boolean = false,
     favorites: List<FavoriteTrack>,
     onBack: () -> Unit,
@@ -8876,7 +9113,7 @@ private fun ArtistDetailScreen(
                                 isFavorite = favorite != null,
                                 isSelected = track.id == currentTrackId,
                                 downloadState = favorite?.downloadState,
-                                progress = downloadProgress[track.id],
+                                progress = { downloadProgress[track.id] },
                                 isPlaying = isPlaying,
                                 onClick = { onPlayTrack(track) },
                                 onFavoriteClick = { onFavoriteClick(track) },
@@ -8953,7 +9190,7 @@ private fun SetDetailContent(
     favorites: List<FavoriteTrack>,
     currentTrackId: Long?,
     isPlaying: Boolean,
-    downloadProgress: Map<Long, Float>,
+    downloadProgress: DownloadProgressOf,
     onBack: () -> Unit,
     onPlayTrack: (SoundCloudTrack) -> Unit,
     onFavoriteClick: (SoundCloudTrack) -> Unit,
@@ -9071,7 +9308,7 @@ private fun SetDetailContent(
                             isFavorite = favorite != null,
                             isSelected = track.id == currentTrackId,
                             downloadState = favorite?.downloadState,
-                            progress = downloadProgress[track.id],
+                            progress = { downloadProgress[track.id] },
                             isPlaying = isPlaying,
                             onClick = { onPlayTrack(track) },
                             onFavoriteClick = { onFavoriteClick(track) },
@@ -9122,7 +9359,8 @@ fun TrackActionsDialog(
     onShare: () -> Unit,
     onRedownload: () -> Unit = {},
     // Only for tracks with a radio to start — YouTube Music's.
-    onRadio: (() -> Unit)? = null
+    onRadio: (() -> Unit)? = null,
+    radioDescription: String = "Трек и то, что YouTube Music поставит за ним"
 ) {
     // A real M3 modal bottom sheet rather than a Dialog imitating one: this brings the
     // spec scrim, drag handle, swipe-to-dismiss, predictive back and inset handling.
@@ -9235,7 +9473,7 @@ fun TrackActionsDialog(
                                 if (onRadio != null) {
                                     ListItem(
                                         headlineContent = { Text("Радио по треку") },
-                                        supportingContent = { Text("Трек и то, что YouTube Music поставит за ним") },
+                                        supportingContent = { Text(radioDescription) },
                                         leadingContent = {
                                             SheetActionIcon(
                                                 icon = Icons.Default.Radio,

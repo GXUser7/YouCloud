@@ -49,7 +49,10 @@ import androidx.compose.material3.carousel.HorizontalMultiBrowseCarousel
 import androidx.compose.material3.carousel.rememberCarouselState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.ReadOnlyComposable
+import androidx.compose.runtime.Stable
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -116,6 +119,65 @@ internal fun AppLinearProgress(
         )
     }
 }
+
+/**
+ * [AppLinearProgress] with the fraction read as the bar is drawn: a download moving on redraws
+ * the bar alone, rather than composing again every screen and row it passes through.
+ */
+@Composable
+internal fun AppLinearProgress(
+    progress: () -> Float?,
+    modifier: Modifier = Modifier,
+    color: Color = MaterialTheme.colorScheme.primary,
+    trackColor: Color = color.copy(alpha = 0.24f)
+) {
+    val known by remember(progress) { derivedStateOf { progress() != null } }
+    if (!known) {
+        LinearWavyProgressIndicator(modifier = modifier, color = color, trackColor = trackColor)
+    } else {
+        LinearWavyProgressIndicator(
+            progress = { (progress() ?: 0f).coerceIn(0f, 1f) },
+            modifier = modifier,
+            color = color,
+            trackColor = trackColor
+        )
+    }
+}
+
+/** [AppCircularProgress] with the fraction read as it is drawn; see the linear one. */
+@Composable
+internal fun AppCircularProgress(
+    progress: () -> Float?,
+    modifier: Modifier = Modifier,
+    color: Color = MaterialTheme.colorScheme.primary
+) {
+    val known by remember(progress) { derivedStateOf { progress() != null } }
+    if (!known) {
+        LoadingIndicator(modifier = modifier, color = color)
+    } else {
+        CircularWavyProgressIndicator(
+            progress = { (progress() ?: 0f).coerceIn(0f, 1f) },
+            modifier = modifier,
+            color = color,
+            trackColor = color.copy(alpha = 0.24f)
+        )
+    }
+}
+
+/**
+ * How far each track's download has got, looked up where it is shown. Handed down instead of the
+ * map itself, which changes many times a second while anything downloads: read at the top, it
+ * composed the whole app again each time.
+ */
+@Stable
+internal fun interface DownloadProgressOf {
+    operator fun get(trackId: Long): Float?
+}
+
+internal val NoDownloadProgress = DownloadProgressOf { null }
+
+/** A row's download progress when there is none. */
+internal val NoProgress: () -> Float? = { null }
 
 /** Wavy circular progress for a known fraction; the loading indicator when it isn't known. */
 @Composable

@@ -22,6 +22,10 @@ class OfflineMusicStore private constructor(context: Context) {
     private val hlsCacheDirectory = File(downloadDirectory, "hls_cache").apply { mkdirs() }
     private val cache = SimpleCache(hlsCacheDirectory, NoOpCacheEvictor(), databaseProvider)
 
+    // One client for every download: a client of its own per file brought its own connection pool
+    // and threads each time, kept alive for minutes after — a hundred of them for a playlist.
+    private val http by lazy { OkHttpClient() }
+
     val cacheDataSourceFactory: CacheDataSource.Factory = CacheDataSource.Factory()
         .setCache(cache)
         .setUpstreamDataSourceFactory(DefaultDataSource.Factory(context))
@@ -66,7 +70,7 @@ class OfflineMusicStore private constructor(context: Context) {
         val finalFile = File(downloadDirectory, "track_${trackId}.$extension")
         if (chunked) return downloadInChunks(url, tempFile, finalFile, userAgent, onProgress)
         return try {
-            val client = OkHttpClient()
+            val client = http
             val request = okhttp3.Request.Builder().url(url).build()
             client.newCall(request).execute().use { response ->
                 if (!response.isSuccessful) return null
@@ -119,7 +123,7 @@ class OfflineMusicStore private constructor(context: Context) {
         userAgent: String?,
         onProgress: (Float) -> Unit
     ): String? = try {
-        val client = OkHttpClient()
+        val client = http
         var position = 0L
         var total = -1L
         tempFile.outputStream().use { output ->
@@ -174,7 +178,7 @@ class OfflineMusicStore private constructor(context: Context) {
         val target = artworkFile(trackId)
         if (target.exists() && target.length() > 0L) return target.absolutePath
         return try {
-            val client = OkHttpClient()
+            val client = http
             val request = okhttp3.Request.Builder().url(url).build()
             val bytes = client.newCall(request).execute().use { response ->
                 if (!response.isSuccessful) return null

@@ -1,5 +1,6 @@
 package com.example.myapplication.data
 
+import retrofit2.http.Body
 import retrofit2.http.GET
 import retrofit2.http.Headers
 import retrofit2.http.POST
@@ -111,6 +112,26 @@ interface YandexMusicService {
     suspend fun getAlbumWithTracks(
         @Path("albumId") albumId: Long
     ): YandexAlbumDetailResponse
+
+    /** A new radio session (Rotor) from [YandexRotorSessionRequest.seeds], with its first batch. */
+    @POST("rotor/session/new")
+    suspend fun rotorSessionNew(
+        @Body request: YandexRotorSessionRequest
+    ): YandexRotorSessionResponse
+
+    /** The radio's next batch; the queue is what it has already given, so nothing repeats. */
+    @POST("rotor/session/{sessionId}/tracks")
+    suspend fun rotorSessionTracks(
+        @Path("sessionId") sessionId: String,
+        @Body request: YandexRotorQueueRequest
+    ): YandexRotorSessionResponse
+
+    /** What was done with the radio's tracks: started, finished, skipped. */
+    @POST("rotor/session/{sessionId}/feedback")
+    suspend fun rotorSessionFeedback(
+        @Path("sessionId") sessionId: String,
+        @Body feedback: YandexRotorFeedback
+    ): com.google.gson.JsonObject
 }
 
 object YandexMusicApi {
