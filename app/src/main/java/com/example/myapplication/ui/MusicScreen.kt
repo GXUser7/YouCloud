@@ -75,6 +75,7 @@ import androidx.compose.foundation.layout.statusBars
 import androidx.compose.material.icons.automirrored.filled.TrendingUp
 import androidx.compose.material.icons.filled.Lyrics
 import androidx.compose.runtime.snapshotFlow
+import androidx.compose.animation.EnterTransition
 import com.example.myapplication.data.LyricLine
 import com.example.myapplication.data.YtAuth
 import com.example.myapplication.data.YtShelf
@@ -371,6 +372,8 @@ fun MusicScreen(viewModel: MusicViewModel) {
     val needsRelogin by viewModel.needsRelogin.collectAsState()
     val homeSelectedTab by viewModel.homeSelectedTab.collectAsState()
     var showTrackActionsDialog by remember { mutableStateOf(false) }
+    // The full player pulled off its place: see TrackDetailScreen's onPulledChange.
+    var playerPulled by remember { mutableStateOf(false) }
     val showDebugPercentage by viewModel.showDebugPercentage.collectAsState()
     val downloadedPercentages by viewModel.downloadedPercentages.collectAsState()
     val isAllArtistTracksLoaded by viewModel.isAllArtistTracksLoaded.collectAsState()
@@ -1000,9 +1003,12 @@ fun MusicScreen(viewModel: MusicViewModel) {
                 animationSpec = spring(dampingRatio = Spring.DampingRatioLowBouncy, stiffness = Spring.StiffnessMediumLow),
                 label = "miniPlayerLift"
             )
+            // Under a player being pulled down it is there already, in its place and without
+            // coming in: the player folds away onto it, rather than it rising after the player
+            // has gone.
             AnimatedVisibility(
-                visible = currentTrackTitle != null && selectedTrack == null,
-                enter = slideInVertically(initialOffsetY = { it }) + fadeIn(),
+                visible = currentTrackTitle != null && (selectedTrack == null || playerPulled),
+                enter = if (selectedTrack != null) EnterTransition.None else slideInVertically(initialOffsetY = { it }) + fadeIn(),
                 exit = slideOutVertically(targetOffsetY = { it }) + fadeOut(),
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
@@ -1123,7 +1129,8 @@ fun MusicScreen(viewModel: MusicViewModel) {
                                 username = artist.username,
                                 trackUrn = track.urn
                             )
-                        }
+                        },
+                        onPulledChange = { playerPulled = it }
                     )
                     }
                 }
@@ -5704,7 +5711,10 @@ private fun TrackDetailScreen(
     onShuffle: () -> Unit,
     onDeleteDownload: (FavoriteTrack) -> Unit,
     onLongPressCover: () -> Unit,
-    onArtistClick: (SoundCloudUser) -> Unit
+    onArtistClick: (SoundCloudUser) -> Unit,
+    // Whether the player has been pulled off its place: the screen keeps the mini player ready
+    // under it meanwhile, so a pull that folds the player away ends on it.
+    onPulledChange: (Boolean) -> Unit = {}
 ) {
     val context = LocalContext.current
     val vibrator = remember {
@@ -5728,7 +5738,8 @@ private fun TrackDetailScreen(
     val dragQueue: (Float) -> Float = { dy ->
         val before = queueHidden.value
         val after = (before + dy / queueHeightPx).coerceIn(0f, 1f)
-        queueScope.launch { queueHidden.snapTo(after) }
+        // Undispatched: moved in this very frame, not the next, or it trails the finger.
+        queueScope.launch(start = kotlinx.coroutines.CoroutineStart.UNDISPATCHED) { queueHidden.snapTo(after) }
         (after - before) * queueHeightPx
     }
     // Where the sheet was when the finger took it: a fifth of the way from there is enough.
@@ -5754,11 +5765,18 @@ private fun TrackDetailScreen(
     var playerHeightPx by remember { mutableFloatStateOf(1f) }
     val currentOnBack by rememberUpdatedState(onBack)
     val collapseProgress: () -> Float = { (collapse.value / playerHeightPx).coerceIn(0f, 1f) }
+    val currentOnPulledChange by rememberUpdatedState(onPulledChange)
+    LaunchedEffect(collapse) {
+        snapshotFlow { collapse.value > 0f }.collect { currentOnPulledChange(it) }
+    }
+    DisposableEffect(Unit) { onDispose { currentOnPulledChange(false) } }
     val releaseCollapse: (Float) -> Unit = { velocity ->
         val away = if (kotlin.math.abs(velocity) > flingPx) velocity > 0f else collapseProgress() > CollapseMeantFraction
         queueScope.launch {
             if (away) {
-                collapse.animateTo(playerHeightPx, tween(200, easing = FastOutLinearInEasing), initialVelocity = velocity)
+                // On at the finger's own speed: a fixed curve that set off slowly made a flick
+                // stall the moment it was let go, and then the player dropped away.
+                collapse.animateTo(playerHeightPx, CollapseSpring, initialVelocity = velocity)
                 currentOnBack()
             } else {
                 collapse.animateTo(0f, QueueSpring, initialVelocity = velocity)
@@ -5872,8 +5890,8 @@ private fun TrackDetailScreen(
                             collapse.value > 0f -> PlayerPull.Player
                             else -> PlayerPull.Undecided
                         }
-                        queueScope.launch { queueHidden.stop() }
-                        queueScope.launch { collapse.stop() }
+                        queueScope.launch(start = kotlinx.coroutines.CoroutineStart.UNDISPATCHED) { queueHidden.stop() }
+                        queueScope.launch(start = kotlinx.coroutines.CoroutineStart.UNDISPATCHED) { collapse.stop() }
                     },
                     onVerticalDrag = { change, dy ->
                         velocity.addPosition(change.uptimeMillis, change.position)
@@ -5883,7 +5901,7 @@ private fun TrackDetailScreen(
                         change.consume()
                         when (pulling) {
                             PlayerPull.Queue -> dragQueue(dy)
-                            PlayerPull.Player -> queueScope.launch {
+                            PlayerPull.Player -> queueScope.launch(start = kotlinx.coroutines.CoroutineStart.UNDISPATCHED) {
                                 collapse.snapTo((collapse.value + dy).coerceAtLeast(0f))
                             }
                             PlayerPull.Undecided -> Unit
@@ -5906,6 +5924,12 @@ private fun TrackDetailScreen(
                     }
                 )
             }
+            // The screen it was opened from, dimmed under the player as it starts coming down and
+            // clearing as it goes: a card lifted off the screen, not a hole cut in it.
+            .drawBehind {
+                val pulled = collapseProgress()
+                if (pulled > 0f) drawRect(Color.Black.copy(alpha = PulledScrim * (1f - pulled)))
+            }
     ) {
     Box(
         modifier = Modifier
@@ -5913,6 +5937,7 @@ private fun TrackDetailScreen(
             .graphicsLayer {
                 val pulled = collapseProgress()
                 translationY = collapse.value
+                // Narrowing to about the mini player's width by the bottom.
                 val scale = 1f - 0.08f * pulled
                 scaleX = scale
                 scaleY = scale
@@ -5922,6 +5947,8 @@ private fun TrackDetailScreen(
                     shape = RoundedCornerShape(PulledCorner * (pulled / 0.15f).coerceAtMost(1f))
                     clip = true
                 }
+                // The last of the way down it fades into the mini player waiting under it.
+                alpha = 1f - ((pulled - CollapseFadeFrom) / (1f - CollapseFadeFrom)).coerceIn(0f, 1f)
             }
             // Drawn over the app's own screens, so the player owns its whole backdrop.
             .background(MaterialTheme.colorScheme.background)
@@ -6239,6 +6266,12 @@ private enum class PlayerPull { Undecided, Queue, Player }
 // Pulled down this far (of its height), or flung, the player folds away; its corners round to this.
 private const val CollapseMeantFraction = 0.22f
 private val PulledCorner = 36.dp
+// Folding away: no bounce, quick, and it takes up the fling's speed.
+private val CollapseSpring = spring<Float>(dampingRatio = 1f, stiffness = 900f, visibilityThreshold = 1f)
+// How dark the screen behind is as the player starts coming down.
+private const val PulledScrim = 0.45f
+// From this far down the player fades into the mini player.
+private const val CollapseFadeFrom = 0.7f
 
 /**
  * Cover on top, panel at the bottom. The panel is measured first and keeps its natural height;
