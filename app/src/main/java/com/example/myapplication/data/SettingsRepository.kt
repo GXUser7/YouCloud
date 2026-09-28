@@ -5,6 +5,12 @@ import android.media.audiofx.Equalizer
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 
+/**
+ * How the player's glow is made: the picture's light spread out around it, as the Ambilight
+ * extension spreads it, in one pass; or steps of larger, softer copies of the picture, each drawn.
+ */
+enum class GlowStyle { Ambilight, Copies }
+
 class SettingsRepository(
     context: Context,
     val defaultClientId: String,
@@ -164,13 +170,30 @@ class SettingsRepository(
         preferences.edit().putBoolean(KEY_VIDEO_YANDEX, enabled).apply()
     }
 
-    // The glow of blurred copies around a video in the cover's place and behind the panel.
+    // The glow around a video or the cover in the player, filling its background behind the panel.
     val videoGlow = MutableStateFlow(preferences.getBoolean(KEY_VIDEO_GLOW, true))
 
     fun setVideoGlow(enabled: Boolean) {
         videoGlow.value = enabled
         preferences.edit().putBoolean(KEY_VIDEO_GLOW, enabled).apply()
     }
+
+    // How that glow is made, for a video and for the cover each.
+    val videoGlowStyle = MutableStateFlow(glowStyle(KEY_VIDEO_GLOW_STYLE))
+    val coverGlowStyle = MutableStateFlow(glowStyle(KEY_COVER_GLOW_STYLE))
+
+    fun setVideoGlowStyle(style: GlowStyle) {
+        videoGlowStyle.value = style
+        preferences.edit().putString(KEY_VIDEO_GLOW_STYLE, style.name).apply()
+    }
+
+    fun setCoverGlowStyle(style: GlowStyle) {
+        coverGlowStyle.value = style
+        preferences.edit().putString(KEY_COVER_GLOW_STYLE, style.name).apply()
+    }
+
+    private fun glowStyle(key: String): GlowStyle =
+        GlowStyle.entries.firstOrNull { it.name == preferences.getString(key, null) } ?: GlowStyle.Ambilight
 
     // Downloaded tracks' videos kept on the phone, to play offline.
     val videoDownload = MutableStateFlow(preferences.getBoolean(KEY_VIDEO_DOWNLOAD, true))
@@ -345,6 +368,8 @@ class SettingsRepository(
         const val KEY_VIDEO_YOUTUBE = "video_youtube"
         const val KEY_VIDEO_YANDEX = "video_yandex"
         const val KEY_VIDEO_GLOW = "video_glow"
+        const val KEY_VIDEO_GLOW_STYLE = "video_glow_style"
+        const val KEY_COVER_GLOW_STYLE = "cover_glow_style"
         const val KEY_VIDEO_DOWNLOAD = "video_download"
         const val KEY_PLAYER_COVER_COLORS = "player_cover_colors"
         const val KEY_UPDATE_AUTO_CHECK = "update_auto_check"
