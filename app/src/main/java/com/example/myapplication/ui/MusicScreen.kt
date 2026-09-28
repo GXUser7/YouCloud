@@ -4368,6 +4368,9 @@ private fun DownloadsScreen(
     val isActive = currentTrackId != null && tracks.any { it.id == currentTrackId }
     val listState = rememberLazyListState()
     val collapsed = rememberCollapsed(listState, MixCoverHeight - 140.dp)
+    // The track whose bin was tapped, until the deletion is confirmed or called off: one stray
+    // tap on a row's bin used to throw a download away.
+    var pendingDelete by remember { mutableStateOf<FavoriteTrack?>(null) }
 
     // A folder, opened as a mix is: its cover across the top, the big play button, the tracks.
     Box(
@@ -4443,7 +4446,7 @@ private fun DownloadsScreen(
                             progress = { downloadProgress[track.id] },
                             isPlaying = isPlaying,
                             onClick = { onPlayTrack(track) },
-                            onDeleteDownload = { onDeleteDownload(track) },
+                            onDeleteDownload = { pendingDelete = track },
                             showDebugPercentage = showDebugPercentage,
                             debugPercentage = downloadedPercentages[track.id],
                             flat = true
@@ -4454,6 +4457,31 @@ private fun DownloadsScreen(
         }
 
         CollapsingTopBar(title = "Скачанное", collapsed = collapsed, onBack = onBack)
+    }
+
+    pendingDelete?.let { track ->
+        AlertDialog(
+            onDismissRequest = { pendingDelete = null },
+            title = { Text("Удалить с устройства?") },
+            text = {
+                Text("«${track.title}» — ${track.displayArtist}. Скачанный файл удалится с телефона, в любимых трек останется.")
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        pendingDelete = null
+                        onDeleteDownload(track)
+                    }
+                ) {
+                    Text("Удалить")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingDelete = null }) {
+                    Text("Отмена")
+                }
+            }
+        )
     }
 }
 
