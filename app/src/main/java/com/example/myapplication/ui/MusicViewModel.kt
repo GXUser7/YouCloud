@@ -2550,7 +2550,9 @@ class MusicViewModel(
             val pending = favoritesRepository.downloadedWithoutArtwork()
             if (pending.isEmpty()) return@launch
             for (fav in pending) {
-                val source = ArtworkUrls.highRes(fav.artworkUrl) ?: continue
+                // Only a cover on the web can be fetched: a track imported from the phone has its
+                // own file for one, and asking for that path failed on every start.
+                val source = ArtworkUrls.highRes(fav.artworkUrl)?.takeIf { it.startsWith("http") } ?: continue
                 val path = withContext(Dispatchers.IO) {
                     offlineMusicStore.downloadArtwork(source, fav.id)
                 }
