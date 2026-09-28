@@ -286,6 +286,7 @@ import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
 import androidx.compose.ui.input.nestedscroll.NestedScrollSource
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.layout.Layout
+import androidx.compose.ui.layout.layout
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.verticalScroll
@@ -324,7 +325,9 @@ fun MusicScreen(viewModel: MusicViewModel) {
     val isLoggedOut by viewModel.isLoggedOut.collectAsState(initial = false)
     val tracks by viewModel.tracks.collectAsState()
     val searchQuery by viewModel.searchQuery.collectAsState()
-    val downloadProgress by viewModel.downloadProgress.collectAsState()
+    // Looked up by the progress bars themselves as they draw: see [DownloadProgressOf].
+    val downloadProgressMap = viewModel.downloadProgress.collectAsState()
+    val downloadProgress = remember { DownloadProgressOf { downloadProgressMap.value[it] } }
     val isLoading by viewModel.isLoading.collectAsState()
     val errorMessage by viewModel.errorMessage.collectAsState()
     val isPlaying by viewModel.isPlaying.collectAsState()
@@ -355,7 +358,9 @@ fun MusicScreen(viewModel: MusicViewModel) {
     val selectedMix by viewModel.selectedMix.collectAsState()
     val playingMixId by viewModel.playingMixId.collectAsState()
     val mixTracks by viewModel.mixTracks.collectAsState()
-    val playbackPositionMs by viewModel.playbackPositionMs.collectAsState()
+    // Held, not read: it changes twice a second while a track plays, and read here it rebuilt this
+    // whole screen each time. Only the seek bar, the lyrics and the mini player's progress read it.
+    val playbackPosition = viewModel.playbackPositionMs.collectAsState()
     val playbackDurationMs by viewModel.playbackDurationMs.collectAsState()
     val screen by viewModel.screen.collectAsState()
     val activeQueue by viewModel.activeQueue.collectAsState()
@@ -435,9 +440,10 @@ fun MusicScreen(viewModel: MusicViewModel) {
     val backdropFrost = rememberFrostSource(soft = true)
     val screensFrost = rememberFrostSource()
     Box(modifier = Modifier.fillMaxSize()) {
-        // The full player is opaque; nothing behind it needs a frame, or the accelerometer.
+        // The full player is opaque, and so is the sign-in screen; nothing behind them needs a
+        // frame, or the accelerometer.
         Box(modifier = Modifier.fillMaxSize().frostSource(backdropFrost)) {
-            ExpressiveBackground(motionEnabled = backgroundMotion, animated = selectedTrack == null)
+            ExpressiveBackground(motionEnabled = backgroundMotion, animated = selectedTrack == null && !isLoggedOut)
         }
 
         yandexLoginUrl?.let { url ->
@@ -1019,11 +1025,13 @@ fun MusicScreen(viewModel: MusicViewModel) {
                     artist = currentPlayingTrack?.user?.username.orEmpty(),
                     artworkUrl = currentPlayingTrack?.artworkUrl,
                     isPlaying = isPlaying,
-                    progress = if (playbackDurationMs > 0L) {
-                        playbackPositionMs.coerceIn(0L, playbackDurationMs).toFloat() /
-                            playbackDurationMs.toFloat()
-                    } else {
-                        0f
+                    progress = {
+                        if (playbackDurationMs > 0L) {
+                            playbackPosition.value.coerceIn(0L, playbackDurationMs).toFloat() /
+                                playbackDurationMs.toFloat()
+                        } else {
+                            0f
+                        }
                     },
                     onTogglePlay = {
                         haptic.performHapticFeedback(HapticFeedbackType.LongPress)
@@ -1060,7 +1068,7 @@ fun MusicScreen(viewModel: MusicViewModel) {
                         isLoading = isLoading,
                         repeatMode = repeatMode,
                         shuffleEnabled = shuffleEnabled,
-                        positionMs = playbackPositionMs,
+                        positionMs = { playbackPosition.value },
                         durationMs = max(playbackDurationMs, track.duration),
                         lyrics = lyrics?.takeIf { it.trackId == track.id }?.lines,
                         video = trackVideo?.takeIf { it.trackId == track.id },
@@ -2006,7 +2014,7 @@ private fun PagedTrackList(
     favorites: List<FavoriteTrack>,
     currentTrackId: Long?,
     isPlaying: Boolean,
-    downloadProgress: Map<Long, Float>,
+    downloadProgress: DownloadProgressOf,
     onPlayTrack: (SoundCloudTrack) -> Unit,
     onFavoriteClick: (SoundCloudTrack) -> Unit,
     perPage: Int = 4,
@@ -2043,7 +2051,7 @@ private fun PagedTrackList(
                         isFavorite = favorite != null,
                         isSelected = track.id == currentTrackId,
                         downloadState = favorite?.downloadState,
-                        progress = downloadProgress[track.id],
+                        progress = { downloadProgress[track.id] },
                         isPlaying = isPlaying,
                         onClick = { onPlayTrack(track) },
                         onFavoriteClick = { onFavoriteClick(track) },
@@ -2595,7 +2603,7 @@ private fun NowPlayingBadge(
                     Box(
                         modifier = Modifier
                             .width(3.dp)
-                            .height(16.dp * height.value)
+                            .animatedHeight(16.dp) { height.value }
                             .clip(CircleShape)
                             .background(barColor)
                     )
@@ -3750,7 +3758,7 @@ private fun SearchScreen(
     tracks: List<SoundCloudTrack>,
     favorites: List<FavoriteTrack>,
     currentTrackId: Long?,
-    downloadProgress: Map<Long, Float> = emptyMap(),
+    downloadProgress: DownloadProgressOf = NoDownloadProgress,
     isPlaying: Boolean = false,
     isLoading: Boolean,
     errorMessage: String?,
@@ -3984,7 +3992,7 @@ private fun SearchResultsList(
     listState: androidx.compose.foundation.lazy.LazyListState,
     favoritesMap: Map<Long, FavoriteTrack>,
     currentTrackId: Long?,
-    downloadProgress: Map<Long, Float>,
+    downloadProgress: DownloadProgressOf,
     isPlaying: Boolean,
     hasMore: Boolean,
     isLoadingMore: Boolean,
@@ -4121,7 +4129,7 @@ private fun SearchResultsList(
                     isFavorite = favorite != null,
                     isSelected = track.id == currentTrackId,
                     downloadState = favorite?.downloadState,
-                    progress = downloadProgress[track.id],
+                    progress = { downloadProgress[track.id] },
                     isPlaying = isPlaying,
                     onClick = { onPlayTrack(track) },
                     onFavoriteClick = { onFavoriteClick(track) },
@@ -4191,7 +4199,12 @@ private fun SearchSourceTabs(
         )
         Row(modifier = Modifier.fillMaxSize()) {
             labels.forEachIndexed { index, label ->
-                val lit = kotlin.math.abs(pager.currentPage + pager.currentPageOffsetFraction - index) < 0.5f
+                // Derived: read straight, the swipe's every frame composed the tabs again.
+                val lit by remember(pager, index) {
+                    androidx.compose.runtime.derivedStateOf {
+                        kotlin.math.abs(pager.currentPage + pager.currentPageOffsetFraction - index) < 0.5f
+                    }
+                }
                 Box(
                     modifier = Modifier
                         .weight(1f)
@@ -4317,7 +4330,7 @@ private fun DownloadsScreen(
     tracks: List<FavoriteTrack>,
     folderArtworkUri: String?,
     currentTrackId: Long?,
-    downloadProgress: Map<Long, Float> = emptyMap(),
+    downloadProgress: DownloadProgressOf = NoDownloadProgress,
     isPlaying: Boolean = false,
     onBack: () -> Unit,
     onChangeArtwork: (String?) -> Unit,
@@ -4427,7 +4440,7 @@ private fun DownloadsScreen(
                         DownloadedTrackCard(
                             track = track,
                             isSelected = track.id == currentTrackId,
-                            progress = downloadProgress[track.id],
+                            progress = { downloadProgress[track.id] },
                             isPlaying = isPlaying,
                             onClick = { onPlayTrack(track) },
                             onDeleteDownload = { onDeleteDownload(track) },
@@ -5292,7 +5305,7 @@ private fun MixDetailScreen(
     tracks: List<SoundCloudTrack>,
     currentTrackId: Long?,
     favorites: List<FavoriteTrack>,
-    downloadProgress: Map<Long, Float> = emptyMap(),
+    downloadProgress: DownloadProgressOf = NoDownloadProgress,
     isPlaying: Boolean = false,
     isActive: Boolean = false,
     onBack: () -> Unit,
@@ -5350,7 +5363,7 @@ private fun MixDetailScreen(
                             isFavorite = favorite != null,
                             isSelected = track.id == currentTrackId,
                             downloadState = favorite?.downloadState,
-                            progress = downloadProgress[track.id],
+                            progress = { downloadProgress[track.id] },
                             isPlaying = isPlaying,
                             onClick = { onPlayTrack(track) },
                             onFavoriteClick = { onFavoriteClick(track) },
@@ -5453,7 +5466,7 @@ private fun EqualizerBars(animate: Boolean, color: Color, modifier: Modifier = M
         verticalAlignment = Alignment.CenterVertically
     ) {
         repeat(4) { index ->
-            val height by transition.animateFloat(
+            val height = transition.animateFloat(
                 initialValue = 0.3f,
                 targetValue = 1f,
                 animationSpec = infiniteRepeatable(
@@ -5465,12 +5478,22 @@ private fun EqualizerBars(animate: Boolean, color: Color, modifier: Modifier = M
             Box(
                 modifier = Modifier
                     .width(3.dp)
-                    .height(18.dp * (if (animate) height else 0.45f))
+                    .animatedHeight(18.dp) { if (animate) height.value else 0.45f }
                     .clip(CircleShape)
                     .background(color)
             )
         }
     }
+}
+
+/**
+ * `height(max * fraction())`, with the fraction read while laying out rather than while composing:
+ * bars that move on every frame are measured again then, not composed again with all around them.
+ */
+private fun Modifier.animatedHeight(max: Dp, fraction: () -> Float): Modifier = layout { measurable, constraints ->
+    val height = (max * fraction()).roundToPx().coerceAtLeast(0).coerceIn(constraints.minHeight, constraints.maxHeight)
+    val placeable = measurable.measure(constraints.copy(minHeight = height, maxHeight = height))
+    layout(placeable.width, placeable.height) { placeable.placeRelative(0, 0) }
 }
 
 private fun SoundCloudTrack.artistLine(): String =
@@ -5488,7 +5511,7 @@ private fun TrackCard(
     isFavorite: Boolean,
     isSelected: Boolean = false,
     downloadState: DownloadState? = null,
-    progress: Float? = null,
+    progress: () -> Float? = NoProgress,
     isPlaying: Boolean = false,
     onClick: () -> Unit,
     onFavoriteClick: () -> Unit,
@@ -5554,7 +5577,7 @@ private fun TrackCard(
 private fun DownloadedTrackCard(
     track: FavoriteTrack,
     isSelected: Boolean = false,
-    progress: Float? = null,
+    progress: () -> Float? = NoProgress,
     isPlaying: Boolean = false,
     onClick: () -> Unit,
     onDeleteDownload: () -> Unit,
@@ -5631,7 +5654,8 @@ private fun TrackDetailScreen(
     isLoading: Boolean,
     repeatMode: Int,
     shuffleEnabled: Boolean,
-    positionMs: Long,
+    // Read where it is shown, not here: see MusicScreen.
+    positionMs: () -> Long,
     durationMs: Long,
     lyrics: List<LyricLine>?,
     video: com.example.myapplication.data.TrackVideo?,
@@ -5715,8 +5739,9 @@ private fun TrackDetailScreen(
     }
     var showLyrics by remember(track.id) { mutableStateOf(false) }
     val lyricsShown = showLyrics && !lyrics.isNullOrEmpty()
+    val atStart by remember(positionMs) { androidx.compose.runtime.derivedStateOf { positionMs() == 0L } }
     val showLoading = (downloadState != DownloadState.DOWNLOADED) &&
-        (isBuffering || isLoading || (positionMs == 0L && !isPlaying))
+        (isBuffering || isLoading || (atStart && !isPlaying))
     // Nothing is blurred under the queue any more: a scrim that follows the sheet dims the player,
     // and a full-screen blur changing on every frame of a drag cost more than it gave.
     val blurRadius = 0.dp
@@ -6491,7 +6516,7 @@ private fun PlayerPanel(
     isPlaying: Boolean,
     repeatMode: Int,
     shuffleEnabled: Boolean,
-    positionMs: Long,
+    positionMs: () -> Long,
     durationMs: Long,
     vibrator: android.os.Vibrator?,
     onTogglePlay: () -> Unit,
@@ -6696,11 +6721,12 @@ private fun PlayerPanel(
 @Composable
 private fun PlayerSeekBar(
     trackId: Long,
-    positionMs: Long,
+    positionMs: () -> Long,
     durationMs: Long,
     vibrator: android.os.Vibrator?,
     onSeek: (Long) -> Unit
 ) {
+    val positionMs = positionMs()
     val onPanel = PanelColors.content
     var sliderProgress by remember { mutableStateOf<Float?>(null) }
     var lastVibratedRatio by remember(trackId) { mutableStateOf(0f) }
@@ -6921,13 +6947,16 @@ private fun QueuePeek(
 @Composable
 private fun LyricsOverlay(
     lines: List<LyricLine>,
-    positionMs: Long,
+    positionMs: () -> Long,
     onSeek: (Long) -> Unit
 ) {
     val haptic = LocalHapticFeedback.current
     val listState = rememberLazyListState()
     // The position arrives twice a second; leading it a little keeps lines from lighting late.
-    val current = remember(lines, positionMs) { lines.indexOfLast { it.timeMs <= positionMs + 300 } }
+    // Derived, so the lyrics are composed again only when the line changes, not on every tick.
+    val current by remember(lines, positionMs) {
+        androidx.compose.runtime.derivedStateOf { lines.indexOfLast { it.timeMs <= positionMs() + 300 } }
+    }
     val isDragged by listState.interactionSource.collectIsDraggedAsState()
     var lastUserScrollAt by remember { mutableStateOf(0L) }
     LaunchedEffect(isDragged) {
@@ -7631,7 +7660,8 @@ private fun PlayerBar(
     artist: String,
     artworkUrl: String?,
     isPlaying: Boolean,
-    progress: Float,
+    // Read by the indicator as it draws: the bar isn't composed again as the track plays.
+    progress: () -> Float,
     onTogglePlay: () -> Unit,
     onOpen: () -> Unit
 ) {
@@ -7675,7 +7705,7 @@ private fun PlayerBar(
                 )
                 // Waves while playing, lies flat while paused.
                 LinearWavyProgressIndicator(
-                    progress = { progress.coerceIn(0f, 1f) },
+                    progress = { progress().coerceIn(0f, 1f) },
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(top = 4.dp),
@@ -8478,7 +8508,7 @@ private fun PlaylistCard(playlist: Playlist, onClick: () -> Unit, onDelete: () -
 private fun PlaylistDetailScreen(
     playlist: Playlist,
     currentTrackId: Long?,
-    downloadProgress: Map<Long, Float> = emptyMap(),
+    downloadProgress: DownloadProgressOf = NoDownloadProgress,
     isPlaying: Boolean = false,
     onBack: () -> Unit,
     onPlayTrack: (FavoriteTrack) -> Unit,
@@ -8576,7 +8606,7 @@ private fun PlaylistDetailScreen(
                         DownloadedTrackCard(
                             track = track,
                             isSelected = track.id == currentTrackId,
-                            progress = downloadProgress[track.id],
+                            progress = { downloadProgress[track.id] },
                             isPlaying = isPlaying,
                             onClick = { onPlayTrack(track) },
                             onDeleteDownload = { onRemoveTrack(track) },
@@ -8716,7 +8746,7 @@ private fun YandexPlaylistDetailScreen(
     playlist: SoundCloudPlaylist,
     isLoading: Boolean,
     currentTrackId: Long?,
-    downloadProgress: Map<Long, Float> = emptyMap(),
+    downloadProgress: DownloadProgressOf = NoDownloadProgress,
     isPlaying: Boolean = false,
     favorites: List<FavoriteTrack>,
     onBack: () -> Unit,
@@ -8821,7 +8851,7 @@ private fun YandexPlaylistDetailScreen(
                             isFavorite = favorite != null,
                             isSelected = track.id == currentTrackId,
                             downloadState = favorite?.downloadState,
-                            progress = downloadProgress[track.id],
+                            progress = { downloadProgress[track.id] },
                             isPlaying = isPlaying,
                             onClick = { onPlayTrack(track) },
                             onFavoriteClick = { onFavoriteClick(track) },
@@ -8855,7 +8885,7 @@ private fun ArtistDetailScreen(
     isLoading: Boolean,
     error: String?,
     currentTrackId: Long?,
-    downloadProgress: Map<Long, Float> = emptyMap(),
+    downloadProgress: DownloadProgressOf = NoDownloadProgress,
     isPlaying: Boolean = false,
     favorites: List<FavoriteTrack>,
     onBack: () -> Unit,
@@ -8952,7 +8982,7 @@ private fun ArtistDetailScreen(
                                 isFavorite = favorite != null,
                                 isSelected = track.id == currentTrackId,
                                 downloadState = favorite?.downloadState,
-                                progress = downloadProgress[track.id],
+                                progress = { downloadProgress[track.id] },
                                 isPlaying = isPlaying,
                                 onClick = { onPlayTrack(track) },
                                 onFavoriteClick = { onFavoriteClick(track) },
@@ -9029,7 +9059,7 @@ private fun SetDetailContent(
     favorites: List<FavoriteTrack>,
     currentTrackId: Long?,
     isPlaying: Boolean,
-    downloadProgress: Map<Long, Float>,
+    downloadProgress: DownloadProgressOf,
     onBack: () -> Unit,
     onPlayTrack: (SoundCloudTrack) -> Unit,
     onFavoriteClick: (SoundCloudTrack) -> Unit,
@@ -9147,7 +9177,7 @@ private fun SetDetailContent(
                             isFavorite = favorite != null,
                             isSelected = track.id == currentTrackId,
                             downloadState = favorite?.downloadState,
-                            progress = downloadProgress[track.id],
+                            progress = { downloadProgress[track.id] },
                             isPlaying = isPlaying,
                             onClick = { onPlayTrack(track) },
                             onFavoriteClick = { onFavoriteClick(track) },

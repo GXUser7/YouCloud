@@ -28,12 +28,7 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.layout
 import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.asComposePath
-import androidx.compose.ui.graphics.drawscope.DrawScope
-import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.graphics.drawscope.clipPath
 import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.luminance
@@ -51,6 +46,7 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import kotlinx.coroutines.isActive
 import kotlin.math.PI
+import kotlin.math.atan2
 import kotlin.math.cos
 import kotlin.math.min
 import kotlin.math.sin
@@ -117,10 +113,23 @@ private class BackdropMotion(count: Int) {
     /** Where the light comes from, as a unit vector; swings with the tilt. */
     var lightX = -0.55f
     var lightY = -0.83f
+    /**
+     * Whether a shape is moving faster than the slow drift — a tilt being followed, a shake
+     * settling. Otherwise the scene only turns and breathes, under a pixel a frame at thirty frames a
+     * second, and blurred: drawing it more often than that is work nobody can see.
+     */
+    var lively = true
+        private set
 
     fun step(dt: Float, shapes: List<BackdropShape>, tilt: TiltSensor, shiftPx: Float) {
         time += dt
-        val (kickX, kickY, kick) = tilt.takeImpulse()
+        var fastest = 0f
+        var fastestWobble = 0f
+        // Shakes since the last frame, consumed by this one.
+        val kickX = tilt.kickX
+        val kickY = tilt.kickY
+        val kick = tilt.kick
+        tilt.clearImpulse()
         shapes.forEachIndexed { i, shape ->
             // Springs toward the parallax position: nearer shapes travel further.
             val targetX = -tilt.tiltX * shape.depth * shiftPx
@@ -139,7 +148,10 @@ private class BackdropMotion(count: Int) {
             wobble[i] += wobbleVelocity[i] * dt
 
             angle[i] = (angle[i] + shape.spin * dt) % 360f
+            fastest = maxOf(fastest, kotlin.math.abs(vx[i]), kotlin.math.abs(vy[i]))
+            fastestWobble = maxOf(fastestWobble, kotlin.math.abs(wobbleVelocity[i]))
         }
+        lively = fastest > LIVELY_SPEED * shiftPx || fastestWobble > LIVELY_WOBBLE
         val lx = -0.55f + tilt.tiltX * 0.9f
         val ly = -0.83f - tilt.tiltY * 0.9f
         val length = sqrt(lx * lx + ly * ly).coerceAtLeast(0.001f)
@@ -158,6 +170,10 @@ private class BackdropMotion(count: Int) {
         const val WOBBLE_DAMPING = 4.5f
         const val WOBBLE_KICK = 260f
         const val MAX_WOBBLE_SPEED = 600f
+        // A quarter of the parallax distance a second, a few degrees a second of wobble: past
+        // these a shape moves far enough between frames for thirty of them to show.
+        const val LIVELY_SPEED = 0.25f
+        const val LIVELY_WOBBLE = 3f
     }
 }
 
@@ -178,9 +194,12 @@ private class TiltSensor : SensorEventListener {
     private var restX = 0f
     private var restY = 0f
     private var primed = false
-    private var kickX = 0f
-    private var kickY = 0f
-    private var kick = 0f
+    var kickX = 0f
+        private set
+    var kickY = 0f
+        private set
+    var kick = 0f
+        private set
 
     override fun onSensorChanged(event: SensorEvent) {
         val x = event.values[0]
@@ -212,11 +231,9 @@ private class TiltSensor : SensorEventListener {
 
     override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) = Unit
 
-    /** Shakes since the last frame, consumed by it. */
-    fun takeImpulse(): Triple<Float, Float, Float> {
-        val result = Triple(kickX, kickY, kick)
+    /** The shakes read by a frame: without a Triple for them on each one. */
+    fun clearImpulse() {
         kickX = 0f; kickY = 0f; kick = 0f
-        return result
     }
 
     fun reset() {
@@ -288,8 +305,10 @@ internal fun ExpressiveBackground(motionEnabled: Boolean, animated: Boolean = tr
                 last = now
                 motion.step(dt, shapes, tilt, shiftPx)
                 // Redrawn sixty times a second at most: the shapes drift slowly, and on a 120 Hz
-                // screen every other frame of them was work nobody could see.
-                if (now - drawn >= BACKDROP_FRAME_NANOS) {
+                // screen every other frame of them was work nobody could see. Only drifting, thirty:
+                // each frame of the backdrop repaints the whole screen over it, glass and all.
+                val interval = if (motion.lively) BACKDROP_FRAME_NANOS else CALM_BACKDROP_FRAME_NANOS
+                if (now - drawn >= interval) {
                     drawn = now
                     frame.longValue = now
                 }
@@ -324,13 +343,75 @@ internal fun ExpressiveBackground(motionEnabled: Boolean, animated: Boolean = tr
     }
 }
 
-private class BackdropPalette(
+private data class BackdropPalette(
     val ground: Color,
     val body: Color,
     val light: Color,
     val dark: Color,
     val darkTheme: Boolean
 )
+
+/**
+ * What a layer paints its shapes with. The gradients are made once per palette, laid along a unit
+ * line or circle, and on each frame the canvas is moved to where they fall on the shape instead:
+ * the shapes are redrawn sixty times a second, and brushes, shaders and strokes made afresh on
+ * every one of those frames kept the garbage collector busy for nothing. What reaches the screen
+ * is the same — the same gradients between the same points, over the same paths.
+ */
+private class BackdropPaints(shapes: List<BackdropShape>, indices: List<Int>, palette: BackdropPalette) {
+    // From (0, 0) to (1, 0): lit face, body, shaded face.
+    val body = arrayOfNulls<android.graphics.Shader>(shapes.size)
+    // Radius 1 around (0, 0): the soft highlight.
+    val highlight = arrayOfNulls<android.graphics.Shader>(shapes.size)
+    // From (0, 0) to (1, 0): the rim of light, gone by the middle.
+    val rim = arrayOfNulls<android.graphics.Shader>(shapes.size)
+
+    // Compose's own defaults for a drawn path: antialiased, bitmap filtering, butt caps, mitre joins.
+    val fill = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG or android.graphics.Paint.FILTER_BITMAP_FLAG).apply {
+        style = android.graphics.Paint.Style.FILL
+    }
+    val stroke = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG or android.graphics.Paint.FILTER_BITMAP_FLAG).apply {
+        style = android.graphics.Paint.Style.STROKE
+        strokeCap = android.graphics.Paint.Cap.BUTT
+        strokeJoin = android.graphics.Paint.Join.MITER
+        strokeMiter = 4f
+    }
+    val shadow = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+        style = android.graphics.Paint.Style.FILL
+        color = Color.Black.copy(alpha = if (palette.darkTheme) 0.38f else 0.12f).toArgb()
+    }
+
+    // Scratch objects, reused on every frame.
+    val work = android.graphics.Path()
+    val local = android.graphics.Path()
+    val matrix = android.graphics.Matrix()
+    val toScreen = android.graphics.Matrix()
+    val toLocal = android.graphics.Matrix()
+
+    init {
+        val clamp = android.graphics.Shader.TileMode.CLAMP
+        val transparent = Color.Transparent.toArgb()
+        for (i in indices) {
+            val depth = shapes[i].depth
+            // Far shapes stay close to the ground, near ones stand out of it.
+            val bodyColor = lerp(palette.ground, palette.body, 0.45f + 0.55f * depth)
+            val lit = lerp(bodyColor, palette.light, if (palette.darkTheme) 0.22f else 0.5f)
+            val shaded = lerp(bodyColor, palette.dark, if (palette.darkTheme) 0.3f else 0.16f)
+            body[i] = android.graphics.LinearGradient(
+                0f, 0f, 1f, 0f,
+                intArrayOf(lit.toArgb(), bodyColor.toArgb(), shaded.toArgb()), null, clamp
+            )
+            highlight[i] = android.graphics.RadialGradient(
+                0f, 0f, 1f,
+                intArrayOf(Color.White.copy(alpha = 0.07f * (0.4f + depth)).toArgb(), transparent), null, clamp
+            )
+            rim[i] = android.graphics.LinearGradient(
+                0f, 0f, 1f, 0f,
+                intArrayOf(lit.copy(alpha = 0.7f).toArgb(), transparent), null, clamp
+            )
+        }
+    }
+}
 
 @Composable
 private fun BackdropLayer(
@@ -342,13 +423,7 @@ private fun BackdropLayer(
     blur: Dp,
     shrink: Int
 ) {
-    val work = remember { android.graphics.Path() }
-    val matrix = remember { android.graphics.Matrix() }
-    val shadowPaint = remember {
-        android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
-            style = android.graphics.Paint.Style.FILL
-        }
-    }
+    val paints = remember(shapes, indices, palette) { BackdropPaints(shapes, indices, palette) }
     // Drawn [shrink] times smaller and stretched back, blurred on the way: soft shapes lose
     // nothing by it, and a full-screen blur on every frame was most of what the backdrop cost.
     Canvas(
@@ -373,57 +448,93 @@ private fun BackdropLayer(
         // Read so that every frame of the simulation redraws, without recomposing anything.
         frame.longValue
         scale(1f / shrink, 1f / shrink, pivot = Offset.Zero) {
-        val full = androidx.compose.ui.geometry.Size(size.width * shrink, size.height * shrink)
-        val unit = min(full.width, full.height)
-        val light = Offset(motion.lightX, motion.lightY)
-        indices.forEach { i ->
-            val shape = shapes[i]
-            val diameter = shape.size * unit
-            val center = Offset(
-                shape.cx * full.width + motion.x[i],
-                shape.cy * full.height + motion.y[i] + sin(motion.time * 0.35f + i * 1.7f) * 6f * density * shape.depth
-            )
-            buildShapePath(shape, motion, i, diameter, center, work, matrix)
-            val path = work.asComposePath()
+            val fullWidth = size.width * shrink
+            val fullHeight = size.height * shrink
+            val unit = min(fullWidth, fullHeight)
+            val lightX = motion.lightX
+            val lightY = motion.lightY
+            drawIntoCanvas { composeCanvas ->
+                val canvas = composeCanvas.nativeCanvas
+                val work = paints.work
+                indices.forEach { i ->
+                    val shape = shapes[i]
+                    val diameter = shape.size * unit
+                    val centerX = shape.cx * fullWidth + motion.x[i]
+                    val centerY = shape.cy * fullHeight + motion.y[i] +
+                        sin(motion.time * 0.35f + i * 1.7f) * 6f * density * shape.depth
+                    buildShapePath(shape, motion, i, diameter, centerX, centerY, work, paints.matrix)
+                    val radius = diameter / 2f
 
-            // Far shapes stay close to the ground, near ones stand out of it.
-            val body = lerp(palette.ground, palette.body, 0.45f + 0.55f * shape.depth)
-            val lit = lerp(body, palette.light, if (palette.darkTheme) 0.22f else 0.5f)
-            val shaded = lerp(body, palette.dark, if (palette.darkTheme) 0.3f else 0.16f)
-            val radius = diameter / 2f
+                    // A shadow thrown away from the light; nearer shapes float higher, so theirs
+                    // falls further. Drawn hard: the layer's blur is what softens it.
+                    val distance = (8f + 20f * shape.depth) * density
+                    canvas.save()
+                    canvas.translate(-lightX * distance, -lightY * distance)
+                    canvas.drawPath(work, paints.shadow)
+                    canvas.restore()
 
-            drawCastShadow(work, light, shape.depth, shadowPaint, palette.darkTheme)
-            drawPath(
-                path,
-                Brush.linearGradient(
-                    colors = listOf(lit, body, shaded),
-                    start = center + light * radius,
-                    end = center - light * radius
-                )
-            )
-            clipPath(path) {
-                drawCircle(
-                    brush = Brush.radialGradient(
-                        colors = listOf(Color.White.copy(alpha = 0.07f * (0.4f + shape.depth)), Color.Transparent),
-                        center = center + light * (radius * 0.45f),
-                        radius = radius * 0.85f
-                    ),
-                    radius = radius * 0.85f,
-                    center = center + light * (radius * 0.45f)
-                )
+                    // Lit face to shaded, across the whole shape from the light's side.
+                    paints.fill.shader = paints.body[i]
+                    drawAlong(
+                        canvas, paints, paints.fill,
+                        fromX = centerX + lightX * radius, fromY = centerY + lightY * radius,
+                        toX = centerX - lightX * radius, toY = centerY - lightY * radius
+                    )
+
+                    // A soft highlight toward the light, inside the shape.
+                    paints.fill.shader = paints.highlight[i]
+                    val glow = radius * 0.85f
+                    canvas.save()
+                    canvas.clipPath(work)
+                    canvas.translate(centerX + lightX * (radius * 0.45f), centerY + lightY * (radius * 0.45f))
+                    canvas.scale(glow, glow)
+                    canvas.drawCircle(0f, 0f, 1f, paints.fill)
+                    canvas.restore()
+
+                    // A rim of light along the lit edge.
+                    paints.stroke.shader = paints.rim[i]
+                    drawAlong(
+                        canvas, paints, paints.stroke,
+                        fromX = centerX + lightX * radius, fromY = centerY + lightY * radius,
+                        toX = centerX, toY = centerY,
+                        strokeWidth = 1.5f * density
+                    )
+                }
             }
-            drawPath(
-                path,
-                Brush.linearGradient(
-                    colors = listOf(lit.copy(alpha = 0.7f), Color.Transparent),
-                    start = center + light * radius,
-                    end = center
-                ),
-                style = Stroke(width = 1.5f * density)
-            )
-        }
         }
     }
+}
+
+/**
+ * Draws [BackdropPaints.work] with [paint], whose shader runs from (0, 0) to (1, 0), laid from
+ * (fromX, fromY) to (toX, toY): the canvas is turned and scaled onto that line, and the path,
+ * moved the opposite way, lands where it was. A stroke is thinned by the scale to keep its width.
+ */
+private fun drawAlong(
+    canvas: android.graphics.Canvas,
+    paints: BackdropPaints,
+    paint: android.graphics.Paint,
+    fromX: Float,
+    fromY: Float,
+    toX: Float,
+    toY: Float,
+    strokeWidth: Float = 0f
+) {
+    val dx = toX - fromX
+    val dy = toY - fromY
+    val length = sqrt(dx * dx + dy * dy)
+    if (length <= 0f) return
+    val toScreen = paints.toScreen
+    toScreen.setScale(length, length)
+    toScreen.postRotate(Math.toDegrees(atan2(dy, dx).toDouble()).toFloat())
+    toScreen.postTranslate(fromX, fromY)
+    if (!toScreen.invert(paints.toLocal)) return
+    paints.work.transform(paints.toLocal, paints.local)
+    if (strokeWidth > 0f) paint.strokeWidth = strokeWidth / length
+    canvas.save()
+    canvas.concat(toScreen)
+    canvas.drawPath(paints.local, paint)
+    canvas.restore()
 }
 
 private fun buildShapePath(
@@ -431,7 +542,8 @@ private fun buildShapePath(
     motion: BackdropMotion,
     index: Int,
     diameter: Float,
-    center: Offset,
+    centerX: Float,
+    centerY: Float,
     work: android.graphics.Path,
     matrix: android.graphics.Matrix
 ) {
@@ -449,30 +561,8 @@ private fun buildShapePath(
     matrix.setTranslate(-0.5f, -0.5f)
     matrix.postScale(diameter, diameter)
     matrix.postRotate(motion.angle[index] + motion.wobble[index])
-    matrix.postTranslate(center.x, center.y)
+    matrix.postTranslate(centerX, centerY)
     work.transform(matrix)
-}
-
-/**
- * A shadow thrown away from the light; nearer shapes float higher, so theirs falls further. Drawn
- * hard: the layer's blur is what softens it.
- */
-private fun DrawScope.drawCastShadow(
-    path: android.graphics.Path,
-    light: Offset,
-    depth: Float,
-    paint: android.graphics.Paint,
-    darkTheme: Boolean
-) {
-    val distance = (8f + 20f * depth) * density
-    paint.color = Color.Black.copy(alpha = if (darkTheme) 0.38f else 0.12f).toArgb()
-    drawIntoCanvas { canvas ->
-        val native = canvas.nativeCanvas
-        native.save()
-        native.translate(-light.x * distance, -light.y * distance)
-        native.drawPath(path, paint)
-        native.restore()
-    }
 }
 
 /** How far the nearest shape slides at full tilt. */
@@ -485,3 +575,5 @@ private val NEAR_BLUR = 3.dp
 private const val FAR_SHRINK = 4
 private const val NEAR_SHRINK = 2
 private const val BACKDROP_FRAME_NANOS = 15_000_000L
+// Thirty a second, with room for a frame arriving a little early.
+private const val CALM_BACKDROP_FRAME_NANOS = 32_000_000L
