@@ -65,6 +65,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import retrofit2.HttpException
 import kotlinx.coroutines.Dispatchers
@@ -212,9 +213,15 @@ class MusicViewModel(
     private val _downloadProgress = MutableStateFlow<Map<Long, Float>>(emptyMap())
     val downloadProgress = _downloadProgress.asStateFlow()
 
+    // Called from the download threads, once for every 8 KB read: each call used to launch a
+    // coroutine and rebuild the screens, hundreds of times a second on a fast connection. Now the
+    // map changes only once a track's progress moves on by a thousandth — under a pixel of any
+    // progress bar — and in place, with no coroutine.
     fun updateDownloadProgress(trackId: Long, progress: Float) {
-        viewModelScope.launch {
-            _downloadProgress.value = _downloadProgress.value + (trackId to progress)
+        _downloadProgress.update { current ->
+            val shown = current[trackId]
+            if (shown != null && (shown * 1000f).toInt() == (progress * 1000f).toInt()) current
+            else current + (trackId to progress)
         }
     }
 
@@ -2933,7 +2940,7 @@ class MusicViewModel(
             playlistsRepository.updateTrackDownload(playlistId, track.id, DownloadState.FAILED)
             return false
         } finally {
-            _downloadProgress.value = _downloadProgress.value - track.id
+            _downloadProgress.update { it - track.id }
         }
     }
 
@@ -3769,7 +3776,7 @@ class MusicViewModel(
             _errorMessage.value = readableMessage(e, isYandex = isYandex)
             return false
         } finally {
-            _downloadProgress.value = _downloadProgress.value - track.id
+            _downloadProgress.update { it - track.id }
         }
     }
 
