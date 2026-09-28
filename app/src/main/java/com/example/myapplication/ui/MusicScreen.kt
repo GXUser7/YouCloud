@@ -5838,7 +5838,9 @@ private fun TrackDetailScreen(
     // and a full-screen blur changing on every frame of a drag cost more than it gave.
     val blurRadius = 0.dp
     // Lyrics take the cover's place: it blurs into a backdrop behind them.
-    val coverBlur by animateDpAsState(
+    // Held, not read: the blurs read them as they draw (see lightBlur), so that while they move
+    // only the blur is drawn again, not the player composed again on every frame.
+    val coverBlur = animateDpAsState(
         targetValue = if (lyricsShown) 28.dp else 0.dp,
         animationSpec = tween(durationMillis = 350),
         label = "lyricsCoverBlur"
@@ -5865,7 +5867,7 @@ private fun TrackDetailScreen(
     val coverVideo = videoState?.takeIf { !it.isPortrait }
     val backdropVideo = coverVideo?.takeIf { videoGlow }
     // Paused, a video blurs, as if it had stopped to wait.
-    val pauseBlur by animateDpAsState(
+    val pauseBlur = animateDpAsState(
         targetValue = if (!isPlaying && videoState?.showing == true) 24.dp else 0.dp,
         animationSpec = tween(durationMillis = 400),
         label = "videoPauseBlur"
@@ -5890,6 +5892,8 @@ private fun TrackDetailScreen(
     // back — not by how far it has been dragged; they return once it has settled.
     val swipeActive = remember { Animatable(0f) }
     val swipeProgress: () -> Float = { swipeActive.value }
+    // Whether the picture is swiped aside at all: only changes at the start and the end of a swipe.
+    val swiping by remember { derivedStateOf { swipeActive.value > 0f } }
 
     // Over a video the buttons at the top turn to frosted glass as well, like the panel.
     val buttonGlass: (@Composable BoxScope.() -> Unit)? = videoState?.takeIf { it.showing }?.let { shown ->
@@ -5909,7 +5913,7 @@ private fun TrackDetailScreen(
         null
     }
     if (landscape && videoState != null && videoState.showing) {
-        FullScreenVideo(state = videoState, blur = pauseBlur, glow = videoGlow)
+        FullScreenVideo(state = videoState, blur = { pauseBlur.value }, glow = videoGlow)
         return
     }
 
@@ -6019,10 +6023,21 @@ private fun TrackDetailScreen(
                 alpha = 1f,
                 modifier = Modifier
                     .fillMaxSize()
-                    .graphicsLayer { alpha = 1f - swipeProgress() }
+                    .graphicsLayer {
+                        // Under a video's glow, which is opaque, it isn't drawn at all: it shows
+                        // only while that glow comes in, or goes out for a swipe. It was painted
+                        // unseen on every frame, and again in all its steps each time the cover
+                        // under the video settled back for a pause.
+                        alpha = if (backdropVideo != null && videoShown >= 1f && swipeProgress() == 0f) {
+                            0f
+                        } else {
+                            1f - swipeProgress()
+                        }
+                    }
                     // Under the lyrics the glow blurs with the cover, or its near steps would
                     // stay sharper than the cover they come from.
-                    .blur(blurRadius + coverBlur)
+                    .lightBlur({ blurRadius + coverBlur.value }),
+                held = { swiping }
             )
         }
         if (backdropVideo != null) {
@@ -6034,7 +6049,8 @@ private fun TrackDetailScreen(
                     .graphicsLayer { alpha = 1f - swipeProgress() }
                     // Paused, or under the lyrics, the glow blurs with the video, or its near steps
                     // would stay sharper than the video they come from.
-                    .blur(blurRadius + pauseBlur + coverBlur)
+                    .lightBlur({ blurRadius + pauseBlur.value + coverBlur.value }),
+                held = { swiping }
             )
         }
         if (immersiveVideo != null) {
@@ -6045,7 +6061,7 @@ private fun TrackDetailScreen(
                         alpha = videoShown
                         swiped(swipe.value, swipeProgress(), rounded = false)
                     }
-                    .blur(coverBlur + blurRadius + pauseBlur)
+                    .lightBlur({ coverBlur.value + blurRadius + pauseBlur.value })
             ) {
                 VideoSurface(state = immersiveVideo, modifier = Modifier.fillMaxSize())
                 // Keeps the status bar and the buttons over the video legible.
@@ -6130,7 +6146,7 @@ private fun TrackDetailScreen(
                                 .graphicsLayer { alpha = if (immersiveVideo != null) 1f - videoShown else 1f }
                                 // Unbounded: cut at the edge of its box, which reaches under the
                                 // panel, the blur left a hard line across the panel's top.
-                                .blur(coverBlur + pauseBlur, androidx.compose.ui.draw.BlurredEdgeTreatment.Unbounded)
+                                .lightBlur({ coverBlur.value + pauseBlur.value }, unbounded = true)
                         ) {
                             PlayerArtwork(
                                 track = track,
@@ -6462,6 +6478,7 @@ private fun PlayerArtwork(
                     bottom = PlayerPanelOverlap + 36.dp,
                     overBackdrop = true,
                     alpha = videoShown,
+                    edgeFade = { 1f - swipeProgress() },
                     modifier = Modifier
                         .fillMaxSize()
                         .graphicsLayer { swiped(swipeOffset(), swipeProgress(), rounded = false) }
@@ -7657,48 +7674,40 @@ private fun TrackArtwork(
     useMorphing: Boolean = true,
     fallbackShape: Shape? = null
 ) {
-    val clipShape = if (useMorphing) {
-        val morphProgress by animateFloatAsState(
+    val stillShape = fallbackShape ?: RoundedCornerShape(if (size > 100.dp) 36.dp else 18.dp)
+    // Read as the cover is drawn, not composed: its morph and its turn moved on every frame of the
+    // screen, 120 a second on some, and each composed the row again. The turn is a loop clock's
+    // (sixty a second at most), from nought whenever playing starts, as it was.
+    val morphProgress = if (useMorphing) {
+        animateFloatAsState(
             targetValue = if (isPlaying) 1f else 0f,
             animationSpec = tween(durationMillis = 600, easing = FastOutSlowInEasing),
             label = "morphProgress"
         )
-        val infiniteTransition = rememberInfiniteTransition(label = "rotation")
-        val rotationPhase by if (isPlaying) {
-            infiniteTransition.animateFloat(
-                initialValue = 0f,
-                targetValue = (2f * Math.PI).toFloat(),
-                animationSpec = infiniteRepeatable(
-                    animation = tween(durationMillis = 16000, easing = LinearEasing),
-                    repeatMode = RepeatMode.Restart
-                ),
-                label = "rotationPhase"
-            )
-        } else {
-            remember { mutableStateOf(0f) }
-        }
-
-        if (morphProgress <= 0.001f) {
-            // Not morphing — so don't pay for a morphing shape. MorphingArtworkShape rebuilds a
-            // 72-segment path every time its outline is invalidated, and with useMorphing
-            // defaulting to true that ran for every row of every list, playing or not. It was
-            // the dominant cost while scrolling.
-            fallbackShape ?: RoundedCornerShape(if (size > 100.dp) 36.dp else 18.dp)
-        } else {
-            remember(morphProgress, rotationPhase) {
-                MorphingArtworkShape(morphProgress, rotationPhase)
-            }
-        }
     } else {
-        fallbackShape ?: RoundedCornerShape(if (size > 100.dp) 36.dp else 18.dp)
+        null
     }
+    val clock = rememberLoopClock(running = useMorphing && isPlaying)
+    LaunchedEffect(isPlaying) { if (!isPlaying) clock.longValue = 0L }
 
     AsyncImage(
         model = artworkUrlForSize(artworkUrl, size),
         contentDescription = null,
         modifier = Modifier
             .size(size)
-            .clip(clipShape)
+            .graphicsLayer {
+                val progress = morphProgress?.value ?: 0f
+                // Not morphing — so don't pay for a morphing shape. MorphingArtworkShape builds a
+                // 72-segment path each time, and with useMorphing defaulting to true that ran for
+                // every row of every list, playing or not.
+                shape = if (progress <= 0.001f) {
+                    stillShape
+                } else {
+                    val phase = if (isPlaying) (clock.longValue % 16_000L) / 16_000f * (2f * Math.PI.toFloat()) else 0f
+                    MorphingArtworkShape(progress, phase)
+                }
+                clip = true
+            }
             .background(MaterialTheme.colorScheme.surfaceVariant),
         contentScale = ContentScale.Crop
     )

@@ -35,7 +35,14 @@ import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.TileMode
 import androidx.compose.ui.graphics.TransformOrigin
+import androidx.compose.ui.graphics.drawscope.ContentDrawScope
 import androidx.compose.ui.graphics.drawscope.DrawScope
+import androidx.compose.ui.graphics.drawscope.clipRect
+import androidx.compose.ui.node.DrawModifierNode
+import androidx.compose.ui.node.ModifierNodeElement
+import androidx.compose.ui.node.invalidateDraw
+import androidx.compose.ui.node.requireGraphicsContext
+import androidx.compose.ui.platform.InspectorInfo
 import androidx.compose.ui.graphics.drawscope.scale
 import androidx.compose.ui.graphics.drawscope.translate
 import androidx.compose.ui.graphics.graphicsLayer
@@ -439,7 +446,10 @@ fun AmbientVideo(
     modifier: Modifier = Modifier,
     // A [VideoBackdrop] lies behind and draws the glow, over the whole screen: here only the
     // video itself.
-    overBackdrop: Boolean = false
+    overBackdrop: Boolean = false,
+    // How much the video's top and bottom dissolve, 1 fully: they fade into its glow, and while
+    // the glow is out (the video swiped aside) they are drawn whole, not fading into black.
+    edgeFade: () -> Float = { 1f }
 ) {
     val topPx = with(LocalDensity.current) { top.toPx() }
     val bottomPx = with(LocalDensity.current) { bottom.toPx() }
@@ -475,15 +485,19 @@ fun AmbientVideo(
                 .graphicsLayer { compositingStrategy = CompositingStrategy.Offscreen }
                 .drawWithContent {
                     drawContent()
-                    drawRect(
-                        brush = Brush.verticalGradient(
-                            0f to Color.Transparent,
-                            topFadePx / size.height to Color.Black,
-                            1f - bottomFadePx / size.height to Color.Black,
-                            1f to Color.Transparent
-                        ),
-                        blendMode = BlendMode.DstIn
-                    )
+                    val fade = edgeFade().coerceIn(0f, 1f)
+                    if (fade > 0f) {
+                        val edge = Color.Black.copy(alpha = 1f - fade)
+                        drawRect(
+                            brush = Brush.verticalGradient(
+                                0f to edge,
+                                topFadePx / size.height to Color.Black,
+                                1f - bottomFadePx / size.height to Color.Black,
+                                1f to edge
+                            ),
+                            blendMode = BlendMode.DstIn
+                        )
+                    }
                 }
         )
     }
@@ -498,7 +512,16 @@ private val VIDEO_EDGE_FADE = 64.dp
  * drawn again, centred on the video, and move with every frame.
  */
 @Composable
-fun VideoBackdrop(state: GlowSource, alpha: Float, modifier: Modifier = Modifier) {
+fun VideoBackdrop(
+    state: GlowSource,
+    alpha: Float,
+    modifier: Modifier = Modifier,
+    // While true the glow stays where the picture last was: swiped aside, the picture moves on
+    // every frame with the finger, and the glow, going out meanwhile, was blurred all over again
+    // on each of them — the swipe crawled on a phone of a few years ago.
+    held: () -> Boolean = { false }
+) {
+    val hold = remember { GlowHold() }
     Box(
         modifier = modifier.graphicsLayer {
             this.alpha = alpha
@@ -515,8 +538,14 @@ fun VideoBackdrop(state: GlowSource, alpha: Float, modifier: Modifier = Modifier
                     .matchParentSize()
                     .blurredDrawing(glow.blur, alpha = glow.opacity) {
                         val layer = state.frameLayer ?: return@blurredDrawing
-                        val origin = state.frameOrigin ?: return@blurredDrawing
-                        val frame = state.frameSize ?: return@blurredDrawing
+                        val isHeld = held()
+                        // Held, the picture's place isn't read, so its moving draws nothing again.
+                        val origin = hold.origin.takeIf { isHeld } ?: state.frameOrigin ?: return@blurredDrawing
+                        val frame = hold.size.takeIf { isHeld } ?: state.frameSize ?: return@blurredDrawing
+                        if (!isHeld) {
+                            hold.origin = origin
+                            hold.size = frame
+                        }
                         val width = frame.width.toFloat()
                         val height = frame.height.toFloat()
                         translate(origin.x, origin.y) {
@@ -528,6 +557,12 @@ fun VideoBackdrop(state: GlowSource, alpha: Float, modifier: Modifier = Modifier
             )
         }
     }
+}
+
+/** Where a [VideoBackdrop] last drew its glow from: plain fields, read and written while drawing. */
+private class GlowHold {
+    var origin: Offset? = null
+    var size: IntSize? = null
 }
 
 // The steps around the video, and more beyond them, larger and softer each, out past the bottom
@@ -549,7 +584,7 @@ private val BACKDROP_GLOWS by lazy {
  * around a 16:9 video) its glow fills in, steps of larger and softer copies as in the player.
  */
 @Composable
-fun FullScreenVideo(state: PlayerVideoState, blur: androidx.compose.ui.unit.Dp, glow: Boolean = true) {
+fun FullScreenVideo(state: PlayerVideoState, blur: () -> Dp, glow: Boolean = true) {
     val view = androidx.compose.ui.platform.LocalView.current
     DisposableEffect(view) {
         val activity = generateSequence(view.context) { (it as? android.content.ContextWrapper)?.baseContext }
@@ -565,7 +600,7 @@ fun FullScreenVideo(state: PlayerVideoState, blur: androidx.compose.ui.unit.Dp, 
         modifier = Modifier
             .fillMaxSize()
             .drawBehind { drawRect(Color.Black) }
-            .blur(blur)
+            .lightBlur(blur)
     ) {
         // Without its glow the sides stay black.
         for (step in if (glow) FULL_SCREEN_GLOWS else emptyList()) {
@@ -635,6 +670,82 @@ private fun Modifier.blurredDrawing(
             draw(Size(size.width * shrink, size.height * shrink))
         }
     }
+
+/**
+ * `blur(radius())`, made at a fraction of the resolution once the radius is large, and blurred by as
+ * much less there: a picture blurred by tens of pixels has nothing finer to lose. The radius is
+ * read as it draws, so while it changes — the video pausing, the lyrics coming up — only the blur
+ * is drawn again, not the player; and that at full resolution, on every frame of it, was what made
+ * pausing a video stutter on a phone of a few years ago. [unbounded]: as `BlurredEdgeTreatment.
+ * Unbounded`, spreading past the box; otherwise cut at its edges, as the default.
+ */
+internal fun Modifier.lightBlur(radius: () -> Dp, unbounded: Boolean = false): Modifier =
+    this then LightBlurElement(radius, unbounded)
+
+private data class LightBlurElement(val radius: () -> Dp, val unbounded: Boolean) :
+    ModifierNodeElement<LightBlurNode>() {
+    override fun create() = LightBlurNode(radius, unbounded)
+
+    override fun update(node: LightBlurNode) {
+        node.radius = radius
+        node.unbounded = unbounded
+        node.invalidateDraw()
+    }
+
+    override fun InspectorInfo.inspectableProperties() {
+        name = "lightBlur"
+    }
+}
+
+private class LightBlurNode(var radius: () -> Dp, var unbounded: Boolean) :
+    Modifier.Node(), DrawModifierNode {
+    private var layer: GraphicsLayer? = null
+    private var effectPx = -1f
+    private var effectShrink = 0
+    private var effectUnbounded = false
+
+    override fun onAttach() {
+        layer = requireGraphicsContext().createGraphicsLayer()
+    }
+
+    override fun onDetach() {
+        layer?.let { requireGraphicsContext().releaseGraphicsLayer(it) }
+        layer = null
+        effectPx = -1f
+    }
+
+    override fun ContentDrawScope.draw() {
+        val px = radius().toPx()
+        val layer = layer
+        if (px <= 0f || layer == null) {
+            if (unbounded) drawContent() else clipRect { this@draw.drawContent() }
+            return
+        }
+        // Whole steps, so that the picture is made again at a new size only three times on the way
+        // to a large blur rather than on every frame; at full size only for the faintest.
+        val shrink = when {
+            px < 1.5f -> 1
+            px < 16f -> 2
+            px < 32f -> 4
+            else -> 8
+        }
+        if (px != effectPx || shrink != effectShrink || unbounded != effectUnbounded) {
+            layer.renderEffect = BlurEffect(px / shrink, px / shrink, if (unbounded) TileMode.Decal else TileMode.Clamp)
+            layer.clip = !unbounded
+            effectPx = px
+            effectShrink = shrink
+            effectUnbounded = unbounded
+        }
+        val small = IntSize(
+            kotlin.math.ceil(size.width / shrink).toInt().coerceAtLeast(1),
+            kotlin.math.ceil(size.height / shrink).toInt().coerceAtLeast(1)
+        )
+        layer.record(small) {
+            scale(1f / shrink, 1f / shrink, pivot = Offset.Zero) { this@draw.drawContent() }
+        }
+        scale(shrink.toFloat(), shrink.toFloat(), pivot = Offset.Zero) { drawLayer(layer) }
+    }
+}
 
 /**
  * How many times smaller a blur of [blur] is made: as small as leaves it a few pixels still, so
