@@ -122,12 +122,20 @@ private fun LayoutCoordinates.positionIn(space: GlowSpace?): Offset {
 interface GlowSource {
     val frameLayer: GraphicsLayer?
     val frameOrigin: Offset?
+    /**
+     * The picture's size, as state: the glow is scaled about the picture's middle, and read off the
+     * layer instead it could be read before the picture was first drawn — nought, the glow scaled
+     * about its corner — and, nothing else changing, kept so, off to the right and below.
+     */
+    val frameSize: IntSize?
 }
 
 /** The cover as a [GlowSource]: its picture, recorded where [glowSource] draws it. */
 @Stable
 class CoverGlow internal constructor(override val frameLayer: GraphicsLayer) : GlowSource {
     override var frameOrigin: Offset? by mutableStateOf(null)
+        internal set
+    override var frameSize: IntSize? by mutableStateOf(null)
         internal set
 }
 
@@ -139,7 +147,10 @@ fun rememberCoverGlow(): CoverGlow {
 
 /** Records what this box draws as [glow]'s picture, for the glow and the glass around it. */
 fun Modifier.glowSource(glow: CoverGlow, space: GlowSpace?): Modifier = this
-    .onGloballyPositioned { glow.frameOrigin = it.positionIn(space) }
+    .onGloballyPositioned {
+        glow.frameOrigin = it.positionIn(space)
+        glow.frameSize = it.size
+    }
     .drawWithContent {
         glow.frameLayer.record { this@drawWithContent.drawContent() }
         drawLayer(glow.frameLayer)
@@ -180,6 +191,7 @@ class PlayerVideoState internal constructor(video: TrackVideo, internal val play
     // The picture as drawn, for the glass to draw again; and where on screen it is drawn.
     override var frameLayer: GraphicsLayer? = null
     override var frameOrigin: Offset? by mutableStateOf(null)
+    override var frameSize: IntSize? by mutableStateOf(null)
 
     /**
      * Taller than wide: Yandex's videoshots. Played behind the whole player rather than in the
@@ -375,7 +387,10 @@ fun VideoSurface(state: PlayerVideoState, modifier: Modifier = Modifier, fit: Bo
     BoxWithConstraints(
         modifier = modifier
             .clipToBounds()
-            .onGloballyPositioned { state.frameOrigin = it.positionIn(space) }
+            .onGloballyPositioned {
+                state.frameOrigin = it.positionIn(space)
+                state.frameSize = it.size
+            }
             .drawWithContent {
                 if (layer == null) {
                     drawContent()
@@ -501,8 +516,9 @@ fun VideoBackdrop(state: GlowSource, alpha: Float, modifier: Modifier = Modifier
                     .blurredDrawing(glow.blur, alpha = glow.opacity) {
                         val layer = state.frameLayer ?: return@blurredDrawing
                         val origin = state.frameOrigin ?: return@blurredDrawing
-                        val width = layer.size.width.toFloat()
-                        val height = layer.size.height.toFloat()
+                        val frame = state.frameSize ?: return@blurredDrawing
+                        val width = frame.width.toFloat()
+                        val height = frame.height.toFloat()
                         translate(origin.x, origin.y) {
                             scale(glow.scale, glow.scale, pivot = Offset(width / 2, height / 2)) {
                                 drawLayer(layer)
