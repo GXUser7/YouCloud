@@ -93,7 +93,9 @@ android {
     buildTypes {
         val signing = signingConfigs.findByName("youcloud") ?: signingConfigs.getByName("debug")
         release {
-            isMinifyEnabled = false
+            // R8: Compose is built to be optimised by it, and runs noticeably slower without —
+            // most of all on a slow phone. Names are kept (see proguard-rules.pro).
+            isMinifyEnabled = true
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
