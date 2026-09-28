@@ -44,6 +44,8 @@ import androidx.compose.ui.graphics.layer.drawLayer
 import androidx.compose.ui.graphics.rememberGraphicsLayer
 import androidx.compose.ui.layout.layout
 import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.LayoutCoordinates
+import androidx.compose.ui.layout.onPlaced
 import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
@@ -92,8 +94,30 @@ private const val MAX_HOLD_MS = 4_000L
 private const val SYNC_INTERVAL_MS = 100L
 
 /**
- * A picture the player's glow and glass are drawn from: its layer as last drawn, and where on the
- * screen it was drawn. A music video, or the cover.
+ * The player's own frame, in which the pictures glow is drawn from, the glow and the glass are all
+ * placed. It moves as a whole when the player is pulled down: measured on the screen instead, the
+ * picture's place changed on every frame of the pull, and every step of the glow was blurred again
+ * each time — the pull crawled on a phone of a few years ago — and drawn off to one side at that.
+ */
+@Stable
+class GlowSpace {
+    internal var coordinates: LayoutCoordinates? = null
+}
+
+val LocalGlowSpace = androidx.compose.runtime.staticCompositionLocalOf<GlowSpace?> { null }
+
+/** The player's frame: what [LocalGlowSpace] places glow in. */
+fun Modifier.glowSpace(space: GlowSpace): Modifier = onPlaced { space.coordinates = it }
+
+/** Where this is in [space], or on the screen where there is none. */
+private fun LayoutCoordinates.positionIn(space: GlowSpace?): Offset {
+    val frame = space?.coordinates?.takeIf { it.isAttached } ?: return positionInRoot()
+    return frame.localPositionOf(this, Offset.Zero)
+}
+
+/**
+ * A picture the player's glow and glass are drawn from: its layer as last drawn, and where in the
+ * player (see [GlowSpace]) it was drawn. A music video, or the cover.
  */
 interface GlowSource {
     val frameLayer: GraphicsLayer?
@@ -114,8 +138,8 @@ fun rememberCoverGlow(): CoverGlow {
 }
 
 /** Records what this box draws as [glow]'s picture, for the glow and the glass around it. */
-fun Modifier.glowSource(glow: CoverGlow): Modifier = this
-    .onGloballyPositioned { glow.frameOrigin = it.positionInRoot() }
+fun Modifier.glowSource(glow: CoverGlow, space: GlowSpace?): Modifier = this
+    .onGloballyPositioned { glow.frameOrigin = it.positionIn(space) }
     .drawWithContent {
         glow.frameLayer.record { this@drawWithContent.drawContent() }
         drawLayer(glow.frameLayer)
@@ -347,10 +371,11 @@ private fun frameCounts(player: ExoPlayer): String {
 @Composable
 fun VideoSurface(state: PlayerVideoState, modifier: Modifier = Modifier, fit: Boolean = false) {
     val layer = state.frameLayer
+    val space = LocalGlowSpace.current
     BoxWithConstraints(
         modifier = modifier
             .clipToBounds()
-            .onGloballyPositioned { state.frameOrigin = it.positionInRoot() }
+            .onGloballyPositioned { state.frameOrigin = it.positionIn(space) }
             .drawWithContent {
                 if (layer == null) {
                     drawContent()
@@ -600,10 +625,15 @@ private fun Modifier.blurredDrawing(
  * that stretched back it stays smooth.
  */
 private fun Density.shrinkFor(blur: Dp): Int =
-    (blur.toPx() / MIN_SHRUNK_BLUR_PX).toInt().coerceIn(1, MAX_BLUR_SHRINK)
+    (blur.toPx() / MIN_SHRUNK_BLUR_PX).toInt().coerceIn(MIN_BLUR_SHRINK, MAX_BLUR_SHRINK)
 
 private const val MIN_SHRUNK_BLUR_PX = 6f
 private const val MAX_BLUR_SHRINK = 8
+// Even the sharpest step (4 dp) at half the screen's resolution: blurred by eleven pixels there is
+// nothing finer than two for the full one to keep, and that one step, blurred at full size on
+// every frame of the video, was as much work as all the others. On a phone of a few years ago
+// the player with a video went from stuttering on half its frames to smooth.
+private const val MIN_BLUR_SHRINK = 2
 
 // Widest and softest first, so each nearer one lies over it. Close steps in size, so that over
 // the line each shows as a band of its own, softer the further out — at the video's own
@@ -627,10 +657,11 @@ private val AMBIENT_GLOWS = listOf(
 @Composable
 fun BoxScope.FrostedVideoGlass(state: GlowSource, tint: Color) {
     var origin by remember { mutableStateOf(Offset.Zero) }
+    val space = LocalGlowSpace.current
     Box(
         modifier = Modifier
             .matchParentSize()
-            .onGloballyPositioned { origin = it.positionInRoot() }
+            .onGloballyPositioned { origin = it.positionIn(space) }
             .blurredDrawing(32.dp, tileMode = TileMode.Clamp) {
                 val layer = state.frameLayer ?: return@blurredDrawing
                 val at = state.frameOrigin ?: return@blurredDrawing

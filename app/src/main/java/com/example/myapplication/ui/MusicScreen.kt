@@ -76,6 +76,10 @@ import androidx.compose.material.icons.automirrored.filled.TrendingUp
 import androidx.compose.material.icons.filled.Lyrics
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.core.MutableTransitionState
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.runtime.derivedStateOf
+import androidx.compose.ui.input.pointer.PointerEventPass
 import com.example.myapplication.data.LyricLine
 import com.example.myapplication.data.YtAuth
 import com.example.myapplication.data.YtShelf
@@ -374,6 +378,17 @@ fun MusicScreen(viewModel: MusicViewModel) {
     var showTrackActionsDialog by remember { mutableStateOf(false) }
     // The full player pulled off its place: see TrackDetailScreen's onPulledChange.
     var playerPulled by remember { mutableStateOf(false) }
+    // A finger on the full player, which may be about to pull it down.
+    var playerTouched by remember { mutableStateOf(false) }
+    val playerShown = remember { MutableTransitionState(false) }
+    playerShown.targetState = selectedTrack != null
+    // The full player, opaque, covers the whole screen: the backdrop and the screens under it
+    // aren't drawn meanwhile. With a video in the player they were painted again on every frame
+    // of it, unseen — half of what the phone's graphics had to do. A finger on the player draws
+    // them again at once, so that a pull finds them there.
+    val playerCovers by remember {
+        derivedStateOf { playerShown.isIdle && playerShown.currentState && !playerPulled && !playerTouched }
+    }
     val showDebugPercentage by viewModel.showDebugPercentage.collectAsState()
     val downloadedPercentages by viewModel.downloadedPercentages.collectAsState()
     val isAllArtistTracksLoaded by viewModel.isAllArtistTracksLoaded.collectAsState()
@@ -445,7 +460,7 @@ fun MusicScreen(viewModel: MusicViewModel) {
     Box(modifier = Modifier.fillMaxSize()) {
         // The full player is opaque, and so is the sign-in screen; nothing behind them needs a
         // frame, or the accelerometer.
-        Box(modifier = Modifier.fillMaxSize().frostSource(backdropFrost)) {
+        Box(modifier = Modifier.fillMaxSize().drawWithContent { if (!playerCovers) drawContent() }.frostSource(backdropFrost)) {
             ExpressiveBackground(motionEnabled = backgroundMotion, animated = selectedTrack == null && !isLoggedOut)
         }
 
@@ -500,7 +515,7 @@ fun MusicScreen(viewModel: MusicViewModel) {
             LocalAlbumLibrary provides albumLibrary,
             LocalFrostSources provides listOf(backdropFrost)
         ) {
-            Box(modifier = Modifier.fillMaxSize().frostSource(screensFrost)) {
+            Box(modifier = Modifier.fillMaxSize().drawWithContent { if (!playerCovers) drawContent() }.frostSource(screensFrost)) {
             // Every screen stands on the moving backdrop: their pages, panels, buttons and cards
             // are glass. (Not the full player, which draws its own backdrop.)
             androidx.compose.runtime.CompositionLocalProvider(LocalGlass provides true) {
@@ -1052,7 +1067,7 @@ fun MusicScreen(viewModel: MusicViewModel) {
             }
 
             AnimatedVisibility(
-                visible = selectedTrack != null,
+                visibleState = playerShown,
                 enter = slideInVertically(initialOffsetY = { it }) + fadeIn(),
                 exit = slideOutVertically(targetOffsetY = { it }) + fadeOut()
             ) {
@@ -1130,7 +1145,8 @@ fun MusicScreen(viewModel: MusicViewModel) {
                                 trackUrn = track.urn
                             )
                         },
-                        onPulledChange = { playerPulled = it }
+                        onPulledChange = { playerPulled = it },
+                        onTouchedChange = { playerTouched = it }
                     )
                     }
                 }
@@ -1460,7 +1476,9 @@ private fun HomeScreen(
                         val scale = 1f - 0.06f * away
                         scaleX = scale
                         scaleY = scale
-                        alpha = 1f - 0.45f * away
+                        // Entirely off to the side it isn't drawn at all: dimmed, the page was
+                        // painted into a picture of its own on every frame, out of sight.
+                        alpha = if (away >= 1f) 0f else 1f - 0.45f * away
                     }
             ) {
                 Box(
@@ -1749,13 +1767,7 @@ private fun SectionIndicator(pager: androidx.compose.foundation.pager.PagerState
 /** The next section's name under the carousel, with a nudging chevron: the page goes on below. */
 @Composable
 private fun NextSectionHint(title: String, upward: Boolean, onClick: () -> Unit) {
-    val nudge = rememberInfiniteTransition(label = "nextSectionNudge")
-    val shift by nudge.animateFloat(
-        initialValue = 0f,
-        targetValue = 1f,
-        animationSpec = infiniteRepeatable(tween(900, easing = FastOutSlowInEasing), RepeatMode.Reverse),
-        label = "nextSectionShift"
-    )
+    val clock = rememberLoopClock()
     Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
         Row(
             modifier = Modifier
@@ -1779,7 +1791,7 @@ private fun NextSectionHint(title: String, upward: Boolean, onClick: () -> Unit)
                 tint = PanelColors.accent,
                 modifier = Modifier
                     .size(20.dp)
-                    .graphicsLayer { translationY = (if (upward) -3f else 3f) * shift * density }
+                    .graphicsLayer { translationY = (if (upward) -3f else 3f) * loopValue(clock.longValue, 900, 0f, 1f) * density }
             )
         }
     }
@@ -2578,22 +2590,8 @@ private fun NowPlayingBadge(
     onClick: (() -> Unit)? = null,
     glass: (@Composable BoxScope.() -> Unit)? = null
 ) {
-    val transition = rememberInfiniteTransition(label = "nowPlaying")
+    val clock = rememberLoopClock()
     val barCount = 4
-    val heights = List(barCount) { index ->
-        transition.animateFloat(
-            initialValue = 0.30f,
-            targetValue = 1f,
-            animationSpec = infiniteRepeatable(
-                animation = tween(
-                    durationMillis = 420 + index * 130,
-                    easing = FastOutSlowInEasing
-                ),
-                repeatMode = RepeatMode.Reverse
-            ),
-            label = "bar$index"
-        )
-    }
 
     Surface(
         modifier = if (onClick != null) {
@@ -2615,11 +2613,11 @@ private fun NowPlayingBadge(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 val barColor = LocalContentColor.current
-                heights.forEach { height ->
+                repeat(barCount) { index ->
                     Box(
                         modifier = Modifier
                             .width(3.dp)
-                            .animatedHeight(16.dp) { height.value }
+                            .animatedHeight(16.dp) { loopValue(clock.longValue, 420 + index * 130, 0.3f, 1f) }
                             .clip(CircleShape)
                             .background(barColor)
                     )
@@ -3948,7 +3946,8 @@ private fun SearchScreen(
                         val scale = 1f - 0.05f * away
                         scaleX = scale
                         scaleY = scale
-                        alpha = 1f - 0.4f * away
+                        // Off to the side, not drawn: see the pages of home.
+                        alpha = if (away >= 1f) 0f else 1f - 0.4f * away
                     }
                 )
             }
@@ -5503,31 +5502,61 @@ private fun TrackRowArtwork(artworkUrl: String?, isCurrent: Boolean, isPlaying: 
 
 @Composable
 private fun EqualizerBars(animate: Boolean, color: Color, modifier: Modifier = Modifier) {
-    val transition = rememberInfiniteTransition(label = "rowBars")
+    val clock = rememberLoopClock(running = animate)
     Row(
         modifier = modifier,
         horizontalArrangement = Arrangement.spacedBy(3.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         repeat(4) { index ->
-            val height = transition.animateFloat(
-                initialValue = 0.3f,
-                targetValue = 1f,
-                animationSpec = infiniteRepeatable(
-                    animation = tween(durationMillis = 420 + index * 130, easing = FastOutSlowInEasing),
-                    repeatMode = RepeatMode.Reverse
-                ),
-                label = "rowBar$index"
-            )
             Box(
                 modifier = Modifier
                     .width(3.dp)
-                    .animatedHeight(18.dp) { if (animate) height.value else 0.45f }
+                    .animatedHeight(18.dp) { if (animate) loopValue(clock.longValue, 420 + index * 130, 0.3f, 1f) else 0.45f }
                     .clip(CircleShape)
                     .background(color)
             )
         }
     }
+}
+
+/**
+ * Milliseconds since the loop began, moved on sixty times a second at most: the clock of the small
+ * looping animations (the playing bars, the chevron under home's carousel). Each of their frames
+ * repaints the whole screen, backdrop and glass and all, and on a 90 or 120 Hz screen the frames
+ * past sixty were that much more work for a movement no one can tell from it — the backdrop has
+ * kept to sixty for the same reason.
+ */
+@Composable
+private fun rememberLoopClock(running: Boolean = true): androidx.compose.runtime.MutableLongState {
+    val clock = remember { androidx.compose.runtime.mutableLongStateOf(0L) }
+    LaunchedEffect(running) {
+        if (!running) return@LaunchedEffect
+        var start = 0L
+        var shown = 0L
+        while (true) {
+            withFrameNanos { now ->
+                if (start == 0L) start = now - clock.longValue * 1_000_000L
+                if (now - shown >= LoopFrameNanos) {
+                    shown = now
+                    clock.longValue = (now - start) / 1_000_000L
+                }
+            }
+        }
+    }
+    return clock
+}
+
+private const val LoopFrameNanos = 15_000_000L
+
+/**
+ * What `infiniteRepeatable(tween(durationMs, FastOutSlowInEasing), RepeatMode.Reverse)` from [from]
+ * to [to] gives at [timeMs]: there and back, eased both ways.
+ */
+private fun loopValue(timeMs: Long, durationMs: Int, from: Float, to: Float): Float {
+    val cycle = timeMs % (2L * durationMs)
+    val t = if (cycle < durationMs) cycle / durationMs.toFloat() else (2L * durationMs - cycle) / durationMs.toFloat()
+    return from + (to - from) * FastOutSlowInEasing.transform(t)
 }
 
 /**
@@ -5723,7 +5752,9 @@ private fun TrackDetailScreen(
     onArtistClick: (SoundCloudUser) -> Unit,
     // Whether the player has been pulled off its place: the screen keeps the mini player ready
     // under it meanwhile, so a pull that folds the player away ends on it.
-    onPulledChange: (Boolean) -> Unit = {}
+    onPulledChange: (Boolean) -> Unit = {},
+    // Whether a finger is on the player: the screen draws what lies under it again, ready for a pull.
+    onTouchedChange: (Boolean) -> Unit = {}
 ) {
     val context = LocalContext.current
     val vibrator = remember {
@@ -5778,7 +5809,13 @@ private fun TrackDetailScreen(
     LaunchedEffect(collapse) {
         snapshotFlow { collapse.value > 0f }.collect { currentOnPulledChange(it) }
     }
-    DisposableEffect(Unit) { onDispose { currentOnPulledChange(false) } }
+    val currentOnTouchedChange by rememberUpdatedState(onTouchedChange)
+    DisposableEffect(Unit) {
+        onDispose {
+            currentOnPulledChange(false)
+            currentOnTouchedChange(false)
+        }
+    }
     val releaseCollapse: (Float) -> Unit = { velocity ->
         val away = if (kotlin.math.abs(velocity) > flingPx) velocity > 0f else collapseProgress() > CollapseMeantFraction
         queueScope.launch {
@@ -5883,6 +5920,17 @@ private fun TrackDetailScreen(
                 queueHeightPx = it.height * QueueHeightFraction
                 playerHeightPx = it.height.toFloat()
             }
+            // Watches for a finger without taking anything from what it touches.
+            .pointerInput(Unit) {
+                awaitEachGesture {
+                    awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+                    currentOnTouchedChange(true)
+                    do {
+                        val event = awaitPointerEvent(PointerEventPass.Initial)
+                    } while (event.changes.any { it.pressed })
+                    currentOnTouchedChange(false)
+                }
+            }
             // A swipe anywhere nothing else takes it: up pulls the queue after the finger, down
             // pulls the player itself down. The first movement decides which; a queue already
             // out is what a pull down moves. On a box that stays put, so that the player moving
@@ -5940,6 +5988,8 @@ private fun TrackDetailScreen(
                 if (pulled > 0f) drawRect(Color.Black.copy(alpha = PulledScrim * (1f - pulled)))
             }
     ) {
+    val glowSpace = remember { GlowSpace() }
+    androidx.compose.runtime.CompositionLocalProvider(LocalGlowSpace provides glowSpace) {
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -5959,6 +6009,7 @@ private fun TrackDetailScreen(
                 // The last of the way down it fades into the mini player waiting under it.
                 alpha = 1f - ((pulled - CollapseFadeFrom) / (1f - CollapseFadeFrom)).coerceIn(0f, 1f)
             }
+            .glowSpace(glowSpace)
             // Drawn over the app's own screens, so the player owns its whole backdrop.
             .background(MaterialTheme.colorScheme.background)
     ) {
@@ -6267,6 +6318,7 @@ private fun TrackDetailScreen(
         }
     }
     }
+    }
 }
 
 /** What a vertical drag on the player moves, decided by its first movement. */
@@ -6498,7 +6550,7 @@ private fun GlowingCover(
                 // Swiped, it goes with the finger; the glow, out meanwhile, is drawn from where
                 // it is.
                 .graphicsLayer { swiped(swipeOffset(), swipeProgress(), rounded = false) }
-                .glowSource(glow)
+                .glowSource(glow, LocalGlowSpace.current)
                 .graphicsLayer {
                     val s = scale()
                     scaleX = s
