@@ -273,7 +273,10 @@ class YouTubeMusicClient(private val authProvider: () -> YtAuth?) {
             title = title,
             artists = artistsOf(subtitle.arr("runs")).ifEmpty { plainArtist(subtitle.runsText()) },
             durationMs = subtitle.durationRun()?.let(::parseDuration) ?: 0L,
-            artwork = bestThumbnail(card.arr("thumbnail", "musicThumbnailRenderer", "thumbnail", "thumbnails"))
+            artwork = bestThumbnail(card.arr("thumbnail", "musicThumbnailRenderer", "thumbnail", "thumbnails")),
+            // The top result is often the broadcast itself: taken for a track, it asked yt-dlp for
+            // a file there is none of.
+            live = isLive(card, subtitle.runsText())
         )
     }
 
@@ -501,7 +504,10 @@ class YouTubeMusicClient(private val authProvider: () -> YtAuth?) {
         val artists = artistsOf(video.arr("longBylineText", "runs"))
             .ifEmpty { plainArtist(video.runs("shortBylineText")) }
         val duration = video.runs("lengthText")?.let(::parseDuration) ?: 0L
-        return track(videoId, title, artists, duration, bestThumbnail(video.arr("thumbnail", "thumbnails")))
+        return track(
+            videoId, title, artists, duration, bestThumbnail(video.arr("thumbnail", "thumbnails")),
+            live = isLive(video, video.runs("longBylineText"))
+        )
     }
 
     /** A tile that plays a song ("Listen again" mixes songs in with sets). */
@@ -510,7 +516,7 @@ class YouTubeMusicClient(private val authProvider: () -> YtAuth?) {
         val title = tile.runs("title") ?: return null
         val artists = artistsOf(tile.arr("subtitle", "runs")).ifEmpty { plainArtist(tile.runs("subtitle")) }
         val artwork = bestThumbnail(tile.arr("thumbnailRenderer", "musicThumbnailRenderer", "thumbnail", "thumbnails"))
-        return track(videoId, title, artists, 0L, artwork)
+        return track(videoId, title, artists, 0L, artwork, live = isLive(tile, tile.runs("subtitle")))
     }
 
     private fun parseTileSet(tile: JsonElement): SoundCloudPlaylist? {
