@@ -75,6 +75,14 @@ class PlaybackService : MediaLibraryService() {
         preferences.registerOnSharedPreferenceChangeListener(prefListener)
 
         val offlineStore = OfflineMusicStore.getInstance(this)
+        if (!preferences.getBoolean(KEY_UNVERSIONED_STREAMS_DROPPED, false)) {
+            Thread {
+                runCatching { StreamCache.dropUnversionedKeys(this) }
+                    .onSuccess { Log.d("PlaybackService", "Dropped $it tracks kept without their file") }
+                    .onFailure { Log.w("PlaybackService", "Couldn't drop tracks kept without their file", it) }
+                preferences.edit().putBoolean(KEY_UNVERSIONED_STREAMS_DROPPED, true).apply()
+            }.start()
+        }
         if (!preferences.getBoolean(KEY_STREAM_LEFTOVERS_DROPPED, false)) {
             Thread {
                 runCatching { offlineStore.dropStreamedLeftovers() }
@@ -103,18 +111,19 @@ class PlaybackService : MediaLibraryService() {
                             }
                             // Heard or fetched ahead whole: played from the cache at once, without
                             // the seconds yt-dlp takes to find it, and without the network.
-                            val key = "ytmusic:$videoId"
-                            if (StreamCache.isFullyCached(this@PlaybackService, key)) {
+                            StreamCache.cachedYouTubeKey(this@PlaybackService, videoId)?.let { key ->
                                 return dataSpec.buildUpon().setKey(key).build()
                             }
                             val audio = com.example.myapplication.data.YouTubeStreams.resolve(this@PlaybackService, videoId, youTubeAuth())
                             if (audio != null) {
-                                // Keyed by the video, not the URL: a fresh URL for the same track
-                                // still finds what the cache already holds. Fetched as the client
-                                // the URL was issued to.
+                                // Keyed by the video and its format, not the URL: a fresh URL for
+                                // the same track still finds what the cache holds, and another
+                                // format is never stitched onto it. Fetched as the client the URL
+                                // was issued to.
+                                val itag = android.net.Uri.parse(audio.url).getQueryParameter("itag") ?: "0"
                                 return dataSpec.buildUpon()
                                     .setUri(android.net.Uri.parse(audio.url))
-                                    .setKey("ytmusic:$videoId")
+                                    .setKey(StreamCache.youTubeKey(videoId, itag))
                                     .setHttpRequestHeaders(dataSpec.httpRequestHeaders + ("User-Agent" to audio.userAgent))
                                     .build()
                             }
@@ -134,18 +143,22 @@ class PlaybackService : MediaLibraryService() {
                     } else if (uri.scheme == "yandex") {
                         val trackId = uri.lastPathSegment
                         if (trackId != null) {
-                            // Kept under the track, not its link, which is signed anew each time.
-                            val key = StreamCache.KEY_PREFIX + "yandex:" + trackId.substringBefore(':')
+                            val rawId = trackId.substringBefore(':')
                             val downloaded = downloadedYandexTrack(trackId)
                             if (downloaded != null) {
                                 return dataSpec.buildUpon().setUri(android.net.Uri.parse(downloaded)).build()
                             }
-                            if (StreamCache.isFullyCached(this@PlaybackService, key)) {
+                            StreamCache.cachedYandexKey(this@PlaybackService, rawId)?.let { key ->
                                 return dataSpec.buildUpon().setKey(key).build()
                             }
-                            val resolvedUri = resolveYandexTrack(trackId)
-                            if (resolvedUri != null) {
-                                return dataSpec.buildUpon().setUri(android.net.Uri.parse(resolvedUri)).setKey(key).build()
+                            val resolved = resolveYandexTrack(trackId)
+                            if (resolved != null) {
+                                // Kept under the track and its file, not its link, which is signed
+                                // anew each time; a file on the phone under nothing.
+                                return dataSpec.buildUpon()
+                                    .setUri(android.net.Uri.parse(resolved.url))
+                                    .apply { resolved.variant?.let { setKey(StreamCache.yandexKey(rawId, it)) } }
+                                    .build()
                             }
                         }
                     }
@@ -372,6 +385,8 @@ class PlaybackService : MediaLibraryService() {
 
         // Set once what playback had left in the downloads' cache has been cleared out.
         private const val KEY_STREAM_LEFTOVERS_DROPPED = "stream_leftovers_dropped"
+        // Set once what the stream cache kept under a track alone, without its file, is gone.
+        private const val KEY_UNVERSIONED_STREAMS_DROPPED = "unversioned_streams_dropped"
 
         private val XML_TAG_REGEXES = mutableMapOf<String, Regex>()
         private fun xmlTagRegex(tag: String): Regex {
@@ -508,7 +523,10 @@ class PlaybackService : MediaLibraryService() {
         return if (localPath.startsWith("/")) "file://$localPath" else localPath
     }
 
-    private fun resolveYandexTrack(trackId: String): String? {
+    /** A Yandex track's address, and which of its files it is ([variant], "mp3-320"); none for one on the phone. */
+    private class YandexStream(val url: String, val variant: String?)
+
+    private fun resolveYandexTrack(trackId: String): YandexStream? {
         val rawTrackId = trackId.substringBefore(":")
         // Match ID generation from YandexMusicModels.kt (#6)
         val numericId = rawTrackId.toLongOrNull()
@@ -527,7 +545,7 @@ class PlaybackService : MediaLibraryService() {
                 localPath
             }
             Log.d("PlaybackService", "Playing Yandex track from cache: $trackId, url: $finalUrl")
-            return finalUrl
+            return YandexStream(finalUrl, null)
         }
 
         val token = preferences.getString("yandex_music_token", "") ?: ""
@@ -536,7 +554,11 @@ class PlaybackService : MediaLibraryService() {
             try {
                 val service = com.example.myapplication.data.YandexMusicApi.createService { token }
                 val response = service.getDownloadInfo(trackId)
-                val bestItem = response.result.orEmpty().firstOrNull { it.codec == "mp3" } ?: response.result.orEmpty().firstOrNull()
+                // The best MP3, whatever order Yandex lists them in: "the first one" was one file
+                // on one call and another on the next, and the two were stitched together.
+                val items = response.result.orEmpty()
+                val bestItem = items.filter { it.codec == "mp3" }.maxByOrNull { it.bitrateInKbps }
+                    ?: items.maxByOrNull { it.bitrateInKbps }
                     ?: return@withTimeout null
                 
                 val client = lazyOkHttpClient
@@ -558,7 +580,10 @@ class PlaybackService : MediaLibraryService() {
                 val s = xmlTagRegex("s").find(xmlString)?.groupValues?.get(1).orEmpty()
                 
                 if (host.isNotEmpty() && path.isNotEmpty() && ts.isNotEmpty() && s.isNotEmpty()) {
-                    com.example.myapplication.data.YandexMusicApi.generateDirectLink(host, path, ts, s)
+                    YandexStream(
+                        com.example.myapplication.data.YandexMusicApi.generateDirectLink(host, path, ts, s),
+                        "${bestItem.codec}-${bestItem.bitrateInKbps}"
+                    )
                 } else {
                     null
                 }
