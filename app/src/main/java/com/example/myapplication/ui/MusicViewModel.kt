@@ -3011,6 +3011,11 @@ class MusicViewModel(
         const val RADIO_AHEAD = 3
         // "Моя волна": the listener's own taste, as Rotor's seed.
         const val YANDEX_WAVE_SEED = "user:onyourwave"
+        // How many of the wave's tracks are remembered as heard, how many of the latest Rotor is
+        // told of, and how many times to ask again when all it offers has been heard.
+        const val WAVE_HEARD_KEPT = 500
+        const val RADIO_QUEUE_SENT = 150
+        const val WAVE_EMPTY_TRIES = 3
 
         // A radio track that stopped this close to its end was heard to the end, not skipped.
         const val RADIO_FINISHED_SLACK_MS = 5_000L
@@ -4059,10 +4064,20 @@ class MusicViewModel(
      * Yandex Music's radio (Rotor) playing from a track: the session, which batch each queued
      * track came in (the feedback names it), and every track it has given, so none comes twice.
      */
-    private class YandexRadio(var sessionId: String, val seeds: List<String>, val wave: Boolean = false) {
+    private class YandexRadio(
+        var sessionId: String,
+        val seeds: List<String>,
+        val wave: Boolean = false,
+        // What was heard before this radio (the wave's earlier sessions): never given again, and
+        // told to Rotor as heard.
+        private val heardBefore: List<String> = emptyList()
+    ) {
         val batchOf = HashMap<Long, String>()
         val given = LinkedHashSet<String>()
-        private val givenRaw = HashSet<String>()
+        private val givenRaw = HashSet<String>().apply { heardBefore.forEach { add(it.substringBefore(':')) } }
+
+        /** What Rotor is told was heard: the latest of what came before, and all this radio gave. */
+        fun heard(): List<String> = (heardBefore + given).takeLast(RADIO_QUEUE_SENT)
         // The last track the radio put in the queue: while it is still there, the queue is the
         // radio's; once another queue has replaced it, the radio stops.
         var tailId: Long? = null
@@ -4145,16 +4160,46 @@ class MusicViewModel(
         _yandexWaveStarting.value = true
         viewModelScope.launch {
             try {
-                val session = yandexService.rotorSessionNew(YandexRotorSessionRequest(seeds = seeds)).result
-                val sessionId = session?.radioSessionId ?: throw IllegalStateException("волна не запустилась")
-                val radio = YandexRadio(sessionId, seeds, wave = true)
-                val batch = acceptRadioBatch(radio, session.batchId, session.sequence)
-                if (batch.isEmpty()) throw IllegalStateException("волна ничего не предложила")
+                // Everything the wave has given before is heard: told to Rotor, and kept out here
+                // too. Started afresh each time with nothing to go on, it opened on the same tracks.
+                val heard = settingsRepository.yandexWaveHeard()
+                val sent = heard.takeLast(RADIO_QUEUE_SENT)
+                // The last session goes on, as the Yandex app's wave does; a new one if Rotor has
+                // let it go.
+                var sessionId = settingsRepository.yandexWaveSession()
+                var answer = sessionId?.let { last ->
+                    runCatching { yandexService.rotorSessionTracks(last, YandexRotorQueueRequest(sent)).result }
+                        .getOrNull()
+                        ?.takeUnless { it.unknownSession == true || it.terminated == true || it.sequence.isNullOrEmpty() }
+                }
+                val resumed = answer != null
+                if (answer == null) {
+                    answer = yandexService.rotorSessionNew(YandexRotorSessionRequest(seeds = seeds, queue = sent)).result
+                    sessionId = answer?.radioSessionId
+                }
+                val session = answer ?: throw IllegalStateException("волна не запустилась")
+                val id = sessionId ?: throw IllegalStateException("волна не запустилась")
+                settingsRepository.setYandexWaveSession(id)
+                val radio = YandexRadio(id, seeds, wave = true, heardBefore = heard)
+                var batchId = session.batchId
+                var batch = acceptRadioBatch(radio, batchId, session.sequence)
+                // All of it heard already: more, a few times, before giving up.
+                var tries = 0
+                while (batch.isEmpty() && tries < WAVE_EMPTY_TRIES) {
+                    tries++
+                    val more = yandexService.rotorSessionTracks(id, YandexRotorQueueRequest(radio.heard())).result ?: break
+                    batchId = more.batchId
+                    batch = acceptRadioBatch(radio, batchId, more.sequence)
+                }
+                if (batch.isEmpty()) throw IllegalStateException("волна ничего нового не предложила")
                 radio.tailId = batch.last().id
                 yandexRadio = radio
-                Log.d("MusicViewModel", "Yandex wave $seeds: session $sessionId, ${batch.size} tracks")
+                Log.d(
+                    "MusicViewModel",
+                    "Yandex wave: session $id (${if (resumed) "resumed" else "new"}), ${batch.size} tracks, ${heard.size} heard before"
+                )
                 playQueuedTrack(batch.first(), batch)
-                sendRadioFeedback(radio, YandexRotorEvent(type = "radioStarted", timestamp = rotorNow()), session.batchId)
+                sendRadioFeedback(radio, YandexRotorEvent(type = "radioStarted", timestamp = rotorNow()), batchId)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -4166,9 +4211,12 @@ class MusicViewModel(
         }
     }
 
-    /** A batch's tracks the radio hasn't given before, as the app's tracks, each tagged with the batch. */
-    private fun acceptRadioBatch(radio: YandexRadio, batchId: String?, sequence: List<YandexRotorItem>?): List<SoundCloudTrack> =
-        sequence.orEmpty()
+    /**
+     * A batch's tracks the radio hasn't given before, as the app's tracks, each tagged with the
+     * batch. The wave's are kept as heard, for the next time it starts.
+     */
+    private fun acceptRadioBatch(radio: YandexRadio, batchId: String?, sequence: List<YandexRotorItem>?): List<SoundCloudTrack> {
+        val accepted = sequence.orEmpty()
             .mapNotNull { it.track }
             .filter { it.available != false }
             .mapNotNull { yandexTrack ->
@@ -4178,6 +4226,14 @@ class MusicViewModel(
                 if (batchId != null) radio.batchOf[track.id] = batchId
                 track
             }
+        if (radio.wave && accepted.isNotEmpty()) {
+            val ids = accepted.mapNotNull { it.urn?.removePrefix("yandex:track:") }
+            val fresh = ids.map { it.substringBefore(':') }.toSet()
+            val kept = settingsRepository.yandexWaveHeard().filterNot { it.substringBefore(':') in fresh }
+            settingsRepository.setYandexWaveHeard((kept + ids).takeLast(WAVE_HEARD_KEPT))
+        }
+        return accepted
+    }
 
     /**
      * Asks the radio for more once fewer than [RADIO_AHEAD] tracks are left after [index], and adds
@@ -4196,12 +4252,15 @@ class MusicViewModel(
         radio.refilling = true
         viewModelScope.launch {
             try {
-                var answer = yandexService.rotorSessionTracks(radio.sessionId, YandexRotorQueueRequest(radio.given.toList())).result
+                var answer = yandexService.rotorSessionTracks(radio.sessionId, YandexRotorQueueRequest(radio.heard())).result
                 if (answer == null || answer.unknownSession == true || answer.terminated == true) {
                     answer = yandexService.rotorSessionNew(
-                        YandexRotorSessionRequest(seeds = radio.seeds, queue = radio.given.toList())
+                        YandexRotorSessionRequest(seeds = radio.seeds, queue = radio.heard())
                     ).result
-                    answer?.radioSessionId?.let { radio.sessionId = it }
+                    answer?.radioSessionId?.let {
+                        radio.sessionId = it
+                        if (radio.wave) settingsRepository.setYandexWaveSession(it)
+                    }
                 }
                 val more = acceptRadioBatch(radio, answer?.batchId, answer?.sequence)
                 if (more.isEmpty() || yandexRadio !== radio) return@launch
