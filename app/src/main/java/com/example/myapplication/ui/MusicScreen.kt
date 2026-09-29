@@ -52,6 +52,13 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.catch
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.withStyle
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.material.icons.rounded.Forum
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.BorderStroke
@@ -6003,7 +6010,9 @@ private fun TrackDetailScreen(
         }
     }
     var showLyrics by remember(track.id) { mutableStateOf(false) }
-    val lyricsShown = showLyrics && !lyrics.isNullOrEmpty()
+    // A broadcast has no lyrics; its chat is shown in their place.
+    val liveId = track.liveVideoId
+    val lyricsShown = showLyrics && (!lyrics.isNullOrEmpty() || liveId != null)
     val atStart by remember(positionMs) { androidx.compose.runtime.derivedStateOf { positionMs() == 0L } }
     val showLoading = (downloadState != DownloadState.DOWNLOADED) &&
         (isBuffering || isLoading || (atStart && !isPlaying))
@@ -6336,11 +6345,15 @@ private fun TrackDetailScreen(
                             exit = fadeOut(animationSpec = tween(250)),
                             modifier = Modifier.fillMaxSize()
                         ) {
-                            LyricsOverlay(
-                                lines = lyrics.orEmpty(),
-                                positionMs = positionMs,
-                                onSeek = onSeek
-                            )
+                            if (liveId != null) {
+                                LiveChatOverlay(videoId = liveId)
+                            } else {
+                                LyricsOverlay(
+                                    lines = lyrics.orEmpty(),
+                                    positionMs = positionMs,
+                                    onSeek = onSeek
+                                )
+                            }
                         }
                     }
                 },
@@ -6399,7 +6412,7 @@ private fun TrackDetailScreen(
                         trackFx = trackFx,
                         onTrackFxChange = onTrackFxChange,
                         onArtistClick = onArtistClick,
-                        lyricsAvailable = !lyrics.isNullOrEmpty(),
+                        lyricsAvailable = !lyrics.isNullOrEmpty() || liveId != null,
                         lyricsShown = lyricsShown,
                         onToggleLyrics = {
                             haptic.performHapticFeedback(HapticFeedbackType.LongPress)
@@ -6955,6 +6968,7 @@ private fun PlayerPanel(
                     QueuePeek(
                         nextTrack = nextTrack,
                         queueSize = activeQueue.size,
+                        chat = track.liveVideoId != null,
                         lyricsAvailable = lyricsAvailable,
                         lyricsShown = lyricsShown,
                         onToggleLyrics = onToggleLyrics,
@@ -7405,6 +7419,8 @@ private fun PanelPlayButton(isPlaying: Boolean, onClick: () -> Unit) {
 private fun QueuePeek(
     nextTrack: SoundCloudTrack?,
     queueSize: Int,
+    // A broadcast: the switch is for its chat.
+    chat: Boolean,
     lyricsAvailable: Boolean,
     lyricsShown: Boolean,
     onToggleLyrics: () -> Unit,
@@ -7469,8 +7485,11 @@ private fun QueuePeek(
                 ) {
                     Box(contentAlignment = Alignment.Center) {
                         Icon(
-                            Icons.Default.Lyrics,
-                            contentDescription = if (lyricsShown) "Скрыть текст" else "Текст песни",
+                            if (chat) Icons.Rounded.Forum else Icons.Default.Lyrics,
+                            contentDescription = when {
+                                chat -> if (lyricsShown) "Скрыть чат" else "Чат трансляции"
+                                else -> if (lyricsShown) "Скрыть текст" else "Текст песни"
+                            },
                             modifier = Modifier.size(24.dp)
                         )
                     }
@@ -7480,6 +7499,71 @@ private fun QueuePeek(
             }
         }
     }
+}
+
+/**
+ * A live stream's chat over its blurred picture, where a track's lyrics go: newest at the bottom,
+ * the list staying on them unless scrolled back. Read only while shown — opening it starts the
+ * reading, closing it (or the app going to the background) stops it.
+ */
+@Composable
+private fun LiveChatOverlay(videoId: String) {
+    val messages = remember(videoId) {
+        com.example.myapplication.data.YouTubeLiveChat.messages(videoId)
+            .map<List<com.example.myapplication.data.LiveChatMessage>, LiveChatState> { LiveChatState.Messages(it) }
+            .catch { emit(LiveChatState.Failed(it.message ?: "Чат недоступен")) }
+    }.collectAsStateWithLifecycle(initialValue = LiveChatState.Loading).value
+    val onPanel = PanelColors.content
+    val top = WindowInsets.statusBars.asPaddingValues().calculateTopPadding() + 24.dp
+    when (messages) {
+        LiveChatState.Loading -> Box(modifier = Modifier.fillMaxSize().padding(top = top), contentAlignment = Alignment.Center) {
+            Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                androidx.compose.material3.CircularProgressIndicator(modifier = Modifier.size(32.dp), color = PanelColors.accent, strokeWidth = 3.dp)
+                Text("Подключаюсь к чату…", style = MaterialTheme.typography.bodyMedium, color = onPanel.copy(alpha = 0.8f))
+            }
+        }
+        is LiveChatState.Failed -> Box(modifier = Modifier.fillMaxSize().padding(top = top, start = 32.dp, end = 32.dp), contentAlignment = Alignment.Center) {
+            Text(messages.reason, style = MaterialTheme.typography.bodyLarge, color = onPanel.copy(alpha = 0.8f), textAlign = TextAlign.Center)
+        }
+        is LiveChatState.Messages -> {
+            if (messages.list.isEmpty()) {
+                Box(modifier = Modifier.fillMaxSize().padding(top = top), contentAlignment = Alignment.Center) {
+                    Text("В чате пока тихо", style = MaterialTheme.typography.bodyLarge, color = onPanel.copy(alpha = 0.8f))
+                }
+            } else {
+                // Upside down: the newest is item 0, at the bottom, where the list rests.
+                val newestFirst = remember(messages.list) { messages.list.asReversed() }
+                LazyColumn(
+                    modifier = Modifier.fillMaxSize(),
+                    reverseLayout = true,
+                    contentPadding = PaddingValues(start = 24.dp, end = 24.dp, top = top, bottom = 16.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    items(newestFirst, key = { it.id }) { message ->
+                        Text(
+                            text = buildAnnotatedString {
+                                withStyle(SpanStyle(color = PanelColors.accent, fontWeight = FontWeight.SemiBold)) {
+                                    append(message.author.removePrefix("@"))
+                                }
+                                message.paid?.let { amount ->
+                                    withStyle(SpanStyle(color = PanelColors.accent)) { append("  $amount") }
+                                }
+                                append("  ")
+                                withStyle(SpanStyle(color = onPanel)) { append(message.text) }
+                            },
+                            style = MaterialTheme.typography.bodyLarge
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+private sealed interface LiveChatState {
+    data object Loading : LiveChatState
+    data class Failed(val reason: String) : LiveChatState
+    data class Messages(val list: List<com.example.myapplication.data.LiveChatMessage>) : LiveChatState
 }
 
 /**
