@@ -4151,6 +4151,17 @@ class MusicViewModel(
     // The track just disliked: leaving it is no skip to tell the radio of, the dislike said it all.
     private var radioDislikedId: Long? = null
 
+    // The track playing's own effects (reverb, speed); see [setTrackFx].
+    private val _trackFx = MutableStateFlow(com.example.myapplication.data.TrackFx())
+    val trackFx = _trackFx.asStateFlow()
+
+    /** Sets the track playing's effects: kept for it, and applied by the playback service at once. */
+    fun setTrackFx(fx: com.example.myapplication.data.TrackFx) {
+        val trackId = musicPlayer.currentTrackId.value ?: return
+        settingsRepository.setTrackFx(trackId, fx)
+        _trackFx.value = fx
+    }
+
     // The track playing as the radio saw it, and how far into it playback got: when it gives way
     // the radio hears whether it was finished or skipped.
     private var radioPlayingId: Long? = null
@@ -4487,6 +4498,11 @@ class MusicViewModel(
     init {
         // Last in the class, so everything it touches is there by the time it runs.
         followYandexRadio()
+        viewModelScope.launch {
+            musicPlayer.currentTrackId.collect { id ->
+                _trackFx.value = id?.let(settingsRepository::trackFx) ?: com.example.myapplication.data.TrackFx()
+            }
+        }
     }
 
     // endregion

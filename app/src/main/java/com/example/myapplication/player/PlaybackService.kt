@@ -37,8 +37,16 @@ class PlaybackService : MediaLibraryService() {
     // Fetches the next tracks in the queue into the stream cache while one plays.
     private var prefetcher: StreamPrefetcher? = null
 
+    // The reverb a track's effects send to, made the first time one asks for it.
+    private var reverb: android.media.audiofx.PresetReverb? = null
+
     private val prefListener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
         if (key == null) return@OnSharedPreferenceChangeListener
+        // The track playing had its effects changed, in the player on screen.
+        if (key.startsWith(com.example.myapplication.data.TrackFx.KEY_PREFIX)) {
+            (mediaSession?.player as? ExoPlayer)?.let(::applyTrackFx)
+            return@OnSharedPreferenceChangeListener
+        }
         val eq = equalizer ?: return@OnSharedPreferenceChangeListener
         try {
             if (key == "equalizer_enabled") {
@@ -174,6 +182,7 @@ class PlaybackService : MediaLibraryService() {
 
             override fun onMediaItemTransition(mediaItem: androidx.media3.common.MediaItem?, reason: Int) {
                 prefetchNextYouTubeTrack(player)
+                applyTrackFx(player)
             }
         })
         prefetcher = StreamPrefetcher(this, player, resolver).also(player::addListener)
@@ -508,6 +517,32 @@ class PlaybackService : MediaLibraryService() {
         }
     }
 
+    /**
+     * The track playing's own effects ([com.example.myapplication.data.TrackFx]): its speed, with
+     * or without its pitch, and its reverb — a hall reverb on the output mix, sent to as much as
+     * the track has of it.
+     */
+    private fun applyTrackFx(player: ExoPlayer) {
+        val trackId = player.currentMediaItem?.mediaId?.toLongOrNull()
+        val fx = trackId?.let {
+            com.example.myapplication.data.TrackFx.decode(preferences.getString(com.example.myapplication.data.TrackFx.KEY_PREFIX + it, null))
+        } ?: com.example.myapplication.data.TrackFx()
+        player.playbackParameters = androidx.media3.common.PlaybackParameters(fx.speed, if (fx.keepPitch) 1f else fx.speed)
+        try {
+            if (fx.reverb == 0) {
+                player.setAuxEffectInfo(androidx.media3.common.AuxEffectInfo(androidx.media3.common.AuxEffectInfo.NO_AUX_EFFECT_ID, 0f))
+            } else {
+                val hall = reverb ?: android.media.audiofx.PresetReverb(0, 0).apply {
+                    preset = android.media.audiofx.PresetReverb.PRESET_LARGEHALL
+                    enabled = true
+                }.also { reverb = it }
+                player.setAuxEffectInfo(androidx.media3.common.AuxEffectInfo(hall.id, fx.reverb / 100f))
+            }
+        } catch (e: Exception) {
+            Log.w("PlaybackService", "Reverb not available here", e)
+        }
+    }
+
     private fun initEqualizer(audioSessionId: Int) {
         try {
             equalizer?.release()
@@ -546,6 +581,8 @@ class PlaybackService : MediaLibraryService() {
         preferences.unregisterOnSharedPreferenceChangeListener(prefListener)
         equalizer?.release()
         equalizer = null
+        reverb?.release()
+        reverb = null
         mediaSession?.run {
             player.release()
             release()

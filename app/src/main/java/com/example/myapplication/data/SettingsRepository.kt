@@ -198,6 +198,23 @@ class SettingsRepository(
         preferences.edit().putString(KEY_YANDEX_WAVE_HEARD, ids.joinToString(",")).apply()
     }
 
+    // The player's button for a track's effects (reverb, speed), off unless asked for.
+    val playerFxButton = MutableStateFlow(preferences.getBoolean(KEY_PLAYER_FX_BUTTON, false))
+
+    fun setPlayerFxButton(enabled: Boolean) {
+        playerFxButton.value = enabled
+        preferences.edit().putBoolean(KEY_PLAYER_FX_BUTTON, enabled).apply()
+    }
+
+    /** [trackId]'s own effects; the playback service applies them as it reaches the track. */
+    fun trackFx(trackId: Long): TrackFx = TrackFx.decode(preferences.getString(TrackFx.KEY_PREFIX + trackId, null))
+
+    fun setTrackFx(trackId: Long, fx: TrackFx) {
+        val editor = preferences.edit()
+        if (fx.isDefault) editor.remove(TrackFx.KEY_PREFIX + trackId) else editor.putString(TrackFx.KEY_PREFIX + trackId, fx.encode())
+        editor.apply()
+    }
+
     /** What the wave is tuned to: a seed per setting ("mood", "mode"). */
     fun yandexWavePicks(): Map<String, String> =
         preferences.getString(KEY_YANDEX_WAVE_PICKS, null).orEmpty()
@@ -402,6 +419,7 @@ class SettingsRepository(
         const val KEY_YANDEX_WAVE_HEARD = "yandex_wave_heard"
         const val KEY_YANDEX_WAVE_SESSION = "yandex_wave_session"
         const val KEY_YANDEX_WAVE_PICKS = "yandex_wave_picks"
+        const val KEY_PLAYER_FX_BUTTON = "player_fx_button"
         const val KEY_COVER_GLOW_STYLE = "cover_glow_style"
         const val KEY_VIDEO_DOWNLOAD = "video_download"
         const val KEY_PLAYER_COVER_COLORS = "player_cover_colors"

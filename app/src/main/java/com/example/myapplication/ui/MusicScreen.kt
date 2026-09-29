@@ -161,6 +161,8 @@ import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
+import androidx.compose.material3.FilterChip
+import androidx.compose.material.icons.rounded.Tune
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -411,6 +413,8 @@ fun MusicScreen(viewModel: MusicViewModel) {
     val yandexPlaylists by viewModel.yandexPlaylists.collectAsState()
     val yandexWaveOn by viewModel.yandexWaveOn.collectAsState()
     val yandexWavePicks by viewModel.yandexWavePicks.collectAsState()
+    val trackFx by viewModel.trackFx.collectAsState()
+    val playerFxButton by viewModel.settingsRepo.playerFxButton.collectAsState()
     val yandexWaveStarting by viewModel.yandexWaveStarting.collectAsState()
     val yandexToken by viewModel.yandexToken.collectAsState()
     val hasYandexToken = yandexToken.isNotEmpty()
@@ -1154,6 +1158,8 @@ fun MusicScreen(viewModel: MusicViewModel) {
                         },
                         // The wave has no order to shuffle: in its place, "not for me".
                         onDislike = if (yandexWaveOn) viewModel::dislikeYandexTrack else null,
+                        trackFx = trackFx.takeIf { playerFxButton },
+                        onTrackFxChange = viewModel::setTrackFx,
                         onLongPressCover = {
                             showTrackActionsDialog = true
                         },
@@ -3745,6 +3751,22 @@ private fun SettingsScreen(
                     eqEnabled = eqEnabled,
                     eqPreset = eqPreset
                 )
+                val fxButton by settingsRepository.playerFxButton.collectAsState()
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .glassOr(MaterialTheme.shapes.extraLarge, MaterialTheme.colorScheme.surfaceContainer),
+                    shape = MaterialTheme.shapes.extraLarge,
+                    colors = CardDefaults.cardColors(containerColor = glassFill(MaterialTheme.colorScheme.surfaceContainer))
+                ) {
+                    SettingsSwitchRow(
+                        icon = Icons.Rounded.Tune,
+                        title = "Эффекты в плеере",
+                        subtitle = "Кнопка реверба, замедления и ускорения — для каждого трека свои",
+                        checked = fxButton,
+                        onCheckedChange = settingsRepository::setPlayerFxButton
+                    )
+                }
             }
         }
 
@@ -5867,6 +5889,9 @@ private fun TrackDetailScreen(
     onRepeat: () -> Unit,
     onShuffle: () -> Unit,
     onDislike: (() -> Unit)? = null,
+    // The track's effects, with the button for them; null while that button is off in settings.
+    trackFx: com.example.myapplication.data.TrackFx? = null,
+    onTrackFxChange: (com.example.myapplication.data.TrackFx) -> Unit = {},
     onLongPressCover: () -> Unit,
     onArtistClick: (SoundCloudUser) -> Unit,
     // Whether the player has been pulled off its place: the screen keeps the mini player ready
@@ -6342,6 +6367,8 @@ private fun TrackDetailScreen(
                         onRepeat = onRepeat,
                         onShuffle = onShuffle,
                         onDislike = onDislike,
+                        trackFx = trackFx,
+                        onTrackFxChange = onTrackFxChange,
                         onArtistClick = onArtistClick,
                         lyricsAvailable = !lyrics.isNullOrEmpty(),
                         lyricsShown = lyricsShown,
@@ -6695,6 +6722,8 @@ private fun PlayerPanel(
     onShuffle: () -> Unit,
     // In the shuffle's place when there is one: "not for me", while the wave plays.
     onDislike: (() -> Unit)? = null,
+    trackFx: com.example.myapplication.data.TrackFx? = null,
+    onTrackFxChange: (com.example.myapplication.data.TrackFx) -> Unit = {},
     onArtistClick: (SoundCloudUser) -> Unit,
     lyricsAvailable: Boolean,
     lyricsShown: Boolean,
@@ -6742,6 +6771,8 @@ private fun PlayerPanel(
                 // a name in the file: there is no page to go to.
                 val fromPhone = track.urn?.startsWith("local:") == true
                 val live = track.liveVideoId != null
+                var fxOpen by remember { mutableStateOf(false) }
+                Row(verticalAlignment = Alignment.CenterVertically) {
                 OnPanelChip(
                     text = buildString {
                         append(
@@ -6756,6 +6787,17 @@ private fun PlayerPanel(
                         if (!fromPhone && downloadState == DownloadState.DOWNLOADED) append(" · на устройстве")
                     }
                 )
+                if (trackFx != null) {
+                    Spacer(modifier = Modifier.weight(1f))
+                    TrackFxButton(fx = trackFx, color = onPanel, onClick = {
+                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                        fxOpen = true
+                    })
+                }
+                }
+                if (fxOpen && trackFx != null) {
+                    TrackFxSheet(fx = trackFx, onChange = onTrackFxChange, onDismiss = { fxOpen = false })
+                }
                 Spacer(modifier = Modifier.height(12.dp))
                 Text(
                     text = track.title ?: "Unknown Track",
@@ -7026,6 +7068,123 @@ private fun BoxScope.LandscapeControls(
 }
 
 private const val LANDSCAPE_CONTROLS_HIDE_MS = 3_000L
+
+/** The button for a track's effects, across from where it is from: lit while it has any. */
+@Composable
+private fun TrackFxButton(fx: com.example.myapplication.data.TrackFx, color: Color, onClick: () -> Unit) {
+    val active = !fx.isDefault
+    Surface(
+        onClick = onClick,
+        shape = CircleShape,
+        color = if (active) PanelColors.accent else color.copy(alpha = 0.12f),
+        contentColor = if (active) PanelColors.onAccent else color
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            Icon(Icons.Rounded.Tune, contentDescription = null, modifier = Modifier.size(18.dp))
+            Text(
+                text = when {
+                    fx.speed != 1f -> "%.2f×".format(fx.speed)
+                    fx.reverb > 0 -> "Реверб"
+                    else -> "Эффекты"
+                },
+                style = MaterialTheme.typography.labelLarge
+            )
+        }
+    }
+}
+
+/**
+ * A track's effects: its speed (with presets for slowed and sped up), whether its pitch stays put,
+ * and its reverb. Each change is heard at once and kept for the track.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun TrackFxSheet(
+    fx: com.example.myapplication.data.TrackFx,
+    onChange: (com.example.myapplication.data.TrackFx) -> Unit,
+    onDismiss: () -> Unit
+) {
+    ModalBottomSheet(onDismissRequest = onDismiss, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 24.dp)
+                .padding(bottom = 28.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp)
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("Эффекты трека", style = MaterialTheme.typography.titleLarge)
+                    Text(
+                        "Сохраняются для этого трека",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                if (!fx.isDefault) TextButton(onClick = { onChange(com.example.myapplication.data.TrackFx()) }) { Text("Сбросить") }
+            }
+
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("Скорость", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
+                Text("%.2f×".format(fx.speed), style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.primary)
+            }
+            Slider(
+                value = fx.speed,
+                onValueChange = { onChange(fx.copy(speed = (Math.round(it * 20f) / 20f))) },
+                valueRange = com.example.myapplication.data.TrackFx.MIN_SPEED..com.example.myapplication.data.TrackFx.MAX_SPEED,
+                steps = 19
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                listOf(0.8f to "Замедлить", 1f to "Обычная", 1.25f to "Ускорить").forEach { (speed, name) ->
+                    FilterChip(
+                        selected = fx.speed == speed,
+                        onClick = { onChange(fx.copy(speed = speed)) },
+                        label = { Text(if (speed == 1f) name else "$name ${"%.2f".format(speed).trimEnd('0').trimEnd('.')}×") }
+                    )
+                }
+            }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("Сохранять тон", style = MaterialTheme.typography.titleMedium)
+                    Text(
+                        "Без этого голос ниже в замедлении и выше в ускорении, как у пластинки",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Switch(checked = fx.keepPitch, onCheckedChange = { onChange(fx.copy(keepPitch = it)) })
+            }
+
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("Реверб", style = MaterialTheme.typography.titleMedium)
+                    Text(
+                        "Эхо большого зала",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Switch(
+                    checked = fx.reverb > 0,
+                    onCheckedChange = { onChange(fx.copy(reverb = if (it) DEFAULT_REVERB else 0)) }
+                )
+            }
+            if (fx.reverb > 0) {
+                Slider(
+                    value = fx.reverb.toFloat(),
+                    onValueChange = { onChange(fx.copy(reverb = it.roundToInt().coerceIn(5, 100))) },
+                    valueRange = 5f..100f
+                )
+            }
+        }
+    }
+}
+
+private const val DEFAULT_REVERB = 40
 
 /** "В эфире", with a red dot: a live stream's place for the seek bar, as tall as it. */
 @Composable

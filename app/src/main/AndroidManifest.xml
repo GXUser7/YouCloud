@@ -8,6 +8,8 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
     <uses-permission android:name="android.permission.VIBRATE" />
+    <!-- The reverb of a track's effects is an effect on the whole output. -->
+    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
     <!-- Hands a downloaded update to the system installer; the user still confirms it there. -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
