@@ -198,6 +198,40 @@ class SettingsRepository(
         preferences.edit().putString(KEY_YANDEX_WAVE_HEARD, ids.joinToString(",")).apply()
     }
 
+    // A YouTube artist's page whole (every row: videos, singles, similar artists…); off, their
+    // tracks and albums as before, and their broadcasts.
+    val ytArtistShowAll = MutableStateFlow(preferences.getBoolean(KEY_YT_ARTIST_SHOW_ALL, false))
+
+    fun setYtArtistShowAll(enabled: Boolean) {
+        ytArtistShowAll.value = enabled
+        preferences.edit().putBoolean(KEY_YT_ARTIST_SHOW_ALL, enabled).apply()
+    }
+
+    // Search YouTube's tab through youtube.com itself instead of YouTube Music, to try it.
+    val ytWebSearch = MutableStateFlow(preferences.getBoolean(KEY_YT_WEB_SEARCH, false))
+
+    fun setYtWebSearch(enabled: Boolean) {
+        ytWebSearch.value = enabled
+        preferences.edit().putBoolean(KEY_YT_WEB_SEARCH, enabled).apply()
+    }
+
+    // The player's button for a track's effects (reverb, speed), off unless asked for.
+    val playerFxButton = MutableStateFlow(preferences.getBoolean(KEY_PLAYER_FX_BUTTON, false))
+
+    fun setPlayerFxButton(enabled: Boolean) {
+        playerFxButton.value = enabled
+        preferences.edit().putBoolean(KEY_PLAYER_FX_BUTTON, enabled).apply()
+    }
+
+    /** [trackId]'s own effects; the playback service applies them as it reaches the track. */
+    fun trackFx(trackId: Long): TrackFx = TrackFx.decode(preferences.getString(TrackFx.KEY_PREFIX + trackId, null))
+
+    fun setTrackFx(trackId: Long, fx: TrackFx) {
+        val editor = preferences.edit()
+        if (fx.isDefault) editor.remove(TrackFx.KEY_PREFIX + trackId) else editor.putString(TrackFx.KEY_PREFIX + trackId, fx.encode())
+        editor.apply()
+    }
+
     /** What the wave is tuned to: a seed per setting ("mood", "mode"). */
     fun yandexWavePicks(): Map<String, String> =
         preferences.getString(KEY_YANDEX_WAVE_PICKS, null).orEmpty()
@@ -402,6 +436,9 @@ class SettingsRepository(
         const val KEY_YANDEX_WAVE_HEARD = "yandex_wave_heard"
         const val KEY_YANDEX_WAVE_SESSION = "yandex_wave_session"
         const val KEY_YANDEX_WAVE_PICKS = "yandex_wave_picks"
+        const val KEY_PLAYER_FX_BUTTON = "player_fx_button"
+        const val KEY_YT_WEB_SEARCH = "yt_web_search"
+        const val KEY_YT_ARTIST_SHOW_ALL = "yt_artist_show_all"
         const val KEY_COVER_GLOW_STYLE = "cover_glow_style"
         const val KEY_VIDEO_DOWNLOAD = "video_download"
         const val KEY_PLAYER_COVER_COLORS = "player_cover_colors"

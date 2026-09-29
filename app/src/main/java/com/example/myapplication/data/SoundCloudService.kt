@@ -123,6 +123,14 @@ interface SoundCloudService {
         @retrofit2.http.Query("limit") limit: Int = 25
     ): retrofit2.Response<okhttp3.ResponseBody>
 
+    /** The ids of every account the signed-in one follows, in `collection`. */
+    @retrofit2.http.GET("me/followings/ids")
+    suspend fun getFollowingIds(
+        @retrofit2.http.Query("client_id") clientId: String,
+        @retrofit2.http.Query("limit") limit: Int = 5000,
+        @retrofit2.http.Query("app_version") appVersion: String = SoundCloudApi.APP_VERSION
+    ): com.google.gson.JsonObject
+
     @retrofit2.http.GET("me")
     suspend fun getMe(
         @retrofit2.http.Query("client_id") clientId: String

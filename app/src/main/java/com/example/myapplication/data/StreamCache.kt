@@ -63,10 +63,24 @@ object StreamCache {
     fun dataSourceFactory(context: Context): CacheDataSource.Factory = CacheDataSource.Factory()
         .setCache(cache(context))
         .setCacheKeyFactory(keyFactory)
-        .setUpstreamDataSourceFactory(DefaultDataSource.Factory(context))
+        .setUpstreamDataSourceFactory(DefaultDataSource.Factory(context, slowNetworkHttp()))
         // Without FLAG_BLOCK_ON_CACHE: a piece being fetched ahead is read from the network
         // meanwhile rather than waited for.
         .setFlags(CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR)
+
+    /**
+     * HTTP with room for a slow connection: over a VPN a handshake with YouTube's video servers
+     * took longer than the default eight seconds, and the track failed before it began.
+     */
+    fun slowNetworkHttp(userAgent: String? = null): androidx.media3.datasource.DefaultHttpDataSource.Factory =
+        androidx.media3.datasource.DefaultHttpDataSource.Factory()
+            .setConnectTimeoutMs(HTTP_CONNECT_TIMEOUT_MS)
+            .setReadTimeoutMs(HTTP_READ_TIMEOUT_MS)
+            .setAllowCrossProtocolRedirects(true)
+            .apply { userAgent?.let(::setUserAgent) }
+
+    private const val HTTP_CONNECT_TIMEOUT_MS = 20_000
+    private const val HTTP_READ_TIMEOUT_MS = 25_000
 
     /** Whether all of [key] is kept, so it plays without the network, and without a link. */
     fun isFullyCached(context: Context, key: String): Boolean {
@@ -93,8 +107,10 @@ class LocalOrCachedDataSource(
     }
 
     override fun open(dataSpec: DataSpec): Long {
-        val source = when (dataSpec.uri.scheme) {
-            "file", "content", "asset", "android.resource", "rawresource", "data" -> local
+        val source = when {
+            dataSpec.uri.scheme in LOCAL_SCHEMES -> local
+            // A live broadcast's pieces are heard once: kept, they only pushed tracks out.
+            isLiveBroadcast(dataSpec.uri) -> local
             else -> cached
         }
         current = source
@@ -118,5 +134,14 @@ class LocalOrCachedDataSource(
 
     class Factory(private val cached: DataSource.Factory, private val local: DataSource.Factory) : DataSource.Factory {
         override fun createDataSource() = LocalOrCachedDataSource(cached.createDataSource(), local.createDataSource())
+    }
+
+    private companion object {
+        val LOCAL_SCHEMES = setOf("file", "content", "asset", "android.resource", "rawresource", "data")
+
+        fun isLiveBroadcast(uri: android.net.Uri): Boolean {
+            val path = uri.path.orEmpty()
+            return uri.host == "manifest.googlevideo.com" || "/yt_live_broadcast/" in path || "/live/1/" in path
+        }
     }
 }

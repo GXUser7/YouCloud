@@ -38,8 +38,23 @@ import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.ime
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.imeAnimationTarget
+import androidx.compose.foundation.layout.isImeVisible
+import androidx.compose.ui.platform.LocalWindowInfo
+import androidx.compose.ui.layout.boundsInWindow
+import androidx.compose.material.icons.rounded.Edit
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.foundation.text.appendInlineContent
+import androidx.compose.ui.unit.em
+import androidx.compose.material.icons.automirrored.rounded.Send
 import androidx.compose.foundation.layout.union
 import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.foundation.layout.displayCutout
+import androidx.compose.foundation.layout.only
+import androidx.compose.foundation.layout.WindowInsetsSides
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -52,6 +67,16 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.catch
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.withStyle
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.material.icons.rounded.Forum
+import androidx.compose.material.icons.rounded.KeyboardArrowDown
+import androidx.compose.material.icons.rounded.HowToReg
+import androidx.compose.material.icons.rounded.PersonAddAlt1
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.BorderStroke
@@ -84,6 +109,7 @@ import com.example.myapplication.data.LyricLine
 import com.example.myapplication.data.YtAuth
 import com.example.myapplication.data.YtShelf
 import com.example.myapplication.data.youTubeTrackId
+import com.example.myapplication.data.liveVideoId
 import com.example.myapplication.data.youTubeVideoId
 import androidx.compose.material.icons.filled.SmartDisplay
 import androidx.compose.material.icons.filled.OndemandVideo
@@ -160,6 +186,8 @@ import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
+import androidx.compose.material3.FilterChip
+import androidx.compose.material.icons.rounded.Tune
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -408,8 +436,11 @@ fun MusicScreen(viewModel: MusicViewModel) {
     }
 
     val yandexPlaylists by viewModel.yandexPlaylists.collectAsState()
+    val yandexShelves by viewModel.yandexShelves.collectAsState()
     val yandexWaveOn by viewModel.yandexWaveOn.collectAsState()
     val yandexWavePicks by viewModel.yandexWavePicks.collectAsState()
+    val trackFx by viewModel.trackFx.collectAsState()
+    val playerFxButton by viewModel.settingsRepo.playerFxButton.collectAsState()
     val yandexWaveStarting by viewModel.yandexWaveStarting.collectAsState()
     val yandexToken by viewModel.yandexToken.collectAsState()
     val hasYandexToken = yandexToken.isNotEmpty()
@@ -574,6 +605,8 @@ fun MusicScreen(viewModel: MusicViewModel) {
                         downloadedFolderArtworkUri = downloadedFolderArtworkUri,
                         playlists = playlists,
                         yandexPlaylists = yandexPlaylists,
+                        yandexShelves = yandexShelves,
+                        onPlayYandexTrack = { track, queue -> viewModel.playYandexTrack(track, queue) },
                         wave = HomeWave(
                             on = yandexWaveOn,
                             starting = yandexWaveStarting,
@@ -915,6 +948,14 @@ fun MusicScreen(viewModel: MusicViewModel) {
                                 onFavoriteClick = { track ->
                                     haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                                     viewModel.toggleFavorite(track)
+                                },
+                                onArtistClick = { artist ->
+                                    viewModel.openArtistDetails(
+                                        userId = artist.id ?: 0L,
+                                        permalinkUrl = artist.permalinkUrl,
+                                        username = artist.username,
+                                        avatarUrl = artist.avatarUrl
+                                    )
                                 }
                             )
                         } else {
@@ -931,11 +972,42 @@ fun MusicScreen(viewModel: MusicViewModel) {
                         val artistLoading by viewModel.artistLoading.collectAsState()
                         val artistError by viewModel.artistError.collectAsState()
                         val selectedArtistPlaylist by viewModel.selectedArtistPlaylist.collectAsState()
+                        val artistFollow by viewModel.artistFollow.collectAsState()
+                        val artistLives by viewModel.artistLives.collectAsState()
+                        val artistShelves by viewModel.artistShelves.collectAsState()
+                        val ytArtistShowAll by viewModel.settingsRepo.ytArtistShowAll.collectAsState()
+                        val artistTracksAreVideos by viewModel.artistTracksAreVideos.collectAsState()
                         currentArtist?.let { artist ->
                             ArtistDetailScreen(
                                 artist = artist,
                                 tracks = currentArtistTracks,
                                 playlists = currentArtistPlaylists,
+                                tracksTitle = if (artistTracksAreVideos) "Видео" else "Популярные треки",
+                                follow = artistFollow,
+                                onToggleFollow = {
+                                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                    viewModel.toggleArtistFollow()
+                                },
+                                lives = artistLives,
+                                // The page whole, or as before: its tracks, albums and broadcasts.
+                                shelves = if (ytArtistShowAll) artistShelves else emptyList(),
+                                onPlayFrom = { track, queue ->
+                                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                    viewModel.playQueuedTrack(track, queue)
+                                },
+                                onOpenArtist = { other ->
+                                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                    viewModel.openArtistDetails(
+                                        userId = 0L,
+                                        permalinkUrl = other.permalinkUrl,
+                                        username = other.username,
+                                        avatarUrl = other.avatarUrl
+                                    )
+                                },
+                                onRetry = {
+                                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                    viewModel.retryArtist()
+                                },
                                 isLoading = artistLoading,
                                 error = artistError,
                                 currentTrackId = currentTrackId,
@@ -1037,12 +1109,23 @@ fun MusicScreen(viewModel: MusicViewModel) {
             // Under a player being pulled down it is there already, in its place and without
             // coming in: the player folds away onto it, rather than it rising after the player
             // has gone.
+            val sideways = isLandscape()
             AnimatedVisibility(
                 visible = currentTrackTitle != null && (selectedTrack == null || playerPulled),
                 enter = if (selectedTrack != null) EnterTransition.None else slideInVertically(initialOffsetY = { it }) + fadeIn(),
                 exit = slideOutVertically(targetOffsetY = { it }) + fadeOut(),
                 modifier = Modifier
-                    .align(Alignment.BottomCenter)
+                    // Sideways, at the foot of the pane on the right, under the thumb.
+                    .align(if (sideways) Alignment.BottomEnd else Alignment.BottomCenter)
+                    .then(
+                        if (sideways) {
+                            Modifier
+                                .windowInsetsPadding(WindowInsets.displayCutout.only(WindowInsetsSides.End))
+                                .width(LandscapePaneWidth)
+                        } else {
+                            Modifier
+                        }
+                    )
                     .then(
                         // On search the tabs ride the keyboard, and the mini player rides them.
                         if (searchTabsShown) {
@@ -1063,7 +1146,10 @@ fun MusicScreen(viewModel: MusicViewModel) {
                     artworkUrl = currentPlayingTrack?.artworkUrl,
                     isPlaying = isPlaying,
                     progress = {
-                        if (playbackDurationMs > 0L) {
+                        // A broadcast has no end to be part way to: the line runs full.
+                        if (currentPlayingTrack?.liveVideoId != null) {
+                            1f
+                        } else if (playbackDurationMs > 0L) {
                             playbackPosition.value.coerceIn(0L, playbackDurationMs).toFloat() /
                                 playbackDurationMs.toFloat()
                         } else {
@@ -1150,6 +1236,9 @@ fun MusicScreen(viewModel: MusicViewModel) {
                         },
                         // The wave has no order to shuffle: in its place, "not for me".
                         onDislike = if (yandexWaveOn) viewModel::dislikeYandexTrack else null,
+                        trackFx = trackFx.takeIf { playerFxButton },
+                        onTrackFxChange = viewModel::setTrackFx,
+                        ytAuth = viewModel.settingsRepo::ytMusicAuth,
                         onLongPressCover = {
                             showTrackActionsDialog = true
                         },
@@ -1161,6 +1250,7 @@ fun MusicScreen(viewModel: MusicViewModel) {
                                 trackUrn = track.urn
                             )
                         },
+                        onAlbumClick = viewModel::openTrackAlbum,
                         onPulledChange = { playerPulled = it },
                         onTouchedChange = { playerTouched = it }
                     )
@@ -1195,8 +1285,10 @@ fun MusicScreen(viewModel: MusicViewModel) {
                     context.startActivity(shareIntent)
                 }
             },
-            onRedownload = {
-                viewModel.redownloadTrack(capturedTrack)
+            // A file added from the phone has nowhere to be downloaded again from, and a broadcast
+            // is never downloaded at all.
+            onRedownload = if (capturedTrack.urn?.startsWith("local:") == true || capturedTrack.liveVideoId != null) null else {
+                { viewModel.redownloadTrack(capturedTrack) }
             },
             // The player has no menu of its own at the top any more: a downloaded track is taken
             // off the phone from here.
@@ -1238,7 +1330,8 @@ private enum class HomeCategory(val title: String, val service: HomeService) {
     YouTube("YouTube Music", HomeService.YouTube),
     Library("Медиатека", HomeService.Yandex),
     MyMusic("Моя музыка", HomeService.Downloads),
-    MyWave("Моя форма", HomeService.Yandex)
+    MyWave("Моя форма", HomeService.Yandex),
+    YandexShelf("Яндекс Музыка", HomeService.Yandex)
 }
 
 /** Yandex's wave as home shows it, as "Моя форма"; see [MyWavePage]. */
@@ -1324,6 +1417,8 @@ private fun HomeScreen(
     downloadedFolderArtworkUri: String?,
     playlists: List<Playlist>,
     yandexPlaylists: List<SoundCloudPlaylist>,
+    yandexShelves: List<YtShelf>,
+    onPlayYandexTrack: (SoundCloudTrack, List<SoundCloudTrack>) -> Unit,
     wave: HomeWave,
     onOpenPlaylist: (Playlist) -> Unit,
     onOpenYandexPlaylist: (SoundCloudPlaylist) -> Unit,
@@ -1413,7 +1508,19 @@ private fun HomeScreen(
                     plural(yandexPlaylists.size, "плейлист", "плейлиста", "плейлистов") + " Яндекс Музыки"
                 }
             )
-        )
+        ) + yandexShelves.map { shelf ->
+            // Each row of Yandex Music's home a section of its own, as YouTube Music's are.
+            HomeSection(
+                key = "ya-" + shelf.title,
+                category = HomeCategory.YandexShelf,
+                title = shelf.title,
+                subtitle = listOfNotNull(
+                    shelf.tracks.size.takeIf { it > 0 }?.let { plural(it, "трек", "трека", "треков") },
+                    shelf.sets.size.takeIf { it > 0 }?.let { plural(it, "подборка", "подборки", "подборок") }
+                ).joinToString(" · "),
+                shelf = shelf
+            )
+        }
         // Each row of YouTube Music's home a section of its own, as on the site.
         HomeService.YouTube -> ytRows.map { shelf ->
             HomeSection(
@@ -1501,30 +1608,33 @@ private fun HomeScreen(
                 if (reselected > 0 && shown == service) sectionPager.animateScrollToPage(0)
             }
 
-            Column(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .statusBarsPadding()
-                    .navigationBarsPadding()
-                    // The page on its way out sinks back a little and dims, the one coming in
-                    // rises from it.
-                    .graphicsLayer {
-                        val away = ((servicePager.currentPage - page) + servicePager.currentPageOffsetFraction)
-                            .absoluteValue.coerceIn(0f, 1f)
-                        val scale = 1f - 0.06f * away
-                        scaleX = scale
-                        scaleY = scale
-                        // Entirely off to the side it isn't drawn at all: dimmed, the page was
-                        // painted into a picture of its own on every frame, out of sight.
-                        alpha = if (away >= 1f) 0f else 1f - 0.45f * away
-                    }
-            ) {
+            // Upright: the title, the carousel, the next section, the toolbar below. Sideways:
+            // the carousel on the left, and on the right, under the thumb, the title, where it
+            // goes on, and the mini player and the toolbar at the foot.
+            val landscape = isLandscape()
+            val pageModifier = Modifier
+                .fillMaxSize()
+                .statusBarsPadding()
+                .navigationBarsPadding()
+                // The page on its way out sinks back a little and dims, the one coming in
+                // rises from it.
+                .graphicsLayer {
+                    val away = ((servicePager.currentPage - page) + servicePager.currentPageOffsetFraction)
+                        .absoluteValue.coerceIn(0f, 1f)
+                    val scale = 1f - 0.06f * away
+                    scaleX = scale
+                    scaleY = scale
+                    // Entirely off to the side it isn't drawn at all: dimmed, the page was
+                    // painted into a picture of its own on every frame, out of sight.
+                    alpha = if (away >= 1f) 0f else 1f - 0.45f * away
+                }
+            val titleBlock: @Composable () -> Unit = {
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(start = 20.dp, top = 12.dp, end = 20.dp)
                         .heightIn(min = 64.dp),
-                    contentAlignment = Alignment.Center
+                    contentAlignment = if (landscape) Alignment.CenterStart else Alignment.Center
                 ) {
                     AnimatedContent(
                         targetState = sections.getOrElse(sectionPager.currentPage) { sections.first() },
@@ -1541,14 +1651,15 @@ private fun HomeScreen(
                         Text(
                             text = section.title,
                             style = MaterialTheme.typography.displaySmall,
-                            textAlign = TextAlign.Center,
-                            maxLines = 1,
+                            textAlign = if (landscape) TextAlign.Start else TextAlign.Center,
+                            maxLines = if (landscape) 2 else 1,
                             overflow = TextOverflow.Ellipsis,
                             modifier = Modifier.fillMaxWidth()
                         )
                     }
                 }
-
+            }
+            val notices: @Composable () -> Unit = {
                 if (hasWarning) {
                     Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
                         when {
@@ -1566,12 +1677,9 @@ private fun HomeScreen(
                     updates = updates,
                     modifier = Modifier.padding(start = 16.dp, top = 8.dp, end = 16.dp)
                 )
-
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .weight(1f)
-                ) {
+            }
+            val sectionsBlock: @Composable (Modifier) -> Unit = { blockModifier ->
+                Box(modifier = blockModifier) {
                 VerticalPager(
                     state = sectionPager,
                     modifier = Modifier.fillMaxSize()
@@ -1625,6 +1733,10 @@ private fun HomeScreen(
                             onPick = wave.onPick,
                             onReset = wave.onReset
                         )
+
+                        HomeCategory.YandexShelf -> section.shelf?.let { shelf ->
+                            HomeHeroCarousel(items = remember(shelf) { ytShelfItems(shelf, onOpenYtSet, onPlayYandexTrack) })
+                        }
 
                         HomeCategory.Library -> {
                             if (yandexPlaylists.isEmpty()) {
@@ -1700,7 +1812,8 @@ private fun HomeScreen(
                         )
                     }
                 }
-
+            }
+            val hintBlock: @Composable () -> Unit = {
                 // The section below (or, at the last, back to the first): says the page goes on
                 // downward, and takes you there. Its room is kept where there is no section to go
                 // to, so that every page's middle, where its carousel sits, is at the same height.
@@ -1725,11 +1838,47 @@ private fun HomeScreen(
                         )
                     }
                 }
-
-                // Room for the toolbar and the mini player over it, whether that is up or not: made
-                // only when it came up, the room shrank the page, and all that is centred on it (a
-                // carousel, the wave's shape) jumped up as a track started.
-                Spacer(modifier = Modifier.height(8.dp + HomeToolbarClearance + 72.dp + 12.dp))
+            }
+            if (landscape) {
+                Row(modifier = pageModifier) {
+                    // Centred on the whole of the left: the camera's cutout at the screen's edge is
+                    // never reached by a cover in the middle, and kept clear of by the pane.
+                    sectionsBlock(Modifier.weight(1f).fillMaxHeight())
+                    Column(
+                        modifier = Modifier
+                            .windowInsetsPadding(WindowInsets.displayCutout.only(WindowInsetsSides.End))
+                            .width(LandscapePaneWidth)
+                            .fillMaxHeight()
+                    ) {
+                        titleBlock()
+                        // What the section is, under its name: there is room for it on the side.
+                        val subtitle = sections.getOrElse(sectionPager.currentPage) { sections.first() }.subtitle
+                        if (subtitle.isNotBlank()) {
+                            Text(
+                                text = subtitle,
+                                style = MaterialTheme.typography.bodyLarge,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.padding(horizontal = 20.dp)
+                            )
+                        }
+                        notices()
+                        hintBlock()
+                        Spacer(modifier = Modifier.weight(1f))
+                    }
+                }
+            } else {
+                Column(modifier = pageModifier) {
+                    titleBlock()
+                    notices()
+                    sectionsBlock(Modifier.fillMaxWidth().weight(1f))
+                    hintBlock()
+                    // Room for the toolbar and the mini player over it, whether that is up or not: made
+                    // only when it came up, the room shrank the page, and all that is centred on it (a
+                    // carousel, the wave's shape) jumped up as a track started.
+                    Spacer(modifier = Modifier.height(8.dp + HomeToolbarClearance + 72.dp + 12.dp))
+                }
             }
         }
 
@@ -1748,10 +1897,19 @@ private fun HomeScreen(
                 haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                 onOpenSettings()
             },
-            modifier = Modifier
-                .align(Alignment.BottomCenter)
-                .navigationBarsPadding()
-                .padding(16.dp)
+            modifier = if (isLandscape()) {
+                Modifier
+                    .align(Alignment.BottomEnd)
+                    .navigationBarsPadding()
+                    .windowInsetsPadding(WindowInsets.displayCutout.only(WindowInsetsSides.End))
+                    .width(LandscapePaneWidth)
+                    .padding(16.dp)
+            } else {
+                Modifier
+                    .align(Alignment.BottomCenter)
+                    .navigationBarsPadding()
+                    .padding(16.dp)
+            }
         )
     }
     }
@@ -2465,15 +2623,36 @@ private fun HomeHeroCarousel(items: List<HeroItem>) {
     val pagerState = rememberPagerState { items.size }
 
     BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
-        val captionHeight = 88.dp
-        val captionGap = 16.dp
+        val landscape = isLandscape()
+        // Sideways the caption is a line of title and a line under it, and no taller than that:
+        // room kept for more stood empty under it, and the covers crowded up against the top.
+        val captionHeight = if (landscape) 60.dp else 88.dp
+        val captionGap = if (landscape) 12.dp else 16.dp
         val margin = 16.dp
-        val coverWidth = maxWidth - (margin + HeroStrip + HeroGap) * 2
+        // Sideways the page is wider than tall: the cover square, as tall as leaves the caption room
+        // and a margin above and below.
+        val coverWidth = if (landscape) {
+            minOf(
+                maxWidth - (margin + HeroStrip + HeroGap) * 2,
+                maxHeight - captionHeight - captionGap - HeroLandscapeMargin * 2
+            ).coerceAtLeast(120.dp)
+        } else {
+            maxWidth - (margin + HeroStrip + HeroGap) * 2
+        }
         val sidePadding = (maxWidth - coverWidth) / 2
         // Close to square: a little taller than wide at most, and never taller than leaves room for
         // the caption under it with the covers in the middle of the page.
-        val carouselHeight = (maxHeight - (captionHeight + captionGap) * 2).coerceIn(160.dp, coverWidth * 1.08f)
-        val carouselTop = (maxHeight - carouselHeight) / 2
+        val carouselHeight = if (landscape) {
+            coverWidth
+        } else {
+            (maxHeight - (captionHeight + captionGap) * 2).coerceIn(160.dp, coverWidth * 1.08f)
+        }
+        // Sideways the covers and their caption are centred together: there is no room to spare.
+        val carouselTop = if (landscape) {
+            ((maxHeight - carouselHeight - captionGap - captionHeight) / 2).coerceAtLeast(0.dp)
+        } else {
+            (maxHeight - carouselHeight) / 2
+        }
         val density = LocalDensity.current
         val coverPx = with(density) { coverWidth.toPx() }
         val stripPx = with(density) { HeroStrip.toPx() }
@@ -2489,7 +2668,8 @@ private fun HomeHeroCarousel(items: List<HeroItem>) {
                 contentPadding = PaddingValues(horizontal = sidePadding),
                 pageSpacing = HeroGap,
                 modifier = Modifier
-                    .align(Alignment.Center)
+                    .align(Alignment.TopCenter)
+                    .padding(top = carouselTop)
                     .fillMaxWidth()
                     .height(carouselHeight)
                     // What the carousel doesn't use of a swipe, at its first or last cover, isn't
@@ -2613,7 +2793,7 @@ private fun HomeHeroCarousel(items: List<HeroItem>) {
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             textAlign = TextAlign.Center,
-                            maxLines = 2,
+                            maxLines = if (landscape) 1 else 2,
                             overflow = TextOverflow.Ellipsis
                         )
                     }
@@ -2626,6 +2806,8 @@ private fun HomeHeroCarousel(items: List<HeroItem>) {
 /** Width a neighbouring cover narrows to, and the gap between covers. */
 private val HeroStrip = 36.dp
 private val HeroGap = 8.dp
+// Sideways, the room above the covers and below their caption.
+private val HeroLandscapeMargin = 24.dp
 
 /** A rounded rectangle over [width] of the page from [left]: the part of a cover left visible. */
 private class HeroStripShape(
@@ -2783,7 +2965,8 @@ private fun PlaylistsScreen(
     LazyColumn(
         modifier = Modifier
             .fillMaxSize()
-            .statusBarsPadding(),
+            .statusBarsPadding()
+            .readableSideways(),
         contentPadding = PaddingValues(start = 16.dp, top = 12.dp, end = 16.dp, bottom = 120.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
@@ -2911,7 +3094,8 @@ private fun SettingsScreen(
     LazyColumn(
         modifier = Modifier
             .fillMaxSize()
-            .statusBarsPadding(),
+            .statusBarsPadding()
+            .readableSideways(),
         contentPadding = PaddingValues(start = 16.dp, top = 12.dp, end = 16.dp, bottom = 120.dp),
         verticalArrangement = Arrangement.spacedBy(18.dp)
     ) {
@@ -3656,6 +3840,22 @@ private fun SettingsScreen(
                         }
                     }
                 }
+                val ytArtistShowAll by settingsRepository.ytArtistShowAll.collectAsState()
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .glassOr(MaterialTheme.shapes.extraLarge, MaterialTheme.colorScheme.surfaceContainer),
+                    shape = MaterialTheme.shapes.extraLarge,
+                    colors = CardDefaults.cardColors(containerColor = glassFill(MaterialTheme.colorScheme.surfaceContainer))
+                ) {
+                    SettingsSwitchRow(
+                        icon = Icons.Default.SmartDisplay,
+                        title = "Вся страница автора YouTube",
+                        subtitle = "Все ряды: видео, синглы, плейлисты, похожие исполнители. Выключено — треки, альбомы и трансляции",
+                        checked = ytArtistShowAll,
+                        onCheckedChange = settingsRepository::setYtArtistShowAll
+                    )
+                }
             }
         }
 
@@ -3740,6 +3940,22 @@ private fun SettingsScreen(
                     eqEnabled = eqEnabled,
                     eqPreset = eqPreset
                 )
+                val fxButton by settingsRepository.playerFxButton.collectAsState()
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .glassOr(MaterialTheme.shapes.extraLarge, MaterialTheme.colorScheme.surfaceContainer),
+                    shape = MaterialTheme.shapes.extraLarge,
+                    colors = CardDefaults.cardColors(containerColor = glassFill(MaterialTheme.colorScheme.surfaceContainer))
+                ) {
+                    SettingsSwitchRow(
+                        icon = Icons.Rounded.Tune,
+                        title = "Эффекты в плеере",
+                        subtitle = "Кнопка реверба, замедления и ускорения — для каждого трека свои",
+                        checked = fxButton,
+                        onCheckedChange = settingsRepository::setPlayerFxButton
+                    )
+                }
             }
         }
 
@@ -3753,6 +3969,22 @@ private fun SettingsScreen(
                     modifier = Modifier.padding(start = 12.dp)
                 )
 
+                val ytWebSearch by settingsRepository.ytWebSearch.collectAsState()
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .glassOr(MaterialTheme.shapes.extraLarge, MaterialTheme.colorScheme.surfaceContainer),
+                    shape = MaterialTheme.shapes.extraLarge,
+                    colors = CardDefaults.cardColors(containerColor = glassFill(MaterialTheme.colorScheme.surfaceContainer))
+                ) {
+                    SettingsSwitchRow(
+                        icon = Icons.Default.Search,
+                        title = "Обычный поиск YouTube",
+                        subtitle = "Вкладка YouTube ищет по youtube.com, а не по YouTube Music: все видео и трансляции, с их каналами",
+                        checked = ytWebSearch,
+                        onCheckedChange = settingsRepository::setYtWebSearch
+                    )
+                }
                 val showDebugPercentageVal by settingsRepository.showDebugPercentage.collectAsState()
                 Card(
                     modifier = Modifier
@@ -3942,7 +4174,8 @@ private fun SearchScreen(
             downloadProgress = downloadProgress,
             onBack = onClosePlaylist,
             onPlayTrack = { track -> onPlayPlaylistTrack(track, openedPlaylist.tracks) },
-            onFavoriteClick = onFavoriteClick
+            onFavoriteClick = onFavoriteClick,
+            onArtistClick = onOpenArtist
         )
         return
     }
@@ -4000,21 +4233,33 @@ private fun SearchScreen(
     val results = rememberFrostSource()
     val tabsShown = sources.size > 1
     val playerShown = currentTrackId != null
+    // Sideways the results have the left to themselves; the bar, the field, the services and the
+    // mini player are in a pane on the right, under the thumb.
+    val landscape = isLandscape()
     // Room at the bottom of each list for what floats over its end: the tabs, the mini player.
-    val bottomRoom = 24.dp + searchDockHeight(tabsShown) + (if (playerShown) MiniPlayerHeight + 12.dp else 0.dp)
+    val bottomRoom = if (landscape) {
+        24.dp + WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
+    } else {
+        24.dp + searchDockHeight(tabsShown) + (if (playerShown) MiniPlayerHeight + 12.dp else 0.dp)
+    }
 
     // Search stands on the moving backdrop: its fields, rows and tabs are glass.
     androidx.compose.runtime.CompositionLocalProvider(LocalGlass provides true) {
     Box(modifier = Modifier.fillMaxSize()) {
+        Row(modifier = Modifier.fillMaxSize()) {
         Column(
             modifier = Modifier
-                .fillMaxSize()
+                .weight(1f)
+                .fillMaxHeight()
                 .statusBarsPadding()
+                .then(if (landscape) Modifier.windowInsetsPadding(WindowInsets.displayCutout.only(WindowInsetsSides.Start)) else Modifier)
         ) {
             // top = 0: the bar has to start at the same y as the home bar, or entering search
             // shifts the title and back button downward and the transition reads as a jump.
-            Box(modifier = Modifier.padding(horizontal = 16.dp)) {
-                TopBar(title = "Поиск", onBack = onBack)
+            if (!landscape) {
+                Box(modifier = Modifier.padding(horizontal = 16.dp)) {
+                    TopBar(title = "Поиск", onBack = onBack)
+                }
             }
             HorizontalPager(
                 state = sourcePager,
@@ -4065,13 +4310,37 @@ private fun SearchScreen(
             }
         }
 
+        if (landscape) {
+            Box(
+                modifier = Modifier
+                    .width(LandscapePaneWidth)
+                    .fillMaxHeight()
+                    .statusBarsPadding()
+                    .windowInsetsPadding(WindowInsets.displayCutout.only(WindowInsetsSides.End))
+                    .padding(horizontal = 16.dp)
+            ) {
+                TopBar(title = "Поиск", onBack = onBack)
+            }
+        }
+        }
+
         // The field and, when there is a choice, the services, down where the thumb is: on the
-        // keyboard's top edge while it is up, at the bottom of the screen when it isn't.
+        // keyboard's top edge while it is up, at the bottom of the screen when it isn't; sideways,
+        // at the foot of the pane on the right.
         androidx.compose.runtime.CompositionLocalProvider(LocalFrostSources provides backdrop + results) {
             Column(
                 modifier = Modifier
-                    .align(Alignment.BottomCenter)
+                    .align(if (landscape) Alignment.BottomEnd else Alignment.BottomCenter)
                     .windowInsetsPadding(WindowInsets.ime.union(WindowInsets.navigationBars))
+                    .then(
+                        if (landscape) {
+                            Modifier
+                                .windowInsetsPadding(WindowInsets.displayCutout.only(WindowInsetsSides.End))
+                                .width(LandscapePaneWidth)
+                        } else {
+                            Modifier
+                        }
+                    )
                     .padding(horizontal = 16.dp, vertical = 12.dp),
                 verticalArrangement = Arrangement.spacedBy(SearchDockGap)
             ) {
@@ -4365,6 +4634,125 @@ private fun searchDockHeight(tabs: Boolean): Dp =
 // The mini player's height, with its padding, for what must leave room for it.
 internal val MiniPlayerHeight = 72.dp
 
+/** Whether the phone is on its side: the screens then put their controls in a pane on the right. */
+@Composable
+@androidx.compose.runtime.ReadOnlyComposable
+internal fun isLandscape(): Boolean =
+    LocalConfiguration.current.orientation == android.content.res.Configuration.ORIENTATION_LANDSCAPE
+
+// Sideways, the pane on the right a screen's controls go in, under the thumb, the mini player at its
+// foot; and the room kept for it there.
+internal val LandscapePaneWidth = 400.dp
+private val PaneMiniPlayerRoom = MiniPlayerHeight + 16.dp + 16.dp
+
+/**
+ * Sideways, a list of settings or playlists across the whole width is hard to read: it keeps to a
+ * column clear of the pane on the right, where the mini player is.
+ */
+@Composable
+private fun Modifier.readableSideways(): Modifier =
+    if (isLandscape()) {
+        this
+            .windowInsetsPadding(WindowInsets.displayCutout.only(WindowInsetsSides.Start))
+            .padding(end = LandscapePaneWidth - 80.dp)
+    } else {
+        this
+    }
+
+/** Set for a collection's header drawn in the side pane rather than on top of its list. */
+private val LocalHeaderPane = androidx.compose.runtime.staticCompositionLocalOf { false }
+
+/**
+ * A collection's screen (an album, a playlist, a mix, an artist): upright, its [header] tops the
+ * list and scrolls away with it; sideways, the list takes the left and the header stands in a pane
+ * on the right, under the thumb, with the mini player at its foot.
+ */
+@Composable
+private fun DetailFrame(
+    listState: androidx.compose.foundation.lazy.LazyListState,
+    bottomPadding: Dp,
+    header: @Composable () -> Unit,
+    content: androidx.compose.foundation.lazy.LazyListScope.() -> Unit
+) {
+    if (isLandscape()) {
+        Row(modifier = Modifier.fillMaxSize()) {
+            LazyColumn(
+                state = listState,
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxHeight()
+                    .windowInsetsPadding(WindowInsets.displayCutout.only(WindowInsetsSides.Start)),
+                // Clear of the back button above; the mini player is in the pane, not over the list.
+                contentPadding = PaddingValues(
+                    top = WindowInsets.statusBars.asPaddingValues().calculateTopPadding() + 72.dp,
+                    bottom = 24.dp + WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
+                ),
+                content = content
+            )
+            androidx.compose.runtime.CompositionLocalProvider(LocalHeaderPane provides true) {
+                Box(modifier = Modifier.width(LandscapePaneWidth).fillMaxHeight()) { header() }
+            }
+        }
+    } else {
+        LazyColumn(
+            state = listState,
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(bottom = bottomPadding)
+        ) {
+            item(key = "detail-hero") { header() }
+            content()
+        }
+    }
+}
+
+/**
+ * A collection's header as a side pane: its picture filling the pane's top and fading into the
+ * page, [text] over its lower edge, then [actions] on the right, where the thumb is, and room below
+ * for the mini player.
+ */
+@Composable
+private fun HeaderPane(
+    picture: @Composable BoxScope.() -> Unit,
+    onPictureClick: (() -> Unit)?,
+    text: @Composable ColumnScope.() -> Unit,
+    actions: (@Composable RowScope.() -> Unit)?
+) {
+    Box(modifier = Modifier.fillMaxSize()) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .fillMaxHeight(0.8f)
+                .then(if (onPictureClick != null) Modifier.clickable(onClick = onPictureClick) else Modifier)
+                .fadedDownward(CoverFade)
+                .background(MaterialTheme.colorScheme.surfaceContainerHigh),
+            content = picture
+        )
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Brush.verticalGradient(0f to Color.Black.copy(alpha = 0.3f), 0.18f to Color.Transparent))
+        )
+        Column(
+            modifier = Modifier
+                .align(Alignment.BottomStart)
+                .fillMaxWidth()
+                .windowInsetsPadding(WindowInsets.navigationBars.only(WindowInsetsSides.Bottom + WindowInsetsSides.End))
+                .padding(start = 20.dp, end = 16.dp, bottom = PaneMiniPlayerRoom)
+        ) {
+            text()
+            if (actions != null) {
+                Spacer(modifier = Modifier.height(14.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp, Alignment.End),
+                    verticalAlignment = Alignment.CenterVertically,
+                    content = actions
+                )
+            }
+        }
+    }
+}
+
 /** Artists a search found: round portraits with a name, the way people show everywhere else. */
 @Composable
 private fun ArtistRow(artists: List<SoundCloudUser>, onOpen: (SoundCloudUser) -> Unit) {
@@ -4505,12 +4893,10 @@ private fun DownloadsScreen(
             .fillMaxSize()
             .pageGlass(MaterialTheme.colorScheme.background)
     ) {
-        LazyColumn(
-            state = listState,
-            modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(bottom = 120.dp)
-        ) {
-            item(key = "downloads-hero") {
+        DetailFrame(
+            listState = listState,
+            bottomPadding = 120.dp,
+            header = {
                 CoverHeader(
                     artwork = {
                         if (!folderArtworkUri.isNullOrBlank()) {
@@ -4538,7 +4924,7 @@ private fun DownloadsScreen(
                     onArtworkClick = { imagePicker.launch(arrayOf("image/*")) }
                 )
             }
-
+        ) {
             item(key = "downloads-count") {
                 CountRule(if (tracks.isEmpty()) "Нет треков" else plural(tracks.size, "трек", "трека", "треков")) {
                     PanelIconButton(
@@ -5018,6 +5404,9 @@ private fun CollapsingTopBar(
     onBack: () -> Unit,
     trailing: (@Composable () -> Unit)? = null
 ) {
+    // Sideways the title stands in the pane beside the list: the bar stays a back button.
+    @Suppress("NAME_SHADOWING")
+    val collapsed = collapsed && !isLandscape()
     val barColor by animateColorAsState(
         targetValue = if (collapsed) MaterialTheme.colorScheme.background else Color.Transparent,
         animationSpec = tween(220),
@@ -5153,7 +5542,9 @@ private fun ArtistPortraitHeader(
     artist: SoundCloudUser,
     albumCount: Int,
     onPlay: (() -> Unit)?,
-    onShuffle: (() -> Unit)?
+    onShuffle: (() -> Unit)?,
+    follow: ArtistFollow? = null,
+    onToggleFollow: () -> Unit = {}
 ) {
     val followers = artist.followersCount ?: 0
     val trackTotal = artist.trackCount ?: 0
@@ -5161,8 +5552,54 @@ private fun ArtistPortraitHeader(
         if (followers > 0) add(compactCount(followers) + " подписчиков")
         if (trackTotal > 0) add(plural(trackTotal, "трек", "трека", "треков"))
         if (albumCount > 0) add(plural(albumCount, "альбом", "альбома", "альбомов"))
+        if (follow?.following == true) add("вы подписаны")
     }.joinToString(" · ")
     val backdrop = MaterialTheme.colorScheme.background
+    if (LocalHeaderPane.current) {
+        HeaderPane(
+            picture = {
+                if (!artist.avatarUrl.isNullOrBlank()) {
+                    AsyncImage(
+                        model = artworkUrlForSize(artist.avatarUrl, 500.dp),
+                        contentDescription = null,
+                        modifier = Modifier.fillMaxSize(),
+                        contentScale = ContentScale.Crop
+                    )
+                } else {
+                    IconCover(icon = Icons.Default.Person, iconSize = 120.dp)
+                }
+            },
+            onPictureClick = null,
+            text = {
+                Kicker(
+                    text = if (artist.permalinkUrl?.startsWith("yandex") == true) "Артист · Яндекс Музыка" else "Артист",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Text(
+                    text = artist.username.orEmpty(),
+                    style = MaterialTheme.typography.displaySmall,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
+                if (stats.isNotBlank()) {
+                    Text(
+                        text = stats,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+            },
+            actions = if ((onPlay == null || onShuffle == null) && follow == null) null else {
+                {
+                    if (follow != null) FollowButton(follow = follow, onToggle = onToggleFollow)
+                    if (onPlay != null && onShuffle != null) PlayShuffleGroup(onPlay = onPlay, onShuffle = onShuffle)
+                }
+            }
+        )
+        return
+    }
 
     Box(modifier = Modifier.fillMaxWidth()) {
         Box(
@@ -5219,9 +5656,14 @@ private fun ArtistPortraitHeader(
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
-            if (onPlay != null && onShuffle != null) {
+            val canPlay = onPlay != null && onShuffle != null
+            if (canPlay || follow != null) {
                 Spacer(modifier = Modifier.height(18.dp))
-                PlayShuffleGroup(onPlay = onPlay, onShuffle = onShuffle)
+                Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    if (onPlay != null && onShuffle != null) PlayShuffleGroup(onPlay = onPlay, onShuffle = onShuffle)
+                    Spacer(modifier = Modifier.weight(1f))
+                    if (follow != null) FollowButton(follow = follow, onToggle = onToggleFollow)
+                }
             }
             Spacer(modifier = Modifier.height(12.dp))
         }
@@ -5229,6 +5671,43 @@ private fun ArtistPortraitHeader(
 }
 
 private val ArtistPortraitHeight = 420.dp
+
+/**
+ * Following the artist in its own service: a subscription on YouTube, a like on Yandex Music, a
+ * follow on SoundCloud. Round and glassy until followed; then it squares off, filled with the
+ * accent, the Expressive way of a toggle.
+ */
+@Composable
+private fun FollowButton(follow: ArtistFollow, onToggle: () -> Unit) {
+    val corner by animateDpAsState(if (follow.following) 18.dp else 28.dp, label = "followCorner")
+    val shape = RoundedCornerShape(corner)
+    Surface(
+        onClick = onToggle,
+        enabled = !follow.busy,
+        modifier = Modifier
+            .size(56.dp)
+            .then(if (follow.following) Modifier else Modifier.glassOr(shape, PanelColors.container)),
+        shape = shape,
+        color = if (follow.following) PanelColors.accent else glassFill(PanelColors.container),
+        contentColor = if (follow.following) PanelColors.onAccent else PanelColors.accent
+    ) {
+        Box(contentAlignment = Alignment.Center) {
+            if (follow.busy) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(22.dp),
+                    color = LocalContentColor.current,
+                    strokeWidth = 2.5.dp
+                )
+            } else {
+                Icon(
+                    imageVector = if (follow.following) Icons.Rounded.HowToReg else Icons.Rounded.PersonAddAlt1,
+                    contentDescription = if (follow.following) "Отписаться" else "Подписаться",
+                    modifier = Modifier.size(24.dp)
+                )
+            }
+        }
+    }
+}
 
 /** A mix's or station's top: its cover, "Микс" or "Станция", its name and description. */
 @Composable
@@ -5276,8 +5755,57 @@ private fun CoverHeader(
     isPlaying: Boolean,
     onPlay: (() -> Unit)?,
     onShuffle: (() -> Unit)?,
-    onArtworkClick: (() -> Unit)? = null
+    onArtworkClick: (() -> Unit)? = null,
+    // In [subtitle]'s place: the collection's artists as chips.
+    byline: (@Composable () -> Unit)? = null
 ) {
+    if (LocalHeaderPane.current) {
+        HeaderPane(
+            picture = artwork,
+            onPictureClick = onArtworkClick,
+            text = {
+                Kicker(text = kicker, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(
+                    text = title,
+                    style = MaterialTheme.typography.headlineLarge,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
+                if (byline != null) {
+                    byline()
+                } else if (subtitle != null) {
+                    Text(
+                        text = subtitle,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+            },
+            actions = if (onPlay == null) null else {
+                {
+                    if (onShuffle != null) {
+                        Surface(
+                            onClick = onShuffle,
+                            modifier = Modifier
+                                .size(56.dp)
+                                .glassOr(CircleShape, PanelColors.container),
+                            shape = CircleShape,
+                            color = glassFill(PanelColors.container),
+                            contentColor = PanelColors.accent
+                        ) {
+                            Box(contentAlignment = Alignment.Center) {
+                                Icon(Icons.Rounded.Shuffle, contentDescription = "Перемешать", modifier = Modifier.size(24.dp))
+                            }
+                        }
+                    }
+                    MixPlayButton(isActive = isActive, isPlaying = isPlaying, onClick = onPlay)
+                }
+            }
+        )
+        return
+    }
     val backdrop = MaterialTheme.colorScheme.background
     Box(
         modifier = Modifier
@@ -5321,7 +5849,9 @@ private fun CoverHeader(
                     overflow = TextOverflow.Ellipsis
                 )
                 // The track count is the rule right below.
-                if (subtitle != null) {
+                if (byline != null) {
+                    byline()
+                } else if (subtitle != null) {
                     Text(
                         text = subtitle,
                         style = MaterialTheme.typography.bodyMedium,
@@ -5483,12 +6013,10 @@ private fun MixDetailScreen(
             .fillMaxSize()
             .pageGlass(MaterialTheme.colorScheme.background)
     ) {
-        LazyColumn(
-            state = listState,
-            modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(bottom = if (playerVisible) 120.dp else 32.dp)
-        ) {
-            item(key = "mix-hero") {
+        DetailFrame(
+            listState = listState,
+            bottomPadding = if (playerVisible) 120.dp else 32.dp,
+            header = {
                 MixCoverHeader(
                     mix = mix,
                     title = title,
@@ -5501,7 +6029,7 @@ private fun MixDetailScreen(
                     onShuffle = if (tracks.isEmpty()) null else onShuffle
                 )
             }
-
+        ) {
             // A rule between the cover and the list, so the two never blur together.
             item(key = "mix-count") {
                 CountRule(if (tracks.isEmpty()) "Загружаем треки" else plural(tracks.size, "трек", "трека", "треков"))
@@ -5724,13 +6252,20 @@ private fun TrackCard(
                 overflow = TextOverflow.Ellipsis
             )
             val duration = track.duration.takeIf { it > 0L }?.let { " · " + formatDuration(it) }.orEmpty()
-            Text(
-                text = track.artistLine() + duration,
-                style = MaterialTheme.typography.bodyMedium,
-                color = LocalContentColor.current.copy(alpha = 0.72f),
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                // A broadcast says so, where a track has its length.
+                if (track.liveVideoId != null) {
+                    LiveBadge()
+                    Spacer(modifier = Modifier.width(6.dp))
+                }
+                Text(
+                    text = track.artistLine() + duration,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = LocalContentColor.current.copy(alpha = 0.72f),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
             if (downloadState == DownloadState.DOWNLOADING) {
                 Spacer(modifier = Modifier.height(4.dp))
                 AppLinearProgress(progress = progress, modifier = Modifier.fillMaxWidth())
@@ -5862,8 +6397,15 @@ private fun TrackDetailScreen(
     onRepeat: () -> Unit,
     onShuffle: () -> Unit,
     onDislike: (() -> Unit)? = null,
+    // The track's effects, with the button for them; null while that button is off in settings.
+    trackFx: com.example.myapplication.data.TrackFx? = null,
+    onTrackFxChange: (com.example.myapplication.data.TrackFx) -> Unit = {},
+    // The YouTube session, which a live stream's chat reads and writes as.
+    ytAuth: () -> com.example.myapplication.data.YtAuth? = { null },
     onLongPressCover: () -> Unit,
     onArtistClick: (SoundCloudUser) -> Unit,
+    // The title: the album the track is from, where there is one to open.
+    onAlbumClick: ((SoundCloudTrack) -> Unit)? = null,
     // Whether the player has been pulled off its place: the screen keeps the mini player ready
     // under it meanwhile, so a pull that folds the player away ends on it.
     onPulledChange: (Boolean) -> Unit = {},
@@ -5944,7 +6486,12 @@ private fun TrackDetailScreen(
         }
     }
     var showLyrics by remember(track.id) { mutableStateOf(false) }
-    val lyricsShown = showLyrics && !lyrics.isNullOrEmpty()
+    // A broadcast has no lyrics; its chat is shown in their place.
+    val liveId = track.liveVideoId
+    val liveChat = remember(liveId) { liveId?.let { com.example.myapplication.data.YouTubeLiveChat(it, ytAuth) } }
+    // A message being written: the field floats over the keyboard, the panel stays put.
+    var chatComposing by remember(liveId) { mutableStateOf(false) }
+    val lyricsShown = showLyrics && (!lyrics.isNullOrEmpty() || liveId != null)
     val atStart by remember(positionMs) { androidx.compose.runtime.derivedStateOf { positionMs() == 0L } }
     val showLoading = (downloadState != DownloadState.DOWNLOADED) &&
         (isBuffering || isLoading || (atStart && !isPlaying))
@@ -6010,7 +6557,76 @@ private fun TrackDetailScreen(
     val swiping by remember { derivedStateOf { swipeActive.value > 0f } }
 
     if (landscape && videoState != null && videoState.showing) {
-        FullScreenVideo(state = videoState, blur = { pauseBlur.value }, glow = videoGlow, glowStyle = videoGlowStyle)
+        // Pulled down, the video folds away into the mini player, as the player does upright; the
+        // controls' taps and the seek bar's drags are theirs still.
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .onSizeChanged { playerHeightPx = it.height.toFloat() }
+                .pointerInput(Unit) {
+                    awaitEachGesture {
+                        awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+                        currentOnTouchedChange(true)
+                        do {
+                            val event = awaitPointerEvent(PointerEventPass.Initial)
+                        } while (event.changes.any { it.pressed })
+                        currentOnTouchedChange(false)
+                    }
+                }
+                .pointerInput(Unit) {
+                    val velocity = VelocityTracker()
+                    detectVerticalDragGestures(
+                        onDragStart = {
+                            velocity.resetTracking()
+                            queueScope.launch(start = kotlinx.coroutines.CoroutineStart.UNDISPATCHED) { collapse.stop() }
+                        },
+                        onVerticalDrag = { change, dy ->
+                            velocity.addPosition(change.uptimeMillis, change.position)
+                            change.consume()
+                            queueScope.launch(start = kotlinx.coroutines.CoroutineStart.UNDISPATCHED) {
+                                collapse.snapTo((collapse.value + dy).coerceAtLeast(0f))
+                            }
+                        },
+                        onDragEnd = { releaseCollapse(velocity.calculateVelocity().y) },
+                        onDragCancel = { releaseCollapse(0f) }
+                    )
+                }
+                .drawBehind {
+                    val pulled = collapseProgress()
+                    if (pulled > 0f) drawRect(Color.Black.copy(alpha = PulledScrim * (1f - pulled)))
+                }
+        ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .graphicsLayer {
+                        val pulled = collapseProgress()
+                        translationY = collapse.value
+                        val scale = 1f - 0.08f * pulled
+                        scaleX = scale
+                        scaleY = scale
+                        transformOrigin = TransformOrigin(0.5f, 0f)
+                        if (pulled > 0f) {
+                            shape = RoundedCornerShape(PulledCorner * (pulled / 0.15f).coerceAtMost(1f))
+                            clip = true
+                        }
+                        alpha = 1f - ((pulled - CollapseFadeFrom) / (1f - CollapseFadeFrom)).coerceIn(0f, 1f)
+                    }
+            ) {
+                FullScreenVideo(state = videoState, blur = { pauseBlur.value }, glow = videoGlow, glowStyle = videoGlowStyle) {
+                    LandscapeControls(
+                        isPlaying = isPlaying,
+                        live = track.liveVideoId != null,
+                        positionMs = positionMs,
+                        durationMs = durationMs,
+                        onTogglePlay = onTogglePlay,
+                        onSeek = onSeek,
+                        onPrevious = onPrevious,
+                        onNext = onNext
+                    )
+                }
+            }
+        }
         return
     }
 
@@ -6266,11 +6882,15 @@ private fun TrackDetailScreen(
                             exit = fadeOut(animationSpec = tween(250)),
                             modifier = Modifier.fillMaxSize()
                         ) {
-                            LyricsOverlay(
-                                lines = lyrics.orEmpty(),
-                                positionMs = positionMs,
-                                onSeek = onSeek
-                            )
+                            if (liveChat != null) {
+                                LiveChatOverlay(chat = liveChat, composing = chatComposing)
+                            } else {
+                                LyricsOverlay(
+                                    lines = lyrics.orEmpty(),
+                                    positionMs = positionMs,
+                                    onSeek = onSeek
+                                )
+                            }
                         }
                     }
                 },
@@ -6326,8 +6946,13 @@ private fun TrackDetailScreen(
                         onRepeat = onRepeat,
                         onShuffle = onShuffle,
                         onDislike = onDislike,
+                        trackFx = trackFx,
+                        onTrackFxChange = onTrackFxChange,
+                        liveChat = liveChat,
+                        onChatCompose = { chatComposing = true },
                         onArtistClick = onArtistClick,
-                        lyricsAvailable = !lyrics.isNullOrEmpty(),
+                        onAlbumClick = onAlbumClick,
+                        lyricsAvailable = !lyrics.isNullOrEmpty() || liveId != null,
                         lyricsShown = lyricsShown,
                         onToggleLyrics = {
                             haptic.performHapticFeedback(HapticFeedbackType.LongPress)
@@ -6340,6 +6965,12 @@ private fun TrackDetailScreen(
                     )
                 }
             )
+        }
+
+        if (liveChat != null && chatComposing) {
+            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.BottomCenter) {
+                FloatingChatComposer(chat = liveChat, onDone = { chatComposing = false })
+            }
         }
 
         if (showQueue) {
@@ -6679,7 +7310,13 @@ private fun PlayerPanel(
     onShuffle: () -> Unit,
     // In the shuffle's place when there is one: "not for me", while the wave plays.
     onDislike: (() -> Unit)? = null,
+    trackFx: com.example.myapplication.data.TrackFx? = null,
+    onTrackFxChange: (com.example.myapplication.data.TrackFx) -> Unit = {},
+    // A broadcast's chat: its switch in the repeat button's place, and its field over "Далее".
+    liveChat: com.example.myapplication.data.YouTubeLiveChat? = null,
+    onChatCompose: () -> Unit = {},
     onArtistClick: (SoundCloudUser) -> Unit,
+    onAlbumClick: ((SoundCloudTrack) -> Unit)? = null,
     lyricsAvailable: Boolean,
     lyricsShown: Boolean,
     onToggleLyrics: () -> Unit,
@@ -6701,35 +7338,47 @@ private fun PlayerPanel(
     ) {
         BoxWithConstraints {
             glass?.invoke(this)
-            Column(
+            // Sideways the panel is wide and short: its content keeps to a phone's width in the
+            // middle, centred up and down, set tighter, and never scrolls — on a phone too short
+            // even for that, it is drawn a little smaller instead.
+            ScaleDownToFit(
+                enabled = landscape,
                 modifier = if (landscape) {
-                    // Sideways the panel is wide and short: its content keeps to a phone's width
-                    // in the middle, centred up and down, and scrolls if it doesn't fit.
                     Modifier
                         .align(Alignment.Center)
                         .widthIn(max = 560.dp)
                         .fillMaxHeight()
-                        .verticalScroll(rememberScrollState())
-                        .heightIn(min = maxHeight)
                         .statusBarsPadding()
                         .navigationBarsPadding()
-                        .padding(horizontal = 24.dp, vertical = 16.dp)
+                } else {
+                    Modifier
+                }
+            ) {
+            Column(
+                modifier = if (landscape) {
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 24.dp, vertical = 8.dp)
                 } else {
                     Modifier
                         .fillMaxWidth()
                         .navigationBarsPadding()
                         .padding(start = 24.dp, top = 24.dp, end = 24.dp, bottom = 16.dp)
                 },
-                verticalArrangement = if (landscape) Arrangement.Center else Arrangement.Top
+                verticalArrangement = Arrangement.Top
             ) {
                 // A track added from the phone's own files is from no service, and its artist is only
                 // a name in the file: there is no page to go to.
                 val fromPhone = track.urn?.startsWith("local:") == true
+                val live = track.liveVideoId != null
+                var fxOpen by remember { mutableStateOf(false) }
+                Row(verticalAlignment = Alignment.CenterVertically) {
                 OnPanelChip(
                     text = buildString {
                         append(
                             when {
                                 fromPhone -> "С телефона"
+                                live -> "YouTube · в эфире"
                                 track.urn?.startsWith("yandex:") == true -> "Яндекс Музыка"
                                 track.youTubeVideoId != null -> "YouTube Music"
                                 else -> "SoundCloud"
@@ -6738,14 +7387,38 @@ private fun PlayerPanel(
                         if (!fromPhone && downloadState == DownloadState.DOWNLOADED) append(" · на устройстве")
                     }
                 )
-                Spacer(modifier = Modifier.height(12.dp))
+                if (trackFx != null) {
+                    Spacer(modifier = Modifier.weight(1f))
+                    TrackFxButton(fx = trackFx, live = live, color = onPanel, onClick = {
+                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                        fxOpen = true
+                    })
+                }
+                }
+                if (fxOpen && trackFx != null) {
+                    TrackFxSheet(fx = trackFx, live = live, onChange = onTrackFxChange, onDismiss = { fxOpen = false })
+                }
+                Spacer(modifier = Modifier.height(if (landscape) 8.dp else 12.dp))
+                // A track of Yandex Music or YouTube Music is from an album: its title opens it.
+                val hasAlbum = onAlbumClick != null && !live && !fromPhone &&
+                    (track.urn?.startsWith("yandex:track:") == true || track.youTubeVideoId != null)
                 Text(
                     text = track.title ?: "Unknown Track",
                     style = MaterialTheme.typography.headlineMedium,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis
+                    maxLines = if (landscape) 1 else 2,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = if (hasAlbum) {
+                        Modifier
+                            .clip(RoundedCornerShape(12.dp))
+                            .clickable {
+                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                onAlbumClick?.invoke(track)
+                            }
+                    } else {
+                        Modifier
+                    }
                 )
-                Spacer(modifier = Modifier.height(10.dp))
+                Spacer(modifier = Modifier.height(if (landscape) 6.dp else 10.dp))
 
                 // Every credited artist gets its own tappable chip: a collaboration used to show a
                 // single name with no way to reach anyone else on the track.
@@ -6787,16 +7460,21 @@ private fun PlayerPanel(
                     }
                 }
 
-                Spacer(modifier = Modifier.height(14.dp))
-                PlayerSeekBar(
-                    trackId = track.id,
-                    positionMs = positionMs,
-                    durationMs = durationMs,
-                    vibrator = vibrator,
-                    onSeek = onSeek
-                )
+                Spacer(modifier = Modifier.height(if (landscape) 6.dp else 14.dp))
+                // A broadcast has no length to seek along: in the bar's place, that it is on air.
+                if (live) {
+                    LiveMark(color = onPanel)
+                } else {
+                    PlayerSeekBar(
+                        trackId = track.id,
+                        positionMs = positionMs,
+                        durationMs = durationMs,
+                        vibrator = vibrator,
+                        onSeek = onSeek
+                    )
+                }
 
-                Spacer(modifier = Modifier.height(10.dp))
+                Spacer(modifier = Modifier.height(if (landscape) 4.dp else 10.dp))
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
@@ -6851,23 +7529,39 @@ private fun PlayerPanel(
                     }
                 }
 
-                Spacer(modifier = Modifier.height(18.dp))
+                Spacer(modifier = Modifier.height(if (landscape) 10.dp else 18.dp))
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
                     val currentIndex = activeQueue.indexOfFirst { it.id == track.id }
                     val nextTrack = if (currentIndex >= 0) activeQueue.getOrNull(currentIndex + 1) else null
-                    QueuePeek(
-                        nextTrack = nextTrack,
-                        queueSize = activeQueue.size,
-                        lyricsAvailable = lyricsAvailable,
-                        lyricsShown = lyricsShown,
-                        onToggleLyrics = onToggleLyrics,
-                        onClick = onOpenQueue,
-                        modifier = Modifier.weight(1f)
-                    )
-                    PanelIconButton(
+                    if (liveChat != null && lyricsShown) {
+                        ChatComposerButton(chat = liveChat, onCompose = onChatCompose, modifier = Modifier.weight(1f))
+                    } else {
+                        QueuePeek(
+                            nextTrack = nextTrack,
+                            queueSize = activeQueue.size,
+                            chat = false,
+                            // A broadcast's chat has a button of its own, beside this.
+                            lyricsAvailable = lyricsAvailable && liveChat == null,
+                            lyricsShown = lyricsShown,
+                            onToggleLyrics = onToggleLyrics,
+                            onClick = onOpenQueue,
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+                    // A broadcast doesn't repeat: in the repeat button's place, its chat.
+                    if (liveChat != null) PanelIconButton(
+                        icon = Icons.Rounded.Forum,
+                        contentDescription = if (lyricsShown) "Скрыть чат" else "Чат трансляции",
+                        onClick = {
+                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                            onToggleLyrics()
+                        },
+                        selected = lyricsShown,
+                        size = 64.dp
+                    ) else PanelIconButton(
                         icon = if (repeatMode == Player.REPEAT_MODE_ONE) Icons.Rounded.RepeatOne else Icons.Rounded.Repeat,
                         contentDescription = when (repeatMode) {
                             Player.REPEAT_MODE_ONE -> "Повтор трека"
@@ -6883,11 +7577,319 @@ private fun PlayerPanel(
                     )
                 }
             }
+            }
+        }
+    }
+}
+
+/**
+ * Lays [content] out at its own height and, where that is more than there is room for, draws it
+ * smaller, whole and centred, rather than cutting it off or making it scroll. [enabled] false: in
+ * the ordinary way, as tall as it is.
+ */
+@Composable
+private fun ScaleDownToFit(enabled: Boolean, modifier: Modifier = Modifier, content: @Composable () -> Unit) {
+    Layout(content = content, modifier = modifier) { measurables, constraints ->
+        if (!enabled) {
+            val placeable = measurables.first().measure(constraints)
+            return@Layout layout(placeable.width, placeable.height) { placeable.place(0, 0) }
+        }
+        val placeable = measurables.first().measure(constraints.copy(minHeight = 0, maxHeight = Constraints.Infinity))
+        val height = constraints.maxHeight
+        val scale = if (placeable.height > height) height.toFloat() / placeable.height else 1f
+        val width = constraints.maxWidth
+        layout(width, height) {
+            placeable.placeWithLayer((width - placeable.width) / 2, (height - placeable.height) / 2) {
+                scaleX = scale
+                scaleY = scale
+                transformOrigin = TransformOrigin(0.5f, 0.5f)
+            }
         }
     }
 }
 
 /** Thick expressive seek bar with a tick every 2% of a manual drag. */
+/**
+ * The controls over a video on the whole screen, as YouTube has them: previous, play and next in
+ * the middle, the time and a bar to seek along at the bottom, on a shade over the picture. A tap
+ * brings them up, and while it plays they go again a few seconds after the last touch; a tap on
+ * them puts them away at once. Everything on the screen is taken by the video meanwhile: taps
+ * used to fall through the picture to the screens under the player.
+ */
+@Composable
+private fun BoxScope.LandscapeControls(
+    isPlaying: Boolean,
+    live: Boolean,
+    positionMs: () -> Long,
+    durationMs: Long,
+    onTogglePlay: () -> Unit,
+    onSeek: (Long) -> Unit,
+    onPrevious: () -> Unit,
+    onNext: () -> Unit
+) {
+    var shown by remember { mutableStateOf(true) }
+    // Bumped by every touch on the controls, so they stay while being used.
+    var touched by remember { mutableIntStateOf(0) }
+    LaunchedEffect(shown, touched, isPlaying) {
+        if (shown && isPlaying) {
+            delay(LANDSCAPE_CONTROLS_HIDE_MS)
+            shown = false
+        }
+    }
+    val haptic = LocalHapticFeedback.current
+    Box(
+        modifier = Modifier
+            .matchParentSize()
+            .pointerInput(Unit) { detectTapGestures { shown = !shown } }
+    )
+    AnimatedVisibility(
+        visible = shown,
+        enter = fadeIn(tween(160)),
+        exit = fadeOut(tween(260)),
+        modifier = Modifier.matchParentSize()
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Color.Black.copy(alpha = 0.42f))
+                .pointerInput(Unit) { detectTapGestures { shown = false } }
+        ) {
+            Row(
+                modifier = Modifier.align(Alignment.Center),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(40.dp)
+            ) {
+                IconButton(
+                    onClick = { touched++; haptic.performHapticFeedback(HapticFeedbackType.LongPress); onPrevious() },
+                    modifier = Modifier.size(56.dp)
+                ) {
+                    Icon(Icons.Rounded.SkipPrevious, contentDescription = "Предыдущий трек", tint = Color.White, modifier = Modifier.size(40.dp))
+                }
+                IconButton(
+                    onClick = { touched++; haptic.performHapticFeedback(HapticFeedbackType.LongPress); onTogglePlay() },
+                    modifier = Modifier
+                        .size(76.dp)
+                        .background(Color.Black.copy(alpha = 0.35f), CircleShape)
+                ) {
+                    Icon(
+                        imageVector = if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
+                        contentDescription = if (isPlaying) "Пауза" else "Играть",
+                        tint = Color.White,
+                        modifier = Modifier.size(52.dp)
+                    )
+                }
+                IconButton(
+                    onClick = { touched++; haptic.performHapticFeedback(HapticFeedbackType.LongPress); onNext() },
+                    modifier = Modifier.size(56.dp)
+                ) {
+                    Icon(Icons.Rounded.SkipNext, contentDescription = "Следующий трек", tint = Color.White, modifier = Modifier.size(40.dp))
+                }
+            }
+            Column(
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .fillMaxWidth()
+                    .padding(horizontal = 28.dp, vertical = 16.dp)
+            ) {
+                if (live) {
+                    LiveMark(color = Color.White)
+                } else {
+                    // The time as the bar draws it, and the bar itself: only these follow the
+                    // track, while the controls are up.
+                    var dragged by remember { mutableStateOf<Float?>(null) }
+                    val duration = durationMs.coerceAtLeast(1L)
+                    val position = dragged?.let { (it * duration).toLong() } ?: positionMs().coerceIn(0L, duration)
+                    Text(
+                        text = formatDuration(position) + " / " + formatDuration(durationMs),
+                        style = MaterialTheme.typography.labelLarge,
+                        color = Color.White
+                    )
+                    Slider(
+                        value = position.toFloat() / duration,
+                        onValueChange = { touched++; dragged = it },
+                        onValueChangeFinished = {
+                            dragged?.let { onSeek((it * duration).toLong()) }
+                            dragged = null
+                        },
+                        colors = SliderDefaults.colors(
+                            thumbColor = Color.White,
+                            activeTrackColor = PanelColors.accent,
+                            inactiveTrackColor = Color.White.copy(alpha = 0.3f)
+                        )
+                    )
+                }
+            }
+        }
+    }
+}
+
+private const val LANDSCAPE_CONTROLS_HIDE_MS = 3_000L
+
+/** The button for a track's effects, across from where it is from: lit while it has any. */
+@Composable
+private fun TrackFxButton(fx: com.example.myapplication.data.TrackFx, live: Boolean, color: Color, onClick: () -> Unit) {
+    // A broadcast's speed isn't changed: only its reverb counts.
+    val speed = if (live) 1f else fx.speed
+    val active = speed != 1f || fx.reverb > 0
+    Surface(
+        onClick = onClick,
+        shape = CircleShape,
+        color = if (active) PanelColors.accent else color.copy(alpha = 0.12f),
+        contentColor = if (active) PanelColors.onAccent else color
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            Icon(Icons.Rounded.Tune, contentDescription = null, modifier = Modifier.size(18.dp))
+            Text(
+                text = when {
+                    speed != 1f -> "%.2f×".format(speed)
+                    fx.reverb > 0 -> "Реверб"
+                    else -> "Эффекты"
+                },
+                style = MaterialTheme.typography.labelLarge
+            )
+        }
+    }
+}
+
+/**
+ * A track's effects: its speed (with presets for slowed and sped up), whether its pitch stays put,
+ * and its reverb. Each change is heard at once and kept for the track.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun TrackFxSheet(
+    fx: com.example.myapplication.data.TrackFx,
+    // A broadcast: no speed, it goes at its own pace.
+    live: Boolean,
+    onChange: (com.example.myapplication.data.TrackFx) -> Unit,
+    onDismiss: () -> Unit
+) {
+    ModalBottomSheet(onDismissRequest = onDismiss, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 24.dp)
+                .padding(bottom = 28.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp)
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("Эффекты трека", style = MaterialTheme.typography.titleLarge)
+                    Text(
+                        "Сохраняются для этого трека",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                if (!fx.isDefault) TextButton(onClick = { onChange(com.example.myapplication.data.TrackFx()) }) { Text("Сбросить") }
+            }
+
+            if (live) {
+                Text(
+                    "Эфир идёт в реальном времени: его скорость не меняется",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            } else {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("Скорость", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
+                Text("%.2f×".format(fx.speed), style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.primary)
+            }
+            Slider(
+                value = fx.speed,
+                onValueChange = { onChange(fx.copy(speed = (Math.round(it * 20f) / 20f))) },
+                valueRange = com.example.myapplication.data.TrackFx.MIN_SPEED..com.example.myapplication.data.TrackFx.MAX_SPEED,
+                steps = 19
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                listOf(0.8f to "Замедлить", 1f to "Обычная", 1.25f to "Ускорить").forEach { (speed, name) ->
+                    FilterChip(
+                        selected = fx.speed == speed,
+                        onClick = { onChange(fx.copy(speed = speed)) },
+                        label = { Text(if (speed == 1f) name else "$name ${"%.2f".format(speed).trimEnd('0').trimEnd('.')}×") }
+                    )
+                }
+            }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("Сохранять тон", style = MaterialTheme.typography.titleMedium)
+                    Text(
+                        "Без этого голос ниже в замедлении и выше в ускорении, как у пластинки",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Switch(checked = fx.keepPitch, onCheckedChange = { onChange(fx.copy(keepPitch = it)) })
+            }
+            }
+
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("Реверб", style = MaterialTheme.typography.titleMedium)
+                    Text(
+                        "Эхо большого зала",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Switch(
+                    checked = fx.reverb > 0,
+                    onCheckedChange = { onChange(fx.copy(reverb = if (it) DEFAULT_REVERB else 0)) }
+                )
+            }
+            if (fx.reverb > 0) {
+                Slider(
+                    value = fx.reverb.toFloat(),
+                    onValueChange = { onChange(fx.copy(reverb = it.roundToInt().coerceIn(5, 100))) },
+                    valueRange = 5f..100f
+                )
+            }
+        }
+    }
+}
+
+private const val DEFAULT_REVERB = 40
+
+/** "В ЭФИРЕ" on red: marks a live stream in a list of tracks. */
+@Composable
+private fun LiveBadge() {
+    Text(
+        text = "В ЭФИРЕ",
+        style = MaterialTheme.typography.labelSmall,
+        color = Color.White,
+        modifier = Modifier
+            .background(Color(0xFFE5322D), RoundedCornerShape(6.dp))
+            .padding(horizontal = 6.dp, vertical = 2.dp)
+    )
+}
+
+/** "В эфире", with a red dot: a live stream's place for the seek bar, as tall as it. */
+@Composable
+private fun LiveMark(color: Color) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(48.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        Box(
+            modifier = Modifier
+                .size(10.dp)
+                .background(Color(0xFFFF3B30), CircleShape)
+        )
+        Text(
+            text = "В эфире",
+            style = MaterialTheme.typography.titleSmall,
+            color = color
+        )
+    }
+}
+
 @Composable
 private fun PlayerSeekBar(
     trackId: Long,
@@ -7030,6 +8032,8 @@ private fun PanelPlayButton(isPlaying: Boolean, onClick: () -> Unit) {
 private fun QueuePeek(
     nextTrack: SoundCloudTrack?,
     queueSize: Int,
+    // A broadcast: the switch is for its chat.
+    chat: Boolean,
     lyricsAvailable: Boolean,
     lyricsShown: Boolean,
     onToggleLyrics: () -> Unit,
@@ -7094,8 +8098,11 @@ private fun QueuePeek(
                 ) {
                     Box(contentAlignment = Alignment.Center) {
                         Icon(
-                            Icons.Default.Lyrics,
-                            contentDescription = if (lyricsShown) "Скрыть текст" else "Текст песни",
+                            if (chat) Icons.Rounded.Forum else Icons.Default.Lyrics,
+                            contentDescription = when {
+                                chat -> if (lyricsShown) "Скрыть чат" else "Чат трансляции"
+                                else -> if (lyricsShown) "Скрыть текст" else "Текст песни"
+                            },
                             modifier = Modifier.size(24.dp)
                         )
                     }
@@ -7106,6 +8113,447 @@ private fun QueuePeek(
         }
     }
 }
+
+/**
+ * A live stream's chat over its blurred picture, where a track's lyrics go, and faded at both ends
+ * as they are: newest at the bottom, over the panel's edge, the list staying on it unless scrolled
+ * back. YouTube's own emoji are their pictures, inline. Read only while shown: opening it starts
+ * the reading, closing it (or the app going to the background) stops it.
+ *
+ * Kept light for a weak phone: the fade is one mask over the whole list, drawn again only when a
+ * message comes (every few seconds at most); no animation per message; emoji pictures decoded at
+ * the size of a line of text, and only the lines on screen composed.
+ */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun LiveChatOverlay(chat: com.example.myapplication.data.YouTubeLiveChat, composing: Boolean = false) {
+    val state = remember(chat) {
+        chat.messages
+            .map<List<com.example.myapplication.data.LiveChatMessage>, LiveChatState> { LiveChatState.Messages(it) }
+            .catch { emit(LiveChatState.Failed(it.message ?: "Чат недоступен")) }
+    }.collectAsStateWithLifecycle(initialValue = LiveChatState.Loading).value
+    val onPanel = PanelColors.content
+    val accent = PanelColors.accent
+    val anchor = WindowInsets.statusBars.asPaddingValues().calculateTopPadding() + 24.dp
+    // Thicker than the lyrics' shade: a chat is small text over whatever the broadcast shows,
+    // and over a bright picture the dark theme's light words (or the light theme's dark ones
+    // over a dark picture) were lost.
+    val ground = MaterialTheme.colorScheme.background
+    val scrim = ground.copy(alpha = 0.62f)
+    // While a message is written the newest lines rise over the field above the keyboard: by the
+    // keyboard's final height, read once as it starts to open rather than on every frame of it.
+    val density = LocalDensity.current
+    val keyboard = WindowInsets.imeAnimationTarget.getBottom(density)
+    val screenHeight = LocalWindowInfo.current.containerSize.height
+    var overlayBottom by remember { mutableIntStateOf(0) }
+    val liftPx = if (composing && keyboard > 0) {
+        val fieldTop = screenHeight - keyboard - with(density) { (ComposerBarHeight + 16.dp).roundToPx() }
+        (overlayBottom - fieldTop).coerceAtLeast(0)
+    } else {
+        0
+    }
+    val lift = with(density) { liftPx.toDp() }
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .onGloballyPositioned { overlayBottom = it.boundsInWindow().bottom.toInt() }
+            // The shade the chat stands on, fading out by the panel's top edge.
+            .drawBehind {
+                val h = size.height
+                val clear = h - PlayerPanelOverlap.toPx()
+                val solid = (clear - LyricsFade.toPx()).coerceAtLeast(0f)
+                drawRect(
+                    Brush.verticalGradient(
+                        0f to scrim,
+                        solid / h to scrim,
+                        clear / h to Color.Transparent,
+                        1f to Color.Transparent
+                    )
+                )
+            }
+    ) {
+        when (state) {
+            LiveChatState.Loading -> Column(
+                modifier = Modifier.align(Alignment.Center),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                androidx.compose.material3.CircularProgressIndicator(modifier = Modifier.size(32.dp), color = accent, strokeWidth = 3.dp)
+                Text("Подключаюсь к чату…", style = MaterialTheme.typography.bodyMedium, color = onPanel.copy(alpha = 0.8f))
+            }
+            is LiveChatState.Failed -> Text(
+                text = state.reason,
+                style = MaterialTheme.typography.bodyLarge,
+                color = onPanel.copy(alpha = 0.8f),
+                textAlign = TextAlign.Center,
+                modifier = Modifier.align(Alignment.Center).padding(horizontal = 32.dp)
+            )
+            is LiveChatState.Messages -> if (state.list.isEmpty()) {
+                Text(
+                    "В чате пока тихо",
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = onPanel.copy(alpha = 0.8f),
+                    modifier = Modifier.align(Alignment.Center)
+                )
+            } else {
+                // Upside down: the newest is item 0, at the bottom, where the list rests.
+                val newestFirst = remember(state.list) { state.list.asReversed() }
+                val listState = rememberLazyListState()
+                val scope = rememberCoroutineScope()
+                // Following the newest, as YouTube's chat does: settled at the bottom, the list
+                // keeps to each new message; read back, it stays put, then returns by itself a few
+                // seconds after the last touch. Decided only when a scroll ends.
+                var following by remember { mutableStateOf(true) }
+                var settled by remember { mutableIntStateOf(0) }
+                LaunchedEffect(listState) {
+                    androidx.compose.runtime.snapshotFlow { listState.isScrollInProgress }.collect { scrolling ->
+                        if (!scrolling) {
+                            following = listState.firstVisibleItemIndex == 0 && listState.firstVisibleItemScrollOffset < 24
+                            settled++
+                        }
+                    }
+                }
+                val newestId = newestFirst.firstOrNull()?.id
+                LaunchedEffect(newestId) {
+                    if (following && !listState.isScrollInProgress) listState.scrollToItem(0)
+                }
+                LaunchedEffect(following, settled) {
+                    if (!following) {
+                        delay(CHAT_RETURN_MS)
+                        if (!listState.isScrollInProgress) listState.animateScrollToItem(0)
+                    }
+                }
+                LazyColumn(
+                    state = listState,
+                    modifier = Modifier
+                        .fillMaxSize()
+                        // Faded at both ends, as the lyrics are: the top over the status bar's
+                        // way, the bottom just short of the panel, the newest above it clear.
+                        .graphicsLayer { compositingStrategy = CompositingStrategy.Offscreen }
+                        .drawWithContent {
+                            drawContent()
+                            val h = size.height
+                            val topClear = (anchor - 16.dp).toPx().coerceAtLeast(0f)
+                            val topSolid = topClear + LyricsFade.toPx()
+                            val bottomClear = h - PlayerPanelOverlap.toPx() - liftPx
+                            val bottomSolid = (bottomClear - ChatBottomFade.toPx()).coerceAtLeast(topSolid)
+                            drawRect(
+                                brush = Brush.verticalGradient(
+                                    0f to Color.Transparent,
+                                    topClear / h to Color.Transparent,
+                                    topSolid / h to Color.Black,
+                                    bottomSolid / h to Color.Black,
+                                    bottomClear / h to Color.Transparent,
+                                    1f to Color.Transparent
+                                ),
+                                blendMode = BlendMode.DstIn
+                            )
+                        },
+                    reverseLayout = true,
+                    contentPadding = PaddingValues(
+                        start = 24.dp,
+                        end = 24.dp,
+                        top = anchor,
+                        bottom = PlayerPanelOverlap + ChatBottomFade + lift
+                    ),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    items(newestFirst, key = { it.id }) { message -> ChatLine(message, accent, onPanel, ground) }
+                }
+                // Read back: the way to the newest, a tap away.
+                androidx.compose.animation.AnimatedVisibility(
+                    visible = !following,
+                    enter = fadeIn() + slideInVertically { it / 2 },
+                    exit = fadeOut() + slideOutVertically { it / 2 },
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .padding(bottom = PlayerPanelOverlap + 12.dp + lift)
+                ) {
+                    Surface(
+                        onClick = { scope.launch { listState.animateScrollToItem(0) } },
+                        shape = CircleShape,
+                        color = accent,
+                        contentColor = PanelColors.onAccent,
+                        shadowElevation = 4.dp
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(start = 14.dp, top = 8.dp, end = 16.dp, bottom = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Icon(Icons.Rounded.KeyboardArrowDown, contentDescription = null, modifier = Modifier.size(20.dp))
+                            Text("Новые сообщения", style = MaterialTheme.typography.labelLarge)
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// How long after the last touch a chat read back returns to the newest by itself.
+private const val CHAT_RETURN_MS = 4_000L
+
+/** A message: its author in the accent, a paid one's amount, then the words and emoji pictures. */
+@Composable
+private fun ChatLine(message: com.example.myapplication.data.LiveChatMessage, accent: Color, onPanel: Color, ground: Color) {
+    val emojis = message.parts.filterIsInstance<com.example.myapplication.data.LiveChatPart.Emoji>()
+    val text = remember(message) {
+        buildAnnotatedString {
+            withStyle(SpanStyle(color = accent, fontWeight = FontWeight.SemiBold)) {
+                append(message.author.removePrefix("@"))
+            }
+            message.paid?.let { amount -> withStyle(SpanStyle(color = accent)) { append("  $amount") } }
+            append("  ")
+            withStyle(SpanStyle(color = onPanel)) {
+                message.parts.forEach { part ->
+                    when (part) {
+                        is com.example.myapplication.data.LiveChatPart.Text -> append(part.text)
+                        is com.example.myapplication.data.LiveChatPart.Emoji -> appendInlineContent(part.url, part.key)
+                    }
+                }
+            }
+        }
+    }
+    val inline = remember(message) {
+        emojis.distinctBy { it.url }.associate { emoji ->
+            emoji.url to androidx.compose.foundation.text.InlineTextContent(
+                androidx.compose.ui.text.Placeholder(
+                    width = 1.35.em,
+                    height = 1.35.em,
+                    placeholderVerticalAlign = androidx.compose.ui.text.PlaceholderVerticalAlign.TextCenter
+                )
+            ) {
+                AsyncImage(model = emoji.url, contentDescription = emoji.key, modifier = Modifier.fillMaxSize())
+            }
+        }
+    }
+    // A soft shadow of the theme's ground around the letters, so they stand off any picture.
+    val style = MaterialTheme.typography.bodyLarge.copy(
+        shadow = androidx.compose.ui.graphics.Shadow(color = ground.copy(alpha = 0.9f), blurRadius = 8f)
+    )
+    Text(text = text, inlineContent = inline, style = style)
+}
+
+private sealed interface LiveChatState {
+    data object Loading : LiveChatState
+    data class Failed(val reason: String) : LiveChatState
+    data class Messages(val list: List<com.example.myapplication.data.LiveChatMessage>) : LiveChatState
+}
+
+// The bottom fade of the chat: short, so the newest message is read whole just above the panel.
+private val ChatBottomFade = 18.dp
+
+/**
+ * In place of "Далее" while a live chat is open: what a message would be written in. A tap opens
+ * the field over the keyboard ([FloatingChatComposer]); where no message can be sent, it says why,
+ * in YouTube's words.
+ */
+@Composable
+private fun ChatComposerButton(
+    chat: com.example.myapplication.data.YouTubeLiveChat,
+    onCompose: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val onPanel = PanelColors.content
+    val canSend by chat.canSend.collectAsState()
+    val blocked by chat.sendBlocked.collectAsState()
+    val subscribersOnly by chat.subscribersOnly.collectAsState()
+    val subscribed by chat.subscribed.collectAsState()
+    val detail by chat.blockedDetail.collectAsState()
+    val wrongSubscription by chat.wrongSubscription.collectAsState()
+    var subscribing by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+    val context = LocalContext.current
+    val haptic = LocalHapticFeedback.current
+    // Subscribed but not let in yet (YouTube may want the subscription a few minutes old): asked
+    // again once a minute, only while the chat is open.
+    val waiting = !canSend && subscribersOnly && subscribed == true
+    // The subscription as YouTube holds it won't do: made again, it will.
+    val resubscribe = !canSend && subscribed == true && wrongSubscription
+    LaunchedEffect(waiting && !resubscribe) {
+        while (waiting && !resubscribe) {
+            delay(CHAT_RECHECK_MS)
+            chat.recheck()
+        }
+    }
+    val reason = when {
+        canSend -> "Сообщение в чат…"
+        subscribing -> "Оформляю подписку…"
+        resubscribe -> "YouTube считает, что подписка оформлена на детском видео — оформим заново"
+        waiting -> "Вы подписаны. " + (detail ?: "YouTube пустит в чат чуть позже")
+        blocked != null -> blocked!!
+        else -> "Подключаюсь к чату…"
+    }
+    Surface(
+        // Blocked, a tap shows the reason whole, with YouTube's explanation.
+        onClick = {
+            if (canSend) {
+                onCompose()
+            } else {
+                val full = listOfNotNull(blocked, detail).distinct().joinToString("\n").ifBlank { reason }
+                android.widget.Toast.makeText(context, full, android.widget.Toast.LENGTH_LONG).show()
+            }
+        },
+        modifier = modifier.height(64.dp),
+        shape = RoundedCornerShape(22.dp),
+        color = onPanel.copy(alpha = 0.12f),
+        contentColor = onPanel
+    ) {
+        Row(
+            modifier = Modifier.padding(start = 18.dp, end = 18.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Text(
+                text = reason,
+                style = if (canSend) MaterialTheme.typography.bodyLarge else MaterialTheme.typography.bodyMedium,
+                color = onPanel.copy(alpha = if (canSend) 0.6f else 0.75f),
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f)
+            )
+            if (canSend) Icon(Icons.Rounded.Edit, contentDescription = null, modifier = Modifier.size(20.dp))
+            // Only subscribers may write: subscribing is a tap away.
+            if (!canSend && ((subscribersOnly && subscribed != true) || resubscribe)) {
+                Surface(
+                    onClick = {
+                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                        subscribing = true
+                        val again = resubscribe
+                        scope.launch {
+                            val done = chat.subscribe(again = again)
+                            android.widget.Toast.makeText(
+                                context,
+                                when {
+                                    !done -> "Не удалось подписаться"
+                                    again -> "Подписка оформлена заново"
+                                    else -> "Вы подписались на канал"
+                                },
+                                android.widget.Toast.LENGTH_SHORT
+                            ).show()
+                            subscribing = false
+                        }
+                    },
+                    enabled = !subscribing,
+                    shape = RoundedCornerShape(16.dp),
+                    color = PanelColors.accent,
+                    contentColor = PanelColors.onAccent,
+                    modifier = Modifier.height(40.dp)
+                ) {
+                    Box(modifier = Modifier.padding(horizontal = 14.dp), contentAlignment = Alignment.Center) {
+                        if (subscribing) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(18.dp),
+                                color = PanelColors.onAccent,
+                                strokeWidth = 2.dp
+                            )
+                        } else {
+                            Text(if (resubscribe) "Заново" else "Подписаться", style = MaterialTheme.typography.labelLarge)
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// How often a chat the account is subscribed to but not yet let into is asked again.
+private const val CHAT_RECHECK_MS = 60_000L
+
+/**
+ * The field a message to a live chat is written in: across the whole width, just over the
+ * keyboard, while the player stays where it is and the chat above stays in sight. It goes when the
+ * keyboard does.
+ */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun FloatingChatComposer(
+    chat: com.example.myapplication.data.YouTubeLiveChat,
+    onDone: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val onPanel = PanelColors.content
+    var draft by rememberSaveable { mutableStateOf("") }
+    var sending by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+    val haptic = LocalHapticFeedback.current
+    val context = LocalContext.current
+    val focus = remember { androidx.compose.ui.focus.FocusRequester() }
+    LaunchedEffect(Unit) { focus.requestFocus() }
+    // Put away with the keyboard, however it went (back, the keyboard's own button).
+    val imeVisible = WindowInsets.isImeVisible
+    var opened by remember { mutableStateOf(false) }
+    LaunchedEffect(imeVisible) {
+        if (imeVisible) opened = true else if (opened) onDone()
+    }
+    BackHandler(onBack = onDone)
+    fun send() {
+        val text = draft.trim()
+        if (text.isEmpty() || sending) return
+        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+        sending = true
+        scope.launch {
+            if (chat.send(text)) {
+                draft = ""
+            } else {
+                android.widget.Toast.makeText(context, "Сообщение не отправилось", android.widget.Toast.LENGTH_SHORT).show()
+            }
+            sending = false
+        }
+    }
+    Surface(
+        modifier = modifier
+            .fillMaxWidth()
+            .imePadding()
+            .padding(horizontal = 8.dp, vertical = 8.dp)
+            .height(ComposerBarHeight),
+        shape = RoundedCornerShape(26.dp),
+        color = PanelColors.container,
+        contentColor = onPanel,
+        shadowElevation = 6.dp
+    ) {
+        Row(
+            modifier = Modifier.padding(start = 20.dp, end = 6.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Box(modifier = Modifier.weight(1f), contentAlignment = Alignment.CenterStart) {
+                if (draft.isEmpty()) {
+                    Text("Сообщение в чат…", style = MaterialTheme.typography.bodyLarge, color = onPanel.copy(alpha = 0.55f))
+                }
+                androidx.compose.foundation.text.BasicTextField(
+                    value = draft,
+                    onValueChange = { draft = it.take(200) },
+                    enabled = !sending,
+                    singleLine = true,
+                    textStyle = MaterialTheme.typography.bodyLarge.copy(color = onPanel),
+                    cursorBrush = androidx.compose.ui.graphics.SolidColor(PanelColors.accent),
+                    keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(imeAction = androidx.compose.ui.text.input.ImeAction.Send),
+                    keyboardActions = androidx.compose.foundation.text.KeyboardActions(onSend = { send() }),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .focusRequester(focus)
+                )
+            }
+            val ready = draft.isNotBlank() && !sending
+            Surface(
+                onClick = { send() },
+                enabled = ready,
+                shape = CircleShape,
+                color = if (ready) PanelColors.accent else onPanel.copy(alpha = 0.1f),
+                contentColor = if (ready) PanelColors.onAccent else onPanel.copy(alpha = 0.5f),
+                modifier = Modifier.size(48.dp)
+            ) {
+                Box(contentAlignment = Alignment.Center) {
+                    Icon(Icons.AutoMirrored.Rounded.Send, contentDescription = "Отправить", modifier = Modifier.size(22.dp))
+                }
+            }
+        }
+    }
+}
+
+// The floating field's height, which the chat above keeps clear of.
+private val ComposerBarHeight = 60.dp
 
 /**
  * Synced lyrics over the blurred cover, in the player's colours. The line being sung is lit,
@@ -8699,12 +10147,10 @@ private fun PlaylistDetailScreen(
             .fillMaxSize()
             .pageGlass(MaterialTheme.colorScheme.background)
     ) {
-        LazyColumn(
-            state = listState,
-            modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(bottom = 120.dp)
-        ) {
-            item(key = "playlist-hero") {
+        DetailFrame(
+            listState = listState,
+            bottomPadding = 120.dp,
+            header = {
                 CoverHeader(
                     artwork = {
                         if (playlist.artworkUrl != null) {
@@ -8732,7 +10178,7 @@ private fun PlaylistDetailScreen(
                     onArtworkClick = { imagePicker.launch(arrayOf("image/*")) }
                 )
             }
-
+        ) {
             item(key = "playlist-count") {
                 CountRule(
                     text = listOfNotNull(
@@ -8938,12 +10384,10 @@ private fun YandexPlaylistDetailScreen(
             .fillMaxSize()
             .pageGlass(MaterialTheme.colorScheme.background)
     ) {
-        LazyColumn(
-            state = listState,
-            modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(bottom = 120.dp)
-        ) {
-            item(key = "yandex-playlist-hero") {
+        DetailFrame(
+            listState = listState,
+            bottomPadding = 120.dp,
+            header = {
                 CoverHeader(
                     artwork = {
                         if (playlist.artworkUrl != null) {
@@ -8975,7 +10419,7 @@ private fun YandexPlaylistDetailScreen(
                     onArtworkClick = { imagePicker.launch(arrayOf("image/*")) }
                 )
             }
-
+        ) {
             item(key = "yandex-playlist-count") {
                 CountRule(
                     text = when {
@@ -9057,7 +10501,15 @@ private fun ArtistDetailScreen(
     onDeselectPlaylist: () -> Unit = {},
     isAllTracksLoaded: Boolean = false,
     onLoadAllTracks: () -> Unit = {},
-    onShuffle: () -> Unit = {}
+    onShuffle: () -> Unit = {},
+    follow: ArtistFollow? = null,
+    onToggleFollow: () -> Unit = {},
+    lives: List<SoundCloudTrack> = emptyList(),
+    shelves: List<YtShelf> = emptyList(),
+    onPlayFrom: (SoundCloudTrack, List<SoundCloudTrack>) -> Unit = { track, _ -> onPlayTrack(track) },
+    onOpenArtist: (SoundCloudUser) -> Unit = {},
+    onRetry: (() -> Unit)? = null,
+    tracksTitle: String = "Популярные треки"
 ) {
     if (selectedPlaylist != null) {
         SetDetailContent(
@@ -9094,31 +10546,43 @@ private fun ArtistDetailScreen(
             .fillMaxSize()
             .pageGlass(MaterialTheme.colorScheme.background)
     ) {
-        LazyColumn(
-            state = listState,
-            modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(bottom = 120.dp)
-        ) {
-            item(key = "artist-hero") {
+        DetailFrame(
+            listState = listState,
+            bottomPadding = 120.dp,
+            header = {
                 ArtistPortraitHeader(
                     artist = artist,
                     albumCount = playlists.size,
                     onPlay = tracks.firstOrNull()?.let { first -> { onPlayTrack(first) } },
-                    onShuffle = if (tracks.isEmpty()) null else onShuffle
+                    onShuffle = if (tracks.isEmpty()) null else onShuffle,
+                    follow = follow,
+                    onToggleFollow = onToggleFollow
                 )
             }
-
+        ) {
             if (isLoading) {
                 item(key = "artist-loading") { LoadingBlock() }
             } else if (error != null) {
                 item(key = "artist-error") {
-                    Box(modifier = Modifier.padding(16.dp)) { MessageCard(error) }
+                    Column(
+                        modifier = Modifier.padding(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        MessageCard(error)
+                        if (onRetry != null) {
+                            FilledTonalButton(onClick = onRetry, shape = MaterialTheme.shapes.medium) {
+                                Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(20.dp))
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text("Повторить")
+                            }
+                        }
+                    }
                 }
             } else {
                 if (tracks.isNotEmpty()) {
                     item(key = "artist-tracks-title") {
                         SectionTitle(
-                            text = "Популярные треки",
+                            text = tracksTitle,
                             modifier = Modifier.padding(start = 16.dp, top = 8.dp, end = 8.dp, bottom = 8.dp),
                             actionLabel = when {
                                 canShowMore -> if (countKnown) "Все $totalTracks" else "Все"
@@ -9154,7 +10618,50 @@ private fun ArtistDetailScreen(
                     }
                 }
 
-                if (playlists.isNotEmpty()) {
+                val isYandexArtist = artist.permalinkUrl?.startsWith("yandex") == true
+                // What the channel is broadcasting now.
+                if (lives.isNotEmpty()) {
+                    item(key = "artist-lives-title") {
+                        SectionTitle(
+                            "Трансляции",
+                            modifier = Modifier.padding(start = 16.dp, top = 24.dp, end = 16.dp, bottom = 8.dp)
+                        )
+                    }
+                    item(key = "artist-lives") {
+                        VideoTileRow(tracks = lives, currentTrackId = currentTrackId, onPlay = { onPlayFrom(it, lives) })
+                    }
+                }
+
+                if (shelves.isNotEmpty()) {
+                    // The page whole, row by row as YouTube lays it out.
+                    shelves.forEachIndexed { index, shelf ->
+                        item(key = "artist-shelf-title-$index") {
+                            SectionTitle(
+                                shelf.title,
+                                modifier = Modifier.padding(start = 16.dp, top = 24.dp, end = 16.dp, bottom = 8.dp)
+                            )
+                        }
+                        item(key = "artist-shelf-$index") {
+                            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                                if (shelf.tracks.isNotEmpty()) {
+                                    VideoTileRow(
+                                        tracks = shelf.tracks,
+                                        currentTrackId = currentTrackId,
+                                        onPlay = { onPlayFrom(it, shelf.tracks) }
+                                    )
+                                }
+                                if (shelf.sets.isNotEmpty()) {
+                                    ArtistSetsCarousel(shelf.sets, isYandexArtist, onPlaylistClick)
+                                }
+                                if (shelf.artists.isNotEmpty()) {
+                                    Box(modifier = Modifier.padding(horizontal = 16.dp)) {
+                                        ArtistRow(artists = shelf.artists, onOpen = onOpenArtist)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                } else if (playlists.isNotEmpty()) {
                     item(key = "artist-sets-title") {
                         SectionTitle(
                             "Альбомы и плейлисты",
@@ -9162,26 +10669,7 @@ private fun ArtistDetailScreen(
                         )
                     }
                     item(key = "artist-sets") {
-                        val isYandexArtist = artist.permalinkUrl?.startsWith("yandex") == true
-                        AlbumCarousel(
-                            albums = playlists.map { playlist ->
-                                val isAlbum = isYandexArtist ||
-                                    playlist.permalinkUrl?.startsWith("yandex:album:") == true
-                                CarouselAlbum(
-                                    key = playlist.id,
-                                    title = playlist.title ?: "Альбом",
-                                    subtitle = "",
-                                    caption = if (isAlbum) {
-                                        "Альбом · " + plural(playlist.trackCount, "трек", "трека", "треков")
-                                    } else {
-                                        setCaption(playlist)
-                                    },
-                                    artworkUrl = playlist.displayArtworkUrl,
-                                    onClick = { onPlaylistClick(playlist) }
-                                )
-                            },
-                            modifier = Modifier.padding(horizontal = 16.dp)
-                        )
+                        ArtistSetsCarousel(playlists, isYandexArtist, onPlaylistClick)
                     }
                 }
 
@@ -9208,6 +10696,122 @@ private fun ArtistDetailScreen(
 /** How many of an artist's tracks show before "Все". */
 private const val TOP_TRACKS = 5
 
+/** A collection's artists as chips, each opening the artist's page, as the player's do. */
+@Composable
+private fun ArtistPills(artists: List<SoundCloudUser>, onClick: (SoundCloudUser) -> Unit) {
+    val haptic = LocalHapticFeedback.current
+    Row(
+        modifier = Modifier
+            .padding(top = 6.dp)
+            .horizontalScroll(rememberScrollState()),
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        artists.forEach { artist ->
+            Surface(
+                onClick = {
+                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                    onClick(artist)
+                },
+                shape = CircleShape,
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.12f),
+                contentColor = MaterialTheme.colorScheme.onSurface
+            ) {
+                Text(
+                    text = artist.username.orEmpty(),
+                    style = MaterialTheme.typography.titleSmall,
+                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 7.dp),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+        }
+    }
+}
+
+/** An artist's albums and playlists in the multi-browse carousel. */
+@Composable
+private fun ArtistSetsCarousel(
+    playlists: List<SoundCloudPlaylist>,
+    isYandexArtist: Boolean,
+    onPlaylistClick: (SoundCloudPlaylist) -> Unit
+) {
+    AlbumCarousel(
+        albums = playlists.map { playlist ->
+            val isAlbum = isYandexArtist || playlist.permalinkUrl?.startsWith("yandex:album:") == true
+            CarouselAlbum(
+                key = playlist.id,
+                title = playlist.title ?: "Альбом",
+                subtitle = "",
+                caption = if (isAlbum) {
+                    "Альбом · " + plural(playlist.trackCount, "трек", "трека", "треков")
+                } else {
+                    setCaption(playlist)
+                },
+                artworkUrl = playlist.displayArtworkUrl,
+                onClick = { onPlaylistClick(playlist) }
+            )
+        },
+        modifier = Modifier.padding(horizontal = 16.dp)
+    )
+}
+
+/**
+ * A row of a channel's videos, as its page shows them: wide pictures with the title beneath, a
+ * broadcast marked "В ЭФИРЕ", the one playing ringed. Songs keep their square covers.
+ */
+@Composable
+private fun VideoTileRow(
+    tracks: List<SoundCloudTrack>,
+    currentTrackId: Long?,
+    onPlay: (SoundCloudTrack) -> Unit
+) {
+    // A video's picture is YouTube's own, wide; a song's cover is square.
+    val wide = tracks.firstOrNull()?.artworkUrl?.contains("/vi/") == true
+    val width = if (wide) 216.dp else 148.dp
+    val shape = RoundedCornerShape(20.dp)
+    LazyRow(
+        contentPadding = PaddingValues(horizontal = 16.dp),
+        horizontalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        items(tracks, key = { it.id }) { track ->
+            Column(
+                modifier = Modifier
+                    .width(width)
+                    .clip(shape)
+                    .clickable { onPlay(track) }
+            ) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .aspectRatio(if (wide) 16f / 9f else 1f)
+                        .clip(shape)
+                        .background(MaterialTheme.colorScheme.surfaceContainerHigh)
+                        .then(
+                            if (track.id == currentTrackId) Modifier.border(3.dp, MaterialTheme.colorScheme.primary, shape) else Modifier
+                        )
+                ) {
+                    AsyncImage(
+                        model = artworkUrlForSize(track.artworkUrl, width),
+                        contentDescription = null,
+                        modifier = Modifier.fillMaxSize(),
+                        contentScale = ContentScale.Crop
+                    )
+                    if (track.kind == "live") {
+                        Box(modifier = Modifier.padding(8.dp)) { LiveBadge() }
+                    }
+                }
+                Text(
+                    text = track.title.orEmpty(),
+                    style = MaterialTheme.typography.titleSmall,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.padding(start = 4.dp, top = 8.dp, end = 4.dp, bottom = 4.dp)
+                )
+            }
+        }
+    }
+}
+
 /**
  * Album or playlist opened from the artist page or from search: laid out as a mix is, the cover
  * across the top with the title over it and the big play button, then the tracks.
@@ -9225,7 +10829,9 @@ private fun SetDetailContent(
     onPlayTrack: (SoundCloudTrack) -> Unit,
     onFavoriteClick: (SoundCloudTrack) -> Unit,
     error: String? = null,
-    artistName: String? = null
+    artistName: String? = null,
+    // Its artists' chips open their pages; null, a plain name (the artist's own page opened it).
+    onArtistClick: ((SoundCloudUser) -> Unit)? = null
 ) {
     val isYandex = playlist.permalinkUrl?.contains("yandex") == true
     val albumLibrary = LocalAlbumLibrary.current
@@ -9240,18 +10846,30 @@ private fun SetDetailContent(
     val isActive = currentTrackId != null && tracks.any { it.id == currentTrackId }
     val listState = rememberLazyListState()
     val collapsed = rememberCollapsed(listState, MixCoverHeight - 140.dp)
+    // Who it is by, with a page each: the set's owner where it links one; an album's artists, as
+    // its tracks name them, otherwise.
+    val setArtists = remember(playlist.user, tracks) {
+        val owner = playlist.user?.takeIf { !it.permalinkUrl.isNullOrBlank() }
+        val album = playlist.isAlbum == true || playlist.permalinkUrl?.startsWith("yandex:album:") == true
+        when {
+            owner != null -> listOf(owner)
+            album -> tracks.firstOrNull()
+                ?.let { first -> first.artists?.takeIf { it.isNotEmpty() } ?: listOfNotNull(first.user) }
+                ?.filter { !it.permalinkUrl.isNullOrBlank() }
+                .orEmpty()
+            else -> emptyList()
+        }
+    }
 
     Box(
         modifier = Modifier
             .fillMaxSize()
             .pageGlass(MaterialTheme.colorScheme.background)
     ) {
-        LazyColumn(
-            state = listState,
-            modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(bottom = 120.dp)
-        ) {
-            item(key = "set-hero") {
+        DetailFrame(
+            listState = listState,
+            bottomPadding = 120.dp,
+            header = {
                 val artworkUrl = ArtworkUrls.highRes(playlist.displayArtworkUrl) ?: playlist.displayArtworkUrl
                 CoverHeader(
                     artwork = {
@@ -9269,6 +10887,9 @@ private fun SetDetailContent(
                     kicker = if (isYandex) "Альбом" else setCaption(playlist),
                     title = title,
                     subtitle = subtitle.takeIf { it.isNotBlank() },
+                    byline = setArtists.takeIf { it.isNotEmpty() && onArtistClick != null }?.let { artists ->
+                        { ArtistPills(artists = artists, onClick = { onArtistClick?.invoke(it) }) }
+                    },
                     isActive = isActive,
                     isPlaying = isPlaying,
                     onPlay = if (tracks.isEmpty()) null else {
@@ -9281,7 +10902,7 @@ private fun SetDetailContent(
                     }
                 )
             }
-
+        ) {
             item(key = "set-count") {
                 CountRule(
                     text = when {
@@ -9387,7 +11008,7 @@ fun TrackActionsDialog(
     onAddToPlaylist: (Playlist) -> Unit,
     onCreatePlaylist: (String) -> Unit,
     onShare: () -> Unit,
-    onRedownload: () -> Unit = {},
+    onRedownload: (() -> Unit)? = null,
     // Only for a track downloaded to the phone.
     onDeleteDownload: (() -> Unit)? = null,
     // Only for tracks with a radio to start — YouTube Music's.
@@ -9528,7 +11149,7 @@ fun TrackActionsDialog(
                                     )
                                 }
 
-                                ListItem(
+                                if (onRedownload != null) ListItem(
                                     headlineContent = { Text("Перескачать трек") },
                                     supportingContent = { Text("Скачать файл заново на устройство") },
                                     leadingContent = {

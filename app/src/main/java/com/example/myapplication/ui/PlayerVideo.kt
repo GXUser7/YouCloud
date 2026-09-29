@@ -224,6 +224,10 @@ fun rememberPlayerVideoState(video: TrackVideo?, isPlaying: Boolean, trackPositi
         // A downloaded track's video is a file of its own, read as it is.
         val dataSource = if (video.url.startsWith("file:")) {
             androidx.media3.datasource.DefaultDataSource.Factory(context)
+        } else if ("m3u8" in video.url || "hls_playlist" in video.url) {
+            // A live stream's picture: its playlist changes under the same address as it airs, and
+            // kept in the cache it would be read stale; its pieces are only seen once.
+            com.example.myapplication.data.StreamCache.slowNetworkHttp(video.userAgent)
         } else {
             VideoCache.dataSourceFactory(context, video.userAgent)
         }
@@ -243,7 +247,13 @@ fun rememberPlayerVideoState(video: TrackVideo?, isPlaying: Boolean, trackPositi
             .setTrackTypeDisabled(C.TRACK_TYPE_AUDIO, true)
             .build()
         player.repeatMode = if (video.loop) Player.REPEAT_MODE_ONE else Player.REPEAT_MODE_OFF
-        player.setMediaItem(MediaItem.fromUri(video.url))
+        // A live stream's picture is an HLS playlist, which its address doesn't always say.
+        player.setMediaItem(
+            MediaItem.Builder()
+                .setUri(video.url)
+                .apply { if ("m3u8" in video.url || "hls_playlist" in video.url) setMimeType(androidx.media3.common.MimeTypes.APPLICATION_M3U8) }
+                .build()
+        )
         if (!video.loop) player.seekTo(video.videoPositionFor(trackPosition()))
         player.prepare()
         PlayerVideoState(video, player)
@@ -602,7 +612,9 @@ fun FullScreenVideo(
     state: PlayerVideoState,
     blur: () -> Dp,
     glow: Boolean = true,
-    glowStyle: GlowStyle = GlowStyle.Ambilight
+    glowStyle: GlowStyle = GlowStyle.Ambilight,
+    // Over the picture, unblurred: the controls, as YouTube lays them over a video.
+    controls: @Composable BoxScope.() -> Unit = {}
 ) {
     val view = androidx.compose.ui.platform.LocalView.current
     DisposableEffect(view) {
@@ -615,6 +627,7 @@ fun FullScreenVideo(
         controller?.hide(androidx.core.view.WindowInsetsCompat.Type.systemBars())
         onDispose { controller?.show(androidx.core.view.WindowInsetsCompat.Type.systemBars()) }
     }
+    Box(modifier = Modifier.fillMaxSize()) {
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -649,6 +662,8 @@ fun FullScreenVideo(
             )
         }
         VideoSurface(state = state, modifier = Modifier.fillMaxSize(), fit = true)
+    }
+    controls()
     }
 }
 

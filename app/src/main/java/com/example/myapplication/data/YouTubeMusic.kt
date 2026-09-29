@@ -46,11 +46,12 @@ fun sapisidAuthorization(sapisid: String, origin: String): String {
     return "SAPISIDHASH ${timestamp}_" + digest.joinToString("") { "%02x".format(it) }
 }
 
-/** A row of YouTube Music's home: songs to play in place, and sets to open. */
+/** A row of YouTube Music's home: songs to play in place, and sets to open; an artist's, artists too. */
 data class YtShelf(
     val title: String,
     val tracks: List<SoundCloudTrack>,
-    val sets: List<SoundCloudPlaylist>
+    val sets: List<SoundCloudPlaylist>,
+    val artists: List<SoundCloudUser> = emptyList()
 )
 
 /** What a search found: songs a page at a time ([continuation] for the next), and the rest at once. */
@@ -70,7 +71,14 @@ data class YtArtistPage(
     val artist: SoundCloudUser,
     val topSongs: List<SoundCloudTrack>,
     val allSongs: SoundCloudPlaylist?,
-    val releases: List<SoundCloudPlaylist>
+    val releases: List<SoundCloudPlaylist>,
+    // Every row of the page, under its own title, for the page shown whole.
+    val shelves: List<YtShelf> = emptyList(),
+    // Whether the signed-in account is subscribed; null signed out.
+    val subscribed: Boolean? = null,
+    // What the page's subscribe button sends, and its unsubscribe: where the subscription is from.
+    val subscribeParams: String? = null,
+    val unsubscribeParams: String? = null
 )
 
 /**
@@ -89,6 +97,8 @@ data class YtMusicVideo(
 class YtMusicException(val code: Int, detail: String) : Exception("YouTube Music HTTP $code: $detail")
 
 const val YT_TRACK_URN = "ytmusic:track:"
+// A live stream: no length, nothing to download, heard as HLS; see [liveVideoId].
+const val YT_LIVE_URN = "ytlive:"
 const val YT_SET_REF = "ytmusic:set:"
 const val YT_ARTIST_REF = "ytmusic:artist:"
 
@@ -111,6 +121,10 @@ fun youTubeTrackId(videoId: String): Long {
 
 val SoundCloudTrack.youTubeVideoId: String?
     get() = urn?.takeIf { it.startsWith(YT_TRACK_URN) }?.removePrefix(YT_TRACK_URN)
+
+/** A YouTube live stream's video id: a track that plays as long as the broadcast does. */
+val SoundCloudTrack.liveVideoId: String?
+    get() = urn?.takeIf { it.startsWith(YT_LIVE_URN) }?.removePrefix(YT_LIVE_URN)
 
 /** Kept on the device as a plain file (Yandex, YouTube), not in SoundCloud's HLS cache. */
 fun isProgressiveSource(urn: String?): Boolean =
@@ -162,25 +176,37 @@ class YouTubeMusicClient(private val authProvider: () -> YtAuth?) {
     /** Tracks of a set from [home]: a playlist or mix (`VL…`) or an album (`MPRE…`). */
     suspend fun setTracks(set: SoundCloudPlaylist): List<SoundCloudTrack> {
         val (browseId, playlistId) = parseSetRef(set.permalinkUrl) ?: return emptyList()
-        val fromPage = if (browseId.isNotBlank()) {
-            val page = post("browse", json { addProperty("browseId", browseId) })
+        // A station's page may not open at all; its tracks are in the watch queue then.
+        val page = if (browseId.isNotBlank()) optional { post("browse", json { addProperty("browseId", browseId) }) } else null
+        val fromPage = if (page != null) {
             // The list itself, not the suggestions a playlist page may add below it.
             val shelf = page.findAll("musicPlaylistShelfRenderer").firstOrNull()
                 ?: page.findAll("musicShelfRenderer").firstOrNull()
-            // Album rows leave out the artist; the album's header names it.
-            val albumArtist = page.findAll("musicResponsiveHeaderRenderer").firstOrNull()
-                ?.runs("straplineTextOne")
+            // Album rows leave out the artist; the album's header names it, with its page.
+            val header = page.findAll("musicResponsiveHeaderRenderer").firstOrNull()
+            val albumArtist = header?.runs("straplineTextOne")
+            val albumArtists = artistsOf(header.arr("straplineTextOne", "runs"))
             shelf.arr("contents").mapNotNull { item ->
                 item.at("musicResponsiveListItemRenderer")?.let { row ->
                     parseSongRow(row, fallbackArtwork = set.artworkUrl, fallbackArtist = albumArtist)
+                }
+            }.map { track ->
+                if (albumArtists.isNotEmpty() && track.artists.orEmpty().none { it.permalinkUrl != null }) {
+                    track.copy(user = albumArtists.first(), artists = albumArtists)
+                } else {
+                    track
                 }
             }
         } else {
             emptyList()
         }
-        // Radio-style mixes have no page of their own; their tracks are in the watch queue.
+        // Radio-style mixes and stations have no page of their own; their tracks are in the watch
+        // queue, a radio's asked for as one.
         if (fromPage.isNotEmpty() || playlistId.isBlank()) return fromPage.distinctBy { it.id }
-        return watchQueue(json { addProperty("playlistId", playlistId) })
+        return watchQueue(json {
+            addProperty("playlistId", playlistId)
+            if (playlistId.startsWith("RD")) addProperty("params", "wAEB")
+        })
     }
 
     /**
@@ -196,14 +222,17 @@ class YouTubeMusicClient(private val authProvider: () -> YtAuth?) {
         val artists = async { optional { searchShelf(query, FILTER_ARTISTS) } }
         val albums = async { optional { searchShelf(query, FILTER_ALBUMS) } }
         val playlists = async { optional { searchShelf(query, FILTER_PLAYLISTS) } }
+        // Live streams (a lo-fi radio) are among the videos, and only there.
+        val videos = async { optional { searchShelf(query, FILTER_VIDEOS) } }
 
         val mixed = parseMixedResults(main.await())
         val songShelf = songs.await()
         val filteredSongs = listRows(songShelf).mapNotNull { parseSongRow(it) }
         // The filtered rows carry the length and album the main page leaves out.
         val detailed = filteredSongs.associateBy { it.id }
+        val live = listRows(videos.await()).mapNotNull { parseSongRow(it) }.filter { it.liveVideoId != null }
         YtSearchPage(
-            tracks = (mixed.tracks.map { detailed[it.id] ?: it } + filteredSongs).distinctBy { it.id },
+            tracks = (mixed.tracks.map { detailed[it.id] ?: it } + live + filteredSongs).distinctBy { it.id },
             artists = (mixed.artists + listRows(artists.await()).mapNotNull(::parseListArtist))
                 .distinctBy { it.permalinkUrl },
             albums = (mixed.sets.filter { it.isAlbum == true } + listRows(albums.await()).mapNotNull(::parseListSet))
@@ -259,7 +288,10 @@ class YouTubeMusicClient(private val authProvider: () -> YtAuth?) {
             title = title,
             artists = artistsOf(subtitle.arr("runs")).ifEmpty { plainArtist(subtitle.runsText()) },
             durationMs = subtitle.durationRun()?.let(::parseDuration) ?: 0L,
-            artwork = bestThumbnail(card.arr("thumbnail", "musicThumbnailRenderer", "thumbnail", "thumbnails"))
+            artwork = bestThumbnail(card.arr("thumbnail", "musicThumbnailRenderer", "thumbnail", "thumbnails")),
+            // The top result is often the broadcast itself: taken for a track, it asked yt-dlp for
+            // a file there is none of.
+            live = isLive(card, subtitle.runsText())
         )
     }
 
@@ -323,6 +355,34 @@ class YouTubeMusicClient(private val authProvider: () -> YtAuth?) {
             ?: sections.firstNotNullOfOrNull { it.at("musicDescriptionShelfRenderer") }.runs("description")
         val listeners = header.runs("monthlyListenerCount")
             ?: header.runs("subscriptionButton", "subscribeButtonRenderer", "subscriberCountText")
+        // Every row as the page has it, in its order and under its title ("Видео", "Синглы",
+        // "Похожие исполнители"…): a channel's broadcasts come as a podcast's episodes.
+        val owner = SoundCloudUser(username = name, permalinkUrl = YT_ARTIST_REF + channelId)
+        val shelves = carousels.mapNotNull { shelf ->
+            val title = shelf.runs("header", "musicCarouselShelfBasicHeaderRenderer", "title") ?: return@mapNotNull null
+            val tracks = mutableListOf<SoundCloudTrack>()
+            val sets = mutableListOf<SoundCloudPlaylist>()
+            val artists = mutableListOf<SoundCloudUser>()
+            shelf.arr("contents").forEach { item ->
+                item.at("musicTwoRowItemRenderer")?.let { tile ->
+                    parseTileTrack(tile)?.let(tracks::add)
+                        ?: parseTileArtist(tile)?.let(artists::add)
+                        ?: parseTileSet(tile)?.let(sets::add)
+                }
+                item.at("musicMultiRowListItemRenderer")?.let { parseEpisode(it, owner) }?.let(tracks::add)
+                item.at("musicResponsiveListItemRenderer")?.let { parseSongRow(it, fallbackArtist = name) }?.let(tracks::add)
+            }
+            YtShelf(title, tracks.distinctBy { it.id }, sets.distinctBy { it.id }, artists.distinctBy { it.permalinkUrl })
+                .takeIf { it.tracks.isNotEmpty() || it.sets.isNotEmpty() || it.artists.isNotEmpty() }
+        }
+        val subscribeButton = header.at("subscriptionButton", "subscribeButtonRenderer")
+        val subscribed = subscribeButton.at("subscribed")
+            ?.takeIf { it.isJsonPrimitive && authProvider()?.sapisid != null }
+            ?.asBoolean
+        val subscribeParams = subscribeButton?.findAll("subscribeEndpoint")?.firstNotNullOfOrNull { it.str("params") }
+            ?: ARTIST_SUBSCRIBE_PARAMS
+        val unsubscribeParams = subscribeButton?.findAll("unsubscribeEndpoint")?.firstNotNullOfOrNull { it.str("params") }
+            ?: ARTIST_UNSUBSCRIBE_PARAMS
         val artist = SoundCloudUser(
             username = name,
             // A channel's page shows its avatar apart from a wide banner; an artist's, one picture.
@@ -332,7 +392,16 @@ class YouTubeMusicClient(private val authProvider: () -> YtAuth?) {
             followersCount = listeners?.let(::parseCount),
             permalinkUrl = YT_ARTIST_REF + channelId
         )
-        return YtArtistPage(artist, topSongs, allSongs, releases)
+        return YtArtistPage(artist, topSongs, allSongs, releases, shelves, subscribed, subscribeParams, unsubscribeParams)
+    }
+
+    /** Subscribes to the channel [channelId] or unsubscribes, sending [params] as the page's button does. */
+    suspend fun subscribe(channelId: String, subscribe: Boolean, params: String?) {
+        if (authProvider()?.sapisid == null) throw YtMusicException(401, "Не выполнен вход в YouTube Music")
+        post(if (subscribe) "subscription/subscribe" else "subscription/unsubscribe", json {
+            add("channelIds", com.google.gson.JsonArray().apply { add(channelId) })
+            params?.let { addProperty("params", it.replace("%3D", "=")) }
+        })
     }
 
     /**
@@ -405,6 +474,35 @@ class YouTubeMusicClient(private val authProvider: () -> YtAuth?) {
         return header.runs("accountName") ?: header.runs("channelHandle")
     }
 
+    /**
+     * The album [videoId] is from, as the watch queue's byline names it ("Artist • Album • 2024");
+     * null for a video, an upload, a podcast's episode.
+     */
+    suspend fun albumOf(videoId: String): SoundCloudPlaylist? {
+        val next = post("next", json {
+            addProperty("videoId", videoId)
+            addProperty("enablePersistentPlaylistPanel", true)
+            addProperty("isAudioOnly", true)
+        })
+        val row = next.findAll("playlistPanelVideoRenderer").firstOrNull { it.str("videoId") == videoId } ?: return null
+        val byline = row.arr("longBylineText", "runs")
+        val run = byline.firstOrNull { run ->
+            val browse = run.at("navigationEndpoint", "browseEndpoint")
+            browse.str("browseId")?.startsWith("MPRE") == true ||
+                browse.str("browseEndpointContextSupportedConfigs", "browseEndpointContextMusicConfig", "pageType") == "MUSIC_PAGE_TYPE_ALBUM"
+        } ?: return null
+        val browseId = run.str("navigationEndpoint", "browseEndpoint", "browseId") ?: return null
+        return SoundCloudPlaylist(
+            id = youTubeTrackId("set:$browseId"),
+            title = run.str("text"),
+            artworkUrl = bestThumbnail(row.arr("thumbnail", "thumbnails")),
+            permalinkUrl = "$YT_SET_REF$browseId:",
+            user = artistsOf(byline).firstOrNull(),
+            isAlbum = true,
+            setType = "album"
+        )
+    }
+
     /** Thumbs up, or back to neither. */
     suspend fun rate(videoId: String, like: Boolean) {
         post(if (like) "like/like" else "like/removelike", json {
@@ -459,7 +557,7 @@ class YouTubeMusicClient(private val authProvider: () -> YtAuth?) {
         val title = columns.getOrNull(0).runsText() ?: return null
         val byline = columns.getOrNull(1)
         val artists = artistsOf(byline.arr("runs"))
-            .ifEmpty { plainArtist(byline.runsText()) }
+            .ifEmpty { withChannel(plainArtist(byline.runsText()), row) }
             .ifEmpty { plainArtist(fallbackArtist) }
         // A column of its own in playlists; the byline's last part in search results.
         val duration = (row.arr("fixedColumns")
@@ -468,7 +566,17 @@ class YouTubeMusicClient(private val authProvider: () -> YtAuth?) {
             ?.let(::parseDuration) ?: 0L
         val artwork = bestThumbnail(row.arr("thumbnail", "musicThumbnailRenderer", "thumbnail", "thumbnails"))
             ?: fallbackArtwork
-        return track(videoId, title, artists, duration, artwork)
+        return track(videoId, title, artists, duration, artwork, live = isLive(row, byline.runsText()))
+    }
+
+    /**
+     * Whether a row is a broadcast going on now: YouTube marks it with a "LIVE" badge, and its
+     * byline counts who is watching instead of views, with no length.
+     */
+    private fun isLive(row: JsonElement, byline: String?): Boolean {
+        val badged = row.findAll("iconType").any { it.isJsonPrimitive && it.asString.contains("LIVE") } ||
+            row.findAll("liveBadgeRenderer").isNotEmpty()
+        return badged || (byline != null && WATCHING.containsMatchIn(byline))
     }
 
     private fun parseQueueVideo(video: JsonElement): SoundCloudTrack? {
@@ -477,7 +585,10 @@ class YouTubeMusicClient(private val authProvider: () -> YtAuth?) {
         val artists = artistsOf(video.arr("longBylineText", "runs"))
             .ifEmpty { plainArtist(video.runs("shortBylineText")) }
         val duration = video.runs("lengthText")?.let(::parseDuration) ?: 0L
-        return track(videoId, title, artists, duration, bestThumbnail(video.arr("thumbnail", "thumbnails")))
+        return track(
+            videoId, title, artists, duration, bestThumbnail(video.arr("thumbnail", "thumbnails")),
+            live = isLive(video, video.runs("longBylineText"))
+        )
     }
 
     /** A tile that plays a song ("Listen again" mixes songs in with sets). */
@@ -486,11 +597,30 @@ class YouTubeMusicClient(private val authProvider: () -> YtAuth?) {
         val title = tile.runs("title") ?: return null
         val artists = artistsOf(tile.arr("subtitle", "runs")).ifEmpty { plainArtist(tile.runs("subtitle")) }
         val artwork = bestThumbnail(tile.arr("thumbnailRenderer", "musicThumbnailRenderer", "thumbnail", "thumbnails"))
-        return track(videoId, title, artists, 0L, artwork)
+        return track(videoId, title, artists, 0L, artwork, live = isLive(tile, tile.runs("subtitle")))
+    }
+
+    /** A tile that opens an artist or a channel ("Похожие исполнители"). */
+    private fun parseTileArtist(tile: JsonElement): SoundCloudUser? {
+        val id = tile.str("navigationEndpoint", "browseEndpoint", "browseId")?.takeIf { it.startsWith("UC") } ?: return null
+        return SoundCloudUser(
+            username = tile.runs("title") ?: return null,
+            avatarUrl = bestThumbnail(tile.arr("thumbnailRenderer", "musicThumbnailRenderer", "thumbnail", "thumbnails")),
+            followersCount = tile.runs("subtitle")?.let(::parseCount),
+            permalinkUrl = YT_ARTIST_REF + id
+        )
+    }
+
+    /** A podcast's episode: how YouTube Music files a channel's broadcasts ("Новые выпуски"). */
+    private fun parseEpisode(row: JsonElement, owner: SoundCloudUser): SoundCloudTrack? {
+        val videoId = row.str("onTap", "watchEndpoint", "videoId") ?: return null
+        val title = row.runs("title") ?: return null
+        val artwork = bestThumbnail(row.arr("thumbnail", "musicThumbnailRenderer", "thumbnail", "thumbnails"))
+        return track(videoId, title, listOf(owner), 0L, artwork, live = isLive(row, row.runs("subtitle")))
     }
 
     private fun parseTileSet(tile: JsonElement): SoundCloudPlaylist? {
-        val browse = tile.at("navigationEndpoint", "browseEndpoint") ?: return null
+        val browse = tile.at("navigationEndpoint", "browseEndpoint") ?: return parseTileStation(tile)
         val browseId = browse.str("browseId") ?: return null
         val pageType = browse.str(
             "browseEndpointContextSupportedConfigs", "browseEndpointContextMusicConfig", "pageType"
@@ -516,6 +646,20 @@ class YouTubeMusicClient(private val authProvider: () -> YtAuth?) {
             user = SoundCloudUser(username = tile.runs("subtitle")),
             isAlbum = isAlbum,
             setType = if (isAlbum) "album" else null
+        )
+    }
+
+    /** A station: a tile with no page, only a queue to play ("Радио", a mix of an artist). */
+    private fun parseTileStation(tile: JsonElement): SoundCloudPlaylist? {
+        val playlistId = tile.str("navigationEndpoint", "watchPlaylistEndpoint", "playlistId") ?: return null
+        val title = tile.runs("title") ?: return null
+        return SoundCloudPlaylist(
+            id = youTubeTrackId("set:$playlistId"),
+            title = title,
+            artworkUrl = bestThumbnail(tile.arr("thumbnailRenderer", "musicThumbnailRenderer", "thumbnail", "thumbnails")),
+            permalinkUrl = "$YT_SET_REF:$playlistId",
+            user = SoundCloudUser(username = tile.runs("subtitle")),
+            isAlbum = false
         )
     }
 
@@ -581,17 +725,19 @@ class YouTubeMusicClient(private val authProvider: () -> YtAuth?) {
         title: String,
         artists: List<SoundCloudUser>,
         durationMs: Long,
-        artwork: String?
+        artwork: String?,
+        live: Boolean = false
     ) = SoundCloudTrack(
-        id = youTubeTrackId(videoId),
-        urn = YT_TRACK_URN + videoId,
-        kind = "track",
+        // Apart from the same video as a track, should it ever be one.
+        id = youTubeTrackId(if (live) "live:$videoId" else videoId),
+        urn = (if (live) YT_LIVE_URN else YT_TRACK_URN) + videoId,
+        kind = if (live) "live" else "track",
         title = title,
         artworkUrl = artwork,
         permalinkUrl = "https://music.youtube.com/watch?v=$videoId",
         user = artists.firstOrNull() ?: SoundCloudUser(username = "YouTube Music"),
         artists = artists,
-        duration = durationMs,
+        duration = if (live) 0L else durationMs,
         streamable = true,
         policy = "ALLOW"
     )
@@ -603,10 +749,28 @@ class YouTubeMusicClient(private val authProvider: () -> YtAuth?) {
         SoundCloudUser(username = run.str("text"), permalinkUrl = YT_ARTIST_REF + id)
     }
 
-    /** "Artist • 29 млн прослушиваний", "Видео • Artist • …" → the artist. */
+    /**
+     * A name from a byline with no link, given the channel the row leads to elsewhere — its menu's
+     * "go to artist" — so that it opens: a live stream's byline names its channel without linking it.
+     */
+    private fun withChannel(artists: List<SoundCloudUser>, row: JsonElement): List<SoundCloudUser> {
+        val first = artists.firstOrNull() ?: return artists
+        val channelId = row.findAll("browseId")
+            .firstNotNullOfOrNull { id -> id.takeIf { it.isJsonPrimitive }?.asString?.takeIf { it.startsWith("UC") } }
+            ?: return artists
+        return listOf(first.copy(permalinkUrl = YT_ARTIST_REF + channelId)) + artists.drop(1)
+    }
+
+    /**
+     * "Artist • 29 млн прослушиваний", "Видео • Artist • …" → the artist: the first part that is a
+     * name, not the kind of result, a count, a length or a date — a live stream's byline may start
+     * with the day it began ("19 августа"), which came out as its artist.
+     */
     private fun plainArtist(byline: String?): List<SoundCloudUser> {
         val parts = byline?.split(" • ")?.map { it.trim() }.orEmpty()
-        val name = parts.firstOrNull { it.isNotEmpty() && it.lowercase() !in KIND_WORDS }
+        val name = parts.firstOrNull { part ->
+            part.isNotEmpty() && part.lowercase() !in KIND_WORDS && NOT_A_NAME.none { it.containsMatchIn(part) }
+        }
         return listOfNotNull(name?.let { SoundCloudUser(username = it) })
     }
 
@@ -706,13 +870,28 @@ class YouTubeMusicClient(private val authProvider: () -> YtAuth?) {
         private const val FILTER_PLAYLISTS = "EgeKAQQoAEABahAQBRAJEAMQBBAKEBEQEBAV"
 
         private const val PORTRAIT_SIZE = 900
+        // An artist page's subscribe and unsubscribe, should the page not carry its own.
+        private const val ARTIST_SUBSCRIBE_PARAMS = "EgIIGxgA"
+        private const val ARTIST_UNSUBSCRIBE_PARAMS = "CgIIGxgA"
         private const val SHORTER_BY_MS = 10_000L
         private const val LONGER_BY_MS = 150_000L
         private val NOT_A_CLIP = listOf("audio", "lyric", "visualizer", "visualiser", "текст")
         // What a search row's byline starts with before naming anyone.
-        private val KIND_WORDS = setOf("композиция", "видео", "трек", "song", "video", "эпизод", "episode")
+        private val KIND_WORDS = setOf("композиция", "видео", "трек", "song", "video", "эпизод", "episode", "выпуск")
         private val COUNT = Regex("(\\d+(?:[.,]\\d+)?)\\s*(тыс|млн|млрд|k|m|b)?", RegexOption.IGNORE_CASE)
         private val NON_WORD = Regex("[^\\p{L}\\p{N}]+")
+        // What a byline part is when it isn't a name: a date, a year, a length, a count of plays,
+        // views or watchers.
+        private val NOT_A_NAME = listOf(
+            Regex("""^\d{1,2}\s+\p{L}+\.?(\s+\d{4})?$"""),
+            Regex("""^\p{L}{3,9}\.?\s+\d{1,2}(,\s*\d{4})?$"""),
+            Regex("""^\d{4}$"""),
+            Regex("""назад|\bago\b""", RegexOption.IGNORE_CASE),
+            Regex("""^\d+:\d{2}(:\d{2})?$"""),
+            Regex("""\d.*(тыс|млн|млрд|просмотр|прослушив|смотр|зрител|views|plays|watching)""", RegexOption.IGNORE_CASE)
+        )
+        // How a live stream's byline counts its audience.
+        private val WATCHING = Regex("смотр[яи]т|зрител|watching|в эфире", RegexOption.IGNORE_CASE)
 
         private const val ORIGIN = "https://music.youtube.com"
         private const val API = "$ORIGIN/youtubei/v1/"

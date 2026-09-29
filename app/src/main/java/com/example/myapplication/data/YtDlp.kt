@@ -40,10 +40,15 @@ object YtDlp {
     private const val KEY_CHECKED_AT = "update_checked_at"
 
     /**
-     * What to ask yt-dlp for. Plain HTTPS only, never an HLS or DASH manifest: the players and
-     * the downloader here all expect one file.
+     * What to ask yt-dlp for. Plain HTTPS only, never an HLS or DASH manifest — the players and
+     * the downloader here expect one file — but for a live stream, which is only HLS.
      */
-    enum class Kind(val format: String, val clients: String? = null) {
+    enum class Kind(
+        val format: String,
+        val clients: String? = null,
+        // The manifests yt-dlp doesn't fetch: both, for a file, as they are only one more request.
+        val skip: String = "hls,dash"
+    ) {
         /** AAC in MP4 (itag 140) first: every device decodes it, and downloads are kept as it. */
         AUDIO("140/bestaudio[ext=m4a][protocol=https]/bestaudio[protocol=https]"),
 
@@ -59,7 +64,17 @@ object YtDlp {
             "bv[height<=720][vcodec^=vp][protocol=https]/bv[height<=720][vcodec^=avc1][protocol=https]/" +
                 "bv[height<=720][protocol=https]/bv*[height<=720][protocol=https]",
             clients = "tv,tv_downgraded"
-        )
+        ),
+
+        /**
+         * A live stream's sound: its audio-only HLS (itags 233, 234), else the smallest whole one.
+         * A broadcast is only HLS, so that manifest is fetched; the web client hands it out, where
+         * the ones asked for files have none.
+         */
+        LIVE_AUDIO("bestaudio[protocol^=m3u8]/234/233/worst[protocol^=m3u8]", clients = "web_safari,tv,mweb", skip = "dash"),
+
+        /** A live stream's picture, for the player to show: HLS no larger than it needs. */
+        LIVE_VIDEO("best[height<=720][protocol^=m3u8]/94/93/best[protocol^=m3u8]", clients = "web_safari,tv,mweb", skip = "dash")
     }
 
     /**
@@ -118,6 +133,9 @@ def main():
             youtube_args = dict(base_args.get(YOUTUBE_ARGS) or {})
             if request.get("clients"):
                 youtube_args["player_client"] = request["clients"].split(",")
+            # The manifests not to fetch, per request: a live stream is only HLS.
+            if "skip" in request:
+                youtube_args["skip"] = [part for part in request["skip"].split(",") if part]
             ydl.params["extractor_args"] = {**base_args, YOUTUBE_ARGS: youtube_args}
             info = ydl.extract_info(request["url"], download=False)
             reply = {key: info.get(key) for key in KEEP}
@@ -285,7 +303,7 @@ main()
             .addOption("--cache-dir", cacheDir(context).absolutePath)
             .addOption("--plugin-dirs", pluginDir(context).absolutePath)
             // Only the plain audio files are of use; the HLS manifest is one more request.
-            .addOption("--extractor-args", "youtube:skip=hls,dash" + kind.clients?.let { ";player_client=$it" }.orEmpty())
+            .addOption("--extractor-args", "youtube:skip=${kind.skip}" + kind.clients?.let { ";player_client=$it" }.orEmpty())
         // A file per run: yt-dlp writes the jar back when it exits, and two runs can overlap.
         val cookies = auth?.let { writeCookies(File(dir, "cookies-$kind-$videoId.txt"), it) }
         cookies?.let { request.addOption("--cookies", it.absolutePath) }
@@ -336,8 +354,8 @@ main()
         fun field(name: String) = json.get(name)?.takeUnless { it.isJsonNull }
         val url = field("url")?.asString ?: return null
         val userAgent = json.getAsJsonObject("http_headers")?.get("User-Agent")?.asString
-        val media = if (kind == Kind.VIDEO) "video" else "audio"
-        val mimeType = when (field("ext")?.asString) {
+        val media = if (kind == Kind.VIDEO || kind == Kind.LIVE_VIDEO) "video" else "audio"
+        val mimeType = if (field("protocol")?.asString?.startsWith("m3u8") == true) "application/x-mpegURL" else when (field("ext")?.asString) {
             "m4a", "mp4" -> "$media/mp4"
             "webm" -> "$media/webm"
             else -> null
@@ -417,6 +435,7 @@ main()
             addProperty("url", "https://www.youtube.com/watch?v=$videoId")
             addProperty("format", kind.format)
             kind.clients?.let { addProperty("clients", it) }
+            addProperty("skip", kind.skip)
         }
         // A request that hangs takes its server with it.
         val timeout = watchdog.schedule({ server.stop() }, RUN_TIMEOUT_MS, TimeUnit.MILLISECONDS)

@@ -37,8 +37,16 @@ class PlaybackService : MediaLibraryService() {
     // Fetches the next tracks in the queue into the stream cache while one plays.
     private var prefetcher: StreamPrefetcher? = null
 
+    // The reverb of a track's effects, in the player's own sound chain.
+    private val reverbProcessor = ReverbAudioProcessor()
+
     private val prefListener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
         if (key == null) return@OnSharedPreferenceChangeListener
+        // The track playing had its effects changed, in the player on screen.
+        if (key.startsWith(com.example.myapplication.data.TrackFx.KEY_PREFIX)) {
+            (mediaSession?.player as? ExoPlayer)?.let(::applyTrackFx)
+            return@OnSharedPreferenceChangeListener
+        }
         val eq = equalizer ?: return@OnSharedPreferenceChangeListener
         try {
             if (key == "equalizer_enabled") {
@@ -111,6 +119,18 @@ class PlaybackService : MediaLibraryService() {
                                     .build()
                             }
                         }
+                    } else if (uri.scheme == "ytlive") {
+                        // A broadcast: its HLS playlist, fetched as the client it was issued to.
+                        val videoId = uri.lastPathSegment
+                        val live = videoId?.let {
+                            com.example.myapplication.data.YouTubeStreams.resolveLive(this@PlaybackService, it, youTubeAuth())
+                        }
+                        if (live != null) {
+                            return dataSpec.buildUpon()
+                                .setUri(android.net.Uri.parse(live.url))
+                                .setHttpRequestHeaders(dataSpec.httpRequestHeaders + ("User-Agent" to live.userAgent))
+                                .build()
+                        }
                     } else if (uri.scheme == "yandex") {
                         val trackId = uri.lastPathSegment
                         if (trackId != null) {
@@ -135,6 +155,19 @@ class PlaybackService : MediaLibraryService() {
         val resolvingFactory = androidx.media3.datasource.ResolvingDataSource.Factory(baseFactory, resolver)
 
         val player = ExoPlayer.Builder(this)
+            // The reverb of a track's effects, worked out in the player: Android's own, an effect
+            // on the output, is left idle on some phones.
+            .setRenderersFactory(object : androidx.media3.exoplayer.DefaultRenderersFactory(this) {
+                override fun buildAudioSink(
+                    context: Context,
+                    enableFloatOutput: Boolean,
+                    enableAudioTrackPlaybackParams: Boolean
+                ): androidx.media3.exoplayer.audio.AudioSink =
+                    androidx.media3.exoplayer.audio.DefaultAudioSink.Builder(context)
+                        .setAudioProcessorChain(androidx.media3.exoplayer.audio.DefaultAudioSink.DefaultAudioProcessorChain(reverbProcessor))
+                        .setEnableAudioTrackPlaybackParams(enableAudioTrackPlaybackParams)
+                        .build()
+            })
             .setMediaSourceFactory(DefaultMediaSourceFactory(resolvingFactory))
             // "Previous" five seconds into a track starts it over instead.
             .setMaxSeekToPreviousPositionMs(5_000)
@@ -162,9 +195,40 @@ class PlaybackService : MediaLibraryService() {
 
             override fun onMediaItemTransition(mediaItem: androidx.media3.common.MediaItem?, reason: Int) {
                 prefetchNextYouTubeTrack(player)
+                applyTrackFx(player)
             }
         })
         prefetcher = StreamPrefetcher(this, player, resolver).also(player::addListener)
+
+        // A stream that breaks off over a slow connection (a VPN's, say) is tried again, a little
+        // later each time, rather than the player stopping at an error until touched. Preparing
+        // again resolves the link anew, so an expired one (a 403) is mended too.
+        player.addListener(object : Player.Listener {
+            private var retries = 0
+            private val handler = android.os.Handler(android.os.Looper.getMainLooper())
+
+            override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
+                if (error.errorCode !in NETWORK_ERRORS || retries >= RETRY_DELAYS_MS.size) {
+                    retries = 0
+                    return
+                }
+                val wait = RETRY_DELAYS_MS[retries++]
+                val itemId = player.currentMediaItem?.mediaId
+                Log.w("PlaybackService", "Playback broke off (${error.errorCodeName}), again in $wait ms")
+                handler.postDelayed({
+                    // Not if the listener has moved on, or it came back by itself.
+                    if (player.playerError != null && player.currentMediaItem?.mediaId == itemId) player.prepare()
+                }, wait)
+            }
+
+            override fun onPlaybackStateChanged(playbackState: Int) {
+                if (playbackState == Player.STATE_READY) retries = 0
+            }
+
+            override fun onMediaItemTransition(mediaItem: androidx.media3.common.MediaItem?, reason: Int) {
+                retries = 0
+            }
+        })
 
         val intent = Intent(this, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_SINGLE_TOP
@@ -296,6 +360,16 @@ class PlaybackService : MediaLibraryService() {
 
     // Cached regex patterns (#34: avoid recompilation on each call)
     companion object {
+        // What a broken-off stream waits before each try again, and which errors are worth one.
+        private val RETRY_DELAYS_MS = longArrayOf(2_000, 5_000, 10_000)
+        private val NETWORK_ERRORS = setOf(
+            androidx.media3.common.PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED,
+            androidx.media3.common.PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT,
+            androidx.media3.common.PlaybackException.ERROR_CODE_IO_UNSPECIFIED,
+            androidx.media3.common.PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS,
+            androidx.media3.common.PlaybackException.ERROR_CODE_TIMEOUT
+        )
+
         // Set once what playback had left in the downloads' cache has been cleared out.
         private const val KEY_STREAM_LEFTOVERS_DROPPED = "stream_leftovers_dropped"
 
@@ -494,6 +568,23 @@ class PlaybackService : MediaLibraryService() {
             }
             }
         }
+    }
+
+    /**
+     * The track playing's own effects ([com.example.myapplication.data.TrackFx]): its speed, with
+     * or without its pitch, and its reverb, worked out in the player ([ReverbAudioProcessor]).
+     */
+    private fun applyTrackFx(player: ExoPlayer) {
+        val trackId = player.currentMediaItem?.mediaId?.toLongOrNull()
+        val fx = trackId?.let {
+            com.example.myapplication.data.TrackFx.decode(preferences.getString(com.example.myapplication.data.TrackFx.KEY_PREFIX + it, null))
+        } ?: com.example.myapplication.data.TrackFx()
+        // A broadcast goes at its own pace: sped up it ran into its live edge and stalled waiting
+        // for more, slowed down it fell further and further behind.
+        val live = player.currentMediaItem?.localConfiguration?.uri?.scheme == "ytlive"
+        val speed = if (live) 1f else fx.speed
+        player.playbackParameters = androidx.media3.common.PlaybackParameters(speed, if (fx.keepPitch) 1f else speed)
+        reverbProcessor.amount = fx.reverb
     }
 
     private fun initEqualizer(audioSessionId: Int) {

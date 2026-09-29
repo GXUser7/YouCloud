@@ -28,6 +28,7 @@ import com.example.myapplication.data.YandexRotorSessionRequest
 import com.example.myapplication.data.YtAuth
 import com.example.myapplication.data.YtShelf
 import com.example.myapplication.data.isProgressiveSource
+import com.example.myapplication.data.liveVideoId
 import com.example.myapplication.data.youTubeVideoId
 import com.example.myapplication.data.toArtistUser
 import com.example.myapplication.data.FavoriteTrack
@@ -98,6 +99,9 @@ enum class AppScreen {
 
 /** Where search looks. YouTube Music and Yandex only once they are connected. */
 enum class SearchSource { SOUNDCLOUD, YANDEX, YOUTUBE }
+
+/** Whether the account follows the artist on screen; [busy] while the change is on its way. */
+data class ArtistFollow(val following: Boolean, val busy: Boolean = false)
 
 /** A YouTube Music search: what was asked, and what came back so far. */
 data class YtSearchState(
@@ -263,7 +267,11 @@ class MusicViewModel(
             delay(400)
             _ytSearch.value = _ytSearch.value.copy(loading = true)
             try {
-                val page = ytMusic.search(query.trim())
+                val page = if (settingsRepository.ytWebSearch.value) {
+                    com.example.myapplication.data.YouTubeWeb.search(query.trim(), settingsRepository.ytMusicAuth())
+                } else {
+                    ytMusic.search(query.trim())
+                }
                 _ytSearch.value = _ytSearch.value.copy(page = page, loading = false)
             } catch (e: CancellationException) {
                 throw e
@@ -347,6 +355,23 @@ class MusicViewModel(
 
     private val _artistError = MutableStateFlow<String?>(null)
     val artistError = _artistError.asStateFlow()
+
+    // Following the artist on screen, in its own service; null: no account there to follow with.
+    private val _artistFollow = MutableStateFlow<ArtistFollow?>(null)
+    val artistFollow = _artistFollow.asStateFlow()
+    private var artistFollowJob: Job? = null
+
+    // A YouTube artist's broadcasts going on now, and every row of their page.
+    private val _artistLives = MutableStateFlow<List<SoundCloudTrack>>(emptyList())
+    val artistLives = _artistLives.asStateFlow()
+    private val _artistShelves = MutableStateFlow<List<YtShelf>>(emptyList())
+    val artistShelves = _artistShelves.asStateFlow()
+
+    // The artist's tracks are a YouTube channel's videos: YouTube Music had nothing of it.
+    private val _artistTracksAreVideos = MutableStateFlow(false)
+    val artistTracksAreVideos = _artistTracksAreVideos.asStateFlow()
+    // Where the rest of such a channel's videos are, for "Все".
+    private var ytChannelContinuation: String? = null
 
     private val _yandexPlaylists = MutableStateFlow<List<SoundCloudPlaylist>>(emptyList())
     val yandexPlaylists = _yandexPlaylists.asStateFlow()
@@ -802,12 +827,33 @@ class MusicViewModel(
         }
     }
 
+    // Yandex Music's home, as rows; see [loadYandexShelves].
+    private val _yandexShelves = MutableStateFlow<List<com.example.myapplication.data.YtShelf>>(emptyList())
+    val yandexShelves = _yandexShelves.asStateFlow()
+
+    /** Yandex Music's own home rows: the playlists made for the listener, new releases, the chart. */
+    private fun loadYandexShelves() {
+        viewModelScope.launch {
+            try {
+                val shelves = com.example.myapplication.data.YandexLanding.rows(yandexService)
+                Log.d("MusicViewModel", "Yandex home rows: " + shelves.joinToString { "${it.title} (${it.tracks.size} tracks, ${it.sets.size} sets)" })
+                _yandexShelves.value = shelves
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.w("MusicViewModel", "Yandex home rows failed", e)
+            }
+        }
+    }
+
     fun loadYandexPlaylists() {
         val token = settingsRepository.yandexTokenValue()
         if (token.isBlank()) {
             _yandexPlaylists.value = emptyList()
+            _yandexShelves.value = emptyList()
             return
         }
+        loadYandexShelves()
         viewModelScope.launch {
             _yandexPlaylistsLoading.value = true
             try {
@@ -1359,6 +1405,7 @@ class MusicViewModel(
      */
     private fun serviceStreamUrl(track: SoundCloudTrack): String? {
         track.youTubeVideoId?.let { return "ytmusic://track/$it" }
+        track.liveVideoId?.let { return "ytlive://track/$it" }
         if (track.urn?.startsWith("yandex:track:") == true) {
             return "yandex://track/${track.urn.removePrefix("yandex:track:")}"
         }
@@ -1562,7 +1609,7 @@ class MusicViewModel(
         ytSetJob = viewModelScope.launch {
             _ytSetLoading.value = true
             try {
-                val tracks = ytMusic.setTracks(set)
+                val tracks = if (set.permalinkUrl?.startsWith("yandex:") == true) loadYandexSetTracks(set) else ytMusic.setTracks(set)
                 if (_ytOpenedSet.value?.id == set.id) {
                     _ytOpenedSet.value = set.copy(tracks = tracks, trackCount = tracks.size)
                 }
@@ -1578,6 +1625,58 @@ class MusicViewModel(
         }
     }
 
+    /**
+     * Opens the album [track] is from, as the player's title does: Yandex Music's (the track
+     * carries its album's id, a saved one too), YouTube Music's (asked of its watch queue).
+     */
+    fun openTrackAlbum(track: SoundCloudTrack) {
+        viewModelScope.launch {
+            val album = try {
+                findTrackAlbum(track)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.w("MusicViewModel", "Album of ${track.urn} failed", e)
+                null
+            }
+            if (album == null) {
+                Toast.makeText(context, "Не нашлось альбома этого трека", Toast.LENGTH_SHORT).show()
+                return@launch
+            }
+            _selectedTrack.value = null
+            _selectedMix.value = null
+            openYtSet(album)
+        }
+    }
+
+    private suspend fun findTrackAlbum(track: SoundCloudTrack): SoundCloudPlaylist? {
+        val urn = track.urn.orEmpty()
+        if (urn.startsWith("yandex:track:")) {
+            val parts = urn.removePrefix("yandex:track:").split(':')
+            val albumId = parts.getOrNull(1)?.toLongOrNull()
+                ?: yandexService.getTracksDetails(parts.first()).result.orEmpty().firstOrNull()?.albums?.firstOrNull()?.id
+                ?: return null
+            val detail = yandexService.getAlbumWithTracks(albumId).result ?: return null
+            val tracks = detail.volumes.orEmpty().flatten()
+                .map { it.toSoundCloudTrack(customAlbumId = albumId.toString()) }
+                .filter { isPlayableTrack(it) }
+                .distinctBy { it.id }
+            return SoundCloudPlaylist(
+                id = albumId + 10_000_000L,
+                title = detail.title,
+                tracks = tracks,
+                trackCount = tracks.size,
+                artworkUrl = detail.coverUri?.let { "https://" + it.replace("%%", "400x400") } ?: track.artworkUrl,
+                permalinkUrl = "yandex:album:$albumId",
+                user = tracks.firstOrNull()?.user,
+                isAlbum = true,
+                setType = "album"
+            )
+        }
+        val videoId = track.youTubeVideoId ?: return null
+        return ytMusic.albumOf(videoId)?.let { it.copy(artworkUrl = track.artworkUrl ?: it.artworkUrl) }
+    }
+
     fun closeYtSet() {
         ytSetJob?.cancel()
         _ytOpenedSet.value = null
@@ -1591,7 +1690,7 @@ class MusicViewModel(
         viewModelScope.launch {
             try {
                 val radio = ytMusic.radio(videoId).filterNot { it.id == track.id }
-                playQueuedTrack(track, listOf(track) + radio)
+                playQueueFrom(track, listOf(track) + radio)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -1681,8 +1780,24 @@ class MusicViewModel(
         avatarUrl: String? = null
     ) {
         returnToSearchFromArtist = false
+        lastArtistOpen = { openArtistDetails(userId, permalinkUrl, username, trackUrn, avatarUrl) }
         if (permalinkUrl?.startsWith(YT_ARTIST_REF) == true) {
             openYouTubeArtist(permalinkUrl.removePrefix(YT_ARTIST_REF), username, avatarUrl)
+            return
+        }
+        // A YouTube broadcast YouTube Music files under a podcast names no channel: the watch
+        // page does.
+        val liveId = (_selectedTrack.value ?: _currentPlayingTrack.value)?.takeIf { permalinkUrl == null }?.liveVideoId
+        if (liveId != null) {
+            viewModelScope.launch {
+                val owner = runCatching { com.example.myapplication.data.YouTubeWeb.videoOwner(liveId, settingsRepository.ytMusicAuth()) }.getOrNull()
+                val channel = owner?.permalinkUrl
+                if (channel != null) {
+                    openYouTubeArtist(channel.removePrefix(YT_ARTIST_REF), owner.username, owner.avatarUrl)
+                } else {
+                    android.widget.Toast.makeText(context, "Не удалось найти канал трансляции", android.widget.Toast.LENGTH_SHORT).show()
+                }
+            }
             return
         }
         val activeUrn = trackUrn ?: _selectedTrack.value?.urn ?: _currentPlayingTrack.value?.urn
@@ -1705,6 +1820,7 @@ class MusicViewModel(
             _currentArtistPlaylists.value = emptyList()
             _selectedArtistPlaylist.value = null
             _isAllArtistTracksLoaded.value = false
+            resetArtistExtras()
             
             var isYandex = permalinkUrl?.startsWith("yandex:artist:") == true || 
                            permalinkUrl?.contains("yandex:artist:") == true ||
@@ -1755,6 +1871,7 @@ class MusicViewModel(
                         )
                         _currentArtistTracks.value = response.result?.tracks.orEmpty().map { it.toSoundCloudTrack() }
                         _currentArtistPlaylists.value = response.result?.albums.orEmpty().map { it.toSoundCloudPlaylist() }
+                        _currentArtist.value?.let(::checkArtistFollow)
                     } else {
                         _currentArtist.value = SoundCloudUser(username = username ?: "Яндекс Артист")
                         _artistError.value = "Информация об артисте недоступна"
@@ -1806,6 +1923,7 @@ class MusicViewModel(
                         }
                     }
                     _currentArtist.value = resolvedUser
+                    checkArtistFollow(resolvedUser)
 
                     // 3. Load user's stream feed (includes tracks and albums/playlists)
                     if (resolvedUserId != 0L) {
@@ -1842,6 +1960,7 @@ class MusicViewModel(
     private var ytArtistJob: Job? = null
 
     private fun openYouTubeArtist(channelId: String, name: String?, avatarUrl: String?) {
+        lastArtistOpen = { openYouTubeArtist(channelId, name, avatarUrl) }
         _selectedTrack.value = null
         _selectedMix.value = null
         _currentArtist.value = SoundCloudUser(username = name, avatarUrl = avatarUrl, permalinkUrl = YT_ARTIST_REF + channelId)
@@ -1852,11 +1971,33 @@ class MusicViewModel(
         _currentArtistPlaylists.value = emptyList()
         _selectedArtistPlaylist.value = null
         _isAllArtistTracksLoaded.value = false
+        resetArtistExtras()
         ytArtistSongs = null
         ytArtistJob?.cancel()
         ytArtistJob = viewModelScope.launch {
+            // What the channel is broadcasting, from youtube.com, while YouTube Music gives the rest.
+            val lives = async {
+                try {
+                    com.example.myapplication.data.YouTubeWeb.channelLive(
+                        channelId, SoundCloudUser(username = name, permalinkUrl = YT_ARTIST_REF + channelId),
+                        settingsRepository.ytMusicAuth()
+                    )
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    Log.w("MusicViewModel", "Broadcasts of $channelId failed", e)
+                    emptyList()
+                }
+            }
             try {
-                val page = ytMusic.artist(channelId)
+                // Over a VPN a request now and then breaks off: once more before giving up.
+                val page = try {
+                    ytMusic.artist(channelId)
+                } catch (e: IOException) {
+                    Log.w("MusicViewModel", "YouTube Music artist $channelId, trying again", e)
+                    delay(ARTIST_RETRY_MS)
+                    ytMusic.artist(channelId)
+                }
                 _currentArtist.value = page.artist.copy(
                     username = page.artist.username?.takeIf { it.isNotBlank() } ?: name,
                     avatarUrl = page.artist.avatarUrl ?: avatarUrl
@@ -1865,6 +2006,34 @@ class MusicViewModel(
                 _currentArtistPlaylists.value = page.releases
                 ytArtistSongs = page.allSongs
                 _isAllArtistTracksLoaded.value = page.allSongs == null
+                _artistFollow.value = page.subscribed?.let { ArtistFollow(it) }
+                ytFollowParams = page.subscribeParams to page.unsubscribeParams
+                val owner = SoundCloudUser(username = _currentArtist.value?.username, permalinkUrl = YT_ARTIST_REF + channelId)
+                val live = lives.await().map { it.copy(user = owner, artists = listOf(owner)) }
+                _artistLives.value = live
+                // Rows the page's top already shows (its videos standing in for songs), and the
+                // broadcasts it files as a podcast's episodes, aren't shown twice.
+                val shown = (page.topSongs + live).mapTo(HashSet()) { it.id }
+                _artistShelves.value = page.shelves
+                    .map { shelf -> shelf.copy(tracks = shelf.tracks.filterNot { it.id in shown }) }
+                    .filter { it.tracks.isNotEmpty() || it.sets.isNotEmpty() || it.artists.isNotEmpty() }
+                // A channel YouTube Music has nothing of (a video maker's, say): its videos, as
+                // youtube.com lists them.
+                if (page.topSongs.isEmpty() && page.releases.isEmpty() && page.shelves.isEmpty()) {
+                    val channel = com.example.myapplication.data.YouTubeWeb.channelVideos(channelId, owner, settingsRepository.ytMusicAuth())
+                    val current = _currentArtist.value
+                    _currentArtist.value = current?.copy(
+                        username = current.username?.takeIf { it.isNotBlank() } ?: channel.name,
+                        avatarUrl = current.avatarUrl ?: channel.avatarUrl,
+                        description = current.description ?: channel.description
+                    )
+                    val liveIds = live.mapTo(HashSet()) { it.id }
+                    _currentArtistTracks.value = channel.videos.filterNot { it.id in liveIds }
+                    _currentArtistPlaylists.value = channel.playlists
+                    _artistTracksAreVideos.value = true
+                    ytChannelContinuation = channel.continuation
+                    _isAllArtistTracksLoaded.value = channel.continuation == null
+                }
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -1881,8 +2050,138 @@ class MusicViewModel(
         _currentArtistTracks.value = emptyList()
         _currentArtistPlaylists.value = emptyList()
         _selectedArtistPlaylist.value = null
+        resetArtistExtras()
         _screen.value = if (returnToSearchFromArtist) AppScreen.SEARCH else AppScreen.HOME
         returnToSearchFromArtist = false
+    }
+
+    // What a YouTube artist page's subscribe and unsubscribe buttons send.
+    private var ytFollowParams: Pair<String?, String?> = null to null
+
+    // How the artist on screen was opened, for "Повторить" when it didn't load.
+    private var lastArtistOpen: (() -> Unit)? = null
+
+    fun retryArtist() {
+        val backToSearch = returnToSearchFromArtist
+        lastArtistOpen?.invoke()
+        returnToSearchFromArtist = backToSearch
+    }
+
+    private fun resetArtistExtras() {
+        _artistTracksAreVideos.value = false
+        ytChannelContinuation = null
+        artistFollowJob?.cancel()
+        _artistFollow.value = null
+        _artistLives.value = emptyList()
+        _artistShelves.value = emptyList()
+    }
+
+    /** Asks whether the account follows [artist] (SoundCloud, Yandex), for the button on its page. */
+    private fun checkArtistFollow(artist: SoundCloudUser) {
+        artistFollowJob?.cancel()
+        artistFollowJob = viewModelScope.launch {
+            val following = try {
+                isFollowing(artist)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.w("MusicViewModel", "Following ${artist.permalinkUrl} unknown", e)
+                false
+            }
+            if (sameArtist(_currentArtist.value, artist)) {
+                _artistFollow.value = following?.let { ArtistFollow(it) }
+            }
+        }
+    }
+
+    // Null: no account in the artist's service, or the artist is the account itself.
+    private suspend fun isFollowing(artist: SoundCloudUser): Boolean? {
+        val ref = artist.permalinkUrl.orEmpty()
+        if (ref.startsWith("yandex:artist:")) {
+            if (settingsRepository.yandexTokenValue().isBlank()) return null
+            val uid = getYandexUid() ?: return null
+            val id = ref.removePrefix("yandex:artist:")
+            val liked = yandexService.likedArtists(uid).get("result")?.takeIf { it.isJsonArray }?.asJsonArray ?: return false
+            return liked.any { entry ->
+                val item = entry.takeIf { it.isJsonObject }?.asJsonObject ?: return@any false
+                val artistId = item.get("id")
+                    ?: item.get("artist")?.takeIf { it.isJsonObject }?.asJsonObject?.get("id")
+                artistId?.takeIf { it.isJsonPrimitive }?.asString == id
+            }
+        }
+        val userId = artist.id?.takeIf { it != 0L } ?: return null
+        if (settingsRepository.oauthTokenValue().isBlank() || settingsRepository.userIdValue() == userId.toString()) return null
+        val ids = service.getFollowingIds(settingsRepository.clientId.value)
+            .get("collection")?.takeIf { it.isJsonArray }?.asJsonArray ?: return false
+        return ids.any { it.isJsonPrimitive && it.asLong == userId }
+    }
+
+    private fun sameArtist(a: SoundCloudUser?, b: SoundCloudUser): Boolean =
+        a != null && a.permalinkUrl == b.permalinkUrl && (a.id ?: 0L) == (b.id ?: 0L)
+
+    /** Follows the artist on screen in its service, or unfollows: YouTube's subscription, Yandex's like. */
+    fun toggleArtistFollow() {
+        val artist = _currentArtist.value ?: return
+        val state = _artistFollow.value ?: return
+        if (state.busy) return
+        val follow = !state.following
+        // Shown at once; put back if the service refuses.
+        _artistFollow.value = ArtistFollow(follow, busy = true)
+        viewModelScope.launch {
+            val sent = try {
+                sendFollow(artist, follow)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.e("MusicViewModel", "Follow of ${artist.permalinkUrl} failed", e)
+                false
+            }
+            if (!sameArtist(_currentArtist.value, artist)) return@launch
+            _artistFollow.value = ArtistFollow(if (sent) follow else !follow)
+            val name = artist.username?.takeIf { it.isNotBlank() } ?: "исполнителя"
+            Toast.makeText(
+                context,
+                when {
+                    sent && follow -> "Вы подписались на $name"
+                    sent -> "Вы отписались от $name"
+                    follow -> "Не удалось подписаться"
+                    else -> "Не удалось отписаться"
+                },
+                Toast.LENGTH_SHORT
+            ).show()
+        }
+    }
+
+    private suspend fun sendFollow(artist: SoundCloudUser, follow: Boolean): Boolean {
+        val ref = artist.permalinkUrl.orEmpty()
+        when {
+            ref.startsWith(YT_ARTIST_REF) -> {
+                // As the page's own button: YouTube Music's, with where the subscription is from.
+                ytMusic.subscribe(ref.removePrefix(YT_ARTIST_REF), follow, if (follow) ytFollowParams.first else ytFollowParams.second)
+                return true
+            }
+            ref.startsWith("yandex:artist:") -> {
+                val uid = getYandexUid() ?: return false
+                val id = ref.removePrefix("yandex:artist:")
+                if (follow) yandexService.likeArtist(uid, id) else yandexService.unlikeArtist(uid, id)
+                return true
+            }
+        }
+        val userId = artist.id?.takeIf { it != 0L } ?: return false
+        // From a soundcloud.com page, as the website's own button: likes taught that SoundCloud's
+        // bot protection lets nothing else through from a VPN address.
+        suspend fun send() = SoundCloudWebRequests.send(
+            context = context,
+            method = if (follow) "POST" else "DELETE",
+            url = "${SoundCloudApi.BASE_URL}me/followings/$userId" +
+                "?client_id=${settingsRepository.clientId.value}" +
+                "&app_version=${SoundCloudApi.APP_VERSION}&app_locale=en",
+            oauthToken = settingsRepository.oauthTokenValue()
+        )
+        var result = send()
+        if (result?.status == 401 && renewSoundCloudSession(settingsRepository.oauthTokenValue())) result = send()
+        result?.captchaUrl?.takeIf { !it.contains("t=bv") }?.let { _antiBotCaptchaUrl.value = it }
+        return result?.isSuccessful == true
     }
 
     fun selectArtistPlaylist(playlist: SoundCloudPlaylist) {
@@ -2092,7 +2391,7 @@ class MusicViewModel(
                 favoritesRepository.remove(track.id)
                 settingsRepository.setSoundCloudLikePending(track.id, false)
                 val userIdValue = settingsRepository.userIdValue()
-                val youTubeId = track.youTubeVideoId
+                val youTubeId = track.youTubeVideoId ?: track.liveVideoId
                 if (youTubeId != null) {
                     rateOnYouTube(youTubeId, like = false)
                 } else if (track.urn?.startsWith("yandex:track:") == true) {
@@ -2127,6 +2426,12 @@ class MusicViewModel(
             }
 
             favoritesRepository.add(track, streamUrl = null)
+            // A broadcast is kept in favourites to come back to, and liked on YouTube; there is
+            // nothing to download.
+            track.liveVideoId?.let { liveId ->
+                rateOnYouTube(liveId, like = true)
+                return@launch
+            }
             favoritesRepository.updateDownloadState(track.id, DownloadState.DOWNLOADING)
 
             val isYandex = track.urn?.startsWith("yandex:track:") == true
@@ -3017,6 +3322,10 @@ class MusicViewModel(
         const val WAVE_HEARD_KEPT = 500
         const val RADIO_QUEUE_SENT = 150
         const val WAVE_EMPTY_TRIES = 3
+        // The pause before asking for an artist's page again after the request broke off.
+        const val ARTIST_RETRY_MS = 1_500L
+        // How many of a YouTube channel's videos "Все" goes as far as.
+        const val CHANNEL_VIDEOS_MAX = 300
 
         // A radio track that stopped this close to its end was heard to the end, not skipped.
         const val RADIO_FINISHED_SLACK_MS = 5_000L
@@ -3533,6 +3842,32 @@ class MusicViewModel(
 
 
 
+    /**
+     * Plays [queue] from [track]: when [track] is the one playing already, it plays on where it is
+     * and only what comes around it changes — a radio started from the track playing used to start
+     * that track over. Otherwise as [playQueuedTrack].
+     */
+    private fun playQueueFrom(track: SoundCloudTrack, queue: List<SoundCloudTrack>) {
+        if (musicPlayer.currentTrackId.value != track.id) {
+            playQueuedTrack(track, queue)
+            return
+        }
+        viewModelScope.launch {
+            val kept = queueMutex.withLock {
+                val stubs = queue.map { t -> t.toQueueTrack(localStreamUrl(t.id) ?: resolvedUrls[t.id] ?: placeholderStreamUrl(t)) }
+                val index = queue.indexOfFirst { it.id == track.id }.coerceAtLeast(0)
+                if (musicPlayer.reorderQueueKeepingCurrent(stubs, index)) {
+                    originalQueue = queue
+                    _activeQueue.value = queue
+                    true
+                } else {
+                    false
+                }
+            }
+            if (!kept) playQueuedTrack(track, queue)
+        }
+    }
+
     fun playQueuedTrack(
         track: SoundCloudTrack,
         customQueue: List<SoundCloudTrack>? = null,
@@ -3859,8 +4194,16 @@ class MusicViewModel(
                 }
             }
             youTubeId != null -> youTubeVideo(track, youTubeId)
+            // A broadcast shows itself: its own picture, running along as it airs.
+            track.liveVideoId != null -> liveVideo(track, track.liveVideoId!!)
             else -> null
         }
+    }
+
+    private fun liveVideo(track: SoundCloudTrack, videoId: String): TrackVideo? {
+        if (!settingsRepository.videoYouTube.value) return null
+        val stream = YouTubeStreams.resolveLiveVideo(context, videoId, settingsRepository.ytMusicAuth()) ?: return null
+        return TrackVideo(trackId = track.id, url = stream.url, loop = true, userAgent = stream.userAgent)
     }
 
     /**
@@ -4003,7 +4346,35 @@ class MusicViewModel(
         return YandexMusicApi.resolveTrackStream(yandexId, token, lightest = true)?.let { ClipAligner.AudioSource(it) }
     }
 
+    /** The rest of a YouTube channel's videos, a page after another, up to a few hundred. */
+    private fun loadMoreChannelVideos() {
+        val artist = _currentArtist.value ?: return
+        viewModelScope.launch {
+            val owner = SoundCloudUser(username = artist.username, permalinkUrl = artist.permalinkUrl)
+            try {
+                while (sameArtist(_currentArtist.value, artist) && _currentArtistTracks.value.size < CHANNEL_VIDEOS_MAX) {
+                    val token = ytChannelContinuation ?: break
+                    val (more, next) = com.example.myapplication.data.YouTubeWeb.moreChannelVideos(token, owner, settingsRepository.ytMusicAuth())
+                    if (!sameArtist(_currentArtist.value, artist)) return@launch
+                    _currentArtistTracks.value = (_currentArtistTracks.value + more).distinctBy { it.id }
+                    ytChannelContinuation = next
+                    if (more.isEmpty()) break
+                }
+                _isAllArtistTracksLoaded.value = true
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.e("MusicViewModel", "More videos of ${artist.permalinkUrl} failed", e)
+                Toast.makeText(context, "Не удалось загрузить остальные видео", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
     fun loadAllArtistTracks(artistId: String, isYandex: Boolean) {
+        if (_currentArtist.value?.permalinkUrl?.startsWith(YT_ARTIST_REF) == true && ytChannelContinuation != null) {
+            loadMoreChannelVideos()
+            return
+        }
         if (_currentArtist.value?.permalinkUrl?.startsWith(YT_ARTIST_REF) == true) {
             val songs = ytArtistSongs ?: return
             viewModelScope.launch {
@@ -4113,6 +4484,17 @@ class MusicViewModel(
     // The track just disliked: leaving it is no skip to tell the radio of, the dislike said it all.
     private var radioDislikedId: Long? = null
 
+    // The track playing's own effects (reverb, speed); see [setTrackFx].
+    private val _trackFx = MutableStateFlow(com.example.myapplication.data.TrackFx())
+    val trackFx = _trackFx.asStateFlow()
+
+    /** Sets the track playing's effects: kept for it, and applied by the playback service at once. */
+    fun setTrackFx(fx: com.example.myapplication.data.TrackFx) {
+        val trackId = musicPlayer.currentTrackId.value ?: return
+        settingsRepository.setTrackFx(trackId, fx)
+        _trackFx.value = fx
+    }
+
     // The track playing as the radio saw it, and how far into it playback got: when it gives way
     // the radio hears whether it was finished or skipped.
     private var radioPlayingId: Long? = null
@@ -4140,7 +4522,7 @@ class MusicViewModel(
                 radio.tailId = batch.last().id
                 yandexRadio = radio
                 Log.d("MusicViewModel", "Yandex radio from $seed: session $sessionId, ${batch.size} tracks")
-                playQueuedTrack(track, listOf(track) + batch)
+                playQueueFrom(track, listOf(track) + batch)
                 sendRadioFeedback(radio, YandexRotorEvent(type = "radioStarted", timestamp = rotorNow()), session.batchId)
             } catch (e: CancellationException) {
                 throw e
@@ -4449,6 +4831,11 @@ class MusicViewModel(
     init {
         // Last in the class, so everything it touches is there by the time it runs.
         followYandexRadio()
+        viewModelScope.launch {
+            musicPlayer.currentTrackId.collect { id ->
+                _trackFx.value = id?.let(settingsRepository::trackFx) ?: com.example.myapplication.data.TrackFx()
+            }
+        }
     }
 
     // endregion
