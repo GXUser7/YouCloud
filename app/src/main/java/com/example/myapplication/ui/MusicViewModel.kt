@@ -3188,7 +3188,7 @@ class MusicViewModel(
         viewModelScope.launch {
             _isLoading.value = true
             try {
-                val imported = importLocalAudio(context, uris)
+                val imported = importLocalAudio(context, uris, offlineVideos)
                 for (track in imported) {
                     favoritesRepository.addFavoriteTrack(track)
                 }
@@ -3809,8 +3809,9 @@ class MusicViewModel(
      */
     private suspend fun findTrackVideo(track: SoundCloudTrack): TrackVideo? =
         withContext(Dispatchers.IO) { offlineVideos.get(track.id) }
-            // Yandex's loop, or a video from YouTube: shown only while their kind is.
-            ?.takeIf { if (it.loop) settingsRepository.videoYandex.value else settingsRepository.videoYouTube.value }
+            // Yandex's loop, or a video from YouTube: shown only while their kind is. One imported
+            // with the track is its own.
+            ?.takeIf { it.local || if (it.loop) settingsRepository.videoYandex.value else settingsRepository.videoYouTube.value }
             ?: findOnlineTrackVideo(track)
 
     /**

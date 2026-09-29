@@ -4550,8 +4550,8 @@ private fun DownloadsScreen(
                     )
                     PanelIconButton(
                         icon = Icons.Default.Add,
-                        contentDescription = "Импортировать треки с устройства",
-                        onClick = { audioPicker.launch(arrayOf("audio/*")) },
+                        contentDescription = "Импортировать треки и видео с устройства",
+                        onClick = { audioPicker.launch(arrayOf("audio/*", "video/*")) },
                         size = RuleButtonSize,
                         iconSize = RuleIconSize
                     )
@@ -6722,16 +6722,20 @@ private fun PlayerPanel(
                 },
                 verticalArrangement = if (landscape) Arrangement.Center else Arrangement.Top
             ) {
+                // A track added from the phone's own files is from no service, and its artist is only
+                // a name in the file: there is no page to go to.
+                val fromPhone = track.urn?.startsWith("local:") == true
                 OnPanelChip(
                     text = buildString {
                         append(
                             when {
+                                fromPhone -> "С телефона"
                                 track.urn?.startsWith("yandex:") == true -> "Яндекс Музыка"
                                 track.youTubeVideoId != null -> "YouTube Music"
                                 else -> "SoundCloud"
                             }
                         )
-                        if (downloadState == DownloadState.DOWNLOADED) append(" · на устройстве")
+                        if (!fromPhone && downloadState == DownloadState.DOWNLOADED) append(" · на устройстве")
                     }
                 )
                 Spacer(modifier = Modifier.height(12.dp))
@@ -6767,6 +6771,7 @@ private fun PlayerPanel(
                                 haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                                 onArtistClick(artist)
                             },
+                            enabled = !fromPhone,
                             shape = CircleShape,
                             color = onPanel.copy(alpha = 0.12f),
                             contentColor = onPanel
