@@ -2,7 +2,6 @@ package com.example.myapplication.data
 
 import android.content.Context
 import androidx.media3.common.util.UnstableApi
-import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.datasource.cache.CacheDataSource
 import androidx.media3.datasource.cache.LeastRecentlyUsedCacheEvictor
 import androidx.media3.datasource.cache.SimpleCache
@@ -57,9 +56,7 @@ object VideoCache {
     private var cache: SimpleCache? = null
 
     fun dataSourceFactory(context: Context, userAgent: String?): CacheDataSource.Factory {
-        val upstream = DefaultHttpDataSource.Factory()
-            .setAllowCrossProtocolRedirects(true)
-            .apply { userAgent?.let(::setUserAgent) }
+        val upstream = StreamCache.slowNetworkHttp(userAgent)
         return CacheDataSource.Factory()
             .setCache(cache(context))
             .setUpstreamDataSourceFactory(ChunkedDataSource.Factory(upstream, CHUNK_BYTES))

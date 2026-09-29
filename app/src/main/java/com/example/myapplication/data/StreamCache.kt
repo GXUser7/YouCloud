@@ -63,10 +63,24 @@ object StreamCache {
     fun dataSourceFactory(context: Context): CacheDataSource.Factory = CacheDataSource.Factory()
         .setCache(cache(context))
         .setCacheKeyFactory(keyFactory)
-        .setUpstreamDataSourceFactory(DefaultDataSource.Factory(context))
+        .setUpstreamDataSourceFactory(DefaultDataSource.Factory(context, slowNetworkHttp()))
         // Without FLAG_BLOCK_ON_CACHE: a piece being fetched ahead is read from the network
         // meanwhile rather than waited for.
         .setFlags(CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR)
+
+    /**
+     * HTTP with room for a slow connection: over a VPN a handshake with YouTube's video servers
+     * took longer than the default eight seconds, and the track failed before it began.
+     */
+    fun slowNetworkHttp(userAgent: String? = null): androidx.media3.datasource.DefaultHttpDataSource.Factory =
+        androidx.media3.datasource.DefaultHttpDataSource.Factory()
+            .setConnectTimeoutMs(HTTP_CONNECT_TIMEOUT_MS)
+            .setReadTimeoutMs(HTTP_READ_TIMEOUT_MS)
+            .setAllowCrossProtocolRedirects(true)
+            .apply { userAgent?.let(::setUserAgent) }
+
+    private const val HTTP_CONNECT_TIMEOUT_MS = 20_000
+    private const val HTTP_READ_TIMEOUT_MS = 25_000
 
     /** Whether all of [key] is kept, so it plays without the network, and without a link. */
     fun isFullyCached(context: Context, key: String): Boolean {

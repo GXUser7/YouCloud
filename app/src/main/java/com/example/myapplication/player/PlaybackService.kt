@@ -200,6 +200,36 @@ class PlaybackService : MediaLibraryService() {
         })
         prefetcher = StreamPrefetcher(this, player, resolver).also(player::addListener)
 
+        // A stream that breaks off over a slow connection (a VPN's, say) is tried again, a little
+        // later each time, rather than the player stopping at an error until touched. Preparing
+        // again resolves the link anew, so an expired one (a 403) is mended too.
+        player.addListener(object : Player.Listener {
+            private var retries = 0
+            private val handler = android.os.Handler(android.os.Looper.getMainLooper())
+
+            override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
+                if (error.errorCode !in NETWORK_ERRORS || retries >= RETRY_DELAYS_MS.size) {
+                    retries = 0
+                    return
+                }
+                val wait = RETRY_DELAYS_MS[retries++]
+                val itemId = player.currentMediaItem?.mediaId
+                Log.w("PlaybackService", "Playback broke off (${error.errorCodeName}), again in $wait ms")
+                handler.postDelayed({
+                    // Not if the listener has moved on, or it came back by itself.
+                    if (player.playerError != null && player.currentMediaItem?.mediaId == itemId) player.prepare()
+                }, wait)
+            }
+
+            override fun onPlaybackStateChanged(playbackState: Int) {
+                if (playbackState == Player.STATE_READY) retries = 0
+            }
+
+            override fun onMediaItemTransition(mediaItem: androidx.media3.common.MediaItem?, reason: Int) {
+                retries = 0
+            }
+        })
+
         val intent = Intent(this, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_SINGLE_TOP
         }
@@ -330,6 +360,16 @@ class PlaybackService : MediaLibraryService() {
 
     // Cached regex patterns (#34: avoid recompilation on each call)
     companion object {
+        // What a broken-off stream waits before each try again, and which errors are worth one.
+        private val RETRY_DELAYS_MS = longArrayOf(2_000, 5_000, 10_000)
+        private val NETWORK_ERRORS = setOf(
+            androidx.media3.common.PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED,
+            androidx.media3.common.PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT,
+            androidx.media3.common.PlaybackException.ERROR_CODE_IO_UNSPECIFIED,
+            androidx.media3.common.PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS,
+            androidx.media3.common.PlaybackException.ERROR_CODE_TIMEOUT
+        )
+
         // Set once what playback had left in the downloads' cache has been cleared out.
         private const val KEY_STREAM_LEFTOVERS_DROPPED = "stream_leftovers_dropped"
 
