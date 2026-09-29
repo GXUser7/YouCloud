@@ -811,7 +811,7 @@ class MusicViewModel(
     private fun loadYandexShelves() {
         viewModelScope.launch {
             try {
-                val shelves = com.example.myapplication.data.YandexLanding.parse(yandexService.landing())
+                val shelves = com.example.myapplication.data.YandexLanding.rows(yandexService)
                 Log.d("MusicViewModel", "Yandex home rows: " + shelves.joinToString { "${it.title} (${it.tracks.size} tracks, ${it.sets.size} sets)" })
                 _yandexShelves.value = shelves
             } catch (e: CancellationException) {

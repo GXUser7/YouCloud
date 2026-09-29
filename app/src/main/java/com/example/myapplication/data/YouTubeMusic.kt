@@ -643,10 +643,16 @@ class YouTubeMusicClient(private val authProvider: () -> YtAuth?) {
         SoundCloudUser(username = run.str("text"), permalinkUrl = YT_ARTIST_REF + id)
     }
 
-    /** "Artist • 29 млн прослушиваний", "Видео • Artist • …" → the artist. */
+    /**
+     * "Artist • 29 млн прослушиваний", "Видео • Artist • …" → the artist: the first part that is a
+     * name, not the kind of result, a count, a length or a date — a live stream's byline may start
+     * with the day it began ("19 августа"), which came out as its artist.
+     */
     private fun plainArtist(byline: String?): List<SoundCloudUser> {
         val parts = byline?.split(" • ")?.map { it.trim() }.orEmpty()
-        val name = parts.firstOrNull { it.isNotEmpty() && it.lowercase() !in KIND_WORDS }
+        val name = parts.firstOrNull { part ->
+            part.isNotEmpty() && part.lowercase() !in KIND_WORDS && NOT_A_NAME.none { it.containsMatchIn(part) }
+        }
         return listOfNotNull(name?.let { SoundCloudUser(username = it) })
     }
 
@@ -753,6 +759,15 @@ class YouTubeMusicClient(private val authProvider: () -> YtAuth?) {
         private val KIND_WORDS = setOf("композиция", "видео", "трек", "song", "video", "эпизод", "episode")
         private val COUNT = Regex("(\\d+(?:[.,]\\d+)?)\\s*(тыс|млн|млрд|k|m|b)?", RegexOption.IGNORE_CASE)
         private val NON_WORD = Regex("[^\\p{L}\\p{N}]+")
+        // What a byline part is when it isn't a name: a date, a year, a length, a count of plays,
+        // views or watchers.
+        private val NOT_A_NAME = listOf(
+            Regex("""^\d{1,2}\s+\p{L}+\.?(\s+\d{4})?$"""),
+            Regex("""^\p{L}{3,9}\.?\s+\d{1,2}(,\s*\d{4})?$"""),
+            Regex("""^\d{4}$"""),
+            Regex("""^\d+:\d{2}(:\d{2})?$"""),
+            Regex("""\d.*(тыс|млн|млрд|просмотр|прослушив|смотр|зрител|views|plays|watching)""", RegexOption.IGNORE_CASE)
+        )
         // How a live stream's byline counts its audience.
         private val WATCHING = Regex("смотр[яи]т|зрител|watching|в эфире", RegexOption.IGNORE_CASE)
 

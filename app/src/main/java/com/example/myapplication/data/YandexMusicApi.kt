@@ -99,6 +99,26 @@ interface YandexMusicService {
     @GET("landing3")
     suspend fun landing(@Query("blocks") blocks: String = YandexLanding.BLOCKS): com.google.gson.JsonObject
 
+    /** Every new release, as album ids; its home block shows only the first few. */
+    @GET("landing3/new-releases")
+    suspend fun newReleases(): com.google.gson.JsonObject
+
+    /** Every new playlist, as owner and kind. */
+    @GET("landing3/new-playlists")
+    suspend fun newPlaylists(): com.google.gson.JsonObject
+
+    /** The feed: among the rest, every playlist made for the listener (`generatedPlaylists`). */
+    @GET("feed")
+    suspend fun feed(): com.google.gson.JsonObject
+
+    @POST("albums")
+    @FormUrlEncoded
+    suspend fun albums(@Field("album-ids") albumIds: String): com.google.gson.JsonObject
+
+    @POST("playlists/list")
+    @FormUrlEncoded
+    suspend fun playlists(@Field("playlist-ids") playlistIds: String): com.google.gson.JsonObject
+
     /** "Не рекомендовать": the track is kept out of the wave and the radio from now on. */
     @POST("users/{userId}/dislikes/tracks/add-multiple")
     @FormUrlEncoded

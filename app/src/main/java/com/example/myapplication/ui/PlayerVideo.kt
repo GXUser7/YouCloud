@@ -224,6 +224,12 @@ fun rememberPlayerVideoState(video: TrackVideo?, isPlaying: Boolean, trackPositi
         // A downloaded track's video is a file of its own, read as it is.
         val dataSource = if (video.url.startsWith("file:")) {
             androidx.media3.datasource.DefaultDataSource.Factory(context)
+        } else if ("m3u8" in video.url || "hls_playlist" in video.url) {
+            // A live stream's picture: its playlist changes under the same address as it airs, and
+            // kept in the cache it would be read stale; its pieces are only seen once.
+            androidx.media3.datasource.DefaultHttpDataSource.Factory()
+                .setAllowCrossProtocolRedirects(true)
+                .apply { video.userAgent?.let(::setUserAgent) }
         } else {
             VideoCache.dataSourceFactory(context, video.userAgent)
         }
