@@ -93,8 +93,10 @@ class LocalOrCachedDataSource(
     }
 
     override fun open(dataSpec: DataSpec): Long {
-        val source = when (dataSpec.uri.scheme) {
-            "file", "content", "asset", "android.resource", "rawresource", "data" -> local
+        val source = when {
+            dataSpec.uri.scheme in LOCAL_SCHEMES -> local
+            // A live broadcast's pieces are heard once: kept, they only pushed tracks out.
+            isLiveBroadcast(dataSpec.uri) -> local
             else -> cached
         }
         current = source
@@ -118,5 +120,14 @@ class LocalOrCachedDataSource(
 
     class Factory(private val cached: DataSource.Factory, private val local: DataSource.Factory) : DataSource.Factory {
         override fun createDataSource() = LocalOrCachedDataSource(cached.createDataSource(), local.createDataSource())
+    }
+
+    private companion object {
+        val LOCAL_SCHEMES = setOf("file", "content", "asset", "android.resource", "rawresource", "data")
+
+        fun isLiveBroadcast(uri: android.net.Uri): Boolean {
+            val path = uri.path.orEmpty()
+            return uri.host == "manifest.googlevideo.com" || "/yt_live_broadcast/" in path || "/live/1/" in path
+        }
     }
 }

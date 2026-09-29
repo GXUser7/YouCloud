@@ -40,8 +40,8 @@ object YtDlp {
     private const val KEY_CHECKED_AT = "update_checked_at"
 
     /**
-     * What to ask yt-dlp for. Plain HTTPS only, never an HLS or DASH manifest: the players and
-     * the downloader here all expect one file.
+     * What to ask yt-dlp for. Plain HTTPS only, never an HLS or DASH manifest — the players and
+     * the downloader here expect one file — but for a live stream, which is only HLS.
      */
     enum class Kind(val format: String, val clients: String? = null) {
         /** AAC in MP4 (itag 140) first: every device decodes it, and downloads are kept as it. */
@@ -59,7 +59,13 @@ object YtDlp {
             "bv[height<=720][vcodec^=vp][protocol=https]/bv[height<=720][vcodec^=avc1][protocol=https]/" +
                 "bv[height<=720][protocol=https]/bv*[height<=720][protocol=https]",
             clients = "tv,tv_downgraded"
-        )
+        ),
+
+        /** A live stream's sound: its audio-only HLS (itags 233, 234), else the smallest whole one. */
+        LIVE_AUDIO("bestaudio[protocol^=m3u8]/234/233/worst[protocol^=m3u8]"),
+
+        /** A live stream's picture, for the player to show: HLS no larger than it needs. */
+        LIVE_VIDEO("best[height<=720][protocol^=m3u8]/94/93/best[protocol^=m3u8]")
     }
 
     /**
@@ -336,8 +342,8 @@ main()
         fun field(name: String) = json.get(name)?.takeUnless { it.isJsonNull }
         val url = field("url")?.asString ?: return null
         val userAgent = json.getAsJsonObject("http_headers")?.get("User-Agent")?.asString
-        val media = if (kind == Kind.VIDEO) "video" else "audio"
-        val mimeType = when (field("ext")?.asString) {
+        val media = if (kind == Kind.VIDEO || kind == Kind.LIVE_VIDEO) "video" else "audio"
+        val mimeType = if (field("protocol")?.asString?.startsWith("m3u8") == true) "application/x-mpegURL" else when (field("ext")?.asString) {
             "m4a", "mp4" -> "$media/mp4"
             "webm" -> "$media/webm"
             else -> null

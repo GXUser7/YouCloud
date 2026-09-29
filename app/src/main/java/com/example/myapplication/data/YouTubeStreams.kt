@@ -80,6 +80,14 @@ object YouTubeStreams {
         return listOf(url) + mirrors.map { url.replaceFirst(host, "$prefix---$it.googlevideo.com") }
     }
 
+    /** A live stream's sound, as the address of its HLS playlist. */
+    fun resolveLive(context: Context, videoId: String, auth: YtAuth? = null): Stream? =
+        cached("live:$videoId") { YtDlp.resolve(context, videoId, auth, YtDlp.Kind.LIVE_AUDIO) }
+
+    /** A live stream's picture, as the address of its HLS playlist. */
+    fun resolveLiveVideo(context: Context, videoId: String, auth: YtAuth? = null): Stream? =
+        cached("livevideo:$videoId") { YtDlp.resolve(context, videoId, auth, YtDlp.Kind.LIVE_VIDEO) }
+
     /** The picture of a music video, without its sound: the player shows it in the cover's place. */
     fun resolveVideo(context: Context, videoId: String, auth: YtAuth? = null): Stream? =
         cached("video:$videoId") { YtDlp.resolve(context, videoId, auth, YtDlp.Kind.VIDEO) }

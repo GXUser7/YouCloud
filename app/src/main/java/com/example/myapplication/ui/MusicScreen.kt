@@ -84,6 +84,7 @@ import com.example.myapplication.data.LyricLine
 import com.example.myapplication.data.YtAuth
 import com.example.myapplication.data.YtShelf
 import com.example.myapplication.data.youTubeTrackId
+import com.example.myapplication.data.liveVideoId
 import com.example.myapplication.data.youTubeVideoId
 import androidx.compose.material.icons.filled.SmartDisplay
 import androidx.compose.material.icons.filled.OndemandVideo
@@ -1063,7 +1064,10 @@ fun MusicScreen(viewModel: MusicViewModel) {
                     artworkUrl = currentPlayingTrack?.artworkUrl,
                     isPlaying = isPlaying,
                     progress = {
-                        if (playbackDurationMs > 0L) {
+                        // A broadcast has no end to be part way to: the line runs full.
+                        if (currentPlayingTrack?.liveVideoId != null) {
+                            1f
+                        } else if (playbackDurationMs > 0L) {
                             playbackPosition.value.coerceIn(0L, playbackDurationMs).toFloat() /
                                 playbackDurationMs.toFloat()
                         } else {
@@ -6725,11 +6729,13 @@ private fun PlayerPanel(
                 // A track added from the phone's own files is from no service, and its artist is only
                 // a name in the file: there is no page to go to.
                 val fromPhone = track.urn?.startsWith("local:") == true
+                val live = track.liveVideoId != null
                 OnPanelChip(
                     text = buildString {
                         append(
                             when {
                                 fromPhone -> "С телефона"
+                                live -> "YouTube · в эфире"
                                 track.urn?.startsWith("yandex:") == true -> "Яндекс Музыка"
                                 track.youTubeVideoId != null -> "YouTube Music"
                                 else -> "SoundCloud"
@@ -6788,13 +6794,18 @@ private fun PlayerPanel(
                 }
 
                 Spacer(modifier = Modifier.height(14.dp))
-                PlayerSeekBar(
-                    trackId = track.id,
-                    positionMs = positionMs,
-                    durationMs = durationMs,
-                    vibrator = vibrator,
-                    onSeek = onSeek
-                )
+                // A broadcast has no length to seek along: in the bar's place, that it is on air.
+                if (live) {
+                    LiveMark(color = onPanel)
+                } else {
+                    PlayerSeekBar(
+                        trackId = track.id,
+                        positionMs = positionMs,
+                        durationMs = durationMs,
+                        vibrator = vibrator,
+                        onSeek = onSeek
+                    )
+                }
 
                 Spacer(modifier = Modifier.height(10.dp))
                 Row(
@@ -6888,6 +6899,29 @@ private fun PlayerPanel(
 }
 
 /** Thick expressive seek bar with a tick every 2% of a manual drag. */
+/** "В эфире", with a red dot: a live stream's place for the seek bar, as tall as it. */
+@Composable
+private fun LiveMark(color: Color) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(48.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        Box(
+            modifier = Modifier
+                .size(10.dp)
+                .background(Color(0xFFFF3B30), CircleShape)
+        )
+        Text(
+            text = "В эфире",
+            style = MaterialTheme.typography.titleSmall,
+            color = color
+        )
+    }
+}
+
 @Composable
 private fun PlayerSeekBar(
     trackId: Long,

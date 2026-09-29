@@ -126,6 +126,7 @@ internal class StreamPrefetcher(
     private companion object {
         const val TAG = "StreamPrefetcher"
         const val AHEAD = 2
-        val LOCAL_SCHEMES = setOf("file", "content", "asset", "android.resource", "rawresource", "data")
+        // On the phone already, or a broadcast: nothing to fetch ahead.
+        val LOCAL_SCHEMES = setOf("file", "content", "asset", "android.resource", "rawresource", "data", "ytlive")
     }
 }

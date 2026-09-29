@@ -243,7 +243,13 @@ fun rememberPlayerVideoState(video: TrackVideo?, isPlaying: Boolean, trackPositi
             .setTrackTypeDisabled(C.TRACK_TYPE_AUDIO, true)
             .build()
         player.repeatMode = if (video.loop) Player.REPEAT_MODE_ONE else Player.REPEAT_MODE_OFF
-        player.setMediaItem(MediaItem.fromUri(video.url))
+        // A live stream's picture is an HLS playlist, which its address doesn't always say.
+        player.setMediaItem(
+            MediaItem.Builder()
+                .setUri(video.url)
+                .apply { if ("m3u8" in video.url || "hls_playlist" in video.url) setMimeType(androidx.media3.common.MimeTypes.APPLICATION_M3U8) }
+                .build()
+        )
         if (!video.loop) player.seekTo(video.videoPositionFor(trackPosition()))
         player.prepare()
         PlayerVideoState(video, player)

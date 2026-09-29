@@ -284,7 +284,7 @@ class MusicPlayer(context: Context) {
                     .build()
             )
         
-        if (track.url.startsWith("soundcloud://") || track.url.contains(".m3u8") || track.url.contains("m3u8")) {
+        if (track.url.startsWith("soundcloud://") || track.url.startsWith("ytlive://") || track.url.contains("m3u8")) {
             builder.setMimeType(androidx.media3.common.MimeTypes.APPLICATION_M3U8)
         }
         return builder.build()

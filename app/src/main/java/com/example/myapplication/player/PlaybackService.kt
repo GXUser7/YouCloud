@@ -111,6 +111,18 @@ class PlaybackService : MediaLibraryService() {
                                     .build()
                             }
                         }
+                    } else if (uri.scheme == "ytlive") {
+                        // A broadcast: its HLS playlist, fetched as the client it was issued to.
+                        val videoId = uri.lastPathSegment
+                        val live = videoId?.let {
+                            com.example.myapplication.data.YouTubeStreams.resolveLive(this@PlaybackService, it, youTubeAuth())
+                        }
+                        if (live != null) {
+                            return dataSpec.buildUpon()
+                                .setUri(android.net.Uri.parse(live.url))
+                                .setHttpRequestHeaders(dataSpec.httpRequestHeaders + ("User-Agent" to live.userAgent))
+                                .build()
+                        }
                     } else if (uri.scheme == "yandex") {
                         val trackId = uri.lastPathSegment
                         if (trackId != null) {

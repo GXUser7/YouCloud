@@ -28,6 +28,7 @@ import com.example.myapplication.data.YandexRotorSessionRequest
 import com.example.myapplication.data.YtAuth
 import com.example.myapplication.data.YtShelf
 import com.example.myapplication.data.isProgressiveSource
+import com.example.myapplication.data.liveVideoId
 import com.example.myapplication.data.youTubeVideoId
 import com.example.myapplication.data.toArtistUser
 import com.example.myapplication.data.FavoriteTrack
@@ -1359,6 +1360,7 @@ class MusicViewModel(
      */
     private fun serviceStreamUrl(track: SoundCloudTrack): String? {
         track.youTubeVideoId?.let { return "ytmusic://track/$it" }
+        track.liveVideoId?.let { return "ytlive://track/$it" }
         if (track.urn?.startsWith("yandex:track:") == true) {
             return "yandex://track/${track.urn.removePrefix("yandex:track:")}"
         }
@@ -2127,6 +2129,8 @@ class MusicViewModel(
             }
 
             favoritesRepository.add(track, streamUrl = null)
+            // A broadcast is kept in favourites to come back to; there is nothing to download.
+            if (track.liveVideoId != null) return@launch
             favoritesRepository.updateDownloadState(track.id, DownloadState.DOWNLOADING)
 
             val isYandex = track.urn?.startsWith("yandex:track:") == true
@@ -3859,8 +3863,16 @@ class MusicViewModel(
                 }
             }
             youTubeId != null -> youTubeVideo(track, youTubeId)
+            // A broadcast shows itself: its own picture, running along as it airs.
+            track.liveVideoId != null -> liveVideo(track, track.liveVideoId!!)
             else -> null
         }
+    }
+
+    private fun liveVideo(track: SoundCloudTrack, videoId: String): TrackVideo? {
+        if (!settingsRepository.videoYouTube.value) return null
+        val stream = YouTubeStreams.resolveLiveVideo(context, videoId, settingsRepository.ytMusicAuth()) ?: return null
+        return TrackVideo(trackId = track.id, url = stream.url, loop = true, userAgent = stream.userAgent)
     }
 
     /**
