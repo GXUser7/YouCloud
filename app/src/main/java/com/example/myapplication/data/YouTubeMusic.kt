@@ -182,12 +182,19 @@ class YouTubeMusicClient(private val authProvider: () -> YtAuth?) {
             // The list itself, not the suggestions a playlist page may add below it.
             val shelf = page.findAll("musicPlaylistShelfRenderer").firstOrNull()
                 ?: page.findAll("musicShelfRenderer").firstOrNull()
-            // Album rows leave out the artist; the album's header names it.
-            val albumArtist = page.findAll("musicResponsiveHeaderRenderer").firstOrNull()
-                ?.runs("straplineTextOne")
+            // Album rows leave out the artist; the album's header names it, with its page.
+            val header = page.findAll("musicResponsiveHeaderRenderer").firstOrNull()
+            val albumArtist = header?.runs("straplineTextOne")
+            val albumArtists = artistsOf(header.arr("straplineTextOne", "runs"))
             shelf.arr("contents").mapNotNull { item ->
                 item.at("musicResponsiveListItemRenderer")?.let { row ->
                     parseSongRow(row, fallbackArtwork = set.artworkUrl, fallbackArtist = albumArtist)
+                }
+            }.map { track ->
+                if (albumArtists.isNotEmpty() && track.artists.orEmpty().none { it.permalinkUrl != null }) {
+                    track.copy(user = albumArtists.first(), artists = albumArtists)
+                } else {
+                    track
                 }
             }
         } else {
@@ -465,6 +472,35 @@ class YouTubeMusicClient(private val authProvider: () -> YtAuth?) {
             "activeAccountHeaderRenderer"
         )
         return header.runs("accountName") ?: header.runs("channelHandle")
+    }
+
+    /**
+     * The album [videoId] is from, as the watch queue's byline names it ("Artist • Album • 2024");
+     * null for a video, an upload, a podcast's episode.
+     */
+    suspend fun albumOf(videoId: String): SoundCloudPlaylist? {
+        val next = post("next", json {
+            addProperty("videoId", videoId)
+            addProperty("enablePersistentPlaylistPanel", true)
+            addProperty("isAudioOnly", true)
+        })
+        val row = next.findAll("playlistPanelVideoRenderer").firstOrNull { it.str("videoId") == videoId } ?: return null
+        val byline = row.arr("longBylineText", "runs")
+        val run = byline.firstOrNull { run ->
+            val browse = run.at("navigationEndpoint", "browseEndpoint")
+            browse.str("browseId")?.startsWith("MPRE") == true ||
+                browse.str("browseEndpointContextSupportedConfigs", "browseEndpointContextMusicConfig", "pageType") == "MUSIC_PAGE_TYPE_ALBUM"
+        } ?: return null
+        val browseId = run.str("navigationEndpoint", "browseEndpoint", "browseId") ?: return null
+        return SoundCloudPlaylist(
+            id = youTubeTrackId("set:$browseId"),
+            title = run.str("text"),
+            artworkUrl = bestThumbnail(row.arr("thumbnail", "thumbnails")),
+            permalinkUrl = "$YT_SET_REF$browseId:",
+            user = artistsOf(byline).firstOrNull(),
+            isAlbum = true,
+            setType = "album"
+        )
     }
 
     /** Thumbs up, or back to neither. */

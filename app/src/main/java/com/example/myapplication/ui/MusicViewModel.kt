@@ -1625,6 +1625,58 @@ class MusicViewModel(
         }
     }
 
+    /**
+     * Opens the album [track] is from, as the player's title does: Yandex Music's (the track
+     * carries its album's id, a saved one too), YouTube Music's (asked of its watch queue).
+     */
+    fun openTrackAlbum(track: SoundCloudTrack) {
+        viewModelScope.launch {
+            val album = try {
+                findTrackAlbum(track)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.w("MusicViewModel", "Album of ${track.urn} failed", e)
+                null
+            }
+            if (album == null) {
+                Toast.makeText(context, "Не нашлось альбома этого трека", Toast.LENGTH_SHORT).show()
+                return@launch
+            }
+            _selectedTrack.value = null
+            _selectedMix.value = null
+            openYtSet(album)
+        }
+    }
+
+    private suspend fun findTrackAlbum(track: SoundCloudTrack): SoundCloudPlaylist? {
+        val urn = track.urn.orEmpty()
+        if (urn.startsWith("yandex:track:")) {
+            val parts = urn.removePrefix("yandex:track:").split(':')
+            val albumId = parts.getOrNull(1)?.toLongOrNull()
+                ?: yandexService.getTracksDetails(parts.first()).result.orEmpty().firstOrNull()?.albums?.firstOrNull()?.id
+                ?: return null
+            val detail = yandexService.getAlbumWithTracks(albumId).result ?: return null
+            val tracks = detail.volumes.orEmpty().flatten()
+                .map { it.toSoundCloudTrack(customAlbumId = albumId.toString()) }
+                .filter { isPlayableTrack(it) }
+                .distinctBy { it.id }
+            return SoundCloudPlaylist(
+                id = albumId + 10_000_000L,
+                title = detail.title,
+                tracks = tracks,
+                trackCount = tracks.size,
+                artworkUrl = detail.coverUri?.let { "https://" + it.replace("%%", "400x400") } ?: track.artworkUrl,
+                permalinkUrl = "yandex:album:$albumId",
+                user = tracks.firstOrNull()?.user,
+                isAlbum = true,
+                setType = "album"
+            )
+        }
+        val videoId = track.youTubeVideoId ?: return null
+        return ytMusic.albumOf(videoId)?.let { it.copy(artworkUrl = track.artworkUrl ?: it.artworkUrl) }
+    }
+
     fun closeYtSet() {
         ytSetJob?.cancel()
         _ytOpenedSet.value = null

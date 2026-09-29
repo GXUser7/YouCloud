@@ -51,6 +51,10 @@ import androidx.compose.ui.unit.em
 import androidx.compose.material.icons.automirrored.rounded.Send
 import androidx.compose.foundation.layout.union
 import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.foundation.layout.displayCutout
+import androidx.compose.foundation.layout.only
+import androidx.compose.foundation.layout.WindowInsetsSides
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -944,6 +948,14 @@ fun MusicScreen(viewModel: MusicViewModel) {
                                 onFavoriteClick = { track ->
                                     haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                                     viewModel.toggleFavorite(track)
+                                },
+                                onArtistClick = { artist ->
+                                    viewModel.openArtistDetails(
+                                        userId = artist.id ?: 0L,
+                                        permalinkUrl = artist.permalinkUrl,
+                                        username = artist.username,
+                                        avatarUrl = artist.avatarUrl
+                                    )
                                 }
                             )
                         } else {
@@ -1097,12 +1109,23 @@ fun MusicScreen(viewModel: MusicViewModel) {
             // Under a player being pulled down it is there already, in its place and without
             // coming in: the player folds away onto it, rather than it rising after the player
             // has gone.
+            val sideways = isLandscape()
             AnimatedVisibility(
                 visible = currentTrackTitle != null && (selectedTrack == null || playerPulled),
                 enter = if (selectedTrack != null) EnterTransition.None else slideInVertically(initialOffsetY = { it }) + fadeIn(),
                 exit = slideOutVertically(targetOffsetY = { it }) + fadeOut(),
                 modifier = Modifier
-                    .align(Alignment.BottomCenter)
+                    // Sideways, at the foot of the pane on the right, under the thumb.
+                    .align(if (sideways) Alignment.BottomEnd else Alignment.BottomCenter)
+                    .then(
+                        if (sideways) {
+                            Modifier
+                                .windowInsetsPadding(WindowInsets.displayCutout.only(WindowInsetsSides.End))
+                                .width(LandscapePaneWidth)
+                        } else {
+                            Modifier
+                        }
+                    )
                     .then(
                         // On search the tabs ride the keyboard, and the mini player rides them.
                         if (searchTabsShown) {
@@ -1227,6 +1250,7 @@ fun MusicScreen(viewModel: MusicViewModel) {
                                 trackUrn = track.urn
                             )
                         },
+                        onAlbumClick = viewModel::openTrackAlbum,
                         onPulledChange = { playerPulled = it },
                         onTouchedChange = { playerTouched = it }
                     )
@@ -1261,8 +1285,9 @@ fun MusicScreen(viewModel: MusicViewModel) {
                     context.startActivity(shareIntent)
                 }
             },
-            // A file added from the phone has nowhere to be downloaded again from.
-            onRedownload = if (capturedTrack.urn?.startsWith("local:") == true) null else {
+            // A file added from the phone has nowhere to be downloaded again from, and a broadcast
+            // is never downloaded at all.
+            onRedownload = if (capturedTrack.urn?.startsWith("local:") == true || capturedTrack.liveVideoId != null) null else {
                 { viewModel.redownloadTrack(capturedTrack) }
             },
             // The player has no menu of its own at the top any more: a downloaded track is taken
@@ -1583,30 +1608,34 @@ private fun HomeScreen(
                 if (reselected > 0 && shown == service) sectionPager.animateScrollToPage(0)
             }
 
-            Column(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .statusBarsPadding()
-                    .navigationBarsPadding()
-                    // The page on its way out sinks back a little and dims, the one coming in
-                    // rises from it.
-                    .graphicsLayer {
-                        val away = ((servicePager.currentPage - page) + servicePager.currentPageOffsetFraction)
-                            .absoluteValue.coerceIn(0f, 1f)
-                        val scale = 1f - 0.06f * away
-                        scaleX = scale
-                        scaleY = scale
-                        // Entirely off to the side it isn't drawn at all: dimmed, the page was
-                        // painted into a picture of its own on every frame, out of sight.
-                        alpha = if (away >= 1f) 0f else 1f - 0.45f * away
-                    }
-            ) {
+            // Upright: the title, the carousel, the next section, the toolbar below. Sideways:
+            // the carousel on the left, and on the right, under the thumb, the title, where it
+            // goes on, and the mini player and the toolbar at the foot.
+            val landscape = isLandscape()
+            val pageModifier = Modifier
+                .fillMaxSize()
+                .statusBarsPadding()
+                .navigationBarsPadding()
+                // The page on its way out sinks back a little and dims, the one coming in
+                // rises from it.
+                .graphicsLayer {
+                    val away = ((servicePager.currentPage - page) + servicePager.currentPageOffsetFraction)
+                        .absoluteValue.coerceIn(0f, 1f)
+                    val scale = 1f - 0.06f * away
+                    scaleX = scale
+                    scaleY = scale
+                    // Entirely off to the side it isn't drawn at all: dimmed, the page was
+                    // painted into a picture of its own on every frame, out of sight.
+                    alpha = if (away >= 1f) 0f else 1f - 0.45f * away
+                }
+                .then(if (landscape) Modifier.windowInsetsPadding(WindowInsets.displayCutout.only(WindowInsetsSides.Horizontal)) else Modifier)
+            val titleBlock: @Composable () -> Unit = {
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(start = 20.dp, top = 12.dp, end = 20.dp)
                         .heightIn(min = 64.dp),
-                    contentAlignment = Alignment.Center
+                    contentAlignment = if (landscape) Alignment.CenterStart else Alignment.Center
                 ) {
                     AnimatedContent(
                         targetState = sections.getOrElse(sectionPager.currentPage) { sections.first() },
@@ -1623,14 +1652,15 @@ private fun HomeScreen(
                         Text(
                             text = section.title,
                             style = MaterialTheme.typography.displaySmall,
-                            textAlign = TextAlign.Center,
-                            maxLines = 1,
+                            textAlign = if (landscape) TextAlign.Start else TextAlign.Center,
+                            maxLines = if (landscape) 2 else 1,
                             overflow = TextOverflow.Ellipsis,
                             modifier = Modifier.fillMaxWidth()
                         )
                     }
                 }
-
+            }
+            val notices: @Composable () -> Unit = {
                 if (hasWarning) {
                     Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
                         when {
@@ -1648,12 +1678,9 @@ private fun HomeScreen(
                     updates = updates,
                     modifier = Modifier.padding(start = 16.dp, top = 8.dp, end = 16.dp)
                 )
-
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .weight(1f)
-                ) {
+            }
+            val sectionsBlock: @Composable (Modifier) -> Unit = { blockModifier ->
+                Box(modifier = blockModifier) {
                 VerticalPager(
                     state = sectionPager,
                     modifier = Modifier.fillMaxSize()
@@ -1786,7 +1813,8 @@ private fun HomeScreen(
                         )
                     }
                 }
-
+            }
+            val hintBlock: @Composable () -> Unit = {
                 // The section below (or, at the last, back to the first): says the page goes on
                 // downward, and takes you there. Its room is kept where there is no section to go
                 // to, so that every page's middle, where its carousel sits, is at the same height.
@@ -1811,11 +1839,40 @@ private fun HomeScreen(
                         )
                     }
                 }
-
-                // Room for the toolbar and the mini player over it, whether that is up or not: made
-                // only when it came up, the room shrank the page, and all that is centred on it (a
-                // carousel, the wave's shape) jumped up as a track started.
-                Spacer(modifier = Modifier.height(8.dp + HomeToolbarClearance + 72.dp + 12.dp))
+            }
+            if (landscape) {
+                Row(modifier = pageModifier) {
+                    sectionsBlock(Modifier.weight(1f).fillMaxHeight())
+                    Column(modifier = Modifier.width(LandscapePaneWidth).fillMaxHeight()) {
+                        titleBlock()
+                        // What the section is, under its name: there is room for it on the side.
+                        val subtitle = sections.getOrElse(sectionPager.currentPage) { sections.first() }.subtitle
+                        if (subtitle.isNotBlank()) {
+                            Text(
+                                text = subtitle,
+                                style = MaterialTheme.typography.bodyLarge,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.padding(horizontal = 20.dp)
+                            )
+                        }
+                        notices()
+                        hintBlock()
+                        Spacer(modifier = Modifier.weight(1f))
+                    }
+                }
+            } else {
+                Column(modifier = pageModifier) {
+                    titleBlock()
+                    notices()
+                    sectionsBlock(Modifier.fillMaxWidth().weight(1f))
+                    hintBlock()
+                    // Room for the toolbar and the mini player over it, whether that is up or not: made
+                    // only when it came up, the room shrank the page, and all that is centred on it (a
+                    // carousel, the wave's shape) jumped up as a track started.
+                    Spacer(modifier = Modifier.height(8.dp + HomeToolbarClearance + 72.dp + 12.dp))
+                }
             }
         }
 
@@ -1834,10 +1891,19 @@ private fun HomeScreen(
                 haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                 onOpenSettings()
             },
-            modifier = Modifier
-                .align(Alignment.BottomCenter)
-                .navigationBarsPadding()
-                .padding(16.dp)
+            modifier = if (isLandscape()) {
+                Modifier
+                    .align(Alignment.BottomEnd)
+                    .navigationBarsPadding()
+                    .windowInsetsPadding(WindowInsets.displayCutout.only(WindowInsetsSides.End))
+                    .width(LandscapePaneWidth)
+                    .padding(16.dp)
+            } else {
+                Modifier
+                    .align(Alignment.BottomCenter)
+                    .navigationBarsPadding()
+                    .padding(16.dp)
+            }
         )
     }
     }
@@ -2554,12 +2620,27 @@ private fun HomeHeroCarousel(items: List<HeroItem>) {
         val captionHeight = 88.dp
         val captionGap = 16.dp
         val margin = 16.dp
-        val coverWidth = maxWidth - (margin + HeroStrip + HeroGap) * 2
+        val landscape = isLandscape()
+        // Sideways the page is wider than tall: the cover square, as tall as leaves the caption room.
+        val coverWidth = if (landscape) {
+            minOf(maxWidth - (margin + HeroStrip + HeroGap) * 2, maxHeight - captionHeight - captionGap).coerceAtLeast(120.dp)
+        } else {
+            maxWidth - (margin + HeroStrip + HeroGap) * 2
+        }
         val sidePadding = (maxWidth - coverWidth) / 2
         // Close to square: a little taller than wide at most, and never taller than leaves room for
         // the caption under it with the covers in the middle of the page.
-        val carouselHeight = (maxHeight - (captionHeight + captionGap) * 2).coerceIn(160.dp, coverWidth * 1.08f)
-        val carouselTop = (maxHeight - carouselHeight) / 2
+        val carouselHeight = if (landscape) {
+            coverWidth
+        } else {
+            (maxHeight - (captionHeight + captionGap) * 2).coerceIn(160.dp, coverWidth * 1.08f)
+        }
+        // Sideways the covers and their caption are centred together: there is no room to spare.
+        val carouselTop = if (landscape) {
+            ((maxHeight - carouselHeight - captionGap - captionHeight) / 2).coerceAtLeast(0.dp)
+        } else {
+            (maxHeight - carouselHeight) / 2
+        }
         val density = LocalDensity.current
         val coverPx = with(density) { coverWidth.toPx() }
         val stripPx = with(density) { HeroStrip.toPx() }
@@ -2575,7 +2656,8 @@ private fun HomeHeroCarousel(items: List<HeroItem>) {
                 contentPadding = PaddingValues(horizontal = sidePadding),
                 pageSpacing = HeroGap,
                 modifier = Modifier
-                    .align(Alignment.Center)
+                    .align(Alignment.TopCenter)
+                    .padding(top = carouselTop)
                     .fillMaxWidth()
                     .height(carouselHeight)
                     // What the carousel doesn't use of a swipe, at its first or last cover, isn't
@@ -2869,7 +2951,8 @@ private fun PlaylistsScreen(
     LazyColumn(
         modifier = Modifier
             .fillMaxSize()
-            .statusBarsPadding(),
+            .statusBarsPadding()
+            .readableSideways(),
         contentPadding = PaddingValues(start = 16.dp, top = 12.dp, end = 16.dp, bottom = 120.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
@@ -2997,7 +3080,8 @@ private fun SettingsScreen(
     LazyColumn(
         modifier = Modifier
             .fillMaxSize()
-            .statusBarsPadding(),
+            .statusBarsPadding()
+            .readableSideways(),
         contentPadding = PaddingValues(start = 16.dp, top = 12.dp, end = 16.dp, bottom = 120.dp),
         verticalArrangement = Arrangement.spacedBy(18.dp)
     ) {
@@ -4076,7 +4160,8 @@ private fun SearchScreen(
             downloadProgress = downloadProgress,
             onBack = onClosePlaylist,
             onPlayTrack = { track -> onPlayPlaylistTrack(track, openedPlaylist.tracks) },
-            onFavoriteClick = onFavoriteClick
+            onFavoriteClick = onFavoriteClick,
+            onArtistClick = onOpenArtist
         )
         return
     }
@@ -4134,21 +4219,33 @@ private fun SearchScreen(
     val results = rememberFrostSource()
     val tabsShown = sources.size > 1
     val playerShown = currentTrackId != null
+    // Sideways the results have the left to themselves; the bar, the field, the services and the
+    // mini player are in a pane on the right, under the thumb.
+    val landscape = isLandscape()
     // Room at the bottom of each list for what floats over its end: the tabs, the mini player.
-    val bottomRoom = 24.dp + searchDockHeight(tabsShown) + (if (playerShown) MiniPlayerHeight + 12.dp else 0.dp)
+    val bottomRoom = if (landscape) {
+        24.dp + WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
+    } else {
+        24.dp + searchDockHeight(tabsShown) + (if (playerShown) MiniPlayerHeight + 12.dp else 0.dp)
+    }
 
     // Search stands on the moving backdrop: its fields, rows and tabs are glass.
     androidx.compose.runtime.CompositionLocalProvider(LocalGlass provides true) {
     Box(modifier = Modifier.fillMaxSize()) {
+        Row(modifier = Modifier.fillMaxSize()) {
         Column(
             modifier = Modifier
-                .fillMaxSize()
+                .weight(1f)
+                .fillMaxHeight()
                 .statusBarsPadding()
+                .then(if (landscape) Modifier.windowInsetsPadding(WindowInsets.displayCutout.only(WindowInsetsSides.Start)) else Modifier)
         ) {
             // top = 0: the bar has to start at the same y as the home bar, or entering search
             // shifts the title and back button downward and the transition reads as a jump.
-            Box(modifier = Modifier.padding(horizontal = 16.dp)) {
-                TopBar(title = "Поиск", onBack = onBack)
+            if (!landscape) {
+                Box(modifier = Modifier.padding(horizontal = 16.dp)) {
+                    TopBar(title = "Поиск", onBack = onBack)
+                }
             }
             HorizontalPager(
                 state = sourcePager,
@@ -4199,13 +4296,37 @@ private fun SearchScreen(
             }
         }
 
+        if (landscape) {
+            Box(
+                modifier = Modifier
+                    .width(LandscapePaneWidth)
+                    .fillMaxHeight()
+                    .statusBarsPadding()
+                    .windowInsetsPadding(WindowInsets.displayCutout.only(WindowInsetsSides.End))
+                    .padding(horizontal = 16.dp)
+            ) {
+                TopBar(title = "Поиск", onBack = onBack)
+            }
+        }
+        }
+
         // The field and, when there is a choice, the services, down where the thumb is: on the
-        // keyboard's top edge while it is up, at the bottom of the screen when it isn't.
+        // keyboard's top edge while it is up, at the bottom of the screen when it isn't; sideways,
+        // at the foot of the pane on the right.
         androidx.compose.runtime.CompositionLocalProvider(LocalFrostSources provides backdrop + results) {
             Column(
                 modifier = Modifier
-                    .align(Alignment.BottomCenter)
+                    .align(if (landscape) Alignment.BottomEnd else Alignment.BottomCenter)
                     .windowInsetsPadding(WindowInsets.ime.union(WindowInsets.navigationBars))
+                    .then(
+                        if (landscape) {
+                            Modifier
+                                .windowInsetsPadding(WindowInsets.displayCutout.only(WindowInsetsSides.End))
+                                .width(LandscapePaneWidth)
+                        } else {
+                            Modifier
+                        }
+                    )
                     .padding(horizontal = 16.dp, vertical = 12.dp),
                 verticalArrangement = Arrangement.spacedBy(SearchDockGap)
             ) {
@@ -4499,6 +4620,125 @@ private fun searchDockHeight(tabs: Boolean): Dp =
 // The mini player's height, with its padding, for what must leave room for it.
 internal val MiniPlayerHeight = 72.dp
 
+/** Whether the phone is on its side: the screens then put their controls in a pane on the right. */
+@Composable
+@androidx.compose.runtime.ReadOnlyComposable
+internal fun isLandscape(): Boolean =
+    LocalConfiguration.current.orientation == android.content.res.Configuration.ORIENTATION_LANDSCAPE
+
+// Sideways, the pane on the right a screen's controls go in, under the thumb, the mini player at its
+// foot; and the room kept for it there.
+internal val LandscapePaneWidth = 400.dp
+private val PaneMiniPlayerRoom = MiniPlayerHeight + 16.dp + 16.dp
+
+/**
+ * Sideways, a list of settings or playlists across the whole width is hard to read: it keeps to a
+ * column clear of the pane on the right, where the mini player is.
+ */
+@Composable
+private fun Modifier.readableSideways(): Modifier =
+    if (isLandscape()) {
+        this
+            .windowInsetsPadding(WindowInsets.displayCutout.only(WindowInsetsSides.Start))
+            .padding(end = LandscapePaneWidth - 80.dp)
+    } else {
+        this
+    }
+
+/** Set for a collection's header drawn in the side pane rather than on top of its list. */
+private val LocalHeaderPane = androidx.compose.runtime.staticCompositionLocalOf { false }
+
+/**
+ * A collection's screen (an album, a playlist, a mix, an artist): upright, its [header] tops the
+ * list and scrolls away with it; sideways, the list takes the left and the header stands in a pane
+ * on the right, under the thumb, with the mini player at its foot.
+ */
+@Composable
+private fun DetailFrame(
+    listState: androidx.compose.foundation.lazy.LazyListState,
+    bottomPadding: Dp,
+    header: @Composable () -> Unit,
+    content: androidx.compose.foundation.lazy.LazyListScope.() -> Unit
+) {
+    if (isLandscape()) {
+        Row(modifier = Modifier.fillMaxSize()) {
+            LazyColumn(
+                state = listState,
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxHeight()
+                    .windowInsetsPadding(WindowInsets.displayCutout.only(WindowInsetsSides.Start)),
+                // Clear of the back button above; the mini player is in the pane, not over the list.
+                contentPadding = PaddingValues(
+                    top = WindowInsets.statusBars.asPaddingValues().calculateTopPadding() + 72.dp,
+                    bottom = 24.dp + WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
+                ),
+                content = content
+            )
+            androidx.compose.runtime.CompositionLocalProvider(LocalHeaderPane provides true) {
+                Box(modifier = Modifier.width(LandscapePaneWidth).fillMaxHeight()) { header() }
+            }
+        }
+    } else {
+        LazyColumn(
+            state = listState,
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(bottom = bottomPadding)
+        ) {
+            item(key = "detail-hero") { header() }
+            content()
+        }
+    }
+}
+
+/**
+ * A collection's header as a side pane: its picture filling the pane's top and fading into the
+ * page, [text] over its lower edge, then [actions] on the right, where the thumb is, and room below
+ * for the mini player.
+ */
+@Composable
+private fun HeaderPane(
+    picture: @Composable BoxScope.() -> Unit,
+    onPictureClick: (() -> Unit)?,
+    text: @Composable ColumnScope.() -> Unit,
+    actions: (@Composable RowScope.() -> Unit)?
+) {
+    Box(modifier = Modifier.fillMaxSize()) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .fillMaxHeight(0.8f)
+                .then(if (onPictureClick != null) Modifier.clickable(onClick = onPictureClick) else Modifier)
+                .fadedDownward(CoverFade)
+                .background(MaterialTheme.colorScheme.surfaceContainerHigh),
+            content = picture
+        )
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Brush.verticalGradient(0f to Color.Black.copy(alpha = 0.3f), 0.18f to Color.Transparent))
+        )
+        Column(
+            modifier = Modifier
+                .align(Alignment.BottomStart)
+                .fillMaxWidth()
+                .windowInsetsPadding(WindowInsets.navigationBars.only(WindowInsetsSides.Bottom + WindowInsetsSides.End))
+                .padding(start = 20.dp, end = 16.dp, bottom = PaneMiniPlayerRoom)
+        ) {
+            text()
+            if (actions != null) {
+                Spacer(modifier = Modifier.height(14.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp, Alignment.End),
+                    verticalAlignment = Alignment.CenterVertically,
+                    content = actions
+                )
+            }
+        }
+    }
+}
+
 /** Artists a search found: round portraits with a name, the way people show everywhere else. */
 @Composable
 private fun ArtistRow(artists: List<SoundCloudUser>, onOpen: (SoundCloudUser) -> Unit) {
@@ -4639,12 +4879,10 @@ private fun DownloadsScreen(
             .fillMaxSize()
             .pageGlass(MaterialTheme.colorScheme.background)
     ) {
-        LazyColumn(
-            state = listState,
-            modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(bottom = 120.dp)
-        ) {
-            item(key = "downloads-hero") {
+        DetailFrame(
+            listState = listState,
+            bottomPadding = 120.dp,
+            header = {
                 CoverHeader(
                     artwork = {
                         if (!folderArtworkUri.isNullOrBlank()) {
@@ -4672,7 +4910,7 @@ private fun DownloadsScreen(
                     onArtworkClick = { imagePicker.launch(arrayOf("image/*")) }
                 )
             }
-
+        ) {
             item(key = "downloads-count") {
                 CountRule(if (tracks.isEmpty()) "Нет треков" else plural(tracks.size, "трек", "трека", "треков")) {
                     PanelIconButton(
@@ -5152,6 +5390,9 @@ private fun CollapsingTopBar(
     onBack: () -> Unit,
     trailing: (@Composable () -> Unit)? = null
 ) {
+    // Sideways the title stands in the pane beside the list: the bar stays a back button.
+    @Suppress("NAME_SHADOWING")
+    val collapsed = collapsed && !isLandscape()
     val barColor by animateColorAsState(
         targetValue = if (collapsed) MaterialTheme.colorScheme.background else Color.Transparent,
         animationSpec = tween(220),
@@ -5300,6 +5541,51 @@ private fun ArtistPortraitHeader(
         if (follow?.following == true) add("вы подписаны")
     }.joinToString(" · ")
     val backdrop = MaterialTheme.colorScheme.background
+    if (LocalHeaderPane.current) {
+        HeaderPane(
+            picture = {
+                if (!artist.avatarUrl.isNullOrBlank()) {
+                    AsyncImage(
+                        model = artworkUrlForSize(artist.avatarUrl, 500.dp),
+                        contentDescription = null,
+                        modifier = Modifier.fillMaxSize(),
+                        contentScale = ContentScale.Crop
+                    )
+                } else {
+                    IconCover(icon = Icons.Default.Person, iconSize = 120.dp)
+                }
+            },
+            onPictureClick = null,
+            text = {
+                Kicker(
+                    text = if (artist.permalinkUrl?.startsWith("yandex") == true) "Артист · Яндекс Музыка" else "Артист",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Text(
+                    text = artist.username.orEmpty(),
+                    style = MaterialTheme.typography.displaySmall,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
+                if (stats.isNotBlank()) {
+                    Text(
+                        text = stats,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+            },
+            actions = if ((onPlay == null || onShuffle == null) && follow == null) null else {
+                {
+                    if (follow != null) FollowButton(follow = follow, onToggle = onToggleFollow)
+                    if (onPlay != null && onShuffle != null) PlayShuffleGroup(onPlay = onPlay, onShuffle = onShuffle)
+                }
+            }
+        )
+        return
+    }
 
     Box(modifier = Modifier.fillMaxWidth()) {
         Box(
@@ -5455,8 +5741,57 @@ private fun CoverHeader(
     isPlaying: Boolean,
     onPlay: (() -> Unit)?,
     onShuffle: (() -> Unit)?,
-    onArtworkClick: (() -> Unit)? = null
+    onArtworkClick: (() -> Unit)? = null,
+    // In [subtitle]'s place: the collection's artists as chips.
+    byline: (@Composable () -> Unit)? = null
 ) {
+    if (LocalHeaderPane.current) {
+        HeaderPane(
+            picture = artwork,
+            onPictureClick = onArtworkClick,
+            text = {
+                Kicker(text = kicker, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(
+                    text = title,
+                    style = MaterialTheme.typography.headlineLarge,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
+                if (byline != null) {
+                    byline()
+                } else if (subtitle != null) {
+                    Text(
+                        text = subtitle,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+            },
+            actions = if (onPlay == null) null else {
+                {
+                    if (onShuffle != null) {
+                        Surface(
+                            onClick = onShuffle,
+                            modifier = Modifier
+                                .size(56.dp)
+                                .glassOr(CircleShape, PanelColors.container),
+                            shape = CircleShape,
+                            color = glassFill(PanelColors.container),
+                            contentColor = PanelColors.accent
+                        ) {
+                            Box(contentAlignment = Alignment.Center) {
+                                Icon(Icons.Rounded.Shuffle, contentDescription = "Перемешать", modifier = Modifier.size(24.dp))
+                            }
+                        }
+                    }
+                    MixPlayButton(isActive = isActive, isPlaying = isPlaying, onClick = onPlay)
+                }
+            }
+        )
+        return
+    }
     val backdrop = MaterialTheme.colorScheme.background
     Box(
         modifier = Modifier
@@ -5500,7 +5835,9 @@ private fun CoverHeader(
                     overflow = TextOverflow.Ellipsis
                 )
                 // The track count is the rule right below.
-                if (subtitle != null) {
+                if (byline != null) {
+                    byline()
+                } else if (subtitle != null) {
                     Text(
                         text = subtitle,
                         style = MaterialTheme.typography.bodyMedium,
@@ -5662,12 +5999,10 @@ private fun MixDetailScreen(
             .fillMaxSize()
             .pageGlass(MaterialTheme.colorScheme.background)
     ) {
-        LazyColumn(
-            state = listState,
-            modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(bottom = if (playerVisible) 120.dp else 32.dp)
-        ) {
-            item(key = "mix-hero") {
+        DetailFrame(
+            listState = listState,
+            bottomPadding = if (playerVisible) 120.dp else 32.dp,
+            header = {
                 MixCoverHeader(
                     mix = mix,
                     title = title,
@@ -5680,7 +6015,7 @@ private fun MixDetailScreen(
                     onShuffle = if (tracks.isEmpty()) null else onShuffle
                 )
             }
-
+        ) {
             // A rule between the cover and the list, so the two never blur together.
             item(key = "mix-count") {
                 CountRule(if (tracks.isEmpty()) "Загружаем треки" else plural(tracks.size, "трек", "трека", "треков"))
@@ -6055,6 +6390,8 @@ private fun TrackDetailScreen(
     ytAuth: () -> com.example.myapplication.data.YtAuth? = { null },
     onLongPressCover: () -> Unit,
     onArtistClick: (SoundCloudUser) -> Unit,
+    // The title: the album the track is from, where there is one to open.
+    onAlbumClick: ((SoundCloudTrack) -> Unit)? = null,
     // Whether the player has been pulled off its place: the screen keeps the mini player ready
     // under it meanwhile, so a pull that folds the player away ends on it.
     onPulledChange: (Boolean) -> Unit = {},
@@ -6542,6 +6879,7 @@ private fun TrackDetailScreen(
                         liveChat = liveChat,
                         onChatCompose = { chatComposing = true },
                         onArtistClick = onArtistClick,
+                        onAlbumClick = onAlbumClick,
                         lyricsAvailable = !lyrics.isNullOrEmpty() || liveId != null,
                         lyricsShown = lyricsShown,
                         onToggleLyrics = {
@@ -6906,6 +7244,7 @@ private fun PlayerPanel(
     liveChat: com.example.myapplication.data.YouTubeLiveChat? = null,
     onChatCompose: () -> Unit = {},
     onArtistClick: (SoundCloudUser) -> Unit,
+    onAlbumClick: ((SoundCloudTrack) -> Unit)? = null,
     lyricsAvailable: Boolean,
     lyricsShown: Boolean,
     onToggleLyrics: () -> Unit,
@@ -6980,11 +7319,24 @@ private fun PlayerPanel(
                     TrackFxSheet(fx = trackFx, live = live, onChange = onTrackFxChange, onDismiss = { fxOpen = false })
                 }
                 Spacer(modifier = Modifier.height(12.dp))
+                // A track of Yandex Music or YouTube Music is from an album: its title opens it.
+                val hasAlbum = onAlbumClick != null && !live && !fromPhone &&
+                    (track.urn?.startsWith("yandex:track:") == true || track.youTubeVideoId != null)
                 Text(
                     text = track.title ?: "Unknown Track",
                     style = MaterialTheme.typography.headlineMedium,
                     maxLines = 2,
-                    overflow = TextOverflow.Ellipsis
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = if (hasAlbum) {
+                        Modifier
+                            .clip(RoundedCornerShape(12.dp))
+                            .clickable {
+                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                onAlbumClick?.invoke(track)
+                            }
+                    } else {
+                        Modifier
+                    }
                 )
                 Spacer(modifier = Modifier.height(10.dp))
 
@@ -9688,12 +10040,10 @@ private fun PlaylistDetailScreen(
             .fillMaxSize()
             .pageGlass(MaterialTheme.colorScheme.background)
     ) {
-        LazyColumn(
-            state = listState,
-            modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(bottom = 120.dp)
-        ) {
-            item(key = "playlist-hero") {
+        DetailFrame(
+            listState = listState,
+            bottomPadding = 120.dp,
+            header = {
                 CoverHeader(
                     artwork = {
                         if (playlist.artworkUrl != null) {
@@ -9721,7 +10071,7 @@ private fun PlaylistDetailScreen(
                     onArtworkClick = { imagePicker.launch(arrayOf("image/*")) }
                 )
             }
-
+        ) {
             item(key = "playlist-count") {
                 CountRule(
                     text = listOfNotNull(
@@ -9927,12 +10277,10 @@ private fun YandexPlaylistDetailScreen(
             .fillMaxSize()
             .pageGlass(MaterialTheme.colorScheme.background)
     ) {
-        LazyColumn(
-            state = listState,
-            modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(bottom = 120.dp)
-        ) {
-            item(key = "yandex-playlist-hero") {
+        DetailFrame(
+            listState = listState,
+            bottomPadding = 120.dp,
+            header = {
                 CoverHeader(
                     artwork = {
                         if (playlist.artworkUrl != null) {
@@ -9964,7 +10312,7 @@ private fun YandexPlaylistDetailScreen(
                     onArtworkClick = { imagePicker.launch(arrayOf("image/*")) }
                 )
             }
-
+        ) {
             item(key = "yandex-playlist-count") {
                 CountRule(
                     text = when {
@@ -10091,12 +10439,10 @@ private fun ArtistDetailScreen(
             .fillMaxSize()
             .pageGlass(MaterialTheme.colorScheme.background)
     ) {
-        LazyColumn(
-            state = listState,
-            modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(bottom = 120.dp)
-        ) {
-            item(key = "artist-hero") {
+        DetailFrame(
+            listState = listState,
+            bottomPadding = 120.dp,
+            header = {
                 ArtistPortraitHeader(
                     artist = artist,
                     albumCount = playlists.size,
@@ -10106,7 +10452,7 @@ private fun ArtistDetailScreen(
                     onToggleFollow = onToggleFollow
                 )
             }
-
+        ) {
             if (isLoading) {
                 item(key = "artist-loading") { LoadingBlock() }
             } else if (error != null) {
@@ -10243,6 +10589,38 @@ private fun ArtistDetailScreen(
 /** How many of an artist's tracks show before "Все". */
 private const val TOP_TRACKS = 5
 
+/** A collection's artists as chips, each opening the artist's page, as the player's do. */
+@Composable
+private fun ArtistPills(artists: List<SoundCloudUser>, onClick: (SoundCloudUser) -> Unit) {
+    val haptic = LocalHapticFeedback.current
+    Row(
+        modifier = Modifier
+            .padding(top = 6.dp)
+            .horizontalScroll(rememberScrollState()),
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        artists.forEach { artist ->
+            Surface(
+                onClick = {
+                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                    onClick(artist)
+                },
+                shape = CircleShape,
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.12f),
+                contentColor = MaterialTheme.colorScheme.onSurface
+            ) {
+                Text(
+                    text = artist.username.orEmpty(),
+                    style = MaterialTheme.typography.titleSmall,
+                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 7.dp),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+        }
+    }
+}
+
 /** An artist's albums and playlists in the multi-browse carousel. */
 @Composable
 private fun ArtistSetsCarousel(
@@ -10344,7 +10722,9 @@ private fun SetDetailContent(
     onPlayTrack: (SoundCloudTrack) -> Unit,
     onFavoriteClick: (SoundCloudTrack) -> Unit,
     error: String? = null,
-    artistName: String? = null
+    artistName: String? = null,
+    // Its artists' chips open their pages; null, a plain name (the artist's own page opened it).
+    onArtistClick: ((SoundCloudUser) -> Unit)? = null
 ) {
     val isYandex = playlist.permalinkUrl?.contains("yandex") == true
     val albumLibrary = LocalAlbumLibrary.current
@@ -10359,18 +10739,30 @@ private fun SetDetailContent(
     val isActive = currentTrackId != null && tracks.any { it.id == currentTrackId }
     val listState = rememberLazyListState()
     val collapsed = rememberCollapsed(listState, MixCoverHeight - 140.dp)
+    // Who it is by, with a page each: the set's owner where it links one; an album's artists, as
+    // its tracks name them, otherwise.
+    val setArtists = remember(playlist.user, tracks) {
+        val owner = playlist.user?.takeIf { !it.permalinkUrl.isNullOrBlank() }
+        val album = playlist.isAlbum == true || playlist.permalinkUrl?.startsWith("yandex:album:") == true
+        when {
+            owner != null -> listOf(owner)
+            album -> tracks.firstOrNull()
+                ?.let { first -> first.artists?.takeIf { it.isNotEmpty() } ?: listOfNotNull(first.user) }
+                ?.filter { !it.permalinkUrl.isNullOrBlank() }
+                .orEmpty()
+            else -> emptyList()
+        }
+    }
 
     Box(
         modifier = Modifier
             .fillMaxSize()
             .pageGlass(MaterialTheme.colorScheme.background)
     ) {
-        LazyColumn(
-            state = listState,
-            modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(bottom = 120.dp)
-        ) {
-            item(key = "set-hero") {
+        DetailFrame(
+            listState = listState,
+            bottomPadding = 120.dp,
+            header = {
                 val artworkUrl = ArtworkUrls.highRes(playlist.displayArtworkUrl) ?: playlist.displayArtworkUrl
                 CoverHeader(
                     artwork = {
@@ -10388,6 +10780,9 @@ private fun SetDetailContent(
                     kicker = if (isYandex) "Альбом" else setCaption(playlist),
                     title = title,
                     subtitle = subtitle.takeIf { it.isNotBlank() },
+                    byline = setArtists.takeIf { it.isNotEmpty() && onArtistClick != null }?.let { artists ->
+                        { ArtistPills(artists = artists, onClick = { onArtistClick?.invoke(it) }) }
+                    },
                     isActive = isActive,
                     isPlaying = isPlaying,
                     onPlay = if (tracks.isEmpty()) null else {
@@ -10400,7 +10795,7 @@ private fun SetDetailContent(
                     }
                 )
             }
-
+        ) {
             item(key = "set-count") {
                 CountRule(
                     text = when {
