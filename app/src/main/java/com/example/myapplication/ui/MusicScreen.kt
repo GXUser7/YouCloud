@@ -7548,11 +7548,15 @@ private fun LiveChatOverlay(chat: com.example.myapplication.data.YouTubeLiveChat
     val onPanel = PanelColors.content
     val accent = PanelColors.accent
     val anchor = WindowInsets.statusBars.asPaddingValues().calculateTopPadding() + 24.dp
-    val scrim = MaterialTheme.colorScheme.background.copy(alpha = 0.38f)
+    // Thicker than the lyrics' shade: a chat is small text over whatever the broadcast shows,
+    // and over a bright picture the dark theme's light words (or the light theme's dark ones
+    // over a dark picture) were lost.
+    val ground = MaterialTheme.colorScheme.background
+    val scrim = ground.copy(alpha = 0.62f)
     Box(
         modifier = Modifier
             .fillMaxSize()
-            // The same shade the lyrics stand on, fading out by the panel's top edge.
+            // The shade the chat stands on, fading out by the panel's top edge.
             .drawBehind {
                 val h = size.height
                 val clear = h - PlayerPanelOverlap.toPx()
@@ -7627,7 +7631,7 @@ private fun LiveChatOverlay(chat: com.example.myapplication.data.YouTubeLiveChat
                     ),
                     verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
-                    items(newestFirst, key = { it.id }) { message -> ChatLine(message, accent, onPanel) }
+                    items(newestFirst, key = { it.id }) { message -> ChatLine(message, accent, onPanel, ground) }
                 }
             }
         }
@@ -7636,7 +7640,7 @@ private fun LiveChatOverlay(chat: com.example.myapplication.data.YouTubeLiveChat
 
 /** A message: its author in the accent, a paid one's amount, then the words and emoji pictures. */
 @Composable
-private fun ChatLine(message: com.example.myapplication.data.LiveChatMessage, accent: Color, onPanel: Color) {
+private fun ChatLine(message: com.example.myapplication.data.LiveChatMessage, accent: Color, onPanel: Color, ground: Color) {
     val emojis = message.parts.filterIsInstance<com.example.myapplication.data.LiveChatPart.Emoji>()
     val text = remember(message) {
         buildAnnotatedString {
@@ -7668,7 +7672,11 @@ private fun ChatLine(message: com.example.myapplication.data.LiveChatMessage, ac
             }
         }
     }
-    Text(text = text, inlineContent = inline, style = MaterialTheme.typography.bodyLarge)
+    // A soft shadow of the theme's ground around the letters, so they stand off any picture.
+    val style = MaterialTheme.typography.bodyLarge.copy(
+        shadow = androidx.compose.ui.graphics.Shadow(color = ground.copy(alpha = 0.9f), blurRadius = 8f)
+    )
+    Text(text = text, inlineContent = inline, style = style)
 }
 
 private sealed interface LiveChatState {
