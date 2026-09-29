@@ -6543,17 +6543,75 @@ private fun TrackDetailScreen(
     val swiping by remember { derivedStateOf { swipeActive.value > 0f } }
 
     if (landscape && videoState != null && videoState.showing) {
-        FullScreenVideo(state = videoState, blur = { pauseBlur.value }, glow = videoGlow, glowStyle = videoGlowStyle) {
-            LandscapeControls(
-                isPlaying = isPlaying,
-                live = track.liveVideoId != null,
-                positionMs = positionMs,
-                durationMs = durationMs,
-                onTogglePlay = onTogglePlay,
-                onSeek = onSeek,
-                onPrevious = onPrevious,
-                onNext = onNext
-            )
+        // Pulled down, the video folds away into the mini player, as the player does upright; the
+        // controls' taps and the seek bar's drags are theirs still.
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .onSizeChanged { playerHeightPx = it.height.toFloat() }
+                .pointerInput(Unit) {
+                    awaitEachGesture {
+                        awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+                        currentOnTouchedChange(true)
+                        do {
+                            val event = awaitPointerEvent(PointerEventPass.Initial)
+                        } while (event.changes.any { it.pressed })
+                        currentOnTouchedChange(false)
+                    }
+                }
+                .pointerInput(Unit) {
+                    val velocity = VelocityTracker()
+                    detectVerticalDragGestures(
+                        onDragStart = {
+                            velocity.resetTracking()
+                            queueScope.launch(start = kotlinx.coroutines.CoroutineStart.UNDISPATCHED) { collapse.stop() }
+                        },
+                        onVerticalDrag = { change, dy ->
+                            velocity.addPosition(change.uptimeMillis, change.position)
+                            change.consume()
+                            queueScope.launch(start = kotlinx.coroutines.CoroutineStart.UNDISPATCHED) {
+                                collapse.snapTo((collapse.value + dy).coerceAtLeast(0f))
+                            }
+                        },
+                        onDragEnd = { releaseCollapse(velocity.calculateVelocity().y) },
+                        onDragCancel = { releaseCollapse(0f) }
+                    )
+                }
+                .drawBehind {
+                    val pulled = collapseProgress()
+                    if (pulled > 0f) drawRect(Color.Black.copy(alpha = PulledScrim * (1f - pulled)))
+                }
+        ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .graphicsLayer {
+                        val pulled = collapseProgress()
+                        translationY = collapse.value
+                        val scale = 1f - 0.08f * pulled
+                        scaleX = scale
+                        scaleY = scale
+                        transformOrigin = TransformOrigin(0.5f, 0f)
+                        if (pulled > 0f) {
+                            shape = RoundedCornerShape(PulledCorner * (pulled / 0.15f).coerceAtMost(1f))
+                            clip = true
+                        }
+                        alpha = 1f - ((pulled - CollapseFadeFrom) / (1f - CollapseFadeFrom)).coerceIn(0f, 1f)
+                    }
+            ) {
+                FullScreenVideo(state = videoState, blur = { pauseBlur.value }, glow = videoGlow, glowStyle = videoGlowStyle) {
+                    LandscapeControls(
+                        isPlaying = isPlaying,
+                        live = track.liveVideoId != null,
+                        positionMs = positionMs,
+                        durationMs = durationMs,
+                        onTogglePlay = onTogglePlay,
+                        onSeek = onSeek,
+                        onPrevious = onPrevious,
+                        onNext = onNext
+                    )
+                }
+            }
         }
         return
     }
@@ -7266,26 +7324,34 @@ private fun PlayerPanel(
     ) {
         BoxWithConstraints {
             glass?.invoke(this)
-            Column(
+            // Sideways the panel is wide and short: its content keeps to a phone's width in the
+            // middle, centred up and down, set tighter, and never scrolls — on a phone too short
+            // even for that, it is drawn a little smaller instead.
+            ScaleDownToFit(
+                enabled = landscape,
                 modifier = if (landscape) {
-                    // Sideways the panel is wide and short: its content keeps to a phone's width
-                    // in the middle, centred up and down, and scrolls if it doesn't fit.
                     Modifier
                         .align(Alignment.Center)
                         .widthIn(max = 560.dp)
                         .fillMaxHeight()
-                        .verticalScroll(rememberScrollState())
-                        .heightIn(min = maxHeight)
                         .statusBarsPadding()
                         .navigationBarsPadding()
-                        .padding(horizontal = 24.dp, vertical = 16.dp)
+                } else {
+                    Modifier
+                }
+            ) {
+            Column(
+                modifier = if (landscape) {
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 24.dp, vertical = 8.dp)
                 } else {
                     Modifier
                         .fillMaxWidth()
                         .navigationBarsPadding()
                         .padding(start = 24.dp, top = 24.dp, end = 24.dp, bottom = 16.dp)
                 },
-                verticalArrangement = if (landscape) Arrangement.Center else Arrangement.Top
+                verticalArrangement = Arrangement.Top
             ) {
                 // A track added from the phone's own files is from no service, and its artist is only
                 // a name in the file: there is no page to go to.
@@ -7318,14 +7384,14 @@ private fun PlayerPanel(
                 if (fxOpen && trackFx != null) {
                     TrackFxSheet(fx = trackFx, live = live, onChange = onTrackFxChange, onDismiss = { fxOpen = false })
                 }
-                Spacer(modifier = Modifier.height(12.dp))
+                Spacer(modifier = Modifier.height(if (landscape) 8.dp else 12.dp))
                 // A track of Yandex Music or YouTube Music is from an album: its title opens it.
                 val hasAlbum = onAlbumClick != null && !live && !fromPhone &&
                     (track.urn?.startsWith("yandex:track:") == true || track.youTubeVideoId != null)
                 Text(
                     text = track.title ?: "Unknown Track",
                     style = MaterialTheme.typography.headlineMedium,
-                    maxLines = 2,
+                    maxLines = if (landscape) 1 else 2,
                     overflow = TextOverflow.Ellipsis,
                     modifier = if (hasAlbum) {
                         Modifier
@@ -7338,7 +7404,7 @@ private fun PlayerPanel(
                         Modifier
                     }
                 )
-                Spacer(modifier = Modifier.height(10.dp))
+                Spacer(modifier = Modifier.height(if (landscape) 6.dp else 10.dp))
 
                 // Every credited artist gets its own tappable chip: a collaboration used to show a
                 // single name with no way to reach anyone else on the track.
@@ -7380,7 +7446,7 @@ private fun PlayerPanel(
                     }
                 }
 
-                Spacer(modifier = Modifier.height(14.dp))
+                Spacer(modifier = Modifier.height(if (landscape) 6.dp else 14.dp))
                 // A broadcast has no length to seek along: in the bar's place, that it is on air.
                 if (live) {
                     LiveMark(color = onPanel)
@@ -7394,7 +7460,7 @@ private fun PlayerPanel(
                     )
                 }
 
-                Spacer(modifier = Modifier.height(10.dp))
+                Spacer(modifier = Modifier.height(if (landscape) 4.dp else 10.dp))
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
@@ -7449,7 +7515,7 @@ private fun PlayerPanel(
                     }
                 }
 
-                Spacer(modifier = Modifier.height(18.dp))
+                Spacer(modifier = Modifier.height(if (landscape) 10.dp else 18.dp))
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(10.dp)
@@ -7496,6 +7562,33 @@ private fun PlayerPanel(
                         size = 64.dp
                     )
                 }
+            }
+            }
+        }
+    }
+}
+
+/**
+ * Lays [content] out at its own height and, where that is more than there is room for, draws it
+ * smaller, whole and centred, rather than cutting it off or making it scroll. [enabled] false: in
+ * the ordinary way, as tall as it is.
+ */
+@Composable
+private fun ScaleDownToFit(enabled: Boolean, modifier: Modifier = Modifier, content: @Composable () -> Unit) {
+    Layout(content = content, modifier = modifier) { measurables, constraints ->
+        if (!enabled) {
+            val placeable = measurables.first().measure(constraints)
+            return@Layout layout(placeable.width, placeable.height) { placeable.place(0, 0) }
+        }
+        val placeable = measurables.first().measure(constraints.copy(minHeight = 0, maxHeight = Constraints.Infinity))
+        val height = constraints.maxHeight
+        val scale = if (placeable.height > height) height.toFloat() / placeable.height else 1f
+        val width = constraints.maxWidth
+        layout(width, height) {
+            placeable.placeWithLayer((width - placeable.width) / 2, (height - placeable.height) / 2) {
+                scaleX = scale
+                scaleY = scale
+                transformOrigin = TransformOrigin(0.5f, 0.5f)
             }
         }
     }
