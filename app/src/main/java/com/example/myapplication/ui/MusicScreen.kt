@@ -96,6 +96,7 @@ import androidx.compose.material.icons.rounded.SkipPrevious
 import androidx.compose.material.icons.rounded.SkipNext
 import androidx.compose.material.icons.rounded.Repeat
 import androidx.compose.material.icons.rounded.RepeatOne
+import androidx.compose.material.icons.rounded.HeartBroken
 import androidx.compose.material.icons.rounded.Shuffle
 import androidx.compose.material.icons.rounded.Favorite
 import androidx.compose.material.icons.rounded.FavoriteBorder
@@ -408,6 +409,7 @@ fun MusicScreen(viewModel: MusicViewModel) {
 
     val yandexPlaylists by viewModel.yandexPlaylists.collectAsState()
     val yandexWaveOn by viewModel.yandexWaveOn.collectAsState()
+    val yandexWavePicks by viewModel.yandexWavePicks.collectAsState()
     val yandexWaveStarting by viewModel.yandexWaveStarting.collectAsState()
     val yandexToken by viewModel.yandexToken.collectAsState()
     val hasYandexToken = yandexToken.isNotEmpty()
@@ -575,10 +577,13 @@ fun MusicScreen(viewModel: MusicViewModel) {
                         wave = HomeWave(
                             on = yandexWaveOn,
                             starting = yandexWaveStarting,
+                            picks = yandexWavePicks,
                             onToggle = {
                                 haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                                 viewModel.toggleYandexWave()
-                            }
+                            },
+                            onPick = viewModel::pickYandexWave,
+                            onReset = viewModel::resetYandexWave
                         ),
                         onOpenPlaylist = viewModel::openPlaylist,
                         onOpenYandexPlaylist = { playlist ->
@@ -1143,6 +1148,8 @@ fun MusicScreen(viewModel: MusicViewModel) {
                             haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                             viewModel.toggleShuffle()
                         },
+                        // The wave has no order to shuffle: in its place, "not for me".
+                        onDislike = if (yandexWaveOn) viewModel::dislikeYandexTrack else null,
                         onLongPressCover = {
                             showTrackActionsDialog = true
                         },
@@ -1218,7 +1225,7 @@ fun MusicScreen(viewModel: MusicViewModel) {
 /** What home's toolbar picks between: a service, or what is on the device. */
 private enum class HomeService(val title: String, val icon: (() -> ImageVector)?, val letter: String? = null) {
     SoundCloud("SoundCloud", { ServiceIcons.SoundCloud }),
-    Yandex("Яндекс Музыка", icon = null, letter = "Я"),
+    Yandex("Яндекс Музыка", { ServiceIcons.YandexMusic }),
     YouTube("YouTube Music", { ServiceIcons.YouTubeMusic }),
     Downloads("Скачанное", { Icons.Default.Download })
 }
@@ -1238,7 +1245,10 @@ private enum class HomeCategory(val title: String, val service: HomeService) {
 private class HomeWave(
     val on: Boolean,
     val starting: Boolean,
-    val onToggle: () -> Unit
+    val picks: Map<String, String>,
+    val onToggle: () -> Unit,
+    val onPick: (key: String, seed: String) -> Unit,
+    val onReset: () -> Unit
 )
 
 /** A page of home's vertical pager: one of a service's sections. */
@@ -1610,7 +1620,10 @@ private fun HomeScreen(
                             waveOn = wave.on,
                             isPlaying = isPlaying,
                             starting = wave.starting,
-                            onToggle = wave.onToggle
+                            picks = wave.picks,
+                            onToggle = wave.onToggle,
+                            onPick = wave.onPick,
+                            onReset = wave.onReset
                         )
 
                         HomeCategory.Library -> {
@@ -4537,8 +4550,8 @@ private fun DownloadsScreen(
                     )
                     PanelIconButton(
                         icon = Icons.Default.Add,
-                        contentDescription = "Импортировать треки с устройства",
-                        onClick = { audioPicker.launch(arrayOf("audio/*")) },
+                        contentDescription = "Импортировать треки и видео с устройства",
+                        onClick = { audioPicker.launch(arrayOf("audio/*", "video/*")) },
                         size = RuleButtonSize,
                         iconSize = RuleIconSize
                     )
@@ -5848,6 +5861,7 @@ private fun TrackDetailScreen(
     onNext: () -> Unit,
     onRepeat: () -> Unit,
     onShuffle: () -> Unit,
+    onDislike: (() -> Unit)? = null,
     onLongPressCover: () -> Unit,
     onArtistClick: (SoundCloudUser) -> Unit,
     // Whether the player has been pulled off its place: the screen keeps the mini player ready
@@ -6311,6 +6325,7 @@ private fun TrackDetailScreen(
                         onNext = onNext,
                         onRepeat = onRepeat,
                         onShuffle = onShuffle,
+                        onDislike = onDislike,
                         onArtistClick = onArtistClick,
                         lyricsAvailable = !lyrics.isNullOrEmpty(),
                         lyricsShown = lyricsShown,
@@ -6662,6 +6677,8 @@ private fun PlayerPanel(
     onNext: () -> Unit,
     onRepeat: () -> Unit,
     onShuffle: () -> Unit,
+    // In the shuffle's place when there is one: "not for me", while the wave plays.
+    onDislike: (() -> Unit)? = null,
     onArtistClick: (SoundCloudUser) -> Unit,
     lyricsAvailable: Boolean,
     lyricsShown: Boolean,
@@ -6705,16 +6722,20 @@ private fun PlayerPanel(
                 },
                 verticalArrangement = if (landscape) Arrangement.Center else Arrangement.Top
             ) {
+                // A track added from the phone's own files is from no service, and its artist is only
+                // a name in the file: there is no page to go to.
+                val fromPhone = track.urn?.startsWith("local:") == true
                 OnPanelChip(
                     text = buildString {
                         append(
                             when {
+                                fromPhone -> "С телефона"
                                 track.urn?.startsWith("yandex:") == true -> "Яндекс Музыка"
                                 track.youTubeVideoId != null -> "YouTube Music"
                                 else -> "SoundCloud"
                             }
                         )
-                        if (downloadState == DownloadState.DOWNLOADED) append(" · на устройстве")
+                        if (!fromPhone && downloadState == DownloadState.DOWNLOADED) append(" · на устройстве")
                     }
                 )
                 Spacer(modifier = Modifier.height(12.dp))
@@ -6750,6 +6771,7 @@ private fun PlayerPanel(
                                 haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                                 onArtistClick(artist)
                             },
+                            enabled = !fromPhone,
                             shape = CircleShape,
                             color = onPanel.copy(alpha = 0.12f),
                             contentColor = onPanel
@@ -6805,16 +6827,28 @@ private fun PlayerPanel(
                         size = 68.dp,
                         iconSize = 32.dp
                     )
-                    PanelIconButton(
-                        icon = Icons.Rounded.Shuffle,
-                        contentDescription = if (shuffleEnabled) "Перемешивание включено" else "Перемешать",
-                        onClick = {
-                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                            onShuffle()
-                        },
-                        selected = shuffleEnabled,
-                        size = 48.dp
-                    )
+                    if (onDislike != null) {
+                        PanelIconButton(
+                            icon = Icons.Rounded.HeartBroken,
+                            contentDescription = "Не нравится",
+                            onClick = {
+                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                onDislike()
+                            },
+                            size = 48.dp
+                        )
+                    } else {
+                        PanelIconButton(
+                            icon = Icons.Rounded.Shuffle,
+                            contentDescription = if (shuffleEnabled) "Перемешивание включено" else "Перемешать",
+                            onClick = {
+                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                onShuffle()
+                            },
+                            selected = shuffleEnabled,
+                            size = 48.dp
+                        )
+                    }
                 }
 
                 Spacer(modifier = Modifier.height(18.dp))

@@ -22,7 +22,9 @@ class OfflineVideoStore(context: Context) {
         val segments: List<VideoSegment>? = null,
         // A YouTube video's codec, and which choice of YouTube's formats it was picked by.
         val codec: String? = null,
-        val formats: Int = 0
+        val formats: Int = 0,
+        // A video imported from the phone: the track's own, its sound the track.
+        val local: Boolean = false
     )
 
     private fun metaFile(trackId: Long) = File(dir, "$trackId.json")
@@ -38,8 +40,21 @@ class OfflineVideoStore(context: Context) {
             url = Uri.fromFile(video).toString(),
             loop = meta.loop,
             vertical = meta.vertical,
-            segments = meta.segments.orEmpty()
+            segments = meta.segments.orEmpty(),
+            local = meta.local
         )
+    }
+
+    /**
+     * Where an imported video of [trackId] is kept: once, as the track's clip, its sound also the
+     * track's — a clip to the frame, and a film's worth of space not taken twice.
+     */
+    fun localVideoFile(trackId: Long): File = videoFile(trackId)
+
+    /** Marks the video put at [localVideoFile] as [trackId]'s own clip. */
+    fun markLocal(trackId: Long, vertical: Boolean?) {
+        metaFile(trackId).writeText(gson.toJson(Meta(local = true, vertical = vertical, formats = YOUTUBE_FORMATS)))
+        noneFile(trackId).delete()
     }
 
     private fun meta(trackId: Long): Meta? =

@@ -6,13 +6,19 @@ import android.net.Uri
 import android.util.Log
 import com.example.myapplication.data.DownloadState
 import com.example.myapplication.data.FavoriteTrack
+import com.example.myapplication.data.OfflineVideoStore
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.FileOutputStream
 import java.util.UUID
 
-suspend fun importLocalAudio(context: Context, uris: List<Uri>): List<FavoriteTrack> = withContext(Dispatchers.IO) {
+/**
+ * Copies [uris] — audio files, or videos — from the phone into the app as downloaded tracks. A
+ * video becomes a track with its clip: its sound is the track, and the video itself, kept once in
+ * [videos], plays in the player alongside it, to the frame; a frame from its middle is the cover.
+ */
+suspend fun importLocalAudio(context: Context, uris: List<Uri>, videos: OfflineVideoStore): List<FavoriteTrack> = withContext(Dispatchers.IO) {
     val importedTracks = mutableListOf<FavoriteTrack>()
     val localMusicDir = File(context.filesDir, "local_music").apply { mkdirs() }
     val localArtDir = File(context.filesDir, "local_music_artworks").apply { mkdirs() }
@@ -20,9 +26,15 @@ suspend fun importLocalAudio(context: Context, uris: List<Uri>): List<FavoriteTr
     for (uri in uris) {
         try {
             // Copy file to internal storage
-            val fileExtension = context.contentResolver.getType(uri)?.substringAfterLast("/") ?: "mp3"
+            val mimeType = context.contentResolver.getType(uri).orEmpty()
+            val isVideo = mimeType.startsWith("video/")
+            val fileExtension = mimeType.substringAfterLast("/", "").ifBlank { "mp3" }
             val uniqueId = System.currentTimeMillis() + UUID.randomUUID().hashCode()
-            val destFile = File(localMusicDir, "local_track_$uniqueId.$fileExtension")
+            val destFile = if (isVideo) {
+                videos.localVideoFile(uniqueId)
+            } else {
+                File(localMusicDir, "local_track_$uniqueId.$fileExtension")
+            }
 
             context.contentResolver.openInputStream(uri)?.use { input ->
                 FileOutputStream(destFile).use { output ->
@@ -36,6 +48,7 @@ suspend fun importLocalAudio(context: Context, uris: List<Uri>): List<FavoriteTr
             var artist = ""
             var duration = 0L
             var artworkPath: String? = null
+            var vertical: Boolean? = null
 
             try {
                 retriever.setDataSource(destFile.absolutePath)
@@ -52,6 +65,24 @@ suspend fun importLocalAudio(context: Context, uris: List<Uri>): List<FavoriteTr
                     }
                     artworkPath = artFile.absolutePath
                 }
+                if (isVideo) {
+                    val width = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)?.toIntOrNull()
+                    val height = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)?.toIntOrNull()
+                    val rotation = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_ROTATION)?.toIntOrNull() ?: 0
+                    if (width != null && height != null) {
+                        vertical = if (rotation % 180 == 0) height > width else width > height
+                    }
+                    // Without a cover of its own, a frame from a third of the way in.
+                    if (artworkPath == null) {
+                        val frame = retriever.getFrameAtTime(duration * 1000 / 3, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+                        if (frame != null) {
+                            val artFile = File(localArtDir, "local_art_$uniqueId.jpg")
+                            FileOutputStream(artFile).use { fos -> frame.compress(android.graphics.Bitmap.CompressFormat.JPEG, 88, fos) }
+                            frame.recycle()
+                            artworkPath = artFile.absolutePath
+                        }
+                    }
+                }
             } catch (e: Exception) {
                 Log.e("ImportAudio", "Error retrieving metadata for $uri", e)
             } finally {
@@ -60,8 +91,9 @@ suspend fun importLocalAudio(context: Context, uris: List<Uri>): List<FavoriteTr
 
             // Fallback for title/artist
             if (title.isBlank()) {
-                title = getFileName(context, uri) ?: "Локальный трек $uniqueId"
+                title = getFileName(context, uri)?.substringBeforeLast('.') ?: "Локальный трек $uniqueId"
             }
+            if (isVideo) videos.markLocal(uniqueId, vertical)
             if (artist.isBlank()) {
                 artist = "Устройство"
             }

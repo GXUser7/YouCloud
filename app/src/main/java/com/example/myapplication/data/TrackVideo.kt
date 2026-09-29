@@ -31,7 +31,10 @@ data class TrackVideo(
     // but doesn't show it yet.
     val ready: Boolean = true,
     // A YouTube video's codec, as YouTube names it; see [OfflineVideoStore].
-    val codec: String? = null
+    val codec: String? = null,
+    // Imported from the phone along with the track: the track's own, shown whatever kind of
+    // videos the settings let through.
+    val local: Boolean = false
 ) {
     /** Where the video should be while the track is at [trackMs]. */
     fun videoPositionFor(trackMs: Long): Long {

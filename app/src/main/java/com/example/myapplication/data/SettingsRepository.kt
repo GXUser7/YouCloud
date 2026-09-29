@@ -187,6 +187,36 @@ class SettingsRepository(
         preferences.edit().putString(KEY_VIDEO_GLOW_STYLE, style.name).apply()
     }
 
+    /**
+     * The tracks Yandex's wave has given, oldest first ("id" or "id:albumId"), and its last session:
+     * started afresh each time with nothing to go on, the wave opened on the same tracks every time.
+     */
+    fun yandexWaveHeard(): List<String> =
+        preferences.getString(KEY_YANDEX_WAVE_HEARD, null)?.split(',')?.filter { it.isNotBlank() }.orEmpty()
+
+    fun setYandexWaveHeard(ids: List<String>) {
+        preferences.edit().putString(KEY_YANDEX_WAVE_HEARD, ids.joinToString(",")).apply()
+    }
+
+    /** What the wave is tuned to: a seed per setting ("mood", "mode"). */
+    fun yandexWavePicks(): Map<String, String> =
+        preferences.getString(KEY_YANDEX_WAVE_PICKS, null).orEmpty()
+            .split(';')
+            .mapNotNull { entry -> entry.split('=', limit = 2).takeIf { it.size == 2 }?.let { it[0] to it[1] } }
+            .toMap()
+
+    fun setYandexWavePicks(picks: Map<String, String>) {
+        preferences.edit()
+            .putString(KEY_YANDEX_WAVE_PICKS, picks.entries.joinToString(";") { "${it.key}=${it.value}" })
+            .apply()
+    }
+
+    fun yandexWaveSession(): String? = preferences.getString(KEY_YANDEX_WAVE_SESSION, null)
+
+    fun setYandexWaveSession(sessionId: String?) {
+        preferences.edit().putString(KEY_YANDEX_WAVE_SESSION, sessionId).apply()
+    }
+
     fun setCoverGlowStyle(style: GlowStyle) {
         coverGlowStyle.value = style
         preferences.edit().putString(KEY_COVER_GLOW_STYLE, style.name).apply()
@@ -369,6 +399,9 @@ class SettingsRepository(
         const val KEY_VIDEO_YANDEX = "video_yandex"
         const val KEY_VIDEO_GLOW = "video_glow"
         const val KEY_VIDEO_GLOW_STYLE = "video_glow_style"
+        const val KEY_YANDEX_WAVE_HEARD = "yandex_wave_heard"
+        const val KEY_YANDEX_WAVE_SESSION = "yandex_wave_session"
+        const val KEY_YANDEX_WAVE_PICKS = "yandex_wave_picks"
         const val KEY_COVER_GLOW_STYLE = "cover_glow_style"
         const val KEY_VIDEO_DOWNLOAD = "video_download"
         const val KEY_PLAYER_COVER_COLORS = "player_cover_colors"

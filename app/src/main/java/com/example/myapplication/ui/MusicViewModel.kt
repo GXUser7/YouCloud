@@ -2074,6 +2074,7 @@ class MusicViewModel(
 
     fun toggleFavorite(track: SoundCloudTrack) {
         viewModelScope.launch {
+            tellYandexRadio(track, if (favoritesRepository.isFavorite(track.id)) "unlike" else "like")
             if (favoritesRepository.isFavorite(track.id)) {
                 favoritesRepository.get(track.id)?.let { favorite ->
                     if (favorite.downloadState == DownloadState.DOWNLOADED && favorite.streamUrl != null &&
@@ -3011,6 +3012,11 @@ class MusicViewModel(
         const val RADIO_AHEAD = 3
         // "Моя волна": the listener's own taste, as Rotor's seed.
         const val YANDEX_WAVE_SEED = "user:onyourwave"
+        // How many of the wave's tracks are remembered as heard, how many of the latest Rotor is
+        // told of, and how many times to ask again when all it offers has been heard.
+        const val WAVE_HEARD_KEPT = 500
+        const val RADIO_QUEUE_SENT = 150
+        const val WAVE_EMPTY_TRIES = 3
 
         // A radio track that stopped this close to its end was heard to the end, not skipped.
         const val RADIO_FINISHED_SLACK_MS = 5_000L
@@ -3182,7 +3188,7 @@ class MusicViewModel(
         viewModelScope.launch {
             _isLoading.value = true
             try {
-                val imported = importLocalAudio(context, uris)
+                val imported = importLocalAudio(context, uris, offlineVideos)
                 for (track in imported) {
                     favoritesRepository.addFavoriteTrack(track)
                 }
@@ -3803,8 +3809,9 @@ class MusicViewModel(
      */
     private suspend fun findTrackVideo(track: SoundCloudTrack): TrackVideo? =
         withContext(Dispatchers.IO) { offlineVideos.get(track.id) }
-            // Yandex's loop, or a video from YouTube: shown only while their kind is.
-            ?.takeIf { if (it.loop) settingsRepository.videoYandex.value else settingsRepository.videoYouTube.value }
+            // Yandex's loop, or a video from YouTube: shown only while their kind is. One imported
+            // with the track is its own.
+            ?.takeIf { it.local || if (it.loop) settingsRepository.videoYandex.value else settingsRepository.videoYouTube.value }
             ?: findOnlineTrackVideo(track)
 
     /**
@@ -4059,10 +4066,20 @@ class MusicViewModel(
      * Yandex Music's radio (Rotor) playing from a track: the session, which batch each queued
      * track came in (the feedback names it), and every track it has given, so none comes twice.
      */
-    private class YandexRadio(var sessionId: String, val seeds: List<String>, val wave: Boolean = false) {
+    private class YandexRadio(
+        var sessionId: String,
+        val seeds: List<String>,
+        val wave: Boolean = false,
+        // What was heard before this radio (the wave's earlier sessions): never given again, and
+        // told to Rotor as heard.
+        private val heardBefore: List<String> = emptyList()
+    ) {
         val batchOf = HashMap<Long, String>()
         val given = LinkedHashSet<String>()
-        private val givenRaw = HashSet<String>()
+        private val givenRaw = HashSet<String>().apply { heardBefore.forEach { add(it.substringBefore(':')) } }
+
+        /** What Rotor is told was heard: the latest of what came before, and all this radio gave. */
+        fun heard(): List<String> = (heardBefore + given).takeLast(RADIO_QUEUE_SENT)
         // The last track the radio put in the queue: while it is still there, the queue is the
         // radio's; once another queue has replaced it, the radio stops.
         var tailId: Long? = null
@@ -4088,6 +4105,13 @@ class MusicViewModel(
 
     private val _yandexWaveStarting = MutableStateFlow(false)
     val yandexWaveStarting = _yandexWaveStarting.asStateFlow()
+
+    // What the wave is tuned to: its mood and mode, as seeds for Rotor.
+    private val _yandexWavePicks = MutableStateFlow(settingsRepository.yandexWavePicks())
+    val yandexWavePicks = _yandexWavePicks.asStateFlow()
+
+    // The track just disliked: leaving it is no skip to tell the radio of, the dislike said it all.
+    private var radioDislikedId: Long? = null
 
     // The track playing as the radio saw it, and how far into it playback got: when it gives way
     // the radio hears whether it was finished or skipped.
@@ -4127,6 +4151,76 @@ class MusicViewModel(
         }
     }
 
+    /**
+     * Tunes the wave to [seed] for [key] ("mood", "mode"), or, picked again, lets it go. A wave
+     * playing starts over, tuned so; a tuned wave is a session of its own.
+     */
+    fun pickYandexWave(key: String, seed: String) {
+        val picks = _yandexWavePicks.value.toMutableMap()
+        if (picks[key] == seed) picks.remove(key) else picks[key] = seed
+        retuneYandexWave(picks)
+    }
+
+    /** The wave as it is by itself, untuned. */
+    fun resetYandexWave() {
+        if (_yandexWavePicks.value.isNotEmpty()) retuneYandexWave(emptyMap())
+    }
+
+    private fun retuneYandexWave(picks: Map<String, String>) {
+        _yandexWavePicks.value = picks
+        settingsRepository.setYandexWavePicks(picks)
+        settingsRepository.setYandexWaveSession(null)
+        if (_yandexWaveOn.value) playYandexWave()
+    }
+
+    /**
+     * Tells the radio playing that [track] was liked or unliked ([type] "like" or "unlike"), when it
+     * is one the radio gave: the wave leans towards what is liked.
+     */
+    private fun tellYandexRadio(track: SoundCloudTrack, type: String) {
+        val radio = yandexRadio ?: return
+        val batch = radio.batchOf[track.id] ?: return
+        val id = track.urn?.removePrefix("yandex:track:") ?: return
+        sendRadioFeedback(radio, YandexRotorEvent(type = type, timestamp = rotorNow(), trackId = id), batch)
+    }
+
+    /**
+     * "Не нравится" on the Yandex track playing: marked "Не рекомендовать" in Yandex Music, told to
+     * the radio as a dislike, and skipped.
+     */
+    fun dislikeYandexTrack() {
+        val trackId = musicPlayer.currentTrackId.value ?: return
+        val track = _activeQueue.value.firstOrNull { it.id == trackId } ?: return
+        val id = track.urn?.takeIf { it.startsWith("yandex:track:") }?.removePrefix("yandex:track:") ?: return
+        val radio = yandexRadio
+        val batch = radio?.batchOf?.get(trackId)
+        if (radio != null && batch != null) {
+            radioDislikedId = trackId
+            sendRadioFeedback(
+                radio,
+                YandexRotorEvent(
+                    type = "dislike",
+                    timestamp = rotorNow(),
+                    trackId = id,
+                    totalPlayedSeconds = radioPlayedMs / 1000.0
+                ),
+                batch
+            )
+        }
+        viewModelScope.launch {
+            try {
+                val uid = getYandexUid() ?: return@launch
+                yandexService.dislikeTrack(uid, id)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.w("MusicViewModel", "Yandex dislike failed", e)
+            }
+        }
+        android.widget.Toast.makeText(context, "Больше не будет в рекомендациях", android.widget.Toast.LENGTH_SHORT).show()
+        musicPlayer.skipNext()
+    }
+
     /** "Моя волна": played, or paused and played on where it is when it is the one playing. */
     fun toggleYandexWave() {
         if (_yandexWaveOn.value && yandexRadio != null) {
@@ -4141,20 +4235,59 @@ class MusicViewModel(
      * whenever it runs low — the same radio as [playYandexRadio], without a track to start from.
      */
     fun playYandexWave() {
-        val seeds = listOf(YANDEX_WAVE_SEED)
+        val seeds = listOf(YANDEX_WAVE_SEED) + _yandexWavePicks.value.values
         _yandexWaveStarting.value = true
         viewModelScope.launch {
             try {
-                val session = yandexService.rotorSessionNew(YandexRotorSessionRequest(seeds = seeds)).result
-                val sessionId = session?.radioSessionId ?: throw IllegalStateException("волна не запустилась")
-                val radio = YandexRadio(sessionId, seeds, wave = true)
-                val batch = acceptRadioBatch(radio, session.batchId, session.sequence)
-                if (batch.isEmpty()) throw IllegalStateException("волна ничего не предложила")
+                // Everything the wave has given before is heard: told to Rotor, and kept out here
+                // too. Started afresh each time with nothing to go on, it opened on the same tracks.
+                val heard = settingsRepository.yandexWaveHeard()
+                val sent = heard.takeLast(RADIO_QUEUE_SENT)
+                // The last session goes on, as the Yandex app's wave does; a new one if Rotor has
+                // let it go.
+                var sessionId = settingsRepository.yandexWaveSession()
+                var answer = sessionId?.let { last ->
+                    runCatching { yandexService.rotorSessionTracks(last, YandexRotorQueueRequest(sent)).result }
+                        .getOrNull()
+                        ?.takeUnless { it.unknownSession == true || it.terminated == true || it.sequence.isNullOrEmpty() }
+                }
+                val resumed = answer != null
+                if (answer == null) {
+                    answer = try {
+                        yandexService.rotorSessionNew(YandexRotorSessionRequest(seeds = seeds, queue = sent)).result
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        // A mood or mode Rotor doesn't take: the wave as it is, rather than none.
+                        if (seeds.size == 1) throw e
+                        Log.w("MusicViewModel", "Yandex wave $seeds refused, playing it untuned", e)
+                        yandexService.rotorSessionNew(YandexRotorSessionRequest(seeds = listOf(YANDEX_WAVE_SEED), queue = sent)).result
+                    }
+                    sessionId = answer?.radioSessionId
+                }
+                val session = answer ?: throw IllegalStateException("волна не запустилась")
+                val id = sessionId ?: throw IllegalStateException("волна не запустилась")
+                settingsRepository.setYandexWaveSession(id)
+                val radio = YandexRadio(id, seeds, wave = true, heardBefore = heard)
+                var batchId = session.batchId
+                var batch = acceptRadioBatch(radio, batchId, session.sequence)
+                // All of it heard already: more, a few times, before giving up.
+                var tries = 0
+                while (batch.isEmpty() && tries < WAVE_EMPTY_TRIES) {
+                    tries++
+                    val more = yandexService.rotorSessionTracks(id, YandexRotorQueueRequest(radio.heard())).result ?: break
+                    batchId = more.batchId
+                    batch = acceptRadioBatch(radio, batchId, more.sequence)
+                }
+                if (batch.isEmpty()) throw IllegalStateException("волна ничего нового не предложила")
                 radio.tailId = batch.last().id
                 yandexRadio = radio
-                Log.d("MusicViewModel", "Yandex wave $seeds: session $sessionId, ${batch.size} tracks")
+                Log.d(
+                    "MusicViewModel",
+                    "Yandex wave: session $id (${if (resumed) "resumed" else "new"}), ${batch.size} tracks, ${heard.size} heard before"
+                )
                 playQueuedTrack(batch.first(), batch)
-                sendRadioFeedback(radio, YandexRotorEvent(type = "radioStarted", timestamp = rotorNow()), session.batchId)
+                sendRadioFeedback(radio, YandexRotorEvent(type = "radioStarted", timestamp = rotorNow()), batchId)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -4166,9 +4299,12 @@ class MusicViewModel(
         }
     }
 
-    /** A batch's tracks the radio hasn't given before, as the app's tracks, each tagged with the batch. */
-    private fun acceptRadioBatch(radio: YandexRadio, batchId: String?, sequence: List<YandexRotorItem>?): List<SoundCloudTrack> =
-        sequence.orEmpty()
+    /**
+     * A batch's tracks the radio hasn't given before, as the app's tracks, each tagged with the
+     * batch. The wave's are kept as heard, for the next time it starts.
+     */
+    private fun acceptRadioBatch(radio: YandexRadio, batchId: String?, sequence: List<YandexRotorItem>?): List<SoundCloudTrack> {
+        val accepted = sequence.orEmpty()
             .mapNotNull { it.track }
             .filter { it.available != false }
             .mapNotNull { yandexTrack ->
@@ -4178,6 +4314,14 @@ class MusicViewModel(
                 if (batchId != null) radio.batchOf[track.id] = batchId
                 track
             }
+        if (radio.wave && accepted.isNotEmpty()) {
+            val ids = accepted.mapNotNull { it.urn?.removePrefix("yandex:track:") }
+            val fresh = ids.map { it.substringBefore(':') }.toSet()
+            val kept = settingsRepository.yandexWaveHeard().filterNot { it.substringBefore(':') in fresh }
+            settingsRepository.setYandexWaveHeard((kept + ids).takeLast(WAVE_HEARD_KEPT))
+        }
+        return accepted
+    }
 
     /**
      * Asks the radio for more once fewer than [RADIO_AHEAD] tracks are left after [index], and adds
@@ -4196,12 +4340,15 @@ class MusicViewModel(
         radio.refilling = true
         viewModelScope.launch {
             try {
-                var answer = yandexService.rotorSessionTracks(radio.sessionId, YandexRotorQueueRequest(radio.given.toList())).result
+                var answer = yandexService.rotorSessionTracks(radio.sessionId, YandexRotorQueueRequest(radio.heard())).result
                 if (answer == null || answer.unknownSession == true || answer.terminated == true) {
                     answer = yandexService.rotorSessionNew(
-                        YandexRotorSessionRequest(seeds = radio.seeds, queue = radio.given.toList())
+                        YandexRotorSessionRequest(seeds = radio.seeds, queue = radio.heard())
                     ).result
-                    answer?.radioSessionId?.let { radio.sessionId = it }
+                    answer?.radioSessionId?.let {
+                        radio.sessionId = it
+                        if (radio.wave) settingsRepository.setYandexWaveSession(it)
+                    }
                 }
                 val more = acceptRadioBatch(radio, answer?.batchId, answer?.sequence)
                 if (more.isEmpty() || yandexRadio !== radio) return@launch
@@ -4247,7 +4394,9 @@ class MusicViewModel(
             musicPlayer.currentTrackId.collect { trackId ->
                 val radio = yandexRadio
                 val left = radioPlayingId
-                if (radio != null && left != null && left != trackId) {
+                if (radio != null && left != null && left != trackId && left == radioDislikedId) {
+                    radioDislikedId = null
+                } else if (radio != null && left != null && left != trackId) {
                     val batch = radio.batchOf[left]
                     val track = _activeQueue.value.firstOrNull { it.id == left }
                     val id = track?.urn?.removePrefix("yandex:track:")

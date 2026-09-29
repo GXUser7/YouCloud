@@ -147,6 +147,12 @@ class PlaybackService : MediaLibraryService() {
             )
             .build()
 
+        // Only ever heard: a track that is a video (one imported from the phone) has its picture
+        // shown by the player on screen, and decoding it here too was work for nothing.
+        player.trackSelectionParameters = player.trackSelectionParameters.buildUpon()
+            .setTrackTypeDisabled(C.TRACK_TYPE_VIDEO, true)
+            .build()
+
         player.addListener(object : Player.Listener {
             override fun onAudioSessionIdChanged(audioSessionId: Int) {
                 if (audioSessionId != C.AUDIO_SESSION_ID_UNSET) {
