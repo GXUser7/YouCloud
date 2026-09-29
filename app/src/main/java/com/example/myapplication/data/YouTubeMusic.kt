@@ -774,7 +774,7 @@ class YouTubeMusicClient(private val authProvider: () -> YtAuth?) {
         private const val LONGER_BY_MS = 150_000L
         private val NOT_A_CLIP = listOf("audio", "lyric", "visualizer", "visualiser", "текст")
         // What a search row's byline starts with before naming anyone.
-        private val KIND_WORDS = setOf("композиция", "видео", "трек", "song", "video", "эпизод", "episode")
+        private val KIND_WORDS = setOf("композиция", "видео", "трек", "song", "video", "эпизод", "episode", "выпуск")
         private val COUNT = Regex("(\\d+(?:[.,]\\d+)?)\\s*(тыс|млн|млрд|k|m|b)?", RegexOption.IGNORE_CASE)
         private val NON_WORD = Regex("[^\\p{L}\\p{N}]+")
         // What a byline part is when it isn't a name: a date, a year, a length, a count of plays,
@@ -783,6 +783,7 @@ class YouTubeMusicClient(private val authProvider: () -> YtAuth?) {
             Regex("""^\d{1,2}\s+\p{L}+\.?(\s+\d{4})?$"""),
             Regex("""^\p{L}{3,9}\.?\s+\d{1,2}(,\s*\d{4})?$"""),
             Regex("""^\d{4}$"""),
+            Regex("""назад|\bago\b""", RegexOption.IGNORE_CASE),
             Regex("""^\d+:\d{2}(:\d{2})?$"""),
             Regex("""\d.*(тыс|млн|млрд|просмотр|прослушив|смотр|зрител|views|plays|watching)""", RegexOption.IGNORE_CASE)
         )

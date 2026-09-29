@@ -264,7 +264,11 @@ class MusicViewModel(
             delay(400)
             _ytSearch.value = _ytSearch.value.copy(loading = true)
             try {
-                val page = ytMusic.search(query.trim())
+                val page = if (settingsRepository.ytWebSearch.value) {
+                    com.example.myapplication.data.YouTubeWeb.search(query.trim(), settingsRepository.ytMusicAuth())
+                } else {
+                    ytMusic.search(query.trim())
+                }
                 _ytSearch.value = _ytSearch.value.copy(page = page, loading = false)
             } catch (e: CancellationException) {
                 throw e
@@ -1706,6 +1710,21 @@ class MusicViewModel(
         returnToSearchFromArtist = false
         if (permalinkUrl?.startsWith(YT_ARTIST_REF) == true) {
             openYouTubeArtist(permalinkUrl.removePrefix(YT_ARTIST_REF), username, avatarUrl)
+            return
+        }
+        // A YouTube broadcast YouTube Music files under a podcast names no channel: the watch
+        // page does.
+        val liveId = (_selectedTrack.value ?: _currentPlayingTrack.value)?.takeIf { permalinkUrl == null }?.liveVideoId
+        if (liveId != null) {
+            viewModelScope.launch {
+                val owner = runCatching { com.example.myapplication.data.YouTubeWeb.videoOwner(liveId, settingsRepository.ytMusicAuth()) }.getOrNull()
+                val channel = owner?.permalinkUrl
+                if (channel != null) {
+                    openYouTubeArtist(channel.removePrefix(YT_ARTIST_REF), owner.username, owner.avatarUrl)
+                } else {
+                    android.widget.Toast.makeText(context, "Не удалось найти канал трансляции", android.widget.Toast.LENGTH_SHORT).show()
+                }
+            }
             return
         }
         val activeUrn = trackUrn ?: _selectedTrack.value?.urn ?: _currentPlayingTrack.value?.urn

@@ -198,6 +198,14 @@ class SettingsRepository(
         preferences.edit().putString(KEY_YANDEX_WAVE_HEARD, ids.joinToString(",")).apply()
     }
 
+    // Search YouTube's tab through youtube.com itself instead of YouTube Music, to try it.
+    val ytWebSearch = MutableStateFlow(preferences.getBoolean(KEY_YT_WEB_SEARCH, false))
+
+    fun setYtWebSearch(enabled: Boolean) {
+        ytWebSearch.value = enabled
+        preferences.edit().putBoolean(KEY_YT_WEB_SEARCH, enabled).apply()
+    }
+
     // The player's button for a track's effects (reverb, speed), off unless asked for.
     val playerFxButton = MutableStateFlow(preferences.getBoolean(KEY_PLAYER_FX_BUTTON, false))
 
@@ -420,6 +428,7 @@ class SettingsRepository(
         const val KEY_YANDEX_WAVE_SESSION = "yandex_wave_session"
         const val KEY_YANDEX_WAVE_PICKS = "yandex_wave_picks"
         const val KEY_PLAYER_FX_BUTTON = "player_fx_button"
+        const val KEY_YT_WEB_SEARCH = "yt_web_search"
         const val KEY_COVER_GLOW_STYLE = "cover_glow_style"
         const val KEY_VIDEO_DOWNLOAD = "video_download"
         const val KEY_PLAYER_COVER_COLORS = "player_cover_colors"

@@ -3,7 +3,6 @@ package com.example.myapplication.data
 import com.google.gson.JsonArray
 import com.google.gson.JsonElement
 import com.google.gson.JsonObject
-import com.google.gson.JsonParser
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
@@ -13,13 +12,8 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.withContext
-import okhttp3.MediaType.Companion.toMediaType
-import okhttp3.OkHttpClient
-import okhttp3.Request
-import okhttp3.RequestBody.Companion.toRequestBody
 import java.io.IOException
 import java.util.UUID
-import java.util.concurrent.TimeUnit
 
 /** A message of a live stream's chat: who, what (text and emoji pictures), and a paid one's amount. */
 data class LiveChatMessage(val id: String, val author: String, val parts: List<LiveChatPart>, val paid: String? = null)
@@ -43,6 +37,13 @@ class YouTubeLiveChat(private val videoId: String, private val auth: () -> YtAut
     /** Whether a message can be sent: signed in, and the chat open to the account. */
     val canSend: StateFlow<Boolean> = _canSend.asStateFlow()
 
+    private val _sendBlocked = MutableStateFlow<String?>(null)
+    /**
+     * Why no message can be sent, in YouTube's own words where it gives them ("Чат доступен
+     * только подписчикам…"); null while it isn't known yet, or when one can.
+     */
+    val sendBlocked: StateFlow<String?> = _sendBlocked.asStateFlow()
+
     @Volatile
     private var sendParams: String? = null
 
@@ -55,10 +56,7 @@ class YouTubeLiveChat(private val videoId: String, private val auth: () -> YtAut
         while (true) {
             val page = post("live_chat/get_live_chat", JsonObject().apply { addProperty("continuation", continuation) })
                 .at("continuationContents", "liveChatContinuation")
-            page?.findAll("sendLiveChatMessageEndpoint")?.firstNotNullOfOrNull { it.str("params") }?.let {
-                sendParams = it
-                _canSend.value = true
-            }
+            page?.at("actionPanel")?.let(::readActionPanel) ?: if (first) readActionPanel(null) else Unit
             var added = false
             page.arr("actions").forEach { action ->
                 val message = parseMessage(action) ?: return@forEach
@@ -89,6 +87,34 @@ class YouTubeLiveChat(private val videoId: String, private val auth: () -> YtAut
             })
             true
         }.getOrDefault(false)
+    }
+
+    /**
+     * The chat's panel for writing: its send button's parameters when the account may write, else
+     * what YouTube says in its place (subscribers only, members only, slow mode's wait…).
+     */
+    private fun readActionPanel(panel: JsonElement?) {
+        val params = panel?.findAll("sendLiveChatMessageEndpoint")?.firstNotNullOfOrNull { it.str("params") }
+        if (params != null) {
+            sendParams = params
+            _canSend.value = true
+            _sendBlocked.value = null
+            return
+        }
+        sendParams = null
+        _canSend.value = false
+        val said = panel?.findAll("runs")
+            ?.flatMap { runs -> if (runs.isJsonArray) runs.asJsonArray.toList() else emptyList() }
+            ?.mapNotNull { it.str("text") }
+            ?.joinToString("")
+            ?.trim()
+            ?.takeIf { it.isNotEmpty() }
+            ?: panel?.findAll("simpleText")?.firstOrNull()?.takeIf { it.isJsonPrimitive }?.asString
+        _sendBlocked.value = when {
+            auth()?.sapisid == null -> "Войдите в YouTube Music в настройках, чтобы писать"
+            said != null -> said
+            else -> "YouTube не даёт писать в этот чат"
+        }
     }
 
     /** The chat's first continuation: its "top chat", as the watch page opens it. */
@@ -124,55 +150,15 @@ class YouTubeLiveChat(private val videoId: String, private val auth: () -> YtAut
         return LiveChatMessage(id, author, parts, paid?.str("purchaseAmountText", "simpleText"))
     }
 
-    private fun post(endpoint: String, body: JsonObject): JsonElement {
-        val session = auth()
-        body.add("context", JsonObject().apply {
-            add("client", JsonObject().apply {
-                addProperty("clientName", "WEB")
-                addProperty("clientVersion", CLIENT_VERSION)
-                addProperty("hl", "ru")
-                addProperty("gl", "RU")
-                session?.visitorData?.let { addProperty("visitorData", it) }
-            })
-        })
-        val request = Request.Builder()
-            .url("$API$endpoint?prettyPrint=false")
-            .header("User-Agent", USER_AGENT)
-            .header("Origin", ORIGIN)
-            .header("X-Origin", ORIGIN)
-            .apply {
-                val sapisid = session?.sapisid
-                if (session != null && sapisid != null) {
-                    header("Cookie", session.cookie)
-                    header("Authorization", sapisidAuthorization(sapisid, ORIGIN))
-                    header("X-Goog-AuthUser", session.authUser)
-                }
-            }
-            .post(body.toString().toRequestBody(JSON))
-            .build()
-        http.newCall(request).execute().use { response ->
-            if (!response.isSuccessful) throw IOException("YouTube HTTP ${response.code}")
-            return JsonParser.parseString(response.body?.string().orEmpty())
-        }
-    }
+    private fun post(endpoint: String, body: JsonObject): JsonElement = YouTubeWeb.post(endpoint, body, auth())
 
     private companion object {
-        const val ORIGIN = "https://www.youtube.com"
-        const val API = "$ORIGIN/youtubei/v1/"
-        const val CLIENT_VERSION = "2.20260925.01.00"
-        const val USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:140.0) Gecko/20100101 Firefox/140.0"
         // What is kept on screen; the oldest go as new ones come.
         const val KEPT = 150
         // YouTube asks for a chat every ten seconds, and a whole batch then came at once: every few
         // is still light, and reads as a conversation.
         const val MIN_WAIT_MS = 2_000L
         const val MAX_WAIT_MS = 5_000L
-        val JSON = "application/json".toMediaType()
-
-        val http: OkHttpClient = OkHttpClient.Builder()
-            .connectTimeout(15, TimeUnit.SECONDS)
-            .readTimeout(20, TimeUnit.SECONDS)
-            .build()
     }
 }
 

@@ -38,6 +38,13 @@ import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.ime
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.imeAnimationTarget
+import androidx.compose.foundation.layout.isImeVisible
+import androidx.compose.ui.platform.LocalWindowInfo
+import androidx.compose.ui.layout.boundsInWindow
+import androidx.compose.material.icons.rounded.Edit
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.foundation.text.appendInlineContent
 import androidx.compose.ui.unit.em
@@ -3814,6 +3821,22 @@ private fun SettingsScreen(
                     modifier = Modifier.padding(start = 12.dp)
                 )
 
+                val ytWebSearch by settingsRepository.ytWebSearch.collectAsState()
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .glassOr(MaterialTheme.shapes.extraLarge, MaterialTheme.colorScheme.surfaceContainer),
+                    shape = MaterialTheme.shapes.extraLarge,
+                    colors = CardDefaults.cardColors(containerColor = glassFill(MaterialTheme.colorScheme.surfaceContainer))
+                ) {
+                    SettingsSwitchRow(
+                        icon = Icons.Default.Search,
+                        title = "Обычный поиск YouTube",
+                        subtitle = "Вкладка YouTube ищет по youtube.com, а не по YouTube Music: все видео и трансляции, с их каналами",
+                        checked = ytWebSearch,
+                        onCheckedChange = settingsRepository::setYtWebSearch
+                    )
+                }
                 val showDebugPercentageVal by settingsRepository.showDebugPercentage.collectAsState()
                 Card(
                     modifier = Modifier
@@ -6020,6 +6043,8 @@ private fun TrackDetailScreen(
     // A broadcast has no lyrics; its chat is shown in their place.
     val liveId = track.liveVideoId
     val liveChat = remember(liveId) { liveId?.let { com.example.myapplication.data.YouTubeLiveChat(it, ytAuth) } }
+    // A message being written: the field floats over the keyboard, the panel stays put.
+    var chatComposing by remember(liveId) { mutableStateOf(false) }
     val lyricsShown = showLyrics && (!lyrics.isNullOrEmpty() || liveId != null)
     val atStart by remember(positionMs) { androidx.compose.runtime.derivedStateOf { positionMs() == 0L } }
     val showLoading = (downloadState != DownloadState.DOWNLOADED) &&
@@ -6354,7 +6379,7 @@ private fun TrackDetailScreen(
                             modifier = Modifier.fillMaxSize()
                         ) {
                             if (liveChat != null) {
-                                LiveChatOverlay(chat = liveChat)
+                                LiveChatOverlay(chat = liveChat, composing = chatComposing)
                             } else {
                                 LyricsOverlay(
                                     lines = lyrics.orEmpty(),
@@ -6420,6 +6445,7 @@ private fun TrackDetailScreen(
                         trackFx = trackFx,
                         onTrackFxChange = onTrackFxChange,
                         liveChat = liveChat,
+                        onChatCompose = { chatComposing = true },
                         onArtistClick = onArtistClick,
                         lyricsAvailable = !lyrics.isNullOrEmpty() || liveId != null,
                         lyricsShown = lyricsShown,
@@ -6434,6 +6460,12 @@ private fun TrackDetailScreen(
                     )
                 }
             )
+        }
+
+        if (liveChat != null && chatComposing) {
+            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.BottomCenter) {
+                FloatingChatComposer(chat = liveChat, onDone = { chatComposing = false })
+            }
         }
 
         if (showQueue) {
@@ -6777,6 +6809,7 @@ private fun PlayerPanel(
     onTrackFxChange: (com.example.myapplication.data.TrackFx) -> Unit = {},
     // A broadcast's chat: its switch in the repeat button's place, and its field over "Далее".
     liveChat: com.example.myapplication.data.YouTubeLiveChat? = null,
+    onChatCompose: () -> Unit = {},
     onArtistClick: (SoundCloudUser) -> Unit,
     lyricsAvailable: Boolean,
     lyricsShown: Boolean,
@@ -6815,8 +6848,7 @@ private fun PlayerPanel(
                 } else {
                     Modifier
                         .fillMaxWidth()
-                        // The keyboard, for a message to a live chat, lifts the panel over it.
-                        .windowInsetsPadding(WindowInsets.ime.union(WindowInsets.navigationBars))
+                        .navigationBarsPadding()
                         .padding(start = 24.dp, top = 24.dp, end = 24.dp, bottom = 16.dp)
                 },
                 verticalArrangement = if (landscape) Arrangement.Center else Arrangement.Top
@@ -6978,7 +7010,7 @@ private fun PlayerPanel(
                     val currentIndex = activeQueue.indexOfFirst { it.id == track.id }
                     val nextTrack = if (currentIndex >= 0) activeQueue.getOrNull(currentIndex + 1) else null
                     if (liveChat != null && lyricsShown) {
-                        ChatComposer(chat = liveChat, modifier = Modifier.weight(1f))
+                        ChatComposerButton(chat = liveChat, onCompose = onChatCompose, modifier = Modifier.weight(1f))
                     } else {
                         QueuePeek(
                             nextTrack = nextTrack,
@@ -7538,8 +7570,9 @@ private fun QueuePeek(
  * message comes (every few seconds at most); no animation per message; emoji pictures decoded at
  * the size of a line of text, and only the lines on screen composed.
  */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun LiveChatOverlay(chat: com.example.myapplication.data.YouTubeLiveChat) {
+private fun LiveChatOverlay(chat: com.example.myapplication.data.YouTubeLiveChat, composing: Boolean = false) {
     val state = remember(chat) {
         chat.messages
             .map<List<com.example.myapplication.data.LiveChatMessage>, LiveChatState> { LiveChatState.Messages(it) }
@@ -7553,9 +7586,23 @@ private fun LiveChatOverlay(chat: com.example.myapplication.data.YouTubeLiveChat
     // over a dark picture) were lost.
     val ground = MaterialTheme.colorScheme.background
     val scrim = ground.copy(alpha = 0.62f)
+    // While a message is written the newest lines rise over the field above the keyboard: by the
+    // keyboard's final height, read once as it starts to open rather than on every frame of it.
+    val density = LocalDensity.current
+    val keyboard = WindowInsets.imeAnimationTarget.getBottom(density)
+    val screenHeight = LocalWindowInfo.current.containerSize.height
+    var overlayBottom by remember { mutableIntStateOf(0) }
+    val liftPx = if (composing && keyboard > 0) {
+        val fieldTop = screenHeight - keyboard - with(density) { (ComposerBarHeight + 16.dp).roundToPx() }
+        (overlayBottom - fieldTop).coerceAtLeast(0)
+    } else {
+        0
+    }
+    val lift = with(density) { liftPx.toDp() }
     Box(
         modifier = Modifier
             .fillMaxSize()
+            .onGloballyPositioned { overlayBottom = it.boundsInWindow().bottom.toInt() }
             // The shade the chat stands on, fading out by the panel's top edge.
             .drawBehind {
                 val h = size.height
@@ -7608,7 +7655,7 @@ private fun LiveChatOverlay(chat: com.example.myapplication.data.YouTubeLiveChat
                             val h = size.height
                             val topClear = (anchor - 16.dp).toPx().coerceAtLeast(0f)
                             val topSolid = topClear + LyricsFade.toPx()
-                            val bottomClear = h - PlayerPanelOverlap.toPx()
+                            val bottomClear = h - PlayerPanelOverlap.toPx() - liftPx
                             val bottomSolid = (bottomClear - ChatBottomFade.toPx()).coerceAtLeast(topSolid)
                             drawRect(
                                 brush = Brush.verticalGradient(
@@ -7627,7 +7674,7 @@ private fun LiveChatOverlay(chat: com.example.myapplication.data.YouTubeLiveChat
                         start = 24.dp,
                         end = 24.dp,
                         top = anchor,
-                        bottom = PlayerPanelOverlap + ChatBottomFade
+                        bottom = PlayerPanelOverlap + ChatBottomFade + lift
                     ),
                     verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
@@ -7689,19 +7736,76 @@ private sealed interface LiveChatState {
 private val ChatBottomFade = 18.dp
 
 /**
- * Where a message to a live stream's chat is written, in place of "Далее" while the chat is open:
- * a field and its send button. Signed out, or where the chat takes no messages from the account,
- * it says so instead.
+ * In place of "Далее" while a live chat is open: what a message would be written in. A tap opens
+ * the field over the keyboard ([FloatingChatComposer]); where no message can be sent, it says why,
+ * in YouTube's words.
  */
 @Composable
-private fun ChatComposer(chat: com.example.myapplication.data.YouTubeLiveChat, modifier: Modifier = Modifier) {
+private fun ChatComposerButton(
+    chat: com.example.myapplication.data.YouTubeLiveChat,
+    onCompose: () -> Unit,
+    modifier: Modifier = Modifier
+) {
     val onPanel = PanelColors.content
     val canSend by chat.canSend.collectAsState()
+    val blocked by chat.sendBlocked.collectAsState()
+    Surface(
+        onClick = onCompose,
+        enabled = canSend,
+        modifier = modifier.height(64.dp),
+        shape = RoundedCornerShape(22.dp),
+        color = onPanel.copy(alpha = 0.12f),
+        contentColor = onPanel
+    ) {
+        Row(
+            modifier = Modifier.padding(start = 18.dp, end = 18.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Text(
+                text = when {
+                    canSend -> "Сообщение в чат…"
+                    blocked != null -> blocked!!
+                    else -> "Подключаюсь к чату…"
+                },
+                style = if (canSend) MaterialTheme.typography.bodyLarge else MaterialTheme.typography.bodyMedium,
+                color = onPanel.copy(alpha = if (canSend) 0.6f else 0.75f),
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f)
+            )
+            if (canSend) Icon(Icons.Rounded.Edit, contentDescription = null, modifier = Modifier.size(20.dp))
+        }
+    }
+}
+
+/**
+ * The field a message to a live chat is written in: across the whole width, just over the
+ * keyboard, while the player stays where it is and the chat above stays in sight. It goes when the
+ * keyboard does.
+ */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun FloatingChatComposer(
+    chat: com.example.myapplication.data.YouTubeLiveChat,
+    onDone: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val onPanel = PanelColors.content
     var draft by rememberSaveable { mutableStateOf("") }
     var sending by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
     val haptic = LocalHapticFeedback.current
     val context = LocalContext.current
+    val focus = remember { androidx.compose.ui.focus.FocusRequester() }
+    LaunchedEffect(Unit) { focus.requestFocus() }
+    // Put away with the keyboard, however it went (back, the keyboard's own button).
+    val imeVisible = WindowInsets.isImeVisible
+    var opened by remember { mutableStateOf(false) }
+    LaunchedEffect(imeVisible) {
+        if (imeVisible) opened = true else if (opened) onDone()
+    }
+    BackHandler(onBack = onDone)
     fun send() {
         val text = draft.trim()
         if (text.isEmpty() || sending) return
@@ -7717,38 +7821,39 @@ private fun ChatComposer(chat: com.example.myapplication.data.YouTubeLiveChat, m
         }
     }
     Surface(
-        modifier = modifier.height(64.dp),
-        shape = RoundedCornerShape(22.dp),
-        color = onPanel.copy(alpha = 0.12f),
-        contentColor = onPanel
+        modifier = modifier
+            .fillMaxWidth()
+            .imePadding()
+            .padding(horizontal = 8.dp, vertical = 8.dp)
+            .height(ComposerBarHeight),
+        shape = RoundedCornerShape(26.dp),
+        color = PanelColors.container,
+        contentColor = onPanel,
+        shadowElevation = 6.dp
     ) {
         Row(
-            modifier = Modifier.padding(start = 18.dp, end = 8.dp),
+            modifier = Modifier.padding(start = 20.dp, end = 6.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             Box(modifier = Modifier.weight(1f), contentAlignment = Alignment.CenterStart) {
                 if (draft.isEmpty()) {
-                    Text(
-                        text = if (canSend) "Сообщение в чат…" else "Войдите в YouTube, чтобы писать",
-                        style = MaterialTheme.typography.bodyLarge,
-                        color = onPanel.copy(alpha = 0.55f),
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
+                    Text("Сообщение в чат…", style = MaterialTheme.typography.bodyLarge, color = onPanel.copy(alpha = 0.55f))
                 }
                 androidx.compose.foundation.text.BasicTextField(
                     value = draft,
                     onValueChange = { draft = it.take(200) },
-                    enabled = canSend && !sending,
+                    enabled = !sending,
                     singleLine = true,
                     textStyle = MaterialTheme.typography.bodyLarge.copy(color = onPanel),
                     cursorBrush = androidx.compose.ui.graphics.SolidColor(PanelColors.accent),
                     keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(imeAction = androidx.compose.ui.text.input.ImeAction.Send),
                     keyboardActions = androidx.compose.foundation.text.KeyboardActions(onSend = { send() }),
-                    modifier = Modifier.fillMaxWidth()
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .focusRequester(focus)
                 )
             }
-            val ready = canSend && draft.isNotBlank() && !sending
+            val ready = draft.isNotBlank() && !sending
             Surface(
                 onClick = { send() },
                 enabled = ready,
@@ -7764,6 +7869,9 @@ private fun ChatComposer(chat: com.example.myapplication.data.YouTubeLiveChat, m
         }
     }
 }
+
+// The floating field's height, which the chat above keeps clear of.
+private val ComposerBarHeight = 60.dp
 
 /**
  * Synced lyrics over the blurred cover, in the player's colours. The line being sung is lit,
