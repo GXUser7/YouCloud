@@ -198,7 +198,7 @@ internal fun MyWavePage(
 
 /** The wave's settings on frosted glass: the moods and the modes, a connected button group each. */
 @Composable
-private fun WaveTuningPane(
+internal fun WaveTuningPane(
     picks: Map<String, String>,
     onPick: (key: String, seed: String) -> Unit,
     onReset: () -> Unit
@@ -332,7 +332,7 @@ private fun ChoiceGroup(
  * than 60 times a second.
  */
 @Composable
-private fun WaveShape(
+internal fun WaveShape(
     lobes: Int,
     depth: Float,
     light: Color,
