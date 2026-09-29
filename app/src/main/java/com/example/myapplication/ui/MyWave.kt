@@ -125,7 +125,7 @@ internal fun MyWavePage(
                 depth = mood?.depth ?: DEFAULT_DEPTH,
                 light = lerp(colors.primary, Color.White, 0.3f),
                 color = colors.primary,
-                turning = playing,
+                playing = playing,
                 modifier = Modifier
                     .size(side)
                     .pointerInput(Unit) {
@@ -337,7 +337,7 @@ private fun WaveShape(
     depth: Float,
     light: Color,
     color: Color,
-    turning: Boolean,
+    playing: Boolean,
     modifier: Modifier = Modifier
 ) {
     var from by remember { mutableStateOf(lobes to depth) }
@@ -350,11 +350,36 @@ private fun WaveShape(
         morph.snapTo(0f)
         morph.animateTo(1f, spring(dampingRatio = 0.55f, stiffness = Spring.StiffnessLow))
     }
-    val clock = rememberLoopClock(turning)
+    // Its turn, in radians: slowly by itself, a little faster while the wave plays, and spun by a
+    // shake of the phone when the backdrop follows its movement — flung the way it was thrown, then
+    // slowing. Redrawn thirty times a second while it only turns, the backdrop's own pace when it
+    // is still; sixty while playing or spun.
+    val turn = remember { androidx.compose.runtime.mutableFloatStateOf(0f) }
+    LaunchedEffect(playing) {
+        BackdropShake.take()
+        var angle = turn.floatValue
+        var spin = 0f
+        var last = 0L
+        var shown = 0L
+        while (true) {
+            androidx.compose.runtime.withFrameNanos { now ->
+                val dt = if (last == 0L) 0f else ((now - last) / 1_000_000_000f).coerceAtMost(0.05f)
+                last = now
+                spin = (spin + BackdropShake.take() * SHAKE_SPIN).coerceIn(-MAX_SPIN, MAX_SPIN)
+                spin *= kotlin.math.exp(-SPIN_DAMPING * dt)
+                angle += ((if (playing) PLAYING_TURN else IDLE_TURN) + spin) * dt
+                val interval = if (playing || kotlin.math.abs(spin) > 0.05f) FAST_FRAME_NANOS else CALM_FRAME_NANOS
+                if (now - shown >= interval) {
+                    shown = now
+                    turn.floatValue = angle
+                }
+            }
+        }
+    }
     val outline = remember { Path() }
     Canvas(modifier = modifier) {
         val t = morph.value
-        val turn = clock.longValue / 1000f * 0.35f
+        val turn = turn.floatValue
         val radius = size.minDimension * 0.44f
         outline.traceMorph(center, radius, from, to, t, turn)
         drawPath(
@@ -393,5 +418,15 @@ private fun Path.traceMorph(
 }
 
 private const val SHAPE_STEPS = 180
+// Radians a second: by itself, and while the wave plays.
+private const val IDLE_TURN = 0.12f
+private const val PLAYING_TURN = 0.35f
+// A firm shake (a few units of the backdrop's kick) spins it a turn or so a second; it slows to
+// its own pace again over two or three.
+private const val SHAKE_SPIN = 3f
+private const val MAX_SPIN = 14f
+private const val SPIN_DAMPING = 1.1f
+private const val FAST_FRAME_NANOS = 15_000_000L
+private const val CALM_FRAME_NANOS = 32_000_000L
 private const val DEFAULT_LOBES = 8
 private const val DEFAULT_DEPTH = 0.07f

@@ -100,6 +100,28 @@ private fun backdropShapes(): List<BackdropShape> = listOf(
     )
 )
 
+/**
+ * Shakes of the phone as the backdrop feels them, passed on to what spins with its shapes: the
+ * wave's shape on home. Signed by which way the phone was thrown. Read on the main thread, where the
+ * backdrop's frames also run.
+ */
+internal object BackdropShake {
+    private var pending = 0f
+
+    fun add(kick: Float, kickX: Float) {
+        if (kick > 0f) pending = (pending + if (kickX < 0f) -kick else kick).coerceIn(-MAX_PENDING, MAX_PENDING)
+    }
+
+    /** The shakes since last asked, and none left over for the next time. */
+    fun take(): Float {
+        val shake = pending
+        pending = 0f
+        return shake
+    }
+
+    private const val MAX_PENDING = 8f
+}
+
 /** Positions and velocities of the shapes, integrated once per frame. */
 private class BackdropMotion(count: Int) {
     val x = FloatArray(count)
@@ -130,6 +152,7 @@ private class BackdropMotion(count: Int) {
         val kickY = tilt.kickY
         val kick = tilt.kick
         tilt.clearImpulse()
+        BackdropShake.add(kick, kickX)
         shapes.forEachIndexed { i, shape ->
             // Springs toward the parallax position: nearer shapes travel further.
             val targetX = -tilt.tiltX * shape.depth * shiftPx
