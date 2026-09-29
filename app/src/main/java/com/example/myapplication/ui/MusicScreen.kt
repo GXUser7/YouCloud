@@ -74,6 +74,7 @@ import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.material.icons.rounded.Forum
+import androidx.compose.material.icons.rounded.TouchApp
 import androidx.compose.material.icons.rounded.KeyboardArrowDown
 import androidx.compose.material.icons.rounded.HowToReg
 import androidx.compose.material.icons.rounded.PersonAddAlt1
@@ -1163,7 +1164,9 @@ fun MusicScreen(viewModel: MusicViewModel) {
                     onOpen = {
                         haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                         currentPlayingTrack?.let(viewModel::openTrack)
-                    }
+                    },
+                    onSwipe = viewModel::skipToNeighbourTrack,
+                    canSwipe = viewModel::hasNeighbourTrack
                 )
                 }
             }
@@ -1258,6 +1261,13 @@ fun MusicScreen(viewModel: MusicViewModel) {
                 }
             }
         }
+    }
+
+    // The first time the app opens (and whenever asked for again in settings): the gestures
+    // nothing on screen shows, each tried out on the real thing.
+    val onboardingDone by viewModel.settingsRepo.onboardingDone.collectAsState()
+    if (!onboardingDone && !isLoggedOut) {
+        OnboardingOverlay(onFinish = { viewModel.settingsRepo.setOnboardingDone(true) })
     }
 
     val context = LocalContext.current
@@ -3142,6 +3152,16 @@ private fun SettingsScreen(
                             checked = playerCoverColors,
                             onCheckedChange = settingsRepository::setPlayerCoverColors
                         )
+                        HorizontalDivider(
+                            color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.25f),
+                            modifier = Modifier.padding(horizontal = 18.dp)
+                        )
+                        SettingsActionRow(
+                            icon = Icons.Rounded.TouchApp,
+                            title = "Обучение жестам",
+                            subtitle = "Мини-плеер, «Моя форма» и обложка — показать ещё раз",
+                            onClick = { settingsRepository.setOnboardingDone(false) }
+                        )
                     }
                 }
             }
@@ -4067,6 +4087,31 @@ private fun GlowStyleRow(
 }
 
 /** A settings row with a tinted icon puck, a title, a quiet caption and a switch. */
+/** A settings row that does something rather than switching something. */
+@Composable
+private fun SettingsActionRow(
+    icon: ImageVector,
+    title: String,
+    subtitle: String,
+    onClick: () -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(horizontal = 18.dp, vertical = 14.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(16.dp)
+    ) {
+        Icon(icon, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(24.dp))
+        Column(modifier = Modifier.weight(1f)) {
+            Text(title, style = MaterialTheme.typography.titleMedium)
+            Text(subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
+    }
+}
+
 @Composable
 private fun SettingsSwitchRow(
     icon: ImageVector,
@@ -9262,9 +9307,13 @@ private fun MessageCard(message: String) {
 /**
  * The player's colour-block panel, collapsed: same colours, so opening it reads as the bar
  * growing into the full player.
+ *
+ * It follows the finger as the full player's cover does: swiped sideways its track slides with it
+ * and, let go far or fast enough, gives way to the next one (to the left) or the previous one; swiped
+ * up, it opens the player. The bar itself only moves while dragged — a translation, nothing redrawn.
  */
 @Composable
-private fun PlayerBar(
+internal fun PlayerBar(
     title: String,
     artist: String,
     artworkUrl: String?,
@@ -9272,11 +9321,21 @@ private fun PlayerBar(
     // Read by the indicator as it draws: the bar isn't composed again as the track plays.
     progress: () -> Float,
     onTogglePlay: () -> Unit,
-    onOpen: () -> Unit
+    onOpen: () -> Unit,
+    // A sideways swipe: towards the next track (to the left) or the previous one. Null, no swipe.
+    onSwipe: ((next: Boolean) -> Unit)? = null,
+    // Whether there is a track that way; a swipe towards none gives, grudgingly, and springs back.
+    canSwipe: (next: Boolean) -> Boolean = { true }
 ) {
     val haptic = LocalHapticFeedback.current
     val onPanel = PanelColors.content
     val glass = LocalGlass.current
+    val slide = remember { Animatable(0f) }
+    val lift = remember { Animatable(0f) }
+    val swipeScope = rememberCoroutineScope()
+    val currentOnSwipe by rememberUpdatedState(onSwipe)
+    val currentCanSwipe by rememberUpdatedState(canSwipe)
+    val currentOnOpen by rememberUpdatedState(onOpen)
     Surface(
         onClick = onOpen,
         color = if (glass) Color.Transparent else PanelColors.container,
@@ -9286,10 +9345,80 @@ private fun PlayerBar(
         shadowElevation = if (glass) 0.dp else 8.dp,
         modifier = Modifier
             .fillMaxWidth()
+            .graphicsLayer { translationY = lift.value }
+            .pointerInput(Unit) {
+                val velocity = VelocityTracker()
+                // Which way this drag goes, decided by its first movement: sideways the track,
+                // upward the player.
+                var sideways: Boolean? = null
+                detectDragGestures(
+                    onDragStart = {
+                        velocity.resetTracking()
+                        sideways = null
+                    },
+                    onDrag = { change, amount ->
+                        velocity.addPosition(change.uptimeMillis, change.position)
+                        change.consume()
+                        val horizontal = sideways ?: (kotlin.math.abs(amount.x) >= kotlin.math.abs(amount.y)).also { sideways = it }
+                        swipeScope.launch {
+                            if (horizontal && currentOnSwipe != null) {
+                                val next = slide.value + amount.x < 0
+                                val give = if (currentCanSwipe(next)) 1f else 0.3f
+                                slide.snapTo(slide.value + amount.x * give)
+                            } else if (!horizontal) {
+                                // Up follows the finger; down only a little, there is nowhere to go.
+                                val y = lift.value + amount.y
+                                lift.snapTo(if (y > 0f) y * 0.3f else y)
+                            }
+                        }
+                    },
+                    onDragCancel = {
+                        swipeScope.launch { slide.animateTo(0f, SwipeSettle) }
+                        swipeScope.launch { lift.animateTo(0f, SwipeSettle) }
+                    },
+                    onDragEnd = {
+                        val speed = velocity.calculateVelocity()
+                        val width = size.width.toFloat()
+                        if (sideways == true) {
+                            val offset = slide.value
+                            val next = offset < 0
+                            val meant = kotlin.math.abs(offset) > width * 0.25f ||
+                                (kotlin.math.abs(speed.x) > SwipeFlingVelocity.toPx() &&
+                                    kotlin.math.sign(speed.x) == kotlin.math.sign(offset) &&
+                                    kotlin.math.abs(offset) > SwipeMinFling.toPx())
+                            swipeScope.launch {
+                                if (!meant || !currentCanSwipe(next) || currentOnSwipe == null) {
+                                    slide.animateTo(0f, SwipeSettle)
+                                    return@launch
+                                }
+                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                val side = if (next) -1f else 1f
+                                slide.animateTo(side * width, tween(150, easing = FastOutLinearInEasing))
+                                currentOnSwipe?.invoke(next)
+                                // The next track comes in from the other side.
+                                slide.snapTo(-side * width * 0.5f)
+                                slide.animateTo(0f, SwipeSettle)
+                            }
+                        } else {
+                            val opened = lift.value < -MiniPlayerOpenDistance.toPx() ||
+                                speed.y < -SwipeFlingVelocity.toPx()
+                            if (opened) {
+                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                currentOnOpen()
+                            }
+                            swipeScope.launch { lift.animateTo(0f, SwipeSettle) }
+                        }
+                    }
+                )
+            }
             .glassOr(RoundedCornerShape(32.dp), PanelColors.container)
     ) {
         Row(
             modifier = Modifier
+                .graphicsLayer {
+                    translationX = slide.value
+                    alpha = 1f - (kotlin.math.abs(slide.value) / size.width.coerceAtLeast(1f) * 0.8f).coerceIn(0f, 0.8f)
+                }
                 .padding(10.dp)
                 .fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically
@@ -9353,6 +9482,9 @@ private fun PlayerBar(
         }
     }
 }
+
+// How far up the mini player has to be pulled for the player to open.
+private val MiniPlayerOpenDistance = 48.dp
 
 private fun formatDuration(milliseconds: Long): String {
     val totalSeconds = milliseconds.coerceAtLeast(0L) / 1_000

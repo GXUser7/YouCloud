@@ -207,6 +207,14 @@ class SettingsRepository(
         preferences.edit().putBoolean(KEY_YT_ARTIST_SHOW_ALL, enabled).apply()
     }
 
+    // Whether the gestures have been shown: the first time the app opens they are, once.
+    val onboardingDone = MutableStateFlow(preferences.getBoolean(KEY_ONBOARDING_DONE, false))
+
+    fun setOnboardingDone(done: Boolean) {
+        onboardingDone.value = done
+        preferences.edit().putBoolean(KEY_ONBOARDING_DONE, done).apply()
+    }
+
     // Search YouTube's tab through youtube.com itself instead of YouTube Music, to try it.
     val ytWebSearch = MutableStateFlow(preferences.getBoolean(KEY_YT_WEB_SEARCH, false))
 
@@ -437,6 +445,7 @@ class SettingsRepository(
         const val KEY_YANDEX_WAVE_SESSION = "yandex_wave_session"
         const val KEY_YANDEX_WAVE_PICKS = "yandex_wave_picks"
         const val KEY_PLAYER_FX_BUTTON = "player_fx_button"
+        const val KEY_ONBOARDING_DONE = "onboarding_done"
         const val KEY_YT_WEB_SEARCH = "yt_web_search"
         const val KEY_YT_ARTIST_SHOW_ALL = "yt_artist_show_all"
         const val KEY_COVER_GLOW_STYLE = "cover_glow_style"
