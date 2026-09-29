@@ -527,7 +527,11 @@ class PlaybackService : MediaLibraryService() {
         val fx = trackId?.let {
             com.example.myapplication.data.TrackFx.decode(preferences.getString(com.example.myapplication.data.TrackFx.KEY_PREFIX + it, null))
         } ?: com.example.myapplication.data.TrackFx()
-        player.playbackParameters = androidx.media3.common.PlaybackParameters(fx.speed, if (fx.keepPitch) 1f else fx.speed)
+        // A broadcast goes at its own pace: sped up it ran into its live edge and stalled waiting
+        // for more, slowed down it fell further and further behind.
+        val live = player.currentMediaItem?.localConfiguration?.uri?.scheme == "ytlive"
+        val speed = if (live) 1f else fx.speed
+        player.playbackParameters = androidx.media3.common.PlaybackParameters(speed, if (fx.keepPitch) 1f else speed)
         try {
             if (fx.reverb == 0) {
                 player.setAuxEffectInfo(androidx.media3.common.AuxEffectInfo(androidx.media3.common.AuxEffectInfo.NO_AUX_EFFECT_ID, 0f))

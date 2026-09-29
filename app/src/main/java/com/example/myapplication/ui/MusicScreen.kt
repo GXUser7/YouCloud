@@ -6818,14 +6818,14 @@ private fun PlayerPanel(
                 )
                 if (trackFx != null) {
                     Spacer(modifier = Modifier.weight(1f))
-                    TrackFxButton(fx = trackFx, color = onPanel, onClick = {
+                    TrackFxButton(fx = trackFx, live = live, color = onPanel, onClick = {
                         haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                         fxOpen = true
                     })
                 }
                 }
                 if (fxOpen && trackFx != null) {
-                    TrackFxSheet(fx = trackFx, onChange = onTrackFxChange, onDismiss = { fxOpen = false })
+                    TrackFxSheet(fx = trackFx, live = live, onChange = onTrackFxChange, onDismiss = { fxOpen = false })
                 }
                 Spacer(modifier = Modifier.height(12.dp))
                 Text(
@@ -7100,8 +7100,10 @@ private const val LANDSCAPE_CONTROLS_HIDE_MS = 3_000L
 
 /** The button for a track's effects, across from where it is from: lit while it has any. */
 @Composable
-private fun TrackFxButton(fx: com.example.myapplication.data.TrackFx, color: Color, onClick: () -> Unit) {
-    val active = !fx.isDefault
+private fun TrackFxButton(fx: com.example.myapplication.data.TrackFx, live: Boolean, color: Color, onClick: () -> Unit) {
+    // A broadcast's speed isn't changed: only its reverb counts.
+    val speed = if (live) 1f else fx.speed
+    val active = speed != 1f || fx.reverb > 0
     Surface(
         onClick = onClick,
         shape = CircleShape,
@@ -7116,7 +7118,7 @@ private fun TrackFxButton(fx: com.example.myapplication.data.TrackFx, color: Col
             Icon(Icons.Rounded.Tune, contentDescription = null, modifier = Modifier.size(18.dp))
             Text(
                 text = when {
-                    fx.speed != 1f -> "%.2f×".format(fx.speed)
+                    speed != 1f -> "%.2f×".format(speed)
                     fx.reverb > 0 -> "Реверб"
                     else -> "Эффекты"
                 },
@@ -7134,6 +7136,8 @@ private fun TrackFxButton(fx: com.example.myapplication.data.TrackFx, color: Col
 @Composable
 private fun TrackFxSheet(
     fx: com.example.myapplication.data.TrackFx,
+    // A broadcast: no speed, it goes at its own pace.
+    live: Boolean,
     onChange: (com.example.myapplication.data.TrackFx) -> Unit,
     onDismiss: () -> Unit
 ) {
@@ -7157,6 +7161,13 @@ private fun TrackFxSheet(
                 if (!fx.isDefault) TextButton(onClick = { onChange(com.example.myapplication.data.TrackFx()) }) { Text("Сбросить") }
             }
 
+            if (live) {
+                Text(
+                    "Эфир идёт в реальном времени: его скорость не меняется",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            } else {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text("Скорость", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
                 Text("%.2f×".format(fx.speed), style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.primary)
@@ -7186,6 +7197,7 @@ private fun TrackFxSheet(
                     )
                 }
                 Switch(checked = fx.keepPitch, onCheckedChange = { onChange(fx.copy(keepPitch = it)) })
+            }
             }
 
             Row(verticalAlignment = Alignment.CenterVertically) {
