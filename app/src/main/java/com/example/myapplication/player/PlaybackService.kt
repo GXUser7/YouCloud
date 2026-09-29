@@ -37,8 +37,8 @@ class PlaybackService : MediaLibraryService() {
     // Fetches the next tracks in the queue into the stream cache while one plays.
     private var prefetcher: StreamPrefetcher? = null
 
-    // The reverb a track's effects send to, made the first time one asks for it.
-    private var reverb: android.media.audiofx.PresetReverb? = null
+    // The reverb of a track's effects, in the player's own sound chain.
+    private val reverbProcessor = ReverbAudioProcessor()
 
     private val prefListener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
         if (key == null) return@OnSharedPreferenceChangeListener
@@ -155,6 +155,19 @@ class PlaybackService : MediaLibraryService() {
         val resolvingFactory = androidx.media3.datasource.ResolvingDataSource.Factory(baseFactory, resolver)
 
         val player = ExoPlayer.Builder(this)
+            // The reverb of a track's effects, worked out in the player: Android's own, an effect
+            // on the output, is left idle on some phones.
+            .setRenderersFactory(object : androidx.media3.exoplayer.DefaultRenderersFactory(this) {
+                override fun buildAudioSink(
+                    context: Context,
+                    enableFloatOutput: Boolean,
+                    enableAudioTrackPlaybackParams: Boolean
+                ): androidx.media3.exoplayer.audio.AudioSink =
+                    androidx.media3.exoplayer.audio.DefaultAudioSink.Builder(context)
+                        .setAudioProcessorChain(androidx.media3.exoplayer.audio.DefaultAudioSink.DefaultAudioProcessorChain(reverbProcessor))
+                        .setEnableAudioTrackPlaybackParams(enableAudioTrackPlaybackParams)
+                        .build()
+            })
             .setMediaSourceFactory(DefaultMediaSourceFactory(resolvingFactory))
             // "Previous" five seconds into a track starts it over instead.
             .setMaxSeekToPreviousPositionMs(5_000)
@@ -519,8 +532,7 @@ class PlaybackService : MediaLibraryService() {
 
     /**
      * The track playing's own effects ([com.example.myapplication.data.TrackFx]): its speed, with
-     * or without its pitch, and its reverb — a hall reverb on the output mix, sent to as much as
-     * the track has of it.
+     * or without its pitch, and its reverb, worked out in the player ([ReverbAudioProcessor]).
      */
     private fun applyTrackFx(player: ExoPlayer) {
         val trackId = player.currentMediaItem?.mediaId?.toLongOrNull()
@@ -532,19 +544,7 @@ class PlaybackService : MediaLibraryService() {
         val live = player.currentMediaItem?.localConfiguration?.uri?.scheme == "ytlive"
         val speed = if (live) 1f else fx.speed
         player.playbackParameters = androidx.media3.common.PlaybackParameters(speed, if (fx.keepPitch) 1f else speed)
-        try {
-            if (fx.reverb == 0) {
-                player.setAuxEffectInfo(androidx.media3.common.AuxEffectInfo(androidx.media3.common.AuxEffectInfo.NO_AUX_EFFECT_ID, 0f))
-            } else {
-                val hall = reverb ?: android.media.audiofx.PresetReverb(0, 0).apply {
-                    preset = android.media.audiofx.PresetReverb.PRESET_LARGEHALL
-                    enabled = true
-                }.also { reverb = it }
-                player.setAuxEffectInfo(androidx.media3.common.AuxEffectInfo(hall.id, fx.reverb / 100f))
-            }
-        } catch (e: Exception) {
-            Log.w("PlaybackService", "Reverb not available here", e)
-        }
+        reverbProcessor.amount = fx.reverb
     }
 
     private fun initEqualizer(audioSessionId: Int) {
@@ -585,8 +585,6 @@ class PlaybackService : MediaLibraryService() {
         preferences.unregisterOnSharedPreferenceChangeListener(prefListener)
         equalizer?.release()
         equalizer = null
-        reverb?.release()
-        reverb = null
         mediaSession?.run {
             player.release()
             release()
