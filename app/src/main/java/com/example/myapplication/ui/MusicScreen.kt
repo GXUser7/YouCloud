@@ -38,6 +38,10 @@ import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.ime
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.foundation.text.appendInlineContent
+import androidx.compose.ui.unit.em
+import androidx.compose.material.icons.automirrored.rounded.Send
 import androidx.compose.foundation.layout.union
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.layout.Spacer
@@ -1170,6 +1174,7 @@ fun MusicScreen(viewModel: MusicViewModel) {
                         onDislike = if (yandexWaveOn) viewModel::dislikeYandexTrack else null,
                         trackFx = trackFx.takeIf { playerFxButton },
                         onTrackFxChange = viewModel::setTrackFx,
+                        ytAuth = viewModel.settingsRepo::ytMusicAuth,
                         onLongPressCover = {
                             showTrackActionsDialog = true
                         },
@@ -5928,6 +5933,8 @@ private fun TrackDetailScreen(
     // The track's effects, with the button for them; null while that button is off in settings.
     trackFx: com.example.myapplication.data.TrackFx? = null,
     onTrackFxChange: (com.example.myapplication.data.TrackFx) -> Unit = {},
+    // The YouTube session, which a live stream's chat reads and writes as.
+    ytAuth: () -> com.example.myapplication.data.YtAuth? = { null },
     onLongPressCover: () -> Unit,
     onArtistClick: (SoundCloudUser) -> Unit,
     // Whether the player has been pulled off its place: the screen keeps the mini player ready
@@ -6012,6 +6019,7 @@ private fun TrackDetailScreen(
     var showLyrics by remember(track.id) { mutableStateOf(false) }
     // A broadcast has no lyrics; its chat is shown in their place.
     val liveId = track.liveVideoId
+    val liveChat = remember(liveId) { liveId?.let { com.example.myapplication.data.YouTubeLiveChat(it, ytAuth) } }
     val lyricsShown = showLyrics && (!lyrics.isNullOrEmpty() || liveId != null)
     val atStart by remember(positionMs) { androidx.compose.runtime.derivedStateOf { positionMs() == 0L } }
     val showLoading = (downloadState != DownloadState.DOWNLOADED) &&
@@ -6345,8 +6353,8 @@ private fun TrackDetailScreen(
                             exit = fadeOut(animationSpec = tween(250)),
                             modifier = Modifier.fillMaxSize()
                         ) {
-                            if (liveId != null) {
-                                LiveChatOverlay(videoId = liveId)
+                            if (liveChat != null) {
+                                LiveChatOverlay(chat = liveChat)
                             } else {
                                 LyricsOverlay(
                                     lines = lyrics.orEmpty(),
@@ -6411,6 +6419,7 @@ private fun TrackDetailScreen(
                         onDislike = onDislike,
                         trackFx = trackFx,
                         onTrackFxChange = onTrackFxChange,
+                        liveChat = liveChat,
                         onArtistClick = onArtistClick,
                         lyricsAvailable = !lyrics.isNullOrEmpty() || liveId != null,
                         lyricsShown = lyricsShown,
@@ -6766,6 +6775,8 @@ private fun PlayerPanel(
     onDislike: (() -> Unit)? = null,
     trackFx: com.example.myapplication.data.TrackFx? = null,
     onTrackFxChange: (com.example.myapplication.data.TrackFx) -> Unit = {},
+    // A broadcast's chat: its switch in the repeat button's place, and its field over "Далее".
+    liveChat: com.example.myapplication.data.YouTubeLiveChat? = null,
     onArtistClick: (SoundCloudUser) -> Unit,
     lyricsAvailable: Boolean,
     lyricsShown: Boolean,
@@ -6804,7 +6815,8 @@ private fun PlayerPanel(
                 } else {
                     Modifier
                         .fillMaxWidth()
-                        .navigationBarsPadding()
+                        // The keyboard, for a message to a live chat, lifts the panel over it.
+                        .windowInsetsPadding(WindowInsets.ime.union(WindowInsets.navigationBars))
                         .padding(start = 24.dp, top = 24.dp, end = 24.dp, bottom = 16.dp)
                 },
                 verticalArrangement = if (landscape) Arrangement.Center else Arrangement.Top
@@ -6965,17 +6977,32 @@ private fun PlayerPanel(
                 ) {
                     val currentIndex = activeQueue.indexOfFirst { it.id == track.id }
                     val nextTrack = if (currentIndex >= 0) activeQueue.getOrNull(currentIndex + 1) else null
-                    QueuePeek(
-                        nextTrack = nextTrack,
-                        queueSize = activeQueue.size,
-                        chat = track.liveVideoId != null,
-                        lyricsAvailable = lyricsAvailable,
-                        lyricsShown = lyricsShown,
-                        onToggleLyrics = onToggleLyrics,
-                        onClick = onOpenQueue,
-                        modifier = Modifier.weight(1f)
-                    )
-                    PanelIconButton(
+                    if (liveChat != null && lyricsShown) {
+                        ChatComposer(chat = liveChat, modifier = Modifier.weight(1f))
+                    } else {
+                        QueuePeek(
+                            nextTrack = nextTrack,
+                            queueSize = activeQueue.size,
+                            chat = false,
+                            // A broadcast's chat has a button of its own, beside this.
+                            lyricsAvailable = lyricsAvailable && liveChat == null,
+                            lyricsShown = lyricsShown,
+                            onToggleLyrics = onToggleLyrics,
+                            onClick = onOpenQueue,
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+                    // A broadcast doesn't repeat: in the repeat button's place, its chat.
+                    if (liveChat != null) PanelIconButton(
+                        icon = Icons.Rounded.Forum,
+                        contentDescription = if (lyricsShown) "Скрыть чат" else "Чат трансляции",
+                        onClick = {
+                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                            onToggleLyrics()
+                        },
+                        selected = lyricsShown,
+                        size = 64.dp
+                    ) else PanelIconButton(
                         icon = if (repeatMode == Player.REPEAT_MODE_ONE) Icons.Rounded.RepeatOne else Icons.Rounded.Repeat,
                         contentDescription = when (repeatMode) {
                             Player.REPEAT_MODE_ONE -> "Повтор трека"
@@ -7502,68 +7529,232 @@ private fun QueuePeek(
 }
 
 /**
- * A live stream's chat over its blurred picture, where a track's lyrics go: newest at the bottom,
- * the list staying on them unless scrolled back. Read only while shown — opening it starts the
- * reading, closing it (or the app going to the background) stops it.
+ * A live stream's chat over its blurred picture, where a track's lyrics go, and faded at both ends
+ * as they are: newest at the bottom, over the panel's edge, the list staying on it unless scrolled
+ * back. YouTube's own emoji are their pictures, inline. Read only while shown: opening it starts
+ * the reading, closing it (or the app going to the background) stops it.
+ *
+ * Kept light for a weak phone: the fade is one mask over the whole list, drawn again only when a
+ * message comes (every few seconds at most); no animation per message; emoji pictures decoded at
+ * the size of a line of text, and only the lines on screen composed.
  */
 @Composable
-private fun LiveChatOverlay(videoId: String) {
-    val messages = remember(videoId) {
-        com.example.myapplication.data.YouTubeLiveChat.messages(videoId)
+private fun LiveChatOverlay(chat: com.example.myapplication.data.YouTubeLiveChat) {
+    val state = remember(chat) {
+        chat.messages
             .map<List<com.example.myapplication.data.LiveChatMessage>, LiveChatState> { LiveChatState.Messages(it) }
             .catch { emit(LiveChatState.Failed(it.message ?: "Чат недоступен")) }
     }.collectAsStateWithLifecycle(initialValue = LiveChatState.Loading).value
     val onPanel = PanelColors.content
-    val top = WindowInsets.statusBars.asPaddingValues().calculateTopPadding() + 24.dp
-    when (messages) {
-        LiveChatState.Loading -> Box(modifier = Modifier.fillMaxSize().padding(top = top), contentAlignment = Alignment.Center) {
-            Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                androidx.compose.material3.CircularProgressIndicator(modifier = Modifier.size(32.dp), color = PanelColors.accent, strokeWidth = 3.dp)
+    val accent = PanelColors.accent
+    val anchor = WindowInsets.statusBars.asPaddingValues().calculateTopPadding() + 24.dp
+    val scrim = MaterialTheme.colorScheme.background.copy(alpha = 0.38f)
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            // The same shade the lyrics stand on, fading out by the panel's top edge.
+            .drawBehind {
+                val h = size.height
+                val clear = h - PlayerPanelOverlap.toPx()
+                val solid = (clear - LyricsFade.toPx()).coerceAtLeast(0f)
+                drawRect(
+                    Brush.verticalGradient(
+                        0f to scrim,
+                        solid / h to scrim,
+                        clear / h to Color.Transparent,
+                        1f to Color.Transparent
+                    )
+                )
+            }
+    ) {
+        when (state) {
+            LiveChatState.Loading -> Column(
+                modifier = Modifier.align(Alignment.Center),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                androidx.compose.material3.CircularProgressIndicator(modifier = Modifier.size(32.dp), color = accent, strokeWidth = 3.dp)
                 Text("Подключаюсь к чату…", style = MaterialTheme.typography.bodyMedium, color = onPanel.copy(alpha = 0.8f))
             }
-        }
-        is LiveChatState.Failed -> Box(modifier = Modifier.fillMaxSize().padding(top = top, start = 32.dp, end = 32.dp), contentAlignment = Alignment.Center) {
-            Text(messages.reason, style = MaterialTheme.typography.bodyLarge, color = onPanel.copy(alpha = 0.8f), textAlign = TextAlign.Center)
-        }
-        is LiveChatState.Messages -> {
-            if (messages.list.isEmpty()) {
-                Box(modifier = Modifier.fillMaxSize().padding(top = top), contentAlignment = Alignment.Center) {
-                    Text("В чате пока тихо", style = MaterialTheme.typography.bodyLarge, color = onPanel.copy(alpha = 0.8f))
-                }
+            is LiveChatState.Failed -> Text(
+                text = state.reason,
+                style = MaterialTheme.typography.bodyLarge,
+                color = onPanel.copy(alpha = 0.8f),
+                textAlign = TextAlign.Center,
+                modifier = Modifier.align(Alignment.Center).padding(horizontal = 32.dp)
+            )
+            is LiveChatState.Messages -> if (state.list.isEmpty()) {
+                Text(
+                    "В чате пока тихо",
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = onPanel.copy(alpha = 0.8f),
+                    modifier = Modifier.align(Alignment.Center)
+                )
             } else {
                 // Upside down: the newest is item 0, at the bottom, where the list rests.
-                val newestFirst = remember(messages.list) { messages.list.asReversed() }
+                val newestFirst = remember(state.list) { state.list.asReversed() }
                 LazyColumn(
-                    modifier = Modifier.fillMaxSize(),
+                    modifier = Modifier
+                        .fillMaxSize()
+                        // Faded at both ends, as the lyrics are: the top over the status bar's
+                        // way, the bottom just short of the panel, the newest above it clear.
+                        .graphicsLayer { compositingStrategy = CompositingStrategy.Offscreen }
+                        .drawWithContent {
+                            drawContent()
+                            val h = size.height
+                            val topClear = (anchor - 16.dp).toPx().coerceAtLeast(0f)
+                            val topSolid = topClear + LyricsFade.toPx()
+                            val bottomClear = h - PlayerPanelOverlap.toPx()
+                            val bottomSolid = (bottomClear - ChatBottomFade.toPx()).coerceAtLeast(topSolid)
+                            drawRect(
+                                brush = Brush.verticalGradient(
+                                    0f to Color.Transparent,
+                                    topClear / h to Color.Transparent,
+                                    topSolid / h to Color.Black,
+                                    bottomSolid / h to Color.Black,
+                                    bottomClear / h to Color.Transparent,
+                                    1f to Color.Transparent
+                                ),
+                                blendMode = BlendMode.DstIn
+                            )
+                        },
                     reverseLayout = true,
-                    contentPadding = PaddingValues(start = 24.dp, end = 24.dp, top = top, bottom = 16.dp),
+                    contentPadding = PaddingValues(
+                        start = 24.dp,
+                        end = 24.dp,
+                        top = anchor,
+                        bottom = PlayerPanelOverlap + ChatBottomFade
+                    ),
                     verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
-                    items(newestFirst, key = { it.id }) { message ->
-                        Text(
-                            text = buildAnnotatedString {
-                                withStyle(SpanStyle(color = PanelColors.accent, fontWeight = FontWeight.SemiBold)) {
-                                    append(message.author.removePrefix("@"))
-                                }
-                                message.paid?.let { amount ->
-                                    withStyle(SpanStyle(color = PanelColors.accent)) { append("  $amount") }
-                                }
-                                append("  ")
-                                withStyle(SpanStyle(color = onPanel)) { append(message.text) }
-                            },
-                            style = MaterialTheme.typography.bodyLarge
-                        )
-                    }
+                    items(newestFirst, key = { it.id }) { message -> ChatLine(message, accent, onPanel) }
                 }
             }
         }
     }
 }
 
+/** A message: its author in the accent, a paid one's amount, then the words and emoji pictures. */
+@Composable
+private fun ChatLine(message: com.example.myapplication.data.LiveChatMessage, accent: Color, onPanel: Color) {
+    val emojis = message.parts.filterIsInstance<com.example.myapplication.data.LiveChatPart.Emoji>()
+    val text = remember(message) {
+        buildAnnotatedString {
+            withStyle(SpanStyle(color = accent, fontWeight = FontWeight.SemiBold)) {
+                append(message.author.removePrefix("@"))
+            }
+            message.paid?.let { amount -> withStyle(SpanStyle(color = accent)) { append("  $amount") } }
+            append("  ")
+            withStyle(SpanStyle(color = onPanel)) {
+                message.parts.forEach { part ->
+                    when (part) {
+                        is com.example.myapplication.data.LiveChatPart.Text -> append(part.text)
+                        is com.example.myapplication.data.LiveChatPart.Emoji -> appendInlineContent(part.url, part.key)
+                    }
+                }
+            }
+        }
+    }
+    val inline = remember(message) {
+        emojis.distinctBy { it.url }.associate { emoji ->
+            emoji.url to androidx.compose.foundation.text.InlineTextContent(
+                androidx.compose.ui.text.Placeholder(
+                    width = 1.35.em,
+                    height = 1.35.em,
+                    placeholderVerticalAlign = androidx.compose.ui.text.PlaceholderVerticalAlign.TextCenter
+                )
+            ) {
+                AsyncImage(model = emoji.url, contentDescription = emoji.key, modifier = Modifier.fillMaxSize())
+            }
+        }
+    }
+    Text(text = text, inlineContent = inline, style = MaterialTheme.typography.bodyLarge)
+}
+
 private sealed interface LiveChatState {
     data object Loading : LiveChatState
     data class Failed(val reason: String) : LiveChatState
     data class Messages(val list: List<com.example.myapplication.data.LiveChatMessage>) : LiveChatState
+}
+
+// The bottom fade of the chat: short, so the newest message is read whole just above the panel.
+private val ChatBottomFade = 18.dp
+
+/**
+ * Where a message to a live stream's chat is written, in place of "Далее" while the chat is open:
+ * a field and its send button. Signed out, or where the chat takes no messages from the account,
+ * it says so instead.
+ */
+@Composable
+private fun ChatComposer(chat: com.example.myapplication.data.YouTubeLiveChat, modifier: Modifier = Modifier) {
+    val onPanel = PanelColors.content
+    val canSend by chat.canSend.collectAsState()
+    var draft by rememberSaveable { mutableStateOf("") }
+    var sending by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+    val haptic = LocalHapticFeedback.current
+    val context = LocalContext.current
+    fun send() {
+        val text = draft.trim()
+        if (text.isEmpty() || sending) return
+        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+        sending = true
+        scope.launch {
+            if (chat.send(text)) {
+                draft = ""
+            } else {
+                android.widget.Toast.makeText(context, "Сообщение не отправилось", android.widget.Toast.LENGTH_SHORT).show()
+            }
+            sending = false
+        }
+    }
+    Surface(
+        modifier = modifier.height(64.dp),
+        shape = RoundedCornerShape(22.dp),
+        color = onPanel.copy(alpha = 0.12f),
+        contentColor = onPanel
+    ) {
+        Row(
+            modifier = Modifier.padding(start = 18.dp, end = 8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Box(modifier = Modifier.weight(1f), contentAlignment = Alignment.CenterStart) {
+                if (draft.isEmpty()) {
+                    Text(
+                        text = if (canSend) "Сообщение в чат…" else "Войдите в YouTube, чтобы писать",
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = onPanel.copy(alpha = 0.55f),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+                androidx.compose.foundation.text.BasicTextField(
+                    value = draft,
+                    onValueChange = { draft = it.take(200) },
+                    enabled = canSend && !sending,
+                    singleLine = true,
+                    textStyle = MaterialTheme.typography.bodyLarge.copy(color = onPanel),
+                    cursorBrush = androidx.compose.ui.graphics.SolidColor(PanelColors.accent),
+                    keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(imeAction = androidx.compose.ui.text.input.ImeAction.Send),
+                    keyboardActions = androidx.compose.foundation.text.KeyboardActions(onSend = { send() }),
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+            val ready = canSend && draft.isNotBlank() && !sending
+            Surface(
+                onClick = { send() },
+                enabled = ready,
+                shape = CircleShape,
+                color = if (ready) PanelColors.accent else onPanel.copy(alpha = 0.1f),
+                contentColor = if (ready) PanelColors.onAccent else onPanel.copy(alpha = 0.5f),
+                modifier = Modifier.size(48.dp)
+            ) {
+                Box(contentAlignment = Alignment.Center) {
+                    Icon(Icons.AutoMirrored.Rounded.Send, contentDescription = "Отправить", modifier = Modifier.size(22.dp))
+                }
+            }
+        }
+    }
 }
 
 /**
