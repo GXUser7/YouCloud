@@ -52,7 +52,6 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
-import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
@@ -164,12 +163,12 @@ internal fun MyWavePage(
             }
         }
 
-        // Dims the page behind the settings; a tap on it puts them away.
-        AnimatedVisibility(visible = tuning, enter = fadeIn(tween(180)), exit = fadeOut(tween(160))) {
+        // A tap beside the settings puts them away. Not dimmed: the page is only part of the
+        // screen, and a shade over it stood out as a dark box.
+        if (tuning) {
             Box(
                 modifier = Modifier
                     .fillMaxSize()
-                    .background(Color.Black.copy(alpha = 0.32f))
                     .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) {
                         tuning = false
                     }
@@ -197,7 +196,7 @@ internal fun MyWavePage(
     if (tuning) BackHandler { tuning = false }
 }
 
-/** The wave's settings on frosted glass: the moods, each a shape of its own, and the modes. */
+/** The wave's settings on frosted glass: the moods and the modes, a connected button group each. */
 @Composable
 private fun WaveTuningPane(
     picks: Map<String, String>,
@@ -214,7 +213,7 @@ private fun WaveTuningPane(
             // Frosted a little thicker than home's panels, for the settings to read over the shape.
             .glassOr(shape, colors.surfaceContainerHigh, glassAlpha = 0.74f)
             .background(glassFill(colors.surfaceContainerHigh), shape)
-            // Taps inside don't reach the dimming behind, which would put the pane away.
+            // Taps inside don't reach the page behind, where they would put the pane away.
             .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) {}
             .padding(start = 20.dp, end = 12.dp, top = 16.dp, bottom = 20.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp)
@@ -228,17 +227,20 @@ private fun WaveTuningPane(
             if (picks.isNotEmpty()) TextButton(onClick = onReset) { Text("Сбросить") }
         }
         PaneLabel("Настроение")
-        Row(modifier = Modifier.fillMaxWidth().padding(end = 8.dp), horizontalArrangement = Arrangement.SpaceBetween) {
-            WaveTuning.moods.forEach { mood ->
-                MoodTile(
-                    mood = mood,
-                    selected = picks[WaveTuning.MOOD] == mood.seed,
-                    onClick = { onPick(WaveTuning.MOOD, mood.seed) }
-                )
-            }
-        }
+        ChoiceGroup(
+            choices = WaveTuning.moods,
+            picked = picks[WaveTuning.MOOD],
+            onPick = { onPick(WaveTuning.MOOD, it) },
+            // Four in a row: a size smaller, for "Спокойное" to fit beside the others.
+            textStyle = MaterialTheme.typography.labelMedium
+        )
         PaneLabel("Режим")
-        ModeGroup(picked = picks[WaveTuning.MODE], onPick = { onPick(WaveTuning.MODE, it) })
+        ChoiceGroup(
+            choices = WaveTuning.modes,
+            picked = picks[WaveTuning.MODE],
+            onPick = { onPick(WaveTuning.MODE, it) },
+            textStyle = MaterialTheme.typography.labelLarge
+        )
     }
 }
 
@@ -251,42 +253,17 @@ private fun PaneLabel(text: String) {
     )
 }
 
-/** A mood: its own small shape in its colour, filled when picked, only outlined otherwise. */
-@Composable
-private fun MoodTile(mood: WaveChoice, selected: Boolean, onClick: () -> Unit) {
-    val grow by animateFloatAsState(
-        targetValue = if (selected) 1f else 0f,
-        animationSpec = spring(dampingRatio = 0.5f, stiffness = 500f),
-        label = "moodTile"
-    )
-    val outline = remember { Path() }
-    Column(
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(6.dp),
-        modifier = Modifier
-            .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null, onClick = onClick)
-    ) {
-        Canvas(modifier = Modifier.size(62.dp)) {
-            val radius = size.minDimension * (0.36f + 0.05f * grow)
-            outline.traceShape(center, radius, mood.lobes, mood.depth, rotation = 0f)
-            drawPath(outline, color = mood.color.copy(alpha = 0.18f + 0.82f * grow))
-            if (grow < 0.99f) drawPath(outline, color = mood.color.copy(alpha = 1f - grow), style = Stroke(width = 2.dp.toPx()))
-        }
-        Text(
-            text = mood.title,
-            style = MaterialTheme.typography.labelMedium,
-            color = if (selected) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant,
-            maxLines = 1
-        )
-    }
-}
-
 /**
- * The modes as a connected button group: joined by small gaps, the outer corners round and the
+ * [choices] as a connected button group: joined by small gaps, the outer corners round and the
  * inner ones tight; the one picked swells and rounds off entirely. Picked again, it is let go.
  */
 @Composable
-private fun ModeGroup(picked: String?, onPick: (String) -> Unit) {
+private fun ChoiceGroup(
+    choices: List<WaveChoice>,
+    picked: String?,
+    onPick: (String) -> Unit,
+    textStyle: androidx.compose.ui.text.TextStyle
+) {
     val colors = MaterialTheme.colorScheme
     Row(
         modifier = Modifier
@@ -295,7 +272,7 @@ private fun ModeGroup(picked: String?, onPick: (String) -> Unit) {
             .height(44.dp),
         horizontalArrangement = Arrangement.spacedBy(3.dp)
     ) {
-        WaveTuning.modes.forEachIndexed { index, mode ->
+        choices.forEachIndexed { index, mode ->
             val selected = mode.seed == picked
             val weight by animateFloatAsState(
                 targetValue = if (selected) 1.3f else 1f,
@@ -309,7 +286,7 @@ private fun ModeGroup(picked: String?, onPick: (String) -> Unit) {
             )
             val innerPercent = inner.roundToInt().coerceIn(0, 50)
             val start = if (index == 0) 50 else innerPercent
-            val end = if (index == WaveTuning.modes.lastIndex) 50 else innerPercent
+            val end = if (index == choices.lastIndex) 50 else innerPercent
             val fill by animateColorAsState(
                 if (selected) colors.primary else colors.onSurface.copy(alpha = 0.08f),
                 tween(250),
@@ -337,7 +314,7 @@ private fun ModeGroup(picked: String?, onPick: (String) -> Unit) {
                 Box(contentAlignment = Alignment.Center, modifier = Modifier.padding(horizontal = 6.dp)) {
                     Text(
                         text = mode.title,
-                        style = MaterialTheme.typography.labelLarge,
+                        style = textStyle,
                         maxLines = 1,
                         softWrap = false,
                         overflow = TextOverflow.Ellipsis
@@ -391,11 +368,6 @@ private fun WaveShape(
         outline.traceMorph(center, radius * 0.72f, from, to, t, -turn * 1.6f)
         drawPath(path = outline, color = Color.White.copy(alpha = 0.14f))
     }
-}
-
-/** A circle rippled [lobes] times, [depth] deep, turned by [rotation]. */
-private fun Path.traceShape(center: Offset, radius: Float, lobes: Int, depth: Float, rotation: Float) {
-    traceMorph(center, radius, lobes to depth, lobes to depth, 1f, rotation)
 }
 
 /** Part way, [t], from one rippled circle to another: the radii blended, angle by angle. */
