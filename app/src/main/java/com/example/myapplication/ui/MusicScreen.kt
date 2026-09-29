@@ -989,6 +989,10 @@ fun MusicScreen(viewModel: MusicViewModel) {
                                         avatarUrl = other.avatarUrl
                                     )
                                 },
+                                onRetry = {
+                                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                    viewModel.retryArtist()
+                                },
                                 isLoading = artistLoading,
                                 error = artistError,
                                 currentTrackId = currentTrackId,
@@ -5385,11 +5389,19 @@ private fun FollowButton(follow: ArtistFollow, onToggle: () -> Unit) {
         contentColor = if (follow.following) PanelColors.onAccent else PanelColors.accent
     ) {
         Box(contentAlignment = Alignment.Center) {
-            Icon(
-                imageVector = if (follow.following) Icons.Rounded.HowToReg else Icons.Rounded.PersonAddAlt1,
-                contentDescription = if (follow.following) "Отписаться" else "Подписаться",
-                modifier = Modifier.size(24.dp)
-            )
+            if (follow.busy) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(22.dp),
+                    color = LocalContentColor.current,
+                    strokeWidth = 2.5.dp
+                )
+            } else {
+                Icon(
+                    imageVector = if (follow.following) Icons.Rounded.HowToReg else Icons.Rounded.PersonAddAlt1,
+                    contentDescription = if (follow.following) "Отписаться" else "Подписаться",
+                    modifier = Modifier.size(24.dp)
+                )
+            }
         }
     }
 }
@@ -7830,13 +7842,38 @@ private fun ChatComposerButton(
     val canSend by chat.canSend.collectAsState()
     val blocked by chat.sendBlocked.collectAsState()
     val subscribersOnly by chat.subscribersOnly.collectAsState()
+    val subscribed by chat.subscribed.collectAsState()
+    val detail by chat.blockedDetail.collectAsState()
     var subscribing by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
     val haptic = LocalHapticFeedback.current
+    // Subscribed but not let in yet (YouTube may want the subscription a few minutes old): asked
+    // again once a minute, only while the chat is open.
+    val waiting = !canSend && subscribersOnly && subscribed == true
+    LaunchedEffect(waiting) {
+        while (waiting) {
+            delay(CHAT_RECHECK_MS)
+            chat.recheck()
+        }
+    }
+    val reason = when {
+        canSend -> "Сообщение в чат…"
+        subscribing -> "Оформляю подписку…"
+        waiting -> "Вы подписаны. " + (detail ?: "YouTube пустит в чат чуть позже")
+        blocked != null -> blocked!!
+        else -> "Подключаюсь к чату…"
+    }
     Surface(
-        onClick = onCompose,
-        enabled = canSend,
+        // Blocked, a tap shows the reason whole, with YouTube's explanation.
+        onClick = {
+            if (canSend) {
+                onCompose()
+            } else {
+                val full = listOfNotNull(blocked, detail).distinct().joinToString("\n").ifBlank { reason }
+                android.widget.Toast.makeText(context, full, android.widget.Toast.LENGTH_LONG).show()
+            }
+        },
         modifier = modifier.height(64.dp),
         shape = RoundedCornerShape(22.dp),
         color = onPanel.copy(alpha = 0.12f),
@@ -7848,11 +7885,7 @@ private fun ChatComposerButton(
             horizontalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             Text(
-                text = when {
-                    canSend -> "Сообщение в чат…"
-                    blocked != null -> blocked!!
-                    else -> "Подключаюсь к чату…"
-                },
+                text = reason,
                 style = if (canSend) MaterialTheme.typography.bodyLarge else MaterialTheme.typography.bodyMedium,
                 color = onPanel.copy(alpha = if (canSend) 0.6f else 0.75f),
                 maxLines = 2,
@@ -7861,15 +7894,18 @@ private fun ChatComposerButton(
             )
             if (canSend) Icon(Icons.Rounded.Edit, contentDescription = null, modifier = Modifier.size(20.dp))
             // Only subscribers may write: subscribing is a tap away.
-            if (!canSend && subscribersOnly) {
+            if (!canSend && subscribersOnly && subscribed != true) {
                 Surface(
                     onClick = {
                         haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                         subscribing = true
                         scope.launch {
-                            if (!chat.subscribe()) {
-                                android.widget.Toast.makeText(context, "Не удалось подписаться", android.widget.Toast.LENGTH_SHORT).show()
-                            }
+                            val done = chat.subscribe()
+                            android.widget.Toast.makeText(
+                                context,
+                                if (done) "Вы подписались на канал" else "Не удалось подписаться",
+                                android.widget.Toast.LENGTH_SHORT
+                            ).show()
                             subscribing = false
                         }
                     },
@@ -7880,13 +7916,24 @@ private fun ChatComposerButton(
                     modifier = Modifier.height(40.dp)
                 ) {
                     Box(modifier = Modifier.padding(horizontal = 14.dp), contentAlignment = Alignment.Center) {
-                        Text("Подписаться", style = MaterialTheme.typography.labelLarge)
+                        if (subscribing) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(18.dp),
+                                color = PanelColors.onAccent,
+                                strokeWidth = 2.dp
+                            )
+                        } else {
+                            Text("Подписаться", style = MaterialTheme.typography.labelLarge)
+                        }
                     }
                 }
             }
         }
     }
 }
+
+// How often a chat the account is subscribed to but not yet let into is asked again.
+private const val CHAT_RECHECK_MS = 60_000L
 
 /**
  * The field a message to a live chat is written in: across the whole width, just over the
@@ -9938,7 +9985,8 @@ private fun ArtistDetailScreen(
     lives: List<SoundCloudTrack> = emptyList(),
     shelves: List<YtShelf> = emptyList(),
     onPlayFrom: (SoundCloudTrack, List<SoundCloudTrack>) -> Unit = { track, _ -> onPlayTrack(track) },
-    onOpenArtist: (SoundCloudUser) -> Unit = {}
+    onOpenArtist: (SoundCloudUser) -> Unit = {},
+    onRetry: (() -> Unit)? = null
 ) {
     if (selectedPlaylist != null) {
         SetDetailContent(
@@ -9995,7 +10043,19 @@ private fun ArtistDetailScreen(
                 item(key = "artist-loading") { LoadingBlock() }
             } else if (error != null) {
                 item(key = "artist-error") {
-                    Box(modifier = Modifier.padding(16.dp)) { MessageCard(error) }
+                    Column(
+                        modifier = Modifier.padding(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        MessageCard(error)
+                        if (onRetry != null) {
+                            FilledTonalButton(onClick = onRetry, shape = MaterialTheme.shapes.medium) {
+                                Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(20.dp))
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text("Повторить")
+                            }
+                        }
+                    }
                 }
             } else {
                 if (tracks.isNotEmpty()) {

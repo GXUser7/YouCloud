@@ -1722,6 +1722,7 @@ class MusicViewModel(
         avatarUrl: String? = null
     ) {
         returnToSearchFromArtist = false
+        lastArtistOpen = { openArtistDetails(userId, permalinkUrl, username, trackUrn, avatarUrl) }
         if (permalinkUrl?.startsWith(YT_ARTIST_REF) == true) {
             openYouTubeArtist(permalinkUrl.removePrefix(YT_ARTIST_REF), username, avatarUrl)
             return
@@ -1901,6 +1902,7 @@ class MusicViewModel(
     private var ytArtistJob: Job? = null
 
     private fun openYouTubeArtist(channelId: String, name: String?, avatarUrl: String?) {
+        lastArtistOpen = { openYouTubeArtist(channelId, name, avatarUrl) }
         _selectedTrack.value = null
         _selectedMix.value = null
         _currentArtist.value = SoundCloudUser(username = name, avatarUrl = avatarUrl, permalinkUrl = YT_ARTIST_REF + channelId)
@@ -1930,7 +1932,14 @@ class MusicViewModel(
                 }
             }
             try {
-                val page = ytMusic.artist(channelId)
+                // Over a VPN a request now and then breaks off: once more before giving up.
+                val page = try {
+                    ytMusic.artist(channelId)
+                } catch (e: IOException) {
+                    Log.w("MusicViewModel", "YouTube Music artist $channelId, trying again", e)
+                    delay(ARTIST_RETRY_MS)
+                    ytMusic.artist(channelId)
+                }
                 _currentArtist.value = page.artist.copy(
                     username = page.artist.username?.takeIf { it.isNotBlank() } ?: name,
                     avatarUrl = page.artist.avatarUrl ?: avatarUrl
@@ -1968,6 +1977,15 @@ class MusicViewModel(
         resetArtistExtras()
         _screen.value = if (returnToSearchFromArtist) AppScreen.SEARCH else AppScreen.HOME
         returnToSearchFromArtist = false
+    }
+
+    // How the artist on screen was opened, for "Повторить" when it didn't load.
+    private var lastArtistOpen: (() -> Unit)? = null
+
+    fun retryArtist() {
+        val backToSearch = returnToSearchFromArtist
+        lastArtistOpen?.invoke()
+        returnToSearchFromArtist = backToSearch
     }
 
     private fun resetArtistExtras() {
@@ -2039,9 +2057,17 @@ class MusicViewModel(
             }
             if (!sameArtist(_currentArtist.value, artist)) return@launch
             _artistFollow.value = ArtistFollow(if (sent) follow else !follow)
-            if (!sent) {
-                Toast.makeText(context, if (follow) "Не удалось подписаться" else "Не удалось отписаться", Toast.LENGTH_SHORT).show()
-            }
+            val name = artist.username?.takeIf { it.isNotBlank() } ?: "исполнителя"
+            Toast.makeText(
+                context,
+                when {
+                    sent && follow -> "Вы подписались на $name"
+                    sent -> "Вы отписались от $name"
+                    follow -> "Не удалось подписаться"
+                    else -> "Не удалось отписаться"
+                },
+                Toast.LENGTH_SHORT
+            ).show()
         }
     }
 
@@ -3214,6 +3240,8 @@ class MusicViewModel(
         const val WAVE_HEARD_KEPT = 500
         const val RADIO_QUEUE_SENT = 150
         const val WAVE_EMPTY_TRIES = 3
+        // The pause before asking for an artist's page again after the request broke off.
+        const val ARTIST_RETRY_MS = 1_500L
 
         // A radio track that stopped this close to its end was heard to the end, not skipped.
         const val RADIO_FINISHED_SLACK_MS = 5_000L

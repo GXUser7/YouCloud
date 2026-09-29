@@ -103,8 +103,10 @@ class YouTubeLiveChat(private val videoId: String, private val auth: () -> YtAut
         }
         sendParams = null
         _canSend.value = false
-        val said = panel?.let(::panelMessage)
-        _subscribersOnly.value = said != null && SUBSCRIBERS.containsMatchIn(said)
+        val said = panel?.let { panelMessage(it, inDialog = false) }
+        val detail = panel?.let { panelMessage(it, inDialog = true) }?.takeIf { it != said }
+        _blockedDetail.value = detail
+        _subscribersOnly.value = SUBSCRIBERS.containsMatchIn(said.orEmpty() + " " + detail.orEmpty())
         _sendBlocked.value = when {
             auth()?.sapisid == null -> "Войдите в YouTube Music в настройках, чтобы писать"
             said != null -> said
@@ -114,17 +116,19 @@ class YouTubeLiveChat(private val videoId: String, private val auth: () -> YtAut
 
     /**
      * What the panel says, its buttons and links left out: "Только для подписчиков", not the
-     * "Только для подписчиковПодробнее" of every text in it run together.
+     * "Только для подписчиковПодробнее" of every text in it run together. [inDialog]: what the
+     * link behind it opens instead, the explanation ("…подписаны не менее 10 минут").
      */
-    private fun panelMessage(panel: JsonElement): String? {
+    private fun panelMessage(panel: JsonElement, inDialog: Boolean): String? {
         val blocks = mutableListOf<String>()
-        fun walk(node: JsonElement, inButton: Boolean) {
+        fun walk(node: JsonElement, inCommand: Boolean) {
             when {
                 node.isJsonObject -> node.asJsonObject.entrySet().forEach { (name, value) ->
-                    val button = inButton || name.contains("button", ignoreCase = true) || name.endsWith("Endpoint") ||
-                        name.endsWith("Command")
+                    val command = inCommand || name.endsWith("Endpoint") || name.endsWith("Command")
                     when {
-                        button -> Unit
+                        // A button's label is never the reason; a link's target only in a dialog.
+                        name.contains("button", ignoreCase = true) -> Unit
+                        command != inDialog -> if (!inDialog) Unit else walk(value, command)
                         name == "runs" && value.isJsonArray -> value.asJsonArray
                             .filter { it.at("navigationEndpoint") == null }
                             .mapNotNull { it.str("text") }
@@ -135,10 +139,10 @@ class YouTubeLiveChat(private val videoId: String, private val auth: () -> YtAut
                             ?.let(blocks::add)
                         name == "simpleText" && value.isJsonPrimitive ->
                             value.asString.trim().takeIf { it.isNotEmpty() && it.lowercase() !in LINK_WORDS }?.let(blocks::add)
-                        else -> walk(value, false)
+                        else -> walk(value, command)
                     }
                 }
-                node.isJsonArray -> node.asJsonArray.forEach { walk(it, inButton) }
+                node.isJsonArray -> node.asJsonArray.forEach { walk(it, inCommand) }
             }
         }
         walk(panel, false)
@@ -154,6 +158,14 @@ class YouTubeLiveChat(private val videoId: String, private val auth: () -> YtAut
     private val _subscribersOnly = MutableStateFlow(false)
     /** Whether only the channel's subscribers may write: subscribing is then the way in. */
     val subscribersOnly: StateFlow<Boolean> = _subscribersOnly.asStateFlow()
+
+    private val _blockedDetail = MutableStateFlow<String?>(null)
+    /** The explanation behind the reason, where YouTube gives one (its "Подробнее"). */
+    val blockedDetail: StateFlow<String?> = _blockedDetail.asStateFlow()
+
+    private val _subscribed = MutableStateFlow<Boolean?>(null)
+    /** Whether the account is subscribed to the channel broadcasting; null until known. */
+    val subscribed: StateFlow<Boolean?> = _subscribed.asStateFlow()
 
     @Volatile
     private var ownerChannel: String? = null
@@ -171,9 +183,13 @@ class YouTubeLiveChat(private val videoId: String, private val auth: () -> YtAut
             YouTubeWeb.subscribe(channel, true, auth())
             true
         } catch (e: IOException) {
+            android.util.Log.w("YouTubeLiveChat", "Subscribe to $channel failed", e)
             false
         }
-        if (done) recheck()
+        if (done) {
+            _subscribed.value = true
+            recheck()
+        }
         return done
     }
 
@@ -198,6 +214,14 @@ class YouTubeLiveChat(private val videoId: String, private val auth: () -> YtAut
             ?.str("navigationEndpoint", "browseEndpoint", "browseId")
             ?.takeIf { it.startsWith("UC") }
             ?.let { ownerChannel = it }
+        // The watch page's own subscribe button knows, signed in. Once subscribed here, that
+        // stands: the page may not have caught up yet.
+        if (auth()?.sapisid != null && _subscribed.value != true) {
+            next.findAll("subscribeButtonRenderer")
+                .firstOrNull { ownerChannel == null || it.str("channelId") == ownerChannel }
+                ?.at("subscribed")?.takeIf { it.isJsonPrimitive }
+                ?.let { _subscribed.value = it.asBoolean }
+        }
         return next.findAll("liveChatRenderer").firstOrNull()
             ?.arr("continuations")
             ?.firstNotNullOfOrNull { it.str("reloadContinuationData", "continuation") }
