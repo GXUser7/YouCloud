@@ -608,7 +608,9 @@ fun FullScreenVideo(
     state: PlayerVideoState,
     blur: () -> Dp,
     glow: Boolean = true,
-    glowStyle: GlowStyle = GlowStyle.Ambilight
+    glowStyle: GlowStyle = GlowStyle.Ambilight,
+    // Over the picture, unblurred: the controls, as YouTube lays them over a video.
+    controls: @Composable BoxScope.() -> Unit = {}
 ) {
     val view = androidx.compose.ui.platform.LocalView.current
     DisposableEffect(view) {
@@ -621,6 +623,7 @@ fun FullScreenVideo(
         controller?.hide(androidx.core.view.WindowInsetsCompat.Type.systemBars())
         onDispose { controller?.show(androidx.core.view.WindowInsetsCompat.Type.systemBars()) }
     }
+    Box(modifier = Modifier.fillMaxSize()) {
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -655,6 +658,8 @@ fun FullScreenVideo(
             )
         }
         VideoSurface(state = state, modifier = Modifier.fillMaxSize(), fit = true)
+    }
+    controls()
     }
 }
 

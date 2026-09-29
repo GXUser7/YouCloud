@@ -6015,7 +6015,18 @@ private fun TrackDetailScreen(
     val swiping by remember { derivedStateOf { swipeActive.value > 0f } }
 
     if (landscape && videoState != null && videoState.showing) {
-        FullScreenVideo(state = videoState, blur = { pauseBlur.value }, glow = videoGlow, glowStyle = videoGlowStyle)
+        FullScreenVideo(state = videoState, blur = { pauseBlur.value }, glow = videoGlow, glowStyle = videoGlowStyle) {
+            LandscapeControls(
+                isPlaying = isPlaying,
+                live = track.liveVideoId != null,
+                positionMs = positionMs,
+                durationMs = durationMs,
+                onTogglePlay = onTogglePlay,
+                onSeek = onSeek,
+                onPrevious = onPrevious,
+                onNext = onNext
+            )
+        }
         return
     }
 
@@ -6900,6 +6911,122 @@ private fun PlayerPanel(
 }
 
 /** Thick expressive seek bar with a tick every 2% of a manual drag. */
+/**
+ * The controls over a video on the whole screen, as YouTube has them: previous, play and next in
+ * the middle, the time and a bar to seek along at the bottom, on a shade over the picture. A tap
+ * brings them up, and while it plays they go again a few seconds after the last touch; a tap on
+ * them puts them away at once. Everything on the screen is taken by the video meanwhile: taps
+ * used to fall through the picture to the screens under the player.
+ */
+@Composable
+private fun BoxScope.LandscapeControls(
+    isPlaying: Boolean,
+    live: Boolean,
+    positionMs: () -> Long,
+    durationMs: Long,
+    onTogglePlay: () -> Unit,
+    onSeek: (Long) -> Unit,
+    onPrevious: () -> Unit,
+    onNext: () -> Unit
+) {
+    var shown by remember { mutableStateOf(true) }
+    // Bumped by every touch on the controls, so they stay while being used.
+    var touched by remember { mutableIntStateOf(0) }
+    LaunchedEffect(shown, touched, isPlaying) {
+        if (shown && isPlaying) {
+            delay(LANDSCAPE_CONTROLS_HIDE_MS)
+            shown = false
+        }
+    }
+    val haptic = LocalHapticFeedback.current
+    Box(
+        modifier = Modifier
+            .matchParentSize()
+            .pointerInput(Unit) { detectTapGestures { shown = !shown } }
+    )
+    AnimatedVisibility(
+        visible = shown,
+        enter = fadeIn(tween(160)),
+        exit = fadeOut(tween(260)),
+        modifier = Modifier.matchParentSize()
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Color.Black.copy(alpha = 0.42f))
+                .pointerInput(Unit) { detectTapGestures { shown = false } }
+        ) {
+            Row(
+                modifier = Modifier.align(Alignment.Center),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(40.dp)
+            ) {
+                IconButton(
+                    onClick = { touched++; haptic.performHapticFeedback(HapticFeedbackType.LongPress); onPrevious() },
+                    modifier = Modifier.size(56.dp)
+                ) {
+                    Icon(Icons.Rounded.SkipPrevious, contentDescription = "Предыдущий трек", tint = Color.White, modifier = Modifier.size(40.dp))
+                }
+                IconButton(
+                    onClick = { touched++; haptic.performHapticFeedback(HapticFeedbackType.LongPress); onTogglePlay() },
+                    modifier = Modifier
+                        .size(76.dp)
+                        .background(Color.Black.copy(alpha = 0.35f), CircleShape)
+                ) {
+                    Icon(
+                        imageVector = if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
+                        contentDescription = if (isPlaying) "Пауза" else "Играть",
+                        tint = Color.White,
+                        modifier = Modifier.size(52.dp)
+                    )
+                }
+                IconButton(
+                    onClick = { touched++; haptic.performHapticFeedback(HapticFeedbackType.LongPress); onNext() },
+                    modifier = Modifier.size(56.dp)
+                ) {
+                    Icon(Icons.Rounded.SkipNext, contentDescription = "Следующий трек", tint = Color.White, modifier = Modifier.size(40.dp))
+                }
+            }
+            Column(
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .fillMaxWidth()
+                    .padding(horizontal = 28.dp, vertical = 16.dp)
+            ) {
+                if (live) {
+                    LiveMark(color = Color.White)
+                } else {
+                    // The time as the bar draws it, and the bar itself: only these follow the
+                    // track, while the controls are up.
+                    var dragged by remember { mutableStateOf<Float?>(null) }
+                    val duration = durationMs.coerceAtLeast(1L)
+                    val position = dragged?.let { (it * duration).toLong() } ?: positionMs().coerceIn(0L, duration)
+                    Text(
+                        text = formatDuration(position) + " / " + formatDuration(durationMs),
+                        style = MaterialTheme.typography.labelLarge,
+                        color = Color.White
+                    )
+                    Slider(
+                        value = position.toFloat() / duration,
+                        onValueChange = { touched++; dragged = it },
+                        onValueChangeFinished = {
+                            dragged?.let { onSeek((it * duration).toLong()) }
+                            dragged = null
+                        },
+                        colors = SliderDefaults.colors(
+                            thumbColor = Color.White,
+                            activeTrackColor = PanelColors.accent,
+                            inactiveTrackColor = Color.White.copy(alpha = 0.3f)
+                        )
+                    )
+                }
+            }
+        }
+    }
+}
+
+private const val LANDSCAPE_CONTROLS_HIDE_MS = 3_000L
+
 /** "В эфире", with a red dot: a live stream's place for the seek bar, as tall as it. */
 @Composable
 private fun LiveMark(color: Color) {
