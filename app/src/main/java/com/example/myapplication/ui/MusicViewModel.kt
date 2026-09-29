@@ -2115,7 +2115,7 @@ class MusicViewModel(
                 favoritesRepository.remove(track.id)
                 settingsRepository.setSoundCloudLikePending(track.id, false)
                 val userIdValue = settingsRepository.userIdValue()
-                val youTubeId = track.youTubeVideoId
+                val youTubeId = track.youTubeVideoId ?: track.liveVideoId
                 if (youTubeId != null) {
                     rateOnYouTube(youTubeId, like = false)
                 } else if (track.urn?.startsWith("yandex:track:") == true) {
@@ -2150,8 +2150,12 @@ class MusicViewModel(
             }
 
             favoritesRepository.add(track, streamUrl = null)
-            // A broadcast is kept in favourites to come back to; there is nothing to download.
-            if (track.liveVideoId != null) return@launch
+            // A broadcast is kept in favourites to come back to, and liked on YouTube; there is
+            // nothing to download.
+            track.liveVideoId?.let { liveId ->
+                rateOnYouTube(liveId, like = true)
+                return@launch
+            }
             favoritesRepository.updateDownloadState(track.id, DownloadState.DOWNLOADING)
 
             val isYandex = track.urn?.startsWith("yandex:track:") == true

@@ -473,7 +473,7 @@ class YouTubeMusicClient(private val authProvider: () -> YtAuth?) {
         val title = columns.getOrNull(0).runsText() ?: return null
         val byline = columns.getOrNull(1)
         val artists = artistsOf(byline.arr("runs"))
-            .ifEmpty { plainArtist(byline.runsText()) }
+            .ifEmpty { withChannel(plainArtist(byline.runsText()), row) }
             .ifEmpty { plainArtist(fallbackArtist) }
         // A column of its own in playlists; the byline's last part in search results.
         val duration = (row.arr("fixedColumns")
@@ -641,6 +641,18 @@ class YouTubeMusicClient(private val authProvider: () -> YtAuth?) {
         val id = run.str("navigationEndpoint", "browseEndpoint", "browseId")
             ?.takeIf { it.startsWith("UC") } ?: return@mapNotNull null
         SoundCloudUser(username = run.str("text"), permalinkUrl = YT_ARTIST_REF + id)
+    }
+
+    /**
+     * A name from a byline with no link, given the channel the row leads to elsewhere — its menu's
+     * "go to artist" — so that it opens: a live stream's byline names its channel without linking it.
+     */
+    private fun withChannel(artists: List<SoundCloudUser>, row: JsonElement): List<SoundCloudUser> {
+        val first = artists.firstOrNull() ?: return artists
+        val channelId = row.findAll("browseId")
+            .firstNotNullOfOrNull { id -> id.takeIf { it.isJsonPrimitive }?.asString?.takeIf { it.startsWith("UC") } }
+            ?: return artists
+        return listOf(first.copy(permalinkUrl = YT_ARTIST_REF + channelId)) + artists.drop(1)
     }
 
     /**

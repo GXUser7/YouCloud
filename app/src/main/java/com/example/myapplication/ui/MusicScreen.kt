@@ -5773,13 +5773,20 @@ private fun TrackCard(
                 overflow = TextOverflow.Ellipsis
             )
             val duration = track.duration.takeIf { it > 0L }?.let { " · " + formatDuration(it) }.orEmpty()
-            Text(
-                text = track.artistLine() + duration,
-                style = MaterialTheme.typography.bodyMedium,
-                color = LocalContentColor.current.copy(alpha = 0.72f),
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                // A broadcast says so, where a track has its length.
+                if (track.liveVideoId != null) {
+                    LiveBadge()
+                    Spacer(modifier = Modifier.width(6.dp))
+                }
+                Text(
+                    text = track.artistLine() + duration,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = LocalContentColor.current.copy(alpha = 0.72f),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
             if (downloadState == DownloadState.DOWNLOADING) {
                 Spacer(modifier = Modifier.height(4.dp))
                 AppLinearProgress(progress = progress, modifier = Modifier.fillMaxWidth())
@@ -7207,6 +7214,19 @@ private fun TrackFxSheet(
 }
 
 private const val DEFAULT_REVERB = 40
+
+/** "В ЭФИРЕ" on red: marks a live stream in a list of tracks. */
+@Composable
+private fun LiveBadge() {
+    Text(
+        text = "В ЭФИРЕ",
+        style = MaterialTheme.typography.labelSmall,
+        color = Color.White,
+        modifier = Modifier
+            .background(Color(0xFFE5322D), RoundedCornerShape(6.dp))
+            .padding(horizontal = 6.dp, vertical = 2.dp)
+    )
+}
 
 /** "В эфире", with a red dot: a live stream's place for the seek bar, as tall as it. */
 @Composable
