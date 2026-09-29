@@ -13,6 +13,19 @@ import java.io.IOException
 import java.util.concurrent.TimeUnit
 
 /**
+ * A channel as youtube.com shows it, for one YouTube Music has nothing of: its videos, newest
+ * first ([continuation] for the rest), its playlists, and who it is.
+ */
+data class YtChannelVideos(
+    val videos: List<SoundCloudTrack>,
+    val playlists: List<SoundCloudPlaylist>,
+    val continuation: String?,
+    val name: String?,
+    val avatarUrl: String?,
+    val description: String?
+)
+
+/**
  * youtube.com's own web API ("InnerTube", the WEB client), for what YouTube Music's doesn't say:
  * a live stream's chat ([YouTubeLiveChat]), the channel a video is from, and a plain YouTube search.
  * Signed in as the YouTube Music session when there is one — the same Google cookies.
@@ -23,8 +36,12 @@ object YouTubeWeb {
     private const val CLIENT_VERSION = "2.20260925.01.00"
     private const val USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:140.0) Gecko/20100101 Firefox/140.0"
     private val JSON = "application/json".toMediaType()
-    // A channel's "Трансляции" tab.
+    // A channel's tabs: "Трансляции", "Видео", "Плейлисты".
     private const val STREAMS_TAB = "EgdzdHJlYW1z8gYECgJ6AA=="
+    private const val VIDEOS_TAB = "EgZ2aWRlb3PyBgQKAjoA"
+    private const val PLAYLISTS_TAB = "EglwbGF5bGlzdHPyBgQKAkIA"
+    // A video's length on its picture: "13:13", "1:02:45".
+    private val LENGTH = Regex("""^\d+(:\d{2})+$""")
 
     private val http: OkHttpClient = OkHttpClient.Builder()
         .connectTimeout(15, TimeUnit.SECONDS)
@@ -107,7 +124,7 @@ object YouTubeWeb {
                 addProperty("browseId", channelId)
                 addProperty("params", STREAMS_TAB)
             }, session)
-            val lockups = page.findAll("lockupViewModel").mapNotNull { parseLiveLockup(it, owner) }
+            val lockups = page.findAll("lockupViewModel").mapNotNull { parseVideoLockup(it, owner) }.filter { it.kind == "live" }
             // The older layout, should the page come in it.
             val videos = page.findAll("videoRenderer").mapNotNull(::parseVideo)
                 .filter { it.kind == "live" }
@@ -144,26 +161,93 @@ object YouTubeWeb {
         return android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP)
     }
 
-    /** A video of a channel's tab, in its newer layout; only one broadcasting now. */
-    private fun parseLiveLockup(lockup: JsonElement, owner: SoundCloudUser): SoundCloudTrack? {
+    /**
+     * A channel's "Видео" tab, for one YouTube Music has no page for ("нет общедоступного
+     * контента"): its videos as tracks, its playlists, its name and picture. [owner] is who
+     * the videos are by.
+     */
+    suspend fun channelVideos(channelId: String, owner: SoundCloudUser, session: YtAuth?): YtChannelVideos =
+        withContext(Dispatchers.IO) {
+            val page = post("browse", JsonObject().apply {
+                addProperty("browseId", channelId)
+                addProperty("params", VIDEOS_TAB)
+            }, session)
+            val about = page.at("metadata", "channelMetadataRenderer")
+            val name = about.str("title") ?: owner.username
+            val by = owner.copy(username = name)
+            // Its playlists, a request of their own; the videos stand without them.
+            val playlists = runCatching {
+                post("browse", JsonObject().apply {
+                    addProperty("browseId", channelId)
+                    addProperty("params", PLAYLISTS_TAB)
+                }, session).findAll("lockupViewModel").mapNotNull { parsePlaylistLockup(it, by) }.distinctBy { it.id }
+            }.getOrDefault(emptyList())
+            YtChannelVideos(
+                videos = page.findAll("lockupViewModel").mapNotNull { parseVideoLockup(it, by) }.distinctBy { it.id },
+                playlists = playlists,
+                continuation = page.lastContinuation(),
+                name = name,
+                avatarUrl = about.arr("avatar", "thumbnails").lastOrNull().str("url"),
+                description = about.str("description")?.takeIf { it.isNotBlank() }
+            )
+        }
+
+    /** The next videos of a channel's tab, and where the ones after them are. */
+    suspend fun moreChannelVideos(continuation: String, owner: SoundCloudUser, session: YtAuth?): Pair<List<SoundCloudTrack>, String?> =
+        withContext(Dispatchers.IO) {
+            val page = post("browse", JsonObject().apply { addProperty("continuation", continuation) }, session)
+            page.findAll("lockupViewModel").mapNotNull { parseVideoLockup(it, owner) } to page.lastContinuation()
+        }
+
+    private fun JsonElement.lastContinuation(): String? =
+        findAll("continuationCommand").lastOrNull().str("token")
+
+    /**
+     * A video of a channel's tab, in its newer layout: its length on the picture's badge, or a
+     * "В ЭФИРЕ" badge for a broadcast going on now.
+     */
+    private fun parseVideoLockup(lockup: JsonElement, owner: SoundCloudUser): SoundCloudTrack? {
         if (lockup.str("contentType") != "LOCKUP_CONTENT_TYPE_VIDEO") return null
-        val live = lockup.findAll("badgeStyle").any { it.isJsonPrimitive && it.asString == "THUMBNAIL_OVERLAY_BADGE_STYLE_LIVE" }
-        if (!live) return null
         val videoId = lockup.str("contentId") ?: return null
         val title = lockup.str("metadata", "lockupMetadataViewModel", "title", "content") ?: return null
+        val badges = lockup.findAll("thumbnailBadgeViewModel")
+        val live = badges.any { it.str("badgeStyle") == "THUMBNAIL_OVERLAY_BADGE_STYLE_LIVE" }
+        val length = badges.firstNotNullOfOrNull { badge -> badge.str("text")?.takeIf { LENGTH.matches(it) } }
+        // Not yet out (a premiere, a broadcast to come): nothing to play.
+        if (!live && length == null) return null
+        val duration = length?.split(':')?.fold(0L) { total, part -> total * 60 + (part.toLongOrNull() ?: 0L) }?.times(1000) ?: 0L
         val artwork = lockup.arr("contentImage", "thumbnailViewModel", "image", "sources").lastOrNull().str("url")?.substringBefore('?')
         return SoundCloudTrack(
-            id = youTubeTrackId("live:$videoId"),
-            urn = YT_LIVE_URN + videoId,
-            kind = "live",
+            id = youTubeTrackId(if (live) "live:$videoId" else videoId),
+            urn = (if (live) YT_LIVE_URN else YT_TRACK_URN) + videoId,
+            kind = if (live) "live" else "track",
             title = title,
             artworkUrl = artwork,
             permalinkUrl = "https://www.youtube.com/watch?v=$videoId",
             user = owner,
             artists = listOf(owner),
-            duration = 0L,
+            duration = if (live) 0L else duration,
             streamable = true,
             policy = "ALLOW"
+        )
+    }
+
+    /** A playlist of a channel's tab, opened the way YouTube Music opens one. */
+    private fun parsePlaylistLockup(lockup: JsonElement, owner: SoundCloudUser): SoundCloudPlaylist? {
+        if (lockup.str("contentType") != "LOCKUP_CONTENT_TYPE_PLAYLIST") return null
+        val playlistId = lockup.str("contentId") ?: return null
+        val title = lockup.str("metadata", "lockupMetadataViewModel", "title", "content") ?: return null
+        val count = lockup.findAll("thumbnailBadgeViewModel").firstNotNullOfOrNull { it.str("text") }
+            ?.filter { it.isDigit() }?.toIntOrNull() ?: 0
+        return SoundCloudPlaylist(
+            id = youTubeTrackId("set:VL$playlistId"),
+            title = title,
+            artworkUrl = lockup.findAll("sources").firstOrNull()?.takeIf { it.isJsonArray }?.asJsonArray
+                ?.lastOrNull().str("url")?.substringBefore('?'),
+            permalinkUrl = "${YT_SET_REF}VL$playlistId:$playlistId",
+            user = owner,
+            trackCount = count,
+            isAlbum = false
         )
     }
 

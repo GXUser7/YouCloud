@@ -367,6 +367,12 @@ class MusicViewModel(
     private val _artistShelves = MutableStateFlow<List<YtShelf>>(emptyList())
     val artistShelves = _artistShelves.asStateFlow()
 
+    // The artist's tracks are a YouTube channel's videos: YouTube Music had nothing of it.
+    private val _artistTracksAreVideos = MutableStateFlow(false)
+    val artistTracksAreVideos = _artistTracksAreVideos.asStateFlow()
+    // Where the rest of such a channel's videos are, for "Все".
+    private var ytChannelContinuation: String? = null
+
     private val _yandexPlaylists = MutableStateFlow<List<SoundCloudPlaylist>>(emptyList())
     val yandexPlaylists = _yandexPlaylists.asStateFlow()
 
@@ -1959,6 +1965,23 @@ class MusicViewModel(
                 _artistShelves.value = page.shelves
                     .map { shelf -> shelf.copy(tracks = shelf.tracks.filterNot { it.id in shown }) }
                     .filter { it.tracks.isNotEmpty() || it.sets.isNotEmpty() || it.artists.isNotEmpty() }
+                // A channel YouTube Music has nothing of (a video maker's, say): its videos, as
+                // youtube.com lists them.
+                if (page.topSongs.isEmpty() && page.releases.isEmpty() && page.shelves.isEmpty()) {
+                    val channel = com.example.myapplication.data.YouTubeWeb.channelVideos(channelId, owner, settingsRepository.ytMusicAuth())
+                    val current = _currentArtist.value
+                    _currentArtist.value = current?.copy(
+                        username = current.username?.takeIf { it.isNotBlank() } ?: channel.name,
+                        avatarUrl = current.avatarUrl ?: channel.avatarUrl,
+                        description = current.description ?: channel.description
+                    )
+                    val liveIds = live.mapTo(HashSet()) { it.id }
+                    _currentArtistTracks.value = channel.videos.filterNot { it.id in liveIds }
+                    _currentArtistPlaylists.value = channel.playlists
+                    _artistTracksAreVideos.value = true
+                    ytChannelContinuation = channel.continuation
+                    _isAllArtistTracksLoaded.value = channel.continuation == null
+                }
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -1993,6 +2016,8 @@ class MusicViewModel(
     }
 
     private fun resetArtistExtras() {
+        _artistTracksAreVideos.value = false
+        ytChannelContinuation = null
         artistFollowJob?.cancel()
         _artistFollow.value = null
         _artistLives.value = emptyList()
@@ -3247,6 +3272,8 @@ class MusicViewModel(
         const val WAVE_EMPTY_TRIES = 3
         // The pause before asking for an artist's page again after the request broke off.
         const val ARTIST_RETRY_MS = 1_500L
+        // How many of a YouTube channel's videos "Все" goes as far as.
+        const val CHANNEL_VIDEOS_MAX = 300
 
         // A radio track that stopped this close to its end was heard to the end, not skipped.
         const val RADIO_FINISHED_SLACK_MS = 5_000L
@@ -4267,7 +4294,35 @@ class MusicViewModel(
         return YandexMusicApi.resolveTrackStream(yandexId, token, lightest = true)?.let { ClipAligner.AudioSource(it) }
     }
 
+    /** The rest of a YouTube channel's videos, a page after another, up to a few hundred. */
+    private fun loadMoreChannelVideos() {
+        val artist = _currentArtist.value ?: return
+        viewModelScope.launch {
+            val owner = SoundCloudUser(username = artist.username, permalinkUrl = artist.permalinkUrl)
+            try {
+                while (sameArtist(_currentArtist.value, artist) && _currentArtistTracks.value.size < CHANNEL_VIDEOS_MAX) {
+                    val token = ytChannelContinuation ?: break
+                    val (more, next) = com.example.myapplication.data.YouTubeWeb.moreChannelVideos(token, owner, settingsRepository.ytMusicAuth())
+                    if (!sameArtist(_currentArtist.value, artist)) return@launch
+                    _currentArtistTracks.value = (_currentArtistTracks.value + more).distinctBy { it.id }
+                    ytChannelContinuation = next
+                    if (more.isEmpty()) break
+                }
+                _isAllArtistTracksLoaded.value = true
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.e("MusicViewModel", "More videos of ${artist.permalinkUrl} failed", e)
+                Toast.makeText(context, "Не удалось загрузить остальные видео", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
     fun loadAllArtistTracks(artistId: String, isYandex: Boolean) {
+        if (_currentArtist.value?.permalinkUrl?.startsWith(YT_ARTIST_REF) == true && ytChannelContinuation != null) {
+            loadMoreChannelVideos()
+            return
+        }
         if (_currentArtist.value?.permalinkUrl?.startsWith(YT_ARTIST_REF) == true) {
             val songs = ytArtistSongs ?: return
             viewModelScope.launch {

@@ -963,11 +963,13 @@ fun MusicScreen(viewModel: MusicViewModel) {
                         val artistLives by viewModel.artistLives.collectAsState()
                         val artistShelves by viewModel.artistShelves.collectAsState()
                         val ytArtistShowAll by viewModel.settingsRepo.ytArtistShowAll.collectAsState()
+                        val artistTracksAreVideos by viewModel.artistTracksAreVideos.collectAsState()
                         currentArtist?.let { artist ->
                             ArtistDetailScreen(
                                 artist = artist,
                                 tracks = currentArtistTracks,
                                 playlists = currentArtistPlaylists,
+                                tracksTitle = if (artistTracksAreVideos) "Видео" else "Популярные треки",
                                 follow = artistFollow,
                                 onToggleFollow = {
                                     haptic.performHapticFeedback(HapticFeedbackType.LongPress)
@@ -9995,7 +9997,8 @@ private fun ArtistDetailScreen(
     shelves: List<YtShelf> = emptyList(),
     onPlayFrom: (SoundCloudTrack, List<SoundCloudTrack>) -> Unit = { track, _ -> onPlayTrack(track) },
     onOpenArtist: (SoundCloudUser) -> Unit = {},
-    onRetry: (() -> Unit)? = null
+    onRetry: (() -> Unit)? = null,
+    tracksTitle: String = "Популярные треки"
 ) {
     if (selectedPlaylist != null) {
         SetDetailContent(
@@ -10070,7 +10073,7 @@ private fun ArtistDetailScreen(
                 if (tracks.isNotEmpty()) {
                     item(key = "artist-tracks-title") {
                         SectionTitle(
-                            text = "Популярные треки",
+                            text = tracksTitle,
                             modifier = Modifier.padding(start = 16.dp, top = 8.dp, end = 8.dp, bottom = 8.dp),
                             actionLabel = when {
                                 canShowMore -> if (countKnown) "Все $totalTracks" else "Все"
