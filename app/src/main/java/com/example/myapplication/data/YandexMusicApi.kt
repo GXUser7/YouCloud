@@ -92,6 +92,14 @@ interface YandexMusicService {
         @Field("track-ids") trackIds: String
     ): YandexLikeResponse
 
+    /** "Не рекомендовать": the track is kept out of the wave and the radio from now on. */
+    @POST("users/{userId}/dislikes/tracks/add-multiple")
+    @FormUrlEncoded
+    suspend fun dislikeTrack(
+        @Path("userId") userId: Long,
+        @Field("track-ids") trackIds: String
+    ): com.google.gson.JsonObject
+
     @GET("users/{userId}/likes/tracks")
     suspend fun getLikedTracks(
         @Path("userId") userId: Long

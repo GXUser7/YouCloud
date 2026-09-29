@@ -2074,6 +2074,7 @@ class MusicViewModel(
 
     fun toggleFavorite(track: SoundCloudTrack) {
         viewModelScope.launch {
+            tellYandexRadio(track, if (favoritesRepository.isFavorite(track.id)) "unlike" else "like")
             if (favoritesRepository.isFavorite(track.id)) {
                 favoritesRepository.get(track.id)?.let { favorite ->
                     if (favorite.downloadState == DownloadState.DOWNLOADED && favorite.streamUrl != null &&
@@ -4104,6 +4105,13 @@ class MusicViewModel(
     private val _yandexWaveStarting = MutableStateFlow(false)
     val yandexWaveStarting = _yandexWaveStarting.asStateFlow()
 
+    // What the wave is tuned to: its mood and mode, as seeds for Rotor.
+    private val _yandexWavePicks = MutableStateFlow(settingsRepository.yandexWavePicks())
+    val yandexWavePicks = _yandexWavePicks.asStateFlow()
+
+    // The track just disliked: leaving it is no skip to tell the radio of, the dislike said it all.
+    private var radioDislikedId: Long? = null
+
     // The track playing as the radio saw it, and how far into it playback got: when it gives way
     // the radio hears whether it was finished or skipped.
     private var radioPlayingId: Long? = null
@@ -4142,6 +4150,76 @@ class MusicViewModel(
         }
     }
 
+    /**
+     * Tunes the wave to [seed] for [key] ("mood", "mode"), or, picked again, lets it go. A wave
+     * playing starts over, tuned so; a tuned wave is a session of its own.
+     */
+    fun pickYandexWave(key: String, seed: String) {
+        val picks = _yandexWavePicks.value.toMutableMap()
+        if (picks[key] == seed) picks.remove(key) else picks[key] = seed
+        retuneYandexWave(picks)
+    }
+
+    /** The wave as it is by itself, untuned. */
+    fun resetYandexWave() {
+        if (_yandexWavePicks.value.isNotEmpty()) retuneYandexWave(emptyMap())
+    }
+
+    private fun retuneYandexWave(picks: Map<String, String>) {
+        _yandexWavePicks.value = picks
+        settingsRepository.setYandexWavePicks(picks)
+        settingsRepository.setYandexWaveSession(null)
+        if (_yandexWaveOn.value) playYandexWave()
+    }
+
+    /**
+     * Tells the radio playing that [track] was liked or unliked ([type] "like" or "unlike"), when it
+     * is one the radio gave: the wave leans towards what is liked.
+     */
+    private fun tellYandexRadio(track: SoundCloudTrack, type: String) {
+        val radio = yandexRadio ?: return
+        val batch = radio.batchOf[track.id] ?: return
+        val id = track.urn?.removePrefix("yandex:track:") ?: return
+        sendRadioFeedback(radio, YandexRotorEvent(type = type, timestamp = rotorNow(), trackId = id), batch)
+    }
+
+    /**
+     * "Не нравится" on the Yandex track playing: marked "Не рекомендовать" in Yandex Music, told to
+     * the radio as a dislike, and skipped.
+     */
+    fun dislikeYandexTrack() {
+        val trackId = musicPlayer.currentTrackId.value ?: return
+        val track = _activeQueue.value.firstOrNull { it.id == trackId } ?: return
+        val id = track.urn?.takeIf { it.startsWith("yandex:track:") }?.removePrefix("yandex:track:") ?: return
+        val radio = yandexRadio
+        val batch = radio?.batchOf?.get(trackId)
+        if (radio != null && batch != null) {
+            radioDislikedId = trackId
+            sendRadioFeedback(
+                radio,
+                YandexRotorEvent(
+                    type = "dislike",
+                    timestamp = rotorNow(),
+                    trackId = id,
+                    totalPlayedSeconds = radioPlayedMs / 1000.0
+                ),
+                batch
+            )
+        }
+        viewModelScope.launch {
+            try {
+                val uid = getYandexUid() ?: return@launch
+                yandexService.dislikeTrack(uid, id)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.w("MusicViewModel", "Yandex dislike failed", e)
+            }
+        }
+        android.widget.Toast.makeText(context, "Больше не будет в рекомендациях", android.widget.Toast.LENGTH_SHORT).show()
+        musicPlayer.skipNext()
+    }
+
     /** "Моя волна": played, or paused and played on where it is when it is the one playing. */
     fun toggleYandexWave() {
         if (_yandexWaveOn.value && yandexRadio != null) {
@@ -4156,7 +4234,7 @@ class MusicViewModel(
      * whenever it runs low — the same radio as [playYandexRadio], without a track to start from.
      */
     fun playYandexWave() {
-        val seeds = listOf(YANDEX_WAVE_SEED)
+        val seeds = listOf(YANDEX_WAVE_SEED) + _yandexWavePicks.value.values
         _yandexWaveStarting.value = true
         viewModelScope.launch {
             try {
@@ -4174,7 +4252,16 @@ class MusicViewModel(
                 }
                 val resumed = answer != null
                 if (answer == null) {
-                    answer = yandexService.rotorSessionNew(YandexRotorSessionRequest(seeds = seeds, queue = sent)).result
+                    answer = try {
+                        yandexService.rotorSessionNew(YandexRotorSessionRequest(seeds = seeds, queue = sent)).result
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        // A mood or mode Rotor doesn't take: the wave as it is, rather than none.
+                        if (seeds.size == 1) throw e
+                        Log.w("MusicViewModel", "Yandex wave $seeds refused, playing it untuned", e)
+                        yandexService.rotorSessionNew(YandexRotorSessionRequest(seeds = listOf(YANDEX_WAVE_SEED), queue = sent)).result
+                    }
                     sessionId = answer?.radioSessionId
                 }
                 val session = answer ?: throw IllegalStateException("волна не запустилась")
@@ -4306,7 +4393,9 @@ class MusicViewModel(
             musicPlayer.currentTrackId.collect { trackId ->
                 val radio = yandexRadio
                 val left = radioPlayingId
-                if (radio != null && left != null && left != trackId) {
+                if (radio != null && left != null && left != trackId && left == radioDislikedId) {
+                    radioDislikedId = null
+                } else if (radio != null && left != null && left != trackId) {
                     val batch = radio.batchOf[left]
                     val track = _activeQueue.value.firstOrNull { it.id == left }
                     val id = track?.urn?.removePrefix("yandex:track:")
