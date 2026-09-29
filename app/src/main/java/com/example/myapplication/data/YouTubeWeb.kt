@@ -23,6 +23,8 @@ object YouTubeWeb {
     private const val CLIENT_VERSION = "2.20260925.01.00"
     private const val USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:140.0) Gecko/20100101 Firefox/140.0"
     private val JSON = "application/json".toMediaType()
+    // A channel's "Трансляции" tab.
+    private const val STREAMS_TAB = "EgdzdHJlYW1z8gYECgJ6AA=="
 
     private val http: OkHttpClient = OkHttpClient.Builder()
         .connectTimeout(15, TimeUnit.SECONDS)
@@ -93,6 +95,59 @@ object YouTubeWeb {
             )
         }.distinctBy { it.permalinkUrl }
         YtSearchPage(tracks = tracks, artists = channels, albums = emptyList(), playlists = emptyList(), continuation = null)
+    }
+
+    /**
+     * What the channel [channelId] is broadcasting right now, from its "Трансляции" tab: the
+     * streams marked live, not those that ended or are yet to start. [owner] is who they're by.
+     */
+    suspend fun channelLive(channelId: String, owner: SoundCloudUser, session: YtAuth?): List<SoundCloudTrack> =
+        withContext(Dispatchers.IO) {
+            val page = post("browse", JsonObject().apply {
+                addProperty("browseId", channelId)
+                addProperty("params", STREAMS_TAB)
+            }, session)
+            val lockups = page.findAll("lockupViewModel").mapNotNull { parseLiveLockup(it, owner) }
+            // The older layout, should the page come in it.
+            val videos = page.findAll("videoRenderer").mapNotNull(::parseVideo)
+                .filter { it.kind == "live" }
+                .map { if (it.artists.isNullOrEmpty()) it.copy(user = owner, artists = listOf(owner)) else it }
+            (lockups + videos).distinctBy { it.id }
+        }
+
+    /**
+     * Subscribes the signed-in account to the channel [channelId], or unsubscribes it: one
+     * subscription for YouTube and YouTube Music both.
+     */
+    suspend fun subscribe(channelId: String, subscribe: Boolean, session: YtAuth?) = withContext(Dispatchers.IO) {
+        if (session?.sapisid == null) throw IOException("Не выполнен вход в YouTube")
+        post(if (subscribe) "subscription/subscribe" else "subscription/unsubscribe", JsonObject().apply {
+            add("channelIds", com.google.gson.JsonArray().apply { add(channelId) })
+        }, session)
+        Unit
+    }
+
+    /** A video of a channel's tab, in its newer layout; only one broadcasting now. */
+    private fun parseLiveLockup(lockup: JsonElement, owner: SoundCloudUser): SoundCloudTrack? {
+        if (lockup.str("contentType") != "LOCKUP_CONTENT_TYPE_VIDEO") return null
+        val live = lockup.findAll("badgeStyle").any { it.isJsonPrimitive && it.asString == "THUMBNAIL_OVERLAY_BADGE_STYLE_LIVE" }
+        if (!live) return null
+        val videoId = lockup.str("contentId") ?: return null
+        val title = lockup.str("metadata", "lockupMetadataViewModel", "title", "content") ?: return null
+        val artwork = lockup.arr("contentImage", "thumbnailViewModel", "image", "sources").lastOrNull().str("url")?.substringBefore('?')
+        return SoundCloudTrack(
+            id = youTubeTrackId("live:$videoId"),
+            urn = YT_LIVE_URN + videoId,
+            kind = "live",
+            title = title,
+            artworkUrl = artwork,
+            permalinkUrl = "https://www.youtube.com/watch?v=$videoId",
+            user = owner,
+            artists = listOf(owner),
+            duration = 0L,
+            streamable = true,
+            policy = "ALLOW"
+        )
     }
 
     private fun parseVideo(video: JsonElement): SoundCloudTrack? {

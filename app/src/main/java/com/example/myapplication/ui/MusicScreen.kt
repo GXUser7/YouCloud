@@ -70,6 +70,8 @@ import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.material.icons.rounded.Forum
+import androidx.compose.material.icons.rounded.HowToReg
+import androidx.compose.material.icons.rounded.PersonAddAlt1
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.BorderStroke
@@ -957,11 +959,36 @@ fun MusicScreen(viewModel: MusicViewModel) {
                         val artistLoading by viewModel.artistLoading.collectAsState()
                         val artistError by viewModel.artistError.collectAsState()
                         val selectedArtistPlaylist by viewModel.selectedArtistPlaylist.collectAsState()
+                        val artistFollow by viewModel.artistFollow.collectAsState()
+                        val artistLives by viewModel.artistLives.collectAsState()
+                        val artistShelves by viewModel.artistShelves.collectAsState()
+                        val ytArtistShowAll by viewModel.settingsRepo.ytArtistShowAll.collectAsState()
                         currentArtist?.let { artist ->
                             ArtistDetailScreen(
                                 artist = artist,
                                 tracks = currentArtistTracks,
                                 playlists = currentArtistPlaylists,
+                                follow = artistFollow,
+                                onToggleFollow = {
+                                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                    viewModel.toggleArtistFollow()
+                                },
+                                lives = artistLives,
+                                // The page whole, or as before: its tracks, albums and broadcasts.
+                                shelves = if (ytArtistShowAll) artistShelves else emptyList(),
+                                onPlayFrom = { track, queue ->
+                                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                    viewModel.playQueuedTrack(track, queue)
+                                },
+                                onOpenArtist = { other ->
+                                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                    viewModel.openArtistDetails(
+                                        userId = 0L,
+                                        permalinkUrl = other.permalinkUrl,
+                                        username = other.username,
+                                        avatarUrl = other.avatarUrl
+                                    )
+                                },
                                 isLoading = artistLoading,
                                 error = artistError,
                                 currentTrackId = currentTrackId,
@@ -3708,6 +3735,22 @@ private fun SettingsScreen(
                         }
                     }
                 }
+                val ytArtistShowAll by settingsRepository.ytArtistShowAll.collectAsState()
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .glassOr(MaterialTheme.shapes.extraLarge, MaterialTheme.colorScheme.surfaceContainer),
+                    shape = MaterialTheme.shapes.extraLarge,
+                    colors = CardDefaults.cardColors(containerColor = glassFill(MaterialTheme.colorScheme.surfaceContainer))
+                ) {
+                    SettingsSwitchRow(
+                        icon = Icons.Default.SmartDisplay,
+                        title = "Вся страница автора YouTube",
+                        subtitle = "Все ряды: видео, синглы, плейлисты, похожие исполнители. Выключено — треки, альбомы и трансляции",
+                        checked = ytArtistShowAll,
+                        onCheckedChange = settingsRepository::setYtArtistShowAll
+                    )
+                }
             }
         }
 
@@ -5237,7 +5280,9 @@ private fun ArtistPortraitHeader(
     artist: SoundCloudUser,
     albumCount: Int,
     onPlay: (() -> Unit)?,
-    onShuffle: (() -> Unit)?
+    onShuffle: (() -> Unit)?,
+    follow: ArtistFollow? = null,
+    onToggleFollow: () -> Unit = {}
 ) {
     val followers = artist.followersCount ?: 0
     val trackTotal = artist.trackCount ?: 0
@@ -5245,6 +5290,7 @@ private fun ArtistPortraitHeader(
         if (followers > 0) add(compactCount(followers) + " подписчиков")
         if (trackTotal > 0) add(plural(trackTotal, "трек", "трека", "треков"))
         if (albumCount > 0) add(plural(albumCount, "альбом", "альбома", "альбомов"))
+        if (follow?.following == true) add("вы подписаны")
     }.joinToString(" · ")
     val backdrop = MaterialTheme.colorScheme.background
 
@@ -5303,9 +5349,14 @@ private fun ArtistPortraitHeader(
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
-            if (onPlay != null && onShuffle != null) {
+            val canPlay = onPlay != null && onShuffle != null
+            if (canPlay || follow != null) {
                 Spacer(modifier = Modifier.height(18.dp))
-                PlayShuffleGroup(onPlay = onPlay, onShuffle = onShuffle)
+                Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    if (onPlay != null && onShuffle != null) PlayShuffleGroup(onPlay = onPlay, onShuffle = onShuffle)
+                    Spacer(modifier = Modifier.weight(1f))
+                    if (follow != null) FollowButton(follow = follow, onToggle = onToggleFollow)
+                }
             }
             Spacer(modifier = Modifier.height(12.dp))
         }
@@ -5313,6 +5364,35 @@ private fun ArtistPortraitHeader(
 }
 
 private val ArtistPortraitHeight = 420.dp
+
+/**
+ * Following the artist in its own service: a subscription on YouTube, a like on Yandex Music, a
+ * follow on SoundCloud. Round and glassy until followed; then it squares off, filled with the
+ * accent, the Expressive way of a toggle.
+ */
+@Composable
+private fun FollowButton(follow: ArtistFollow, onToggle: () -> Unit) {
+    val corner by animateDpAsState(if (follow.following) 18.dp else 28.dp, label = "followCorner")
+    val shape = RoundedCornerShape(corner)
+    Surface(
+        onClick = onToggle,
+        enabled = !follow.busy,
+        modifier = Modifier
+            .size(56.dp)
+            .then(if (follow.following) Modifier else Modifier.glassOr(shape, PanelColors.container)),
+        shape = shape,
+        color = if (follow.following) PanelColors.accent else glassFill(PanelColors.container),
+        contentColor = if (follow.following) PanelColors.onAccent else PanelColors.accent
+    ) {
+        Box(contentAlignment = Alignment.Center) {
+            Icon(
+                imageVector = if (follow.following) Icons.Rounded.HowToReg else Icons.Rounded.PersonAddAlt1,
+                contentDescription = if (follow.following) "Отписаться" else "Подписаться",
+                modifier = Modifier.size(24.dp)
+            )
+        }
+    }
+}
 
 /** A mix's or station's top: its cover, "Микс" or "Станция", its name and description. */
 @Composable
@@ -7749,6 +7829,11 @@ private fun ChatComposerButton(
     val onPanel = PanelColors.content
     val canSend by chat.canSend.collectAsState()
     val blocked by chat.sendBlocked.collectAsState()
+    val subscribersOnly by chat.subscribersOnly.collectAsState()
+    var subscribing by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+    val context = LocalContext.current
+    val haptic = LocalHapticFeedback.current
     Surface(
         onClick = onCompose,
         enabled = canSend,
@@ -7775,6 +7860,30 @@ private fun ChatComposerButton(
                 modifier = Modifier.weight(1f)
             )
             if (canSend) Icon(Icons.Rounded.Edit, contentDescription = null, modifier = Modifier.size(20.dp))
+            // Only subscribers may write: subscribing is a tap away.
+            if (!canSend && subscribersOnly) {
+                Surface(
+                    onClick = {
+                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                        subscribing = true
+                        scope.launch {
+                            if (!chat.subscribe()) {
+                                android.widget.Toast.makeText(context, "Не удалось подписаться", android.widget.Toast.LENGTH_SHORT).show()
+                            }
+                            subscribing = false
+                        }
+                    },
+                    enabled = !subscribing,
+                    shape = RoundedCornerShape(16.dp),
+                    color = PanelColors.accent,
+                    contentColor = PanelColors.onAccent,
+                    modifier = Modifier.height(40.dp)
+                ) {
+                    Box(modifier = Modifier.padding(horizontal = 14.dp), contentAlignment = Alignment.Center) {
+                        Text("Подписаться", style = MaterialTheme.typography.labelLarge)
+                    }
+                }
+            }
         }
     }
 }
@@ -9823,7 +9932,13 @@ private fun ArtistDetailScreen(
     onDeselectPlaylist: () -> Unit = {},
     isAllTracksLoaded: Boolean = false,
     onLoadAllTracks: () -> Unit = {},
-    onShuffle: () -> Unit = {}
+    onShuffle: () -> Unit = {},
+    follow: ArtistFollow? = null,
+    onToggleFollow: () -> Unit = {},
+    lives: List<SoundCloudTrack> = emptyList(),
+    shelves: List<YtShelf> = emptyList(),
+    onPlayFrom: (SoundCloudTrack, List<SoundCloudTrack>) -> Unit = { track, _ -> onPlayTrack(track) },
+    onOpenArtist: (SoundCloudUser) -> Unit = {}
 ) {
     if (selectedPlaylist != null) {
         SetDetailContent(
@@ -9870,7 +9985,9 @@ private fun ArtistDetailScreen(
                     artist = artist,
                     albumCount = playlists.size,
                     onPlay = tracks.firstOrNull()?.let { first -> { onPlayTrack(first) } },
-                    onShuffle = if (tracks.isEmpty()) null else onShuffle
+                    onShuffle = if (tracks.isEmpty()) null else onShuffle,
+                    follow = follow,
+                    onToggleFollow = onToggleFollow
                 )
             }
 
@@ -9920,7 +10037,50 @@ private fun ArtistDetailScreen(
                     }
                 }
 
-                if (playlists.isNotEmpty()) {
+                val isYandexArtist = artist.permalinkUrl?.startsWith("yandex") == true
+                // What the channel is broadcasting now.
+                if (lives.isNotEmpty()) {
+                    item(key = "artist-lives-title") {
+                        SectionTitle(
+                            "Трансляции",
+                            modifier = Modifier.padding(start = 16.dp, top = 24.dp, end = 16.dp, bottom = 8.dp)
+                        )
+                    }
+                    item(key = "artist-lives") {
+                        VideoTileRow(tracks = lives, currentTrackId = currentTrackId, onPlay = { onPlayFrom(it, lives) })
+                    }
+                }
+
+                if (shelves.isNotEmpty()) {
+                    // The page whole, row by row as YouTube lays it out.
+                    shelves.forEachIndexed { index, shelf ->
+                        item(key = "artist-shelf-title-$index") {
+                            SectionTitle(
+                                shelf.title,
+                                modifier = Modifier.padding(start = 16.dp, top = 24.dp, end = 16.dp, bottom = 8.dp)
+                            )
+                        }
+                        item(key = "artist-shelf-$index") {
+                            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                                if (shelf.tracks.isNotEmpty()) {
+                                    VideoTileRow(
+                                        tracks = shelf.tracks,
+                                        currentTrackId = currentTrackId,
+                                        onPlay = { onPlayFrom(it, shelf.tracks) }
+                                    )
+                                }
+                                if (shelf.sets.isNotEmpty()) {
+                                    ArtistSetsCarousel(shelf.sets, isYandexArtist, onPlaylistClick)
+                                }
+                                if (shelf.artists.isNotEmpty()) {
+                                    Box(modifier = Modifier.padding(horizontal = 16.dp)) {
+                                        ArtistRow(artists = shelf.artists, onOpen = onOpenArtist)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                } else if (playlists.isNotEmpty()) {
                     item(key = "artist-sets-title") {
                         SectionTitle(
                             "Альбомы и плейлисты",
@@ -9928,26 +10088,7 @@ private fun ArtistDetailScreen(
                         )
                     }
                     item(key = "artist-sets") {
-                        val isYandexArtist = artist.permalinkUrl?.startsWith("yandex") == true
-                        AlbumCarousel(
-                            albums = playlists.map { playlist ->
-                                val isAlbum = isYandexArtist ||
-                                    playlist.permalinkUrl?.startsWith("yandex:album:") == true
-                                CarouselAlbum(
-                                    key = playlist.id,
-                                    title = playlist.title ?: "Альбом",
-                                    subtitle = "",
-                                    caption = if (isAlbum) {
-                                        "Альбом · " + plural(playlist.trackCount, "трек", "трека", "треков")
-                                    } else {
-                                        setCaption(playlist)
-                                    },
-                                    artworkUrl = playlist.displayArtworkUrl,
-                                    onClick = { onPlaylistClick(playlist) }
-                                )
-                            },
-                            modifier = Modifier.padding(horizontal = 16.dp)
-                        )
+                        ArtistSetsCarousel(playlists, isYandexArtist, onPlaylistClick)
                     }
                 }
 
@@ -9973,6 +10114,90 @@ private fun ArtistDetailScreen(
 
 /** How many of an artist's tracks show before "Все". */
 private const val TOP_TRACKS = 5
+
+/** An artist's albums and playlists in the multi-browse carousel. */
+@Composable
+private fun ArtistSetsCarousel(
+    playlists: List<SoundCloudPlaylist>,
+    isYandexArtist: Boolean,
+    onPlaylistClick: (SoundCloudPlaylist) -> Unit
+) {
+    AlbumCarousel(
+        albums = playlists.map { playlist ->
+            val isAlbum = isYandexArtist || playlist.permalinkUrl?.startsWith("yandex:album:") == true
+            CarouselAlbum(
+                key = playlist.id,
+                title = playlist.title ?: "Альбом",
+                subtitle = "",
+                caption = if (isAlbum) {
+                    "Альбом · " + plural(playlist.trackCount, "трек", "трека", "треков")
+                } else {
+                    setCaption(playlist)
+                },
+                artworkUrl = playlist.displayArtworkUrl,
+                onClick = { onPlaylistClick(playlist) }
+            )
+        },
+        modifier = Modifier.padding(horizontal = 16.dp)
+    )
+}
+
+/**
+ * A row of a channel's videos, as its page shows them: wide pictures with the title beneath, a
+ * broadcast marked "В ЭФИРЕ", the one playing ringed. Songs keep their square covers.
+ */
+@Composable
+private fun VideoTileRow(
+    tracks: List<SoundCloudTrack>,
+    currentTrackId: Long?,
+    onPlay: (SoundCloudTrack) -> Unit
+) {
+    // A video's picture is YouTube's own, wide; a song's cover is square.
+    val wide = tracks.firstOrNull()?.artworkUrl?.contains("/vi/") == true
+    val width = if (wide) 216.dp else 148.dp
+    val shape = RoundedCornerShape(20.dp)
+    LazyRow(
+        contentPadding = PaddingValues(horizontal = 16.dp),
+        horizontalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        items(tracks, key = { it.id }) { track ->
+            Column(
+                modifier = Modifier
+                    .width(width)
+                    .clip(shape)
+                    .clickable { onPlay(track) }
+            ) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .aspectRatio(if (wide) 16f / 9f else 1f)
+                        .clip(shape)
+                        .background(MaterialTheme.colorScheme.surfaceContainerHigh)
+                        .then(
+                            if (track.id == currentTrackId) Modifier.border(3.dp, MaterialTheme.colorScheme.primary, shape) else Modifier
+                        )
+                ) {
+                    AsyncImage(
+                        model = artworkUrlForSize(track.artworkUrl, width),
+                        contentDescription = null,
+                        modifier = Modifier.fillMaxSize(),
+                        contentScale = ContentScale.Crop
+                    )
+                    if (track.kind == "live") {
+                        Box(modifier = Modifier.padding(8.dp)) { LiveBadge() }
+                    }
+                }
+                Text(
+                    text = track.title.orEmpty(),
+                    style = MaterialTheme.typography.titleSmall,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.padding(start = 4.dp, top = 8.dp, end = 4.dp, bottom = 4.dp)
+                )
+            }
+        }
+    }
+}
 
 /**
  * Album or playlist opened from the artist page or from search: laid out as a mix is, the cover

@@ -100,6 +100,9 @@ enum class AppScreen {
 /** Where search looks. YouTube Music and Yandex only once they are connected. */
 enum class SearchSource { SOUNDCLOUD, YANDEX, YOUTUBE }
 
+/** Whether the account follows the artist on screen; [busy] while the change is on its way. */
+data class ArtistFollow(val following: Boolean, val busy: Boolean = false)
+
 /** A YouTube Music search: what was asked, and what came back so far. */
 data class YtSearchState(
     val query: String = "",
@@ -352,6 +355,17 @@ class MusicViewModel(
 
     private val _artistError = MutableStateFlow<String?>(null)
     val artistError = _artistError.asStateFlow()
+
+    // Following the artist on screen, in its own service; null: no account there to follow with.
+    private val _artistFollow = MutableStateFlow<ArtistFollow?>(null)
+    val artistFollow = _artistFollow.asStateFlow()
+    private var artistFollowJob: Job? = null
+
+    // A YouTube artist's broadcasts going on now, and every row of their page.
+    private val _artistLives = MutableStateFlow<List<SoundCloudTrack>>(emptyList())
+    val artistLives = _artistLives.asStateFlow()
+    private val _artistShelves = MutableStateFlow<List<YtShelf>>(emptyList())
+    val artistShelves = _artistShelves.asStateFlow()
 
     private val _yandexPlaylists = MutableStateFlow<List<SoundCloudPlaylist>>(emptyList())
     val yandexPlaylists = _yandexPlaylists.asStateFlow()
@@ -1747,6 +1761,7 @@ class MusicViewModel(
             _currentArtistPlaylists.value = emptyList()
             _selectedArtistPlaylist.value = null
             _isAllArtistTracksLoaded.value = false
+            resetArtistExtras()
             
             var isYandex = permalinkUrl?.startsWith("yandex:artist:") == true || 
                            permalinkUrl?.contains("yandex:artist:") == true ||
@@ -1797,6 +1812,7 @@ class MusicViewModel(
                         )
                         _currentArtistTracks.value = response.result?.tracks.orEmpty().map { it.toSoundCloudTrack() }
                         _currentArtistPlaylists.value = response.result?.albums.orEmpty().map { it.toSoundCloudPlaylist() }
+                        _currentArtist.value?.let(::checkArtistFollow)
                     } else {
                         _currentArtist.value = SoundCloudUser(username = username ?: "Яндекс Артист")
                         _artistError.value = "Информация об артисте недоступна"
@@ -1848,6 +1864,7 @@ class MusicViewModel(
                         }
                     }
                     _currentArtist.value = resolvedUser
+                    checkArtistFollow(resolvedUser)
 
                     // 3. Load user's stream feed (includes tracks and albums/playlists)
                     if (resolvedUserId != 0L) {
@@ -1894,9 +1911,24 @@ class MusicViewModel(
         _currentArtistPlaylists.value = emptyList()
         _selectedArtistPlaylist.value = null
         _isAllArtistTracksLoaded.value = false
+        resetArtistExtras()
         ytArtistSongs = null
         ytArtistJob?.cancel()
         ytArtistJob = viewModelScope.launch {
+            // What the channel is broadcasting, from youtube.com, while YouTube Music gives the rest.
+            val lives = async {
+                try {
+                    com.example.myapplication.data.YouTubeWeb.channelLive(
+                        channelId, SoundCloudUser(username = name, permalinkUrl = YT_ARTIST_REF + channelId),
+                        settingsRepository.ytMusicAuth()
+                    )
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    Log.w("MusicViewModel", "Broadcasts of $channelId failed", e)
+                    emptyList()
+                }
+            }
             try {
                 val page = ytMusic.artist(channelId)
                 _currentArtist.value = page.artist.copy(
@@ -1907,6 +1939,16 @@ class MusicViewModel(
                 _currentArtistPlaylists.value = page.releases
                 ytArtistSongs = page.allSongs
                 _isAllArtistTracksLoaded.value = page.allSongs == null
+                _artistFollow.value = page.subscribed?.let { ArtistFollow(it) }
+                val owner = SoundCloudUser(username = _currentArtist.value?.username, permalinkUrl = YT_ARTIST_REF + channelId)
+                val live = lives.await().map { it.copy(user = owner, artists = listOf(owner)) }
+                _artistLives.value = live
+                // Rows the page's top already shows (its videos standing in for songs), and the
+                // broadcasts it files as a podcast's episodes, aren't shown twice.
+                val shown = (page.topSongs + live).mapTo(HashSet()) { it.id }
+                _artistShelves.value = page.shelves
+                    .map { shelf -> shelf.copy(tracks = shelf.tracks.filterNot { it.id in shown }) }
+                    .filter { it.tracks.isNotEmpty() || it.sets.isNotEmpty() || it.artists.isNotEmpty() }
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -1923,8 +1965,115 @@ class MusicViewModel(
         _currentArtistTracks.value = emptyList()
         _currentArtistPlaylists.value = emptyList()
         _selectedArtistPlaylist.value = null
+        resetArtistExtras()
         _screen.value = if (returnToSearchFromArtist) AppScreen.SEARCH else AppScreen.HOME
         returnToSearchFromArtist = false
+    }
+
+    private fun resetArtistExtras() {
+        artistFollowJob?.cancel()
+        _artistFollow.value = null
+        _artistLives.value = emptyList()
+        _artistShelves.value = emptyList()
+    }
+
+    /** Asks whether the account follows [artist] (SoundCloud, Yandex), for the button on its page. */
+    private fun checkArtistFollow(artist: SoundCloudUser) {
+        artistFollowJob?.cancel()
+        artistFollowJob = viewModelScope.launch {
+            val following = try {
+                isFollowing(artist)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.w("MusicViewModel", "Following ${artist.permalinkUrl} unknown", e)
+                false
+            }
+            if (sameArtist(_currentArtist.value, artist)) {
+                _artistFollow.value = following?.let { ArtistFollow(it) }
+            }
+        }
+    }
+
+    // Null: no account in the artist's service, or the artist is the account itself.
+    private suspend fun isFollowing(artist: SoundCloudUser): Boolean? {
+        val ref = artist.permalinkUrl.orEmpty()
+        if (ref.startsWith("yandex:artist:")) {
+            if (settingsRepository.yandexTokenValue().isBlank()) return null
+            val uid = getYandexUid() ?: return null
+            val id = ref.removePrefix("yandex:artist:")
+            val liked = yandexService.likedArtists(uid).get("result")?.takeIf { it.isJsonArray }?.asJsonArray ?: return false
+            return liked.any { entry ->
+                val item = entry.takeIf { it.isJsonObject }?.asJsonObject ?: return@any false
+                val artistId = item.get("id")
+                    ?: item.get("artist")?.takeIf { it.isJsonObject }?.asJsonObject?.get("id")
+                artistId?.takeIf { it.isJsonPrimitive }?.asString == id
+            }
+        }
+        val userId = artist.id?.takeIf { it != 0L } ?: return null
+        if (settingsRepository.oauthTokenValue().isBlank() || settingsRepository.userIdValue() == userId.toString()) return null
+        val ids = service.getFollowingIds(settingsRepository.clientId.value)
+            .get("collection")?.takeIf { it.isJsonArray }?.asJsonArray ?: return false
+        return ids.any { it.isJsonPrimitive && it.asLong == userId }
+    }
+
+    private fun sameArtist(a: SoundCloudUser?, b: SoundCloudUser): Boolean =
+        a != null && a.permalinkUrl == b.permalinkUrl && (a.id ?: 0L) == (b.id ?: 0L)
+
+    /** Follows the artist on screen in its service, or unfollows: YouTube's subscription, Yandex's like. */
+    fun toggleArtistFollow() {
+        val artist = _currentArtist.value ?: return
+        val state = _artistFollow.value ?: return
+        if (state.busy) return
+        val follow = !state.following
+        // Shown at once; put back if the service refuses.
+        _artistFollow.value = ArtistFollow(follow, busy = true)
+        viewModelScope.launch {
+            val sent = try {
+                sendFollow(artist, follow)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.e("MusicViewModel", "Follow of ${artist.permalinkUrl} failed", e)
+                false
+            }
+            if (!sameArtist(_currentArtist.value, artist)) return@launch
+            _artistFollow.value = ArtistFollow(if (sent) follow else !follow)
+            if (!sent) {
+                Toast.makeText(context, if (follow) "Не удалось подписаться" else "Не удалось отписаться", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
+    private suspend fun sendFollow(artist: SoundCloudUser, follow: Boolean): Boolean {
+        val ref = artist.permalinkUrl.orEmpty()
+        when {
+            ref.startsWith(YT_ARTIST_REF) -> {
+                com.example.myapplication.data.YouTubeWeb.subscribe(ref.removePrefix(YT_ARTIST_REF), follow, settingsRepository.ytMusicAuth())
+                return true
+            }
+            ref.startsWith("yandex:artist:") -> {
+                val uid = getYandexUid() ?: return false
+                val id = ref.removePrefix("yandex:artist:")
+                if (follow) yandexService.likeArtist(uid, id) else yandexService.unlikeArtist(uid, id)
+                return true
+            }
+        }
+        val userId = artist.id?.takeIf { it != 0L } ?: return false
+        // From a soundcloud.com page, as the website's own button: likes taught that SoundCloud's
+        // bot protection lets nothing else through from a VPN address.
+        suspend fun send() = SoundCloudWebRequests.send(
+            context = context,
+            method = if (follow) "POST" else "DELETE",
+            url = "${SoundCloudApi.BASE_URL}me/followings/$userId" +
+                "?client_id=${settingsRepository.clientId.value}" +
+                "&app_version=${SoundCloudApi.APP_VERSION}&app_locale=en",
+            oauthToken = settingsRepository.oauthTokenValue()
+        )
+        var result = send()
+        if (result?.status == 401 && renewSoundCloudSession(settingsRepository.oauthTokenValue())) result = send()
+        result?.captchaUrl?.takeIf { !it.contains("t=bv") }?.let { _antiBotCaptchaUrl.value = it }
+        return result?.isSuccessful == true
     }
 
     fun selectArtistPlaylist(playlist: SoundCloudPlaylist) {

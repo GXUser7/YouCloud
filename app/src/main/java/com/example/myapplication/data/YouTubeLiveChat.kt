@@ -103,13 +103,8 @@ class YouTubeLiveChat(private val videoId: String, private val auth: () -> YtAut
         }
         sendParams = null
         _canSend.value = false
-        val said = panel?.findAll("runs")
-            ?.flatMap { runs -> if (runs.isJsonArray) runs.asJsonArray.toList() else emptyList() }
-            ?.mapNotNull { it.str("text") }
-            ?.joinToString("")
-            ?.trim()
-            ?.takeIf { it.isNotEmpty() }
-            ?: panel?.findAll("simpleText")?.firstOrNull()?.takeIf { it.isJsonPrimitive }?.asString
+        val said = panel?.let(::panelMessage)
+        _subscribersOnly.value = said != null && SUBSCRIBERS.containsMatchIn(said)
         _sendBlocked.value = when {
             auth()?.sapisid == null -> "Войдите в YouTube Music в настройках, чтобы писать"
             said != null -> said
@@ -117,9 +112,92 @@ class YouTubeLiveChat(private val videoId: String, private val auth: () -> YtAut
         }
     }
 
+    /**
+     * What the panel says, its buttons and links left out: "Только для подписчиков", not the
+     * "Только для подписчиковПодробнее" of every text in it run together.
+     */
+    private fun panelMessage(panel: JsonElement): String? {
+        val blocks = mutableListOf<String>()
+        fun walk(node: JsonElement, inButton: Boolean) {
+            when {
+                node.isJsonObject -> node.asJsonObject.entrySet().forEach { (name, value) ->
+                    val button = inButton || name.contains("button", ignoreCase = true) || name.endsWith("Endpoint") ||
+                        name.endsWith("Command")
+                    when {
+                        button -> Unit
+                        name == "runs" && value.isJsonArray -> value.asJsonArray
+                            .filter { it.at("navigationEndpoint") == null }
+                            .mapNotNull { it.str("text") }
+                            .filterNot { it.trim().lowercase() in LINK_WORDS }
+                            .joinToString("")
+                            .trim()
+                            .takeIf { it.isNotEmpty() }
+                            ?.let(blocks::add)
+                        name == "simpleText" && value.isJsonPrimitive ->
+                            value.asString.trim().takeIf { it.isNotEmpty() && it.lowercase() !in LINK_WORDS }?.let(blocks::add)
+                        else -> walk(value, false)
+                    }
+                }
+                node.isJsonArray -> node.asJsonArray.forEach { walk(it, inButton) }
+            }
+        }
+        walk(panel, false)
+        val said = blocks.distinct()
+        // A title and its explanation read as two sentences.
+        return when (said.size) {
+            0 -> null
+            1 -> said.single()
+            else -> said.joinToString(" ") { if (it.last() in ".!?…") it else "$it." }
+        }
+    }
+
+    private val _subscribersOnly = MutableStateFlow(false)
+    /** Whether only the channel's subscribers may write: subscribing is then the way in. */
+    val subscribersOnly: StateFlow<Boolean> = _subscribersOnly.asStateFlow()
+
+    @Volatile
+    private var ownerChannel: String? = null
+
+    /** The channel broadcasting, as its watch page names it, once the chat has been read. */
+    val channelId: String? get() = ownerChannel
+
+    /**
+     * Subscribes the account to the channel broadcasting, for a chat only its subscribers may
+     * write in, and reads what it may do now (YouTube may still ask to wait a few minutes).
+     */
+    suspend fun subscribe(): Boolean {
+        val channel = ownerChannel ?: return false
+        val done = try {
+            YouTubeWeb.subscribe(channel, true, auth())
+            true
+        } catch (e: IOException) {
+            false
+        }
+        if (done) recheck()
+        return done
+    }
+
+    /**
+     * Reads the panel for writing again, as a fresh chat page opens it: after subscribing, say,
+     * when what the account may do has changed.
+     */
+    suspend fun recheck() = withContext(Dispatchers.IO) {
+        runCatching {
+            val continuation = firstContinuation() ?: return@runCatching
+            val page = post("live_chat/get_live_chat", JsonObject().apply { addProperty("continuation", continuation) })
+                .at("continuationContents", "liveChatContinuation")
+            readActionPanel(page?.at("actionPanel"))
+        }
+        Unit
+    }
+
     /** The chat's first continuation: its "top chat", as the watch page opens it. */
     private fun firstContinuation(): String? {
         val next = post("next", JsonObject().apply { addProperty("videoId", videoId) })
+        next.findAll("videoOwnerRenderer").firstOrNull()
+            ?.str("navigationEndpoint", "browseEndpoint", "browseId")
+            ?.takeIf { it.startsWith("UC") }
+            ?.let { ownerChannel = it }
         return next.findAll("liveChatRenderer").firstOrNull()
             ?.arr("continuations")
             ?.firstNotNullOfOrNull { it.str("reloadContinuationData", "continuation") }
@@ -159,6 +237,9 @@ class YouTubeLiveChat(private val videoId: String, private val auth: () -> YtAut
         // is still light, and reads as a conversation.
         const val MIN_WAIT_MS = 2_000L
         const val MAX_WAIT_MS = 5_000L
+        // A link after the reason, not part of it.
+        val LINK_WORDS = setOf("подробнее", "learn more", "подробнее…", "подробнее...")
+        val SUBSCRIBERS = Regex("подписч|subscri", RegexOption.IGNORE_CASE)
     }
 }
 

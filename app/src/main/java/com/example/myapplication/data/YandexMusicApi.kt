@@ -119,6 +119,28 @@ interface YandexMusicService {
     @FormUrlEncoded
     suspend fun playlists(@Field("playlist-ids") playlistIds: String): com.google.gson.JsonObject
 
+    /** "Нравится" on an artist: Yandex Music's way of following one. */
+    @POST("users/{userId}/likes/artists/add-multiple")
+    @FormUrlEncoded
+    suspend fun likeArtist(
+        @Path("userId") userId: Long,
+        @Field("artist-ids") artistIds: String
+    ): com.google.gson.JsonObject
+
+    @POST("users/{userId}/likes/artists/remove")
+    @FormUrlEncoded
+    suspend fun unlikeArtist(
+        @Path("userId") userId: Long,
+        @Field("artist-ids") artistIds: String
+    ): com.google.gson.JsonObject
+
+    /** Every artist the listener likes: artists, or with timestamps each under `artist`. */
+    @GET("users/{userId}/likes/artists")
+    suspend fun likedArtists(
+        @Path("userId") userId: Long,
+        @Query("with-timestamps") withTimestamps: Boolean = false
+    ): com.google.gson.JsonObject
+
     /** "Не рекомендовать": the track is kept out of the wave and the radio from now on. */
     @POST("users/{userId}/dislikes/tracks/add-multiple")
     @FormUrlEncoded

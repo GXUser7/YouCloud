@@ -46,11 +46,12 @@ fun sapisidAuthorization(sapisid: String, origin: String): String {
     return "SAPISIDHASH ${timestamp}_" + digest.joinToString("") { "%02x".format(it) }
 }
 
-/** A row of YouTube Music's home: songs to play in place, and sets to open. */
+/** A row of YouTube Music's home: songs to play in place, and sets to open; an artist's, artists too. */
 data class YtShelf(
     val title: String,
     val tracks: List<SoundCloudTrack>,
-    val sets: List<SoundCloudPlaylist>
+    val sets: List<SoundCloudPlaylist>,
+    val artists: List<SoundCloudUser> = emptyList()
 )
 
 /** What a search found: songs a page at a time ([continuation] for the next), and the rest at once. */
@@ -70,7 +71,11 @@ data class YtArtistPage(
     val artist: SoundCloudUser,
     val topSongs: List<SoundCloudTrack>,
     val allSongs: SoundCloudPlaylist?,
-    val releases: List<SoundCloudPlaylist>
+    val releases: List<SoundCloudPlaylist>,
+    // Every row of the page, under its own title, for the page shown whole.
+    val shelves: List<YtShelf> = emptyList(),
+    // Whether the signed-in account is subscribed; null signed out.
+    val subscribed: Boolean? = null
 )
 
 /**
@@ -340,6 +345,29 @@ class YouTubeMusicClient(private val authProvider: () -> YtAuth?) {
             ?: sections.firstNotNullOfOrNull { it.at("musicDescriptionShelfRenderer") }.runs("description")
         val listeners = header.runs("monthlyListenerCount")
             ?: header.runs("subscriptionButton", "subscribeButtonRenderer", "subscriberCountText")
+        // Every row as the page has it, in its order and under its title ("Видео", "Синглы",
+        // "Похожие исполнители"…): a channel's broadcasts come as a podcast's episodes.
+        val owner = SoundCloudUser(username = name, permalinkUrl = YT_ARTIST_REF + channelId)
+        val shelves = carousels.mapNotNull { shelf ->
+            val title = shelf.runs("header", "musicCarouselShelfBasicHeaderRenderer", "title") ?: return@mapNotNull null
+            val tracks = mutableListOf<SoundCloudTrack>()
+            val sets = mutableListOf<SoundCloudPlaylist>()
+            val artists = mutableListOf<SoundCloudUser>()
+            shelf.arr("contents").forEach { item ->
+                item.at("musicTwoRowItemRenderer")?.let { tile ->
+                    parseTileTrack(tile)?.let(tracks::add)
+                        ?: parseTileArtist(tile)?.let(artists::add)
+                        ?: parseTileSet(tile)?.let(sets::add)
+                }
+                item.at("musicMultiRowListItemRenderer")?.let { parseEpisode(it, owner) }?.let(tracks::add)
+                item.at("musicResponsiveListItemRenderer")?.let { parseSongRow(it, fallbackArtist = name) }?.let(tracks::add)
+            }
+            YtShelf(title, tracks.distinctBy { it.id }, sets.distinctBy { it.id }, artists.distinctBy { it.permalinkUrl })
+                .takeIf { it.tracks.isNotEmpty() || it.sets.isNotEmpty() || it.artists.isNotEmpty() }
+        }
+        val subscribed = header.at("subscriptionButton", "subscribeButtonRenderer", "subscribed")
+            ?.takeIf { it.isJsonPrimitive && authProvider()?.sapisid != null }
+            ?.asBoolean
         val artist = SoundCloudUser(
             username = name,
             // A channel's page shows its avatar apart from a wide banner; an artist's, one picture.
@@ -349,7 +377,7 @@ class YouTubeMusicClient(private val authProvider: () -> YtAuth?) {
             followersCount = listeners?.let(::parseCount),
             permalinkUrl = YT_ARTIST_REF + channelId
         )
-        return YtArtistPage(artist, topSongs, allSongs, releases)
+        return YtArtistPage(artist, topSongs, allSongs, releases, shelves, subscribed)
     }
 
     /**
@@ -517,6 +545,25 @@ class YouTubeMusicClient(private val authProvider: () -> YtAuth?) {
         val artists = artistsOf(tile.arr("subtitle", "runs")).ifEmpty { plainArtist(tile.runs("subtitle")) }
         val artwork = bestThumbnail(tile.arr("thumbnailRenderer", "musicThumbnailRenderer", "thumbnail", "thumbnails"))
         return track(videoId, title, artists, 0L, artwork, live = isLive(tile, tile.runs("subtitle")))
+    }
+
+    /** A tile that opens an artist or a channel ("Похожие исполнители"). */
+    private fun parseTileArtist(tile: JsonElement): SoundCloudUser? {
+        val id = tile.str("navigationEndpoint", "browseEndpoint", "browseId")?.takeIf { it.startsWith("UC") } ?: return null
+        return SoundCloudUser(
+            username = tile.runs("title") ?: return null,
+            avatarUrl = bestThumbnail(tile.arr("thumbnailRenderer", "musicThumbnailRenderer", "thumbnail", "thumbnails")),
+            followersCount = tile.runs("subtitle")?.let(::parseCount),
+            permalinkUrl = YT_ARTIST_REF + id
+        )
+    }
+
+    /** A podcast's episode: how YouTube Music files a channel's broadcasts ("Новые выпуски"). */
+    private fun parseEpisode(row: JsonElement, owner: SoundCloudUser): SoundCloudTrack? {
+        val videoId = row.str("onTap", "watchEndpoint", "videoId") ?: return null
+        val title = row.runs("title") ?: return null
+        val artwork = bestThumbnail(row.arr("thumbnail", "musicThumbnailRenderer", "thumbnail", "thumbnails"))
+        return track(videoId, title, listOf(owner), 0L, artwork, live = isLive(row, row.runs("subtitle")))
     }
 
     private fun parseTileSet(tile: JsonElement): SoundCloudPlaylist? {
