@@ -1593,7 +1593,7 @@ class MusicViewModel(
         viewModelScope.launch {
             try {
                 val radio = ytMusic.radio(videoId).filterNot { it.id == track.id }
-                playQueuedTrack(track, listOf(track) + radio)
+                playQueueFrom(track, listOf(track) + radio)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -3537,6 +3537,32 @@ class MusicViewModel(
 
 
 
+    /**
+     * Plays [queue] from [track]: when [track] is the one playing already, it plays on where it is
+     * and only what comes around it changes — a radio started from the track playing used to start
+     * that track over. Otherwise as [playQueuedTrack].
+     */
+    private fun playQueueFrom(track: SoundCloudTrack, queue: List<SoundCloudTrack>) {
+        if (musicPlayer.currentTrackId.value != track.id) {
+            playQueuedTrack(track, queue)
+            return
+        }
+        viewModelScope.launch {
+            val kept = queueMutex.withLock {
+                val stubs = queue.map { t -> t.toQueueTrack(localStreamUrl(t.id) ?: resolvedUrls[t.id] ?: placeholderStreamUrl(t)) }
+                val index = queue.indexOfFirst { it.id == track.id }.coerceAtLeast(0)
+                if (musicPlayer.reorderQueueKeepingCurrent(stubs, index)) {
+                    originalQueue = queue
+                    _activeQueue.value = queue
+                    true
+                } else {
+                    false
+                }
+            }
+            if (!kept) playQueuedTrack(track, queue)
+        }
+    }
+
     fun playQueuedTrack(
         track: SoundCloudTrack,
         customQueue: List<SoundCloudTrack>? = null,
@@ -4152,7 +4178,7 @@ class MusicViewModel(
                 radio.tailId = batch.last().id
                 yandexRadio = radio
                 Log.d("MusicViewModel", "Yandex radio from $seed: session $sessionId, ${batch.size} tracks")
-                playQueuedTrack(track, listOf(track) + batch)
+                playQueueFrom(track, listOf(track) + batch)
                 sendRadioFeedback(radio, YandexRotorEvent(type = "radioStarted", timestamp = rotorNow()), session.batchId)
             } catch (e: CancellationException) {
                 throw e

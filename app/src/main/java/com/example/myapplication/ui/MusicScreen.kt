@@ -1199,8 +1199,9 @@ fun MusicScreen(viewModel: MusicViewModel) {
                     context.startActivity(shareIntent)
                 }
             },
-            onRedownload = {
-                viewModel.redownloadTrack(capturedTrack)
+            // A file added from the phone has nowhere to be downloaded again from.
+            onRedownload = if (capturedTrack.urn?.startsWith("local:") == true) null else {
+                { viewModel.redownloadTrack(capturedTrack) }
             },
             // The player has no menu of its own at the top any more: a downloaded track is taken
             // off the phone from here.
@@ -9421,7 +9422,7 @@ fun TrackActionsDialog(
     onAddToPlaylist: (Playlist) -> Unit,
     onCreatePlaylist: (String) -> Unit,
     onShare: () -> Unit,
-    onRedownload: () -> Unit = {},
+    onRedownload: (() -> Unit)? = null,
     // Only for a track downloaded to the phone.
     onDeleteDownload: (() -> Unit)? = null,
     // Only for tracks with a radio to start — YouTube Music's.
@@ -9562,7 +9563,7 @@ fun TrackActionsDialog(
                                     )
                                 }
 
-                                ListItem(
+                                if (onRedownload != null) ListItem(
                                     headlineContent = { Text("Перескачать трек") },
                                     supportingContent = { Text("Скачать файл заново на устройство") },
                                     leadingContent = {
