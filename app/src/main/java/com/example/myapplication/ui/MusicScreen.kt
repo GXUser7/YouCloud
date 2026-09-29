@@ -1628,7 +1628,6 @@ private fun HomeScreen(
                     // painted into a picture of its own on every frame, out of sight.
                     alpha = if (away >= 1f) 0f else 1f - 0.45f * away
                 }
-                .then(if (landscape) Modifier.windowInsetsPadding(WindowInsets.displayCutout.only(WindowInsetsSides.Horizontal)) else Modifier)
             val titleBlock: @Composable () -> Unit = {
                 Box(
                     modifier = Modifier
@@ -1842,8 +1841,15 @@ private fun HomeScreen(
             }
             if (landscape) {
                 Row(modifier = pageModifier) {
+                    // Centred on the whole of the left: the camera's cutout at the screen's edge is
+                    // never reached by a cover in the middle, and kept clear of by the pane.
                     sectionsBlock(Modifier.weight(1f).fillMaxHeight())
-                    Column(modifier = Modifier.width(LandscapePaneWidth).fillMaxHeight()) {
+                    Column(
+                        modifier = Modifier
+                            .windowInsetsPadding(WindowInsets.displayCutout.only(WindowInsetsSides.End))
+                            .width(LandscapePaneWidth)
+                            .fillMaxHeight()
+                    ) {
                         titleBlock()
                         // What the section is, under its name: there is room for it on the side.
                         val subtitle = sections.getOrElse(sectionPager.currentPage) { sections.first() }.subtitle
@@ -2617,13 +2623,19 @@ private fun HomeHeroCarousel(items: List<HeroItem>) {
     val pagerState = rememberPagerState { items.size }
 
     BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
-        val captionHeight = 88.dp
-        val captionGap = 16.dp
-        val margin = 16.dp
         val landscape = isLandscape()
-        // Sideways the page is wider than tall: the cover square, as tall as leaves the caption room.
+        // Sideways the caption is a line of title and a line under it, and no taller than that:
+        // room kept for more stood empty under it, and the covers crowded up against the top.
+        val captionHeight = if (landscape) 60.dp else 88.dp
+        val captionGap = if (landscape) 12.dp else 16.dp
+        val margin = 16.dp
+        // Sideways the page is wider than tall: the cover square, as tall as leaves the caption room
+        // and a margin above and below.
         val coverWidth = if (landscape) {
-            minOf(maxWidth - (margin + HeroStrip + HeroGap) * 2, maxHeight - captionHeight - captionGap).coerceAtLeast(120.dp)
+            minOf(
+                maxWidth - (margin + HeroStrip + HeroGap) * 2,
+                maxHeight - captionHeight - captionGap - HeroLandscapeMargin * 2
+            ).coerceAtLeast(120.dp)
         } else {
             maxWidth - (margin + HeroStrip + HeroGap) * 2
         }
@@ -2781,7 +2793,7 @@ private fun HomeHeroCarousel(items: List<HeroItem>) {
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             textAlign = TextAlign.Center,
-                            maxLines = 2,
+                            maxLines = if (landscape) 1 else 2,
                             overflow = TextOverflow.Ellipsis
                         )
                     }
@@ -2794,6 +2806,8 @@ private fun HomeHeroCarousel(items: List<HeroItem>) {
 /** Width a neighbouring cover narrows to, and the gap between covers. */
 private val HeroStrip = 36.dp
 private val HeroGap = 8.dp
+// Sideways, the room above the covers and below their caption.
+private val HeroLandscapeMargin = 24.dp
 
 /** A rounded rectangle over [width] of the page from [left]: the part of a cover left visible. */
 private class HeroStripShape(
