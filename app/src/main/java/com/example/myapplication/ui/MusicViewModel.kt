@@ -803,12 +803,33 @@ class MusicViewModel(
         }
     }
 
+    // Yandex Music's home, as rows; see [loadYandexShelves].
+    private val _yandexShelves = MutableStateFlow<List<com.example.myapplication.data.YtShelf>>(emptyList())
+    val yandexShelves = _yandexShelves.asStateFlow()
+
+    /** Yandex Music's own home rows: the playlists made for the listener, new releases, the chart. */
+    private fun loadYandexShelves() {
+        viewModelScope.launch {
+            try {
+                val shelves = com.example.myapplication.data.YandexLanding.parse(yandexService.landing())
+                Log.d("MusicViewModel", "Yandex home rows: " + shelves.joinToString { "${it.title} (${it.tracks.size} tracks, ${it.sets.size} sets)" })
+                _yandexShelves.value = shelves
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.w("MusicViewModel", "Yandex home rows failed", e)
+            }
+        }
+    }
+
     fun loadYandexPlaylists() {
         val token = settingsRepository.yandexTokenValue()
         if (token.isBlank()) {
             _yandexPlaylists.value = emptyList()
+            _yandexShelves.value = emptyList()
             return
         }
+        loadYandexShelves()
         viewModelScope.launch {
             _yandexPlaylistsLoading.value = true
             try {
@@ -1564,7 +1585,7 @@ class MusicViewModel(
         ytSetJob = viewModelScope.launch {
             _ytSetLoading.value = true
             try {
-                val tracks = ytMusic.setTracks(set)
+                val tracks = if (set.permalinkUrl?.startsWith("yandex:") == true) loadYandexSetTracks(set) else ytMusic.setTracks(set)
                 if (_ytOpenedSet.value?.id == set.id) {
                     _ytOpenedSet.value = set.copy(tracks = tracks, trackCount = tracks.size)
                 }

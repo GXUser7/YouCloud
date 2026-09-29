@@ -92,6 +92,13 @@ interface YandexMusicService {
         @Field("track-ids") trackIds: String
     ): YandexLikeResponse
 
+    /**
+     * Yandex Music's home, in [blocks]: the playlists made for the listener (of the day, Дежавю,
+     * Премьера, Тайник…), new releases and playlists, the chart. Read by [YandexLanding].
+     */
+    @GET("landing3")
+    suspend fun landing(@Query("blocks") blocks: String = YandexLanding.BLOCKS): com.google.gson.JsonObject
+
     /** "Не рекомендовать": the track is kept out of the wave and the radio from now on. */
     @POST("users/{userId}/dislikes/tracks/add-multiple")
     @FormUrlEncoded

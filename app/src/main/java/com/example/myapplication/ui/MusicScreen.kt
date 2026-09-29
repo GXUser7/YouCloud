@@ -411,6 +411,7 @@ fun MusicScreen(viewModel: MusicViewModel) {
     }
 
     val yandexPlaylists by viewModel.yandexPlaylists.collectAsState()
+    val yandexShelves by viewModel.yandexShelves.collectAsState()
     val yandexWaveOn by viewModel.yandexWaveOn.collectAsState()
     val yandexWavePicks by viewModel.yandexWavePicks.collectAsState()
     val trackFx by viewModel.trackFx.collectAsState()
@@ -579,6 +580,8 @@ fun MusicScreen(viewModel: MusicViewModel) {
                         downloadedFolderArtworkUri = downloadedFolderArtworkUri,
                         playlists = playlists,
                         yandexPlaylists = yandexPlaylists,
+                        yandexShelves = yandexShelves,
+                        onPlayYandexTrack = { track, queue -> viewModel.playYandexTrack(track, queue) },
                         wave = HomeWave(
                             on = yandexWaveOn,
                             starting = yandexWaveStarting,
@@ -1249,7 +1252,8 @@ private enum class HomeCategory(val title: String, val service: HomeService) {
     YouTube("YouTube Music", HomeService.YouTube),
     Library("Медиатека", HomeService.Yandex),
     MyMusic("Моя музыка", HomeService.Downloads),
-    MyWave("Моя форма", HomeService.Yandex)
+    MyWave("Моя форма", HomeService.Yandex),
+    YandexShelf("Яндекс Музыка", HomeService.Yandex)
 }
 
 /** Yandex's wave as home shows it, as "Моя форма"; see [MyWavePage]. */
@@ -1335,6 +1339,8 @@ private fun HomeScreen(
     downloadedFolderArtworkUri: String?,
     playlists: List<Playlist>,
     yandexPlaylists: List<SoundCloudPlaylist>,
+    yandexShelves: List<YtShelf>,
+    onPlayYandexTrack: (SoundCloudTrack, List<SoundCloudTrack>) -> Unit,
     wave: HomeWave,
     onOpenPlaylist: (Playlist) -> Unit,
     onOpenYandexPlaylist: (SoundCloudPlaylist) -> Unit,
@@ -1424,7 +1430,19 @@ private fun HomeScreen(
                     plural(yandexPlaylists.size, "плейлист", "плейлиста", "плейлистов") + " Яндекс Музыки"
                 }
             )
-        )
+        ) + yandexShelves.map { shelf ->
+            // Each row of Yandex Music's home a section of its own, as YouTube Music's are.
+            HomeSection(
+                key = "ya-" + shelf.title,
+                category = HomeCategory.YandexShelf,
+                title = shelf.title,
+                subtitle = listOfNotNull(
+                    shelf.tracks.size.takeIf { it > 0 }?.let { plural(it, "трек", "трека", "треков") },
+                    shelf.sets.size.takeIf { it > 0 }?.let { plural(it, "подборка", "подборки", "подборок") }
+                ).joinToString(" · "),
+                shelf = shelf
+            )
+        }
         // Each row of YouTube Music's home a section of its own, as on the site.
         HomeService.YouTube -> ytRows.map { shelf ->
             HomeSection(
@@ -1636,6 +1654,10 @@ private fun HomeScreen(
                             onPick = wave.onPick,
                             onReset = wave.onReset
                         )
+
+                        HomeCategory.YandexShelf -> section.shelf?.let { shelf ->
+                            HomeHeroCarousel(items = remember(shelf) { ytShelfItems(shelf, onOpenYtSet, onPlayYandexTrack) })
+                        }
 
                         HomeCategory.Library -> {
                             if (yandexPlaylists.isEmpty()) {
