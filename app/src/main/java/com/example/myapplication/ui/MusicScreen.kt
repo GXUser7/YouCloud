@@ -70,6 +70,7 @@ import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.material.icons.rounded.Forum
+import androidx.compose.material.icons.rounded.KeyboardArrowDown
 import androidx.compose.material.icons.rounded.HowToReg
 import androidx.compose.material.icons.rounded.PersonAddAlt1
 import androidx.compose.foundation.lazy.itemsIndexed
@@ -7738,7 +7739,33 @@ private fun LiveChatOverlay(chat: com.example.myapplication.data.YouTubeLiveChat
             } else {
                 // Upside down: the newest is item 0, at the bottom, where the list rests.
                 val newestFirst = remember(state.list) { state.list.asReversed() }
+                val listState = rememberLazyListState()
+                val scope = rememberCoroutineScope()
+                // Following the newest, as YouTube's chat does: settled at the bottom, the list
+                // keeps to each new message; read back, it stays put, then returns by itself a few
+                // seconds after the last touch. Decided only when a scroll ends.
+                var following by remember { mutableStateOf(true) }
+                var settled by remember { mutableIntStateOf(0) }
+                LaunchedEffect(listState) {
+                    androidx.compose.runtime.snapshotFlow { listState.isScrollInProgress }.collect { scrolling ->
+                        if (!scrolling) {
+                            following = listState.firstVisibleItemIndex == 0 && listState.firstVisibleItemScrollOffset < 24
+                            settled++
+                        }
+                    }
+                }
+                val newestId = newestFirst.firstOrNull()?.id
+                LaunchedEffect(newestId) {
+                    if (following && !listState.isScrollInProgress) listState.scrollToItem(0)
+                }
+                LaunchedEffect(following, settled) {
+                    if (!following) {
+                        delay(CHAT_RETURN_MS)
+                        if (!listState.isScrollInProgress) listState.animateScrollToItem(0)
+                    }
+                }
                 LazyColumn(
+                    state = listState,
                     modifier = Modifier
                         .fillMaxSize()
                         // Faded at both ends, as the lyrics are: the top over the status bar's
@@ -7774,10 +7801,39 @@ private fun LiveChatOverlay(chat: com.example.myapplication.data.YouTubeLiveChat
                 ) {
                     items(newestFirst, key = { it.id }) { message -> ChatLine(message, accent, onPanel, ground) }
                 }
+                // Read back: the way to the newest, a tap away.
+                androidx.compose.animation.AnimatedVisibility(
+                    visible = !following,
+                    enter = fadeIn() + slideInVertically { it / 2 },
+                    exit = fadeOut() + slideOutVertically { it / 2 },
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .padding(bottom = PlayerPanelOverlap + 12.dp + lift)
+                ) {
+                    Surface(
+                        onClick = { scope.launch { listState.animateScrollToItem(0) } },
+                        shape = CircleShape,
+                        color = accent,
+                        contentColor = PanelColors.onAccent,
+                        shadowElevation = 4.dp
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(start = 14.dp, top = 8.dp, end = 16.dp, bottom = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Icon(Icons.Rounded.KeyboardArrowDown, contentDescription = null, modifier = Modifier.size(20.dp))
+                            Text("Новые сообщения", style = MaterialTheme.typography.labelLarge)
+                        }
+                    }
+                }
             }
         }
     }
 }
+
+// How long after the last touch a chat read back returns to the newest by itself.
+private const val CHAT_RETURN_MS = 4_000L
 
 /** A message: its author in the accent, a paid one's amount, then the words and emoji pictures. */
 @Composable
