@@ -1949,6 +1949,7 @@ class MusicViewModel(
                 ytArtistSongs = page.allSongs
                 _isAllArtistTracksLoaded.value = page.allSongs == null
                 _artistFollow.value = page.subscribed?.let { ArtistFollow(it) }
+                ytFollowParams = page.subscribeParams to page.unsubscribeParams
                 val owner = SoundCloudUser(username = _currentArtist.value?.username, permalinkUrl = YT_ARTIST_REF + channelId)
                 val live = lives.await().map { it.copy(user = owner, artists = listOf(owner)) }
                 _artistLives.value = live
@@ -1978,6 +1979,9 @@ class MusicViewModel(
         _screen.value = if (returnToSearchFromArtist) AppScreen.SEARCH else AppScreen.HOME
         returnToSearchFromArtist = false
     }
+
+    // What a YouTube artist page's subscribe and unsubscribe buttons send.
+    private var ytFollowParams: Pair<String?, String?> = null to null
 
     // How the artist on screen was opened, for "Повторить" when it didn't load.
     private var lastArtistOpen: (() -> Unit)? = null
@@ -2075,7 +2079,8 @@ class MusicViewModel(
         val ref = artist.permalinkUrl.orEmpty()
         when {
             ref.startsWith(YT_ARTIST_REF) -> {
-                com.example.myapplication.data.YouTubeWeb.subscribe(ref.removePrefix(YT_ARTIST_REF), follow, settingsRepository.ytMusicAuth())
+                // As the page's own button: YouTube Music's, with where the subscription is from.
+                ytMusic.subscribe(ref.removePrefix(YT_ARTIST_REF), follow, if (follow) ytFollowParams.first else ytFollowParams.second)
                 return true
             }
             ref.startsWith("yandex:artist:") -> {

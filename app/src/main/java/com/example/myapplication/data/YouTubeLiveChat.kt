@@ -107,6 +107,7 @@ class YouTubeLiveChat(private val videoId: String, private val auth: () -> YtAut
         val detail = panel?.let { panelMessage(it, inDialog = true) }?.takeIf { it != said }
         _blockedDetail.value = detail
         _subscribersOnly.value = SUBSCRIBERS.containsMatchIn(said.orEmpty() + " " + detail.orEmpty())
+        _wrongSubscription.value = FOR_KIDS.containsMatchIn(said.orEmpty() + " " + detail.orEmpty())
         _sendBlocked.value = when {
             auth()?.sapisid == null -> "Войдите в YouTube Music в настройках, чтобы писать"
             said != null -> said
@@ -163,6 +164,18 @@ class YouTubeLiveChat(private val videoId: String, private val auth: () -> YtAut
     /** The explanation behind the reason, where YouTube gives one (its "Подробнее"). */
     val blockedDetail: StateFlow<String?> = _blockedDetail.asStateFlow()
 
+    private val _wrongSubscription = MutableStateFlow(false)
+    /**
+     * Whether YouTube holds the subscription as made watching a video for children, which a
+     * subscribers' chat doesn't count: made again, properly, it does.
+     */
+    val wrongSubscription: StateFlow<Boolean> = _wrongSubscription.asStateFlow()
+
+    @Volatile
+    private var subscribeParams: String? = null
+    @Volatile
+    private var unsubscribeParams: String? = null
+
     private val _subscribed = MutableStateFlow<Boolean?>(null)
     /** Whether the account is subscribed to the channel broadcasting; null until known. */
     val subscribed: StateFlow<Boolean?> = _subscribed.asStateFlow()
@@ -175,12 +188,17 @@ class YouTubeLiveChat(private val videoId: String, private val auth: () -> YtAut
 
     /**
      * Subscribes the account to the channel broadcasting, for a chat only its subscribers may
-     * write in, and reads what it may do now (YouTube may still ask to wait a few minutes).
+     * write in, and reads what it may do now (YouTube may still ask to wait a few minutes), as
+     * the watch page's button does. [again]: unsubscribes first, for a subscription YouTube holds
+     * against the account ([wrongSubscription]).
      */
-    suspend fun subscribe(): Boolean {
+    suspend fun subscribe(again: Boolean = false): Boolean {
         val channel = ownerChannel ?: return false
         val done = try {
-            YouTubeWeb.subscribe(channel, true, auth())
+            if (again) {
+                YouTubeWeb.subscribe(channel, false, auth(), unsubscribeParams ?: YouTubeWeb.watchSubscribeParams(videoId, false))
+            }
+            YouTubeWeb.subscribe(channel, true, auth(), subscribeParams ?: YouTubeWeb.watchSubscribeParams(videoId, true))
             true
         } catch (e: IOException) {
             android.util.Log.w("YouTubeLiveChat", "Subscribe to $channel failed", e)
@@ -216,6 +234,10 @@ class YouTubeLiveChat(private val videoId: String, private val auth: () -> YtAut
             ?.let { ownerChannel = it }
         // The watch page's own subscribe button knows, signed in. Once subscribed here, that
         // stands: the page may not have caught up yet.
+        next.findAll("subscribeEndpoint").firstOrNull { ownerChannel == null || it.arr("channelIds").any { id -> id.isJsonPrimitive && id.asString == ownerChannel } }
+            ?.str("params")?.let { subscribeParams = it }
+        next.findAll("unsubscribeEndpoint").firstOrNull { ownerChannel == null || it.arr("channelIds").any { id -> id.isJsonPrimitive && id.asString == ownerChannel } }
+            ?.str("params")?.let { unsubscribeParams = it }
         if (auth()?.sapisid != null && _subscribed.value != true) {
             next.findAll("subscribeButtonRenderer")
                 .firstOrNull { ownerChannel == null || it.str("channelId") == ownerChannel }
@@ -263,7 +285,8 @@ class YouTubeLiveChat(private val videoId: String, private val auth: () -> YtAut
         const val MAX_WAIT_MS = 5_000L
         // A link after the reason, not part of it.
         val LINK_WORDS = setOf("подробнее", "learn more", "подробнее…", "подробнее...")
-        val SUBSCRIBERS = Regex("подписч|subscri", RegexOption.IGNORE_CASE)
+        val SUBSCRIBERS = Regex("подписч|подписал|subscri", RegexOption.IGNORE_CASE)
+        val FOR_KIDS = Regex("для детей|детск|for kids|made for kids", RegexOption.IGNORE_CASE)
     }
 }
 

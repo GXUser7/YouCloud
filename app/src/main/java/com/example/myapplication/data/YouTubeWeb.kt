@@ -117,14 +117,31 @@ object YouTubeWeb {
 
     /**
      * Subscribes the signed-in account to the channel [channelId], or unsubscribes it: one
-     * subscription for YouTube and YouTube Music both.
+     * subscription for YouTube and YouTube Music both. [params] say where from, as the page's own
+     * button does: sent without, YouTube files the subscription as made watching a video for
+     * children, and won't let it write in a subscribers' chat.
      */
-    suspend fun subscribe(channelId: String, subscribe: Boolean, session: YtAuth?) = withContext(Dispatchers.IO) {
+    suspend fun subscribe(channelId: String, subscribe: Boolean, session: YtAuth?, params: String?) = withContext(Dispatchers.IO) {
         if (session?.sapisid == null) throw IOException("Не выполнен вход в YouTube")
         post(if (subscribe) "subscription/subscribe" else "subscription/unsubscribe", JsonObject().apply {
             add("channelIds", com.google.gson.JsonArray().apply { add(channelId) })
+            params?.let { addProperty("params", it.replace("%3D", "=")) }
         }, session)
         Unit
+    }
+
+    /**
+     * What the watch page of [videoId] sends with its subscribe button ([subscribe]) or its
+     * unsubscribe: the source, a watch page, and the video.
+     */
+    fun watchSubscribeParams(videoId: String, subscribe: Boolean): String {
+        val id = videoId.toByteArray()
+        val bytes = if (subscribe) {
+            byteArrayOf(0x12, 0x02, 0x08, 0x03, 0x18, 0x00, 0x22, id.size.toByte()) + id
+        } else {
+            byteArrayOf(0x0a, 0x02, 0x08, 0x03, 0x12, id.size.toByte()) + id + byteArrayOf(0x18, 0x00)
+        }
+        return android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP)
     }
 
     /** A video of a channel's tab, in its newer layout; only one broadcasting now. */

@@ -7844,6 +7844,7 @@ private fun ChatComposerButton(
     val subscribersOnly by chat.subscribersOnly.collectAsState()
     val subscribed by chat.subscribed.collectAsState()
     val detail by chat.blockedDetail.collectAsState()
+    val wrongSubscription by chat.wrongSubscription.collectAsState()
     var subscribing by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
@@ -7851,8 +7852,10 @@ private fun ChatComposerButton(
     // Subscribed but not let in yet (YouTube may want the subscription a few minutes old): asked
     // again once a minute, only while the chat is open.
     val waiting = !canSend && subscribersOnly && subscribed == true
-    LaunchedEffect(waiting) {
-        while (waiting) {
+    // The subscription as YouTube holds it won't do: made again, it will.
+    val resubscribe = !canSend && subscribed == true && wrongSubscription
+    LaunchedEffect(waiting && !resubscribe) {
+        while (waiting && !resubscribe) {
             delay(CHAT_RECHECK_MS)
             chat.recheck()
         }
@@ -7860,6 +7863,7 @@ private fun ChatComposerButton(
     val reason = when {
         canSend -> "Сообщение в чат…"
         subscribing -> "Оформляю подписку…"
+        resubscribe -> "YouTube считает, что подписка оформлена на детском видео — оформим заново"
         waiting -> "Вы подписаны. " + (detail ?: "YouTube пустит в чат чуть позже")
         blocked != null -> blocked!!
         else -> "Подключаюсь к чату…"
@@ -7894,16 +7898,21 @@ private fun ChatComposerButton(
             )
             if (canSend) Icon(Icons.Rounded.Edit, contentDescription = null, modifier = Modifier.size(20.dp))
             // Only subscribers may write: subscribing is a tap away.
-            if (!canSend && subscribersOnly && subscribed != true) {
+            if (!canSend && ((subscribersOnly && subscribed != true) || resubscribe)) {
                 Surface(
                     onClick = {
                         haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                         subscribing = true
+                        val again = resubscribe
                         scope.launch {
-                            val done = chat.subscribe()
+                            val done = chat.subscribe(again = again)
                             android.widget.Toast.makeText(
                                 context,
-                                if (done) "Вы подписались на канал" else "Не удалось подписаться",
+                                when {
+                                    !done -> "Не удалось подписаться"
+                                    again -> "Подписка оформлена заново"
+                                    else -> "Вы подписались на канал"
+                                },
                                 android.widget.Toast.LENGTH_SHORT
                             ).show()
                             subscribing = false
@@ -7923,7 +7932,7 @@ private fun ChatComposerButton(
                                 strokeWidth = 2.dp
                             )
                         } else {
-                            Text("Подписаться", style = MaterialTheme.typography.labelLarge)
+                            Text(if (resubscribe) "Заново" else "Подписаться", style = MaterialTheme.typography.labelLarge)
                         }
                     }
                 }

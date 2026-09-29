@@ -75,7 +75,10 @@ data class YtArtistPage(
     // Every row of the page, under its own title, for the page shown whole.
     val shelves: List<YtShelf> = emptyList(),
     // Whether the signed-in account is subscribed; null signed out.
-    val subscribed: Boolean? = null
+    val subscribed: Boolean? = null,
+    // What the page's subscribe button sends, and its unsubscribe: where the subscription is from.
+    val subscribeParams: String? = null,
+    val unsubscribeParams: String? = null
 )
 
 /**
@@ -365,9 +368,14 @@ class YouTubeMusicClient(private val authProvider: () -> YtAuth?) {
             YtShelf(title, tracks.distinctBy { it.id }, sets.distinctBy { it.id }, artists.distinctBy { it.permalinkUrl })
                 .takeIf { it.tracks.isNotEmpty() || it.sets.isNotEmpty() || it.artists.isNotEmpty() }
         }
-        val subscribed = header.at("subscriptionButton", "subscribeButtonRenderer", "subscribed")
+        val subscribeButton = header.at("subscriptionButton", "subscribeButtonRenderer")
+        val subscribed = subscribeButton.at("subscribed")
             ?.takeIf { it.isJsonPrimitive && authProvider()?.sapisid != null }
             ?.asBoolean
+        val subscribeParams = subscribeButton?.findAll("subscribeEndpoint")?.firstNotNullOfOrNull { it.str("params") }
+            ?: ARTIST_SUBSCRIBE_PARAMS
+        val unsubscribeParams = subscribeButton?.findAll("unsubscribeEndpoint")?.firstNotNullOfOrNull { it.str("params") }
+            ?: ARTIST_UNSUBSCRIBE_PARAMS
         val artist = SoundCloudUser(
             username = name,
             // A channel's page shows its avatar apart from a wide banner; an artist's, one picture.
@@ -377,7 +385,16 @@ class YouTubeMusicClient(private val authProvider: () -> YtAuth?) {
             followersCount = listeners?.let(::parseCount),
             permalinkUrl = YT_ARTIST_REF + channelId
         )
-        return YtArtistPage(artist, topSongs, allSongs, releases, shelves, subscribed)
+        return YtArtistPage(artist, topSongs, allSongs, releases, shelves, subscribed, subscribeParams, unsubscribeParams)
+    }
+
+    /** Subscribes to the channel [channelId] or unsubscribes, sending [params] as the page's button does. */
+    suspend fun subscribe(channelId: String, subscribe: Boolean, params: String?) {
+        if (authProvider()?.sapisid == null) throw YtMusicException(401, "Не выполнен вход в YouTube Music")
+        post(if (subscribe) "subscription/subscribe" else "subscription/unsubscribe", json {
+            add("channelIds", com.google.gson.JsonArray().apply { add(channelId) })
+            params?.let { addProperty("params", it.replace("%3D", "=")) }
+        })
     }
 
     /**
@@ -817,6 +834,9 @@ class YouTubeMusicClient(private val authProvider: () -> YtAuth?) {
         private const val FILTER_PLAYLISTS = "EgeKAQQoAEABahAQBRAJEAMQBBAKEBEQEBAV"
 
         private const val PORTRAIT_SIZE = 900
+        // An artist page's subscribe and unsubscribe, should the page not carry its own.
+        private const val ARTIST_SUBSCRIBE_PARAMS = "EgIIGxgA"
+        private const val ARTIST_UNSUBSCRIBE_PARAMS = "CgIIGxgA"
         private const val SHORTER_BY_MS = 10_000L
         private const val LONGER_BY_MS = 150_000L
         private val NOT_A_CLIP = listOf("audio", "lyric", "visualizer", "visualiser", "текст")
