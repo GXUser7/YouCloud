@@ -88,6 +88,44 @@ object StreamCache {
         val length = ContentMetadata.getContentLength(cache.getContentMetadata(key))
         return length > 0 && cache.isCached(key, 0, length)
     }
+
+    /**
+     * The key a Yandex track's sound is kept under: the track *and which of its files* — Yandex
+     * offers the same track as several (MP3 at 320, 192, 128 kbps, AAC), and kept under the track
+     * alone, a start fetched ahead from one file and the rest read later from another were stitched
+     * together: the bytes don't line up between them, so the track jumped seconds ahead where they
+     * met and its length and seeking were off from there on.
+     */
+    fun yandexKey(trackId: String, variant: String): String = "${KEY_PREFIX}yandex:$trackId:$variant"
+
+    /** The same for a YouTube track: the video and its format (`itag`), for the same reason. */
+    fun youTubeKey(videoId: String, itag: String): String = "ytmusic:$videoId:$itag"
+
+    /** Which of a Yandex track's files is kept whole, if one is. */
+    fun cachedYandexKey(context: Context, trackId: String): String? =
+        YANDEX_VARIANTS.map { yandexKey(trackId, it) }.firstOrNull { isFullyCached(context, it) }
+
+    /** Which of a YouTube track's formats is kept whole, if one is. */
+    fun cachedYouTubeKey(context: Context, videoId: String): String? =
+        YOUTUBE_AUDIO_ITAGS.map { youTubeKey(videoId, it) }.firstOrNull { isFullyCached(context, it) }
+
+    /**
+     * Takes out what was kept under the track alone, before the file or format was part of the
+     * key: whatever of it is stitched from two files would play broken, and nothing reads it now.
+     */
+    fun dropUnversionedKeys(context: Context): Int {
+        val cache = cache(context)
+        val stale = cache.keys.filter { key ->
+            (key.startsWith("${KEY_PREFIX}yandex:") && key.removePrefix("${KEY_PREFIX}yandex:").count { it == ':' } == 0) ||
+                (key.startsWith("ytmusic:") && key.removePrefix("ytmusic:").count { it == ':' } == 0)
+        }
+        stale.forEach(cache::removeResource)
+        return stale.size
+    }
+
+    // The files Yandex offers a track as, best first; and YouTube's audio formats, Opus and AAC.
+    private val YANDEX_VARIANTS = listOf("mp3-320", "mp3-192", "mp3-128", "aac-256", "aac-192", "aac-128", "aac-64")
+    private val YOUTUBE_AUDIO_ITAGS = listOf("251", "140", "250", "249", "141", "139", "774", "171", "172")
 }
 
 /**
