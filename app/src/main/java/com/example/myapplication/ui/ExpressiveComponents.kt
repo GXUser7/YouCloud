@@ -693,6 +693,9 @@ internal data class CarouselAlbum(
     val subtitle: String,
     val caption: String,
     val artworkUrl: String?,
+    // Where a queue started from it is said to come from, to light it while it plays (see
+    // NowPlaying).
+    val source: String? = null,
     val onClick: () -> Unit
 )
 
@@ -734,6 +737,15 @@ internal fun AlbumCarousel(
                     )
                 } else {
                     IconCover(icon = Icons.Default.Album, iconSize = 48.dp)
+                }
+                if (LocalNowPlaying.current.lights(album.source, null)) {
+                    NowPlayingBadge(
+                        modifier = Modifier
+                            .align(Alignment.TopEnd)
+                            .padding(10.dp),
+                        // Moving on the large cover only; the narrow ones beside it hold still.
+                        running = index == state.currentItem
+                    )
                 }
             }
         }

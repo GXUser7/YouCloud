@@ -321,18 +321,18 @@ internal fun ExpressiveBackground(motionEnabled: Boolean, animated: Boolean = tr
     LaunchedEffect(animated) {
         if (!animated) return@LaunchedEffect
         var last = 0L
-        var drawn = 0L
+        var drawn = -1L
         while (isActive) {
             withFrameNanos { now ->
                 val dt = if (last == 0L) 0f else ((now - last) / 1_000_000_000f).coerceAtMost(0.05f)
                 last = now
                 motion.step(dt, shapes, tilt, shiftPx)
-                // Redrawn sixty times a second at most: the shapes drift slowly, and on a 120 Hz
-                // screen every other frame of them was work nobody could see. Only drifting, thirty:
-                // each frame of the backdrop repaints the whole screen over it, glass and all.
-                val interval = if (motion.lively) BACKDROP_FRAME_NANOS else CALM_BACKDROP_FRAME_NANOS
-                if (now - drawn >= interval) {
-                    drawn = now
+                // As often as MotionPace says: each frame of the backdrop repaints the whole screen
+                // over it, glass and all, and only drifting it moves under a pixel a frame. On the
+                // frames all else that moves by itself is drawn on (see frameSlot).
+                val slot = frameSlot(now, MotionPace.slotNanos(lively = motion.lively))
+                if (slot != drawn) {
+                    drawn = slot
                     frame.longValue = now
                 }
             }
@@ -597,6 +597,39 @@ private val FAR_BLUR = 8.dp
 private val NEAR_BLUR = 3.dp
 private const val FAR_SHRINK = 4
 private const val NEAR_SHRINK = 2
-private const val BACKDROP_FRAME_NANOS = 15_000_000L
-// Thirty a second, with room for a frame arriving a little early.
-private const val CALM_BACKDROP_FRAME_NANOS = 32_000_000L
+
+/**
+ * Which frame of a grid of [slotNanos] the frame at [frameNanos] falls in. What moves by itself —
+ * the backdrop, the wave's shape, the looping clocks (the playing bars, the chevron under home's
+ * carousel) — moves on when its slot changes, and so all of it on the same frames of the screen.
+ * Each counting from its own last frame instead, two things at sixty a second landed on different
+ * frames of a 120 Hz screen and between them drew on every one: the playing bars on a cover with
+ * the mini player's wave under it, 125 frames a second where 63 do.
+ */
+internal fun frameSlot(frameNanos: Long, slotNanos: Long): Long =
+    if (slotNanos <= 0L) frameNanos else frameNanos / slotNanos
+
+// Sixty a second; and thirty, on every other of the same frames.
+internal const val SLOT_FAST_NANOS = 16_666_666L
+internal const val SLOT_CALM_NANOS = 2 * SLOT_FAST_NANOS
+
+/**
+ * How often what moves by itself is drawn — the backdrop, the wave's shape, the looping clocks —
+ * as "Плавность 120 Гц" in the settings has it ([smooth]; set by the screen from the setting).
+ *
+ * Smooth, what moves for all to see (shaken, tilted, turning while the wave plays, the playing
+ * bars) is drawn on every frame of the screen, 120 a second where it has them; what only drifts,
+ * sixty — under a pixel a frame and blurred, it would redraw home 120 times a second while it sat
+ * still. Otherwise sixty and thirty, as before the setting: lighter on a weak phone.
+ */
+internal object MotionPace {
+    @Volatile
+    var smooth: Boolean = true
+
+    /** The grid (see [frameSlot]) for something that moves [lively], or only drifts. */
+    fun slotNanos(lively: Boolean): Long = when {
+        smooth && lively -> 0L
+        smooth || lively -> SLOT_FAST_NANOS
+        else -> SLOT_CALM_NANOS
+    }
+}

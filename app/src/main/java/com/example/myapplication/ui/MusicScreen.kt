@@ -28,6 +28,7 @@ import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -85,6 +86,8 @@ import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.VerticalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.shrinkVertically
+import androidx.compose.animation.expandVertically
 import androidx.compose.animation.togetherWith
 import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
@@ -101,6 +104,7 @@ import androidx.compose.foundation.layout.statusBars
 import androidx.compose.material.icons.automirrored.filled.TrendingUp
 import androidx.compose.material.icons.filled.Lyrics
 import androidx.compose.runtime.snapshotFlow
+import kotlinx.coroutines.flow.collectLatest
 import androidx.compose.animation.EnterTransition
 import androidx.compose.animation.core.MutableTransitionState
 import androidx.compose.foundation.gestures.awaitEachGesture
@@ -137,7 +141,15 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Animation
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.DeleteSweep
+import androidx.compose.material.icons.filled.History
+import androidx.compose.material.icons.filled.Deselect
+import androidx.compose.material.icons.filled.SelectAll
+import androidx.compose.material.icons.rounded.CheckCircle
+import androidx.compose.material.icons.rounded.RadioButtonUnchecked
+import androidx.compose.material.icons.rounded.Checklist
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.Image
@@ -230,11 +242,14 @@ import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.DpOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
@@ -410,6 +425,20 @@ fun MusicScreen(viewModel: MusicViewModel) {
     var playerPulled by remember { mutableStateOf(false) }
     // A finger on the full player, which may be about to pull it down.
     var playerTouched by remember { mutableStateOf(false) }
+    // Tracks being picked in "Скачанное": their toolbar has the bottom edge, as home's has.
+    var downloadsPicking by remember { mutableStateOf(false) }
+    // The page over home, if any (a mix opens over it on its own, see mixShown), and whether one
+    // is being pulled off its place.
+    val pages = androidx.compose.animation.core.updateTransition(
+        targetState = screen.takeIf { it != AppScreen.HOME && it != AppScreen.MIX_DETAIL },
+        label = "pages"
+    )
+    var pagePulled by remember { mutableStateOf(false) }
+    val mixShown = remember { MutableTransitionState(false) }
+    // It stays under the player opened from it, as any screen does: hidden while the player was
+    // up, it went away with its list and came back in from the top of it, and pulling the player
+    // down showed home instead of the mix.
+    mixShown.targetState = selectedMix != null
     val playerShown = remember { MutableTransitionState(false) }
     playerShown.targetState = selectedTrack != null
     // The full player, opaque, covers the whole screen: the backdrop and the screens under it
@@ -419,10 +448,37 @@ fun MusicScreen(viewModel: MusicViewModel) {
     val playerCovers by remember {
         derivedStateOf { playerShown.isIdle && playerShown.currentState && !playerPulled && !playerTouched }
     }
+    // How much of home shows: it fades back as a page comes over it — search and settings are
+    // see-through between their cards, and home under them in full showed through as they came in
+    // — and back in as the page goes. Under a page being pulled off it shows at once, whole: that
+    // is what the pull uncovers.
+    val homeShown = remember { Animatable(if (screen == AppScreen.HOME || screen == AppScreen.MIX_DETAIL) 1f else 0f) }
+    LaunchedEffect(homeShown) {
+        snapshotFlow { (pages.targetState == null) to pagePulled }.collectLatest { (noPage, pulled) ->
+            when {
+                pulled -> homeShown.snapTo(1f)
+                noPage -> homeShown.animateTo(1f, tween(240))
+                else -> homeShown.animateTo(0f, tween(160))
+            }
+        }
+    }
+    // Gone from under a page, or under a mix that has come up over it, home isn't drawn at all.
+    val homeHidden by remember {
+        derivedStateOf {
+            !pagePulled && (homeShown.value == 0f || (mixShown.isIdle && mixShown.currentState))
+        }
+    }
+    // What is covered, for what moves by itself there (see LocalCovered): read as it is needed,
+    // so that nothing composes again each time a finger lands on the player.
+    val homeCovered = remember { { homeHidden || playerCovers } }
+    val pagesCovered = remember { { playerCovers } }
     val showDebugPercentage by viewModel.showDebugPercentage.collectAsState()
     val downloadedPercentages by viewModel.downloadedPercentages.collectAsState()
     val isAllArtistTracksLoaded by viewModel.isAllArtistTracksLoaded.collectAsState()
     val backgroundMotion by viewModel.settingsRepo.backgroundMotion.collectAsState()
+    val smoothMotion by viewModel.settingsRepo.smoothMotion.collectAsState()
+    // Read by the loops on every frame, not composed: see MotionPace.
+    androidx.compose.runtime.SideEffect { MotionPace.smooth = smoothMotion }
     val playerCoverColors by viewModel.settingsRepo.playerCoverColors.collectAsState()
     val videoGlow by viewModel.settingsRepo.videoGlow.collectAsState()
     val videoGlowStyle by viewModel.settingsRepo.videoGlowStyle.collectAsState()
@@ -449,8 +505,10 @@ fun MusicScreen(viewModel: MusicViewModel) {
     val antiBotCaptchaUrl by viewModel.antiBotCaptchaUrl.collectAsState()
 
     val searchOpenedPlaylist by viewModel.searchOpenedPlaylist.collectAsState()
+    val playingFrom by viewModel.playingFrom.collectAsState()
 
     val downloadedTracks = remember(favorites) { favorites.filter { it.downloadState == DownloadState.DOWNLOADED } }
+    val history by viewModel.history.collectAsState()
 
     // Checks the SoundCloud session whenever the app comes back, so a token that lapsed in the
     // meantime is renewed before the next tap needs it.
@@ -479,13 +537,19 @@ fun MusicScreen(viewModel: MusicViewModel) {
                 viewModel.closeSearch()
             }
             AppScreen.DOWNLOADS -> viewModel.closeDownloads()
+            AppScreen.HISTORY -> viewModel.closeHistory()
             AppScreen.PLAYLISTS -> viewModel.closePlaylists()
             AppScreen.SETTINGS -> viewModel.closeSettings()
             AppScreen.MIX_DETAIL -> viewModel.closeMix()
             AppScreen.PLAYLIST_DETAIL -> viewModel.closePlaylist()
             AppScreen.YANDEX_PLAYLIST_DETAIL -> viewModel.deselectYandexPlaylist()
             AppScreen.YTM_SET_DETAIL -> viewModel.closeYtSet()
-            AppScreen.ARTIST_DETAIL -> viewModel.closeArtist()
+            // An album opened on the artist's page closes back to the page, as pulling it down does.
+            AppScreen.ARTIST_DETAIL -> if (viewModel.selectedArtistPlaylist.value != null) {
+                viewModel.deselectArtistPlaylist()
+            } else {
+                viewModel.closeArtist()
+            }
             AppScreen.HOME -> Unit
         }
     }
@@ -541,9 +605,9 @@ fun MusicScreen(viewModel: MusicViewModel) {
                     viewModel.downloadPlaylist(playlist.id)
                 },
                 onTogglePlay = viewModel::togglePlayPause,
-                onShuffle = { tracks ->
+                onShuffle = { tracks, source ->
                     haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                    viewModel.playShuffled(tracks)
+                    viewModel.playShuffled(tracks, source = source)
                 }
             )
         }
@@ -551,14 +615,111 @@ fun MusicScreen(viewModel: MusicViewModel) {
             SoundCloudLoginScreen(viewModel = viewModel)
         } else androidx.compose.runtime.CompositionLocalProvider(
             LocalAlbumLibrary provides albumLibrary,
-            LocalFrostSources provides listOf(backdropFrost)
+            LocalFrostSources provides listOf(backdropFrost),
+            LocalNowPlaying provides NowPlaying(isPlaying, playingFrom, currentTrackId)
         ) {
             Box(modifier = Modifier.fillMaxSize().drawWithContent { if (!playerCovers) drawContent() }.frostSource(screensFrost)) {
             // Every screen stands on the moving backdrop: their pages, panels, buttons and cards
             // are glass. (Not the full player, which draws its own backdrop.)
-            androidx.compose.runtime.CompositionLocalProvider(LocalGlass provides true) {
-            AnimatedContent(
-                targetState = screen,
+            androidx.compose.runtime.CompositionLocalProvider(
+                LocalGlass provides true,
+                LocalPagePulled provides { pagePulled = it }
+            ) {
+            // Home at the bottom, always there: a page over it pulled down shows it under the page
+            // at once, as the player shows what it was opened from, and coming back finds it as it
+            // was left. Covered by a page that has settled it isn't drawn, nor does anything on it
+            // move by itself (see LocalCovered).
+            UnderPages(hidden = { homeHidden }, shown = { homeShown.value }) {
+                androidx.compose.runtime.CompositionLocalProvider(LocalCovered provides homeCovered) {
+                        HomeScreen(
+                            mixSection = mixSection,
+                            stationSection = stationSection,
+                            trendingSection = trendingSection,
+                            ytShelves = ytHome,
+                            ytConnected = ytMusicAccount != null,
+                            yandexConnected = hasYandexToken,
+                            ytLoading = ytHomeLoading,
+                            ytError = ytHomeError,
+                            onOpenYtSet = { set ->
+                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                viewModel.openYtSet(set)
+                            },
+                            onPlayYtTrack = { track, queue ->
+                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                viewModel.playQueuedTrack(track, queue)
+                            },
+                            onYtLogin = {
+                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                viewModel.openYtMusicLogin()
+                            },
+                            onReloadYt = viewModel::loadYtHome,
+                            mixesLoading = mixesLoading,
+                            loadingMixId = loadingMixId,
+                            hasOauthToken = oauthToken.isNotBlank(),
+                            mixesError = if (screen == AppScreen.HOME) errorMessage else null,
+                            clientId = clientId,
+                            playingMixId = playingMixId,
+                            isPlaying = isPlaying,
+                            isClientIdExpired = isClientIdExpired,
+                            needsRelogin = needsRelogin,
+                            downloadedCount = downloadedTracks.size,
+                            downloadedFolderArtworkUri = downloadedFolderArtworkUri,
+                            history = history,
+                            playlists = playlists,
+                            yandexPlaylists = yandexPlaylists,
+                            yandexShelves = yandexShelves,
+                            onPlayYandexTrack = { track, queue -> viewModel.playYandexTrack(track, queue) },
+                            wave = HomeWave(
+                                on = yandexWaveOn,
+                                starting = yandexWaveStarting,
+                                picks = yandexWavePicks,
+                                onToggle = {
+                                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                    viewModel.toggleYandexWave()
+                                },
+                                onPick = viewModel::pickYandexWave,
+                                onReset = viewModel::resetYandexWave
+                            ),
+                            onOpenPlaylist = viewModel::openPlaylist,
+                            onOpenYandexPlaylist = { playlist ->
+                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                viewModel.selectYandexPlaylist(playlist)
+                            },
+                            onCreatePlaylist = viewModel::createPlaylist,
+                            onRelogin = {
+                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                viewModel.logout()
+                            },
+                            onAutoRefreshClientId = viewModel::tryAutoRefreshClientId,
+                            selectedTab = homeSelectedTab,
+                            onTabSelected = viewModel::setHomeSelectedTab,
+                            onOpenSearch = {
+                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                viewModel.openSearch()
+                            },
+                            onOpenDownloads = {
+                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                viewModel.openDownloads()
+                            },
+                            onOpenHistory = {
+                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                viewModel.openHistory()
+                            },
+                            onOpenSettings = {
+                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                viewModel.openSettings()
+                            },
+                            onOpenMix = { mix ->
+                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                viewModel.openMix(mix)
+                            },
+                            onReloadMixes = viewModel::loadMixes,
+                            updates = viewModel.updates
+                        )
+                }
+            }
+            androidx.compose.runtime.CompositionLocalProvider(LocalCovered provides pagesCovered) {
+            pages.AnimatedContent(
                 transitionSpec = {
                     // Screens share the top-bar geometry now, so a soft fade+scale makes the bar
                     // look like it stays put while only the content beneath it swaps.
@@ -568,88 +729,42 @@ fun MusicScreen(viewModel: MusicViewModel) {
                     ((fadeIn(tween(240)) + scaleIn(initialScale = 0.97f, animationSpec = tween(240))) togetherWith
                         (fadeOut(tween(160)) + scaleOut(targetScale = 1.02f, animationSpec = tween(160)))) using null
                 },
-                label = "screenTransition"
+                contentKey = { it }
             ) { screen ->
+                // Home is under the pages, not one of them.
+                if (screen != null) Box(
+                    // A touch on a page stops there: none reaches home under it.
+                    modifier = Modifier.fillMaxSize().pointerInput(Unit) { }
+                ) {
                 when (screen) {
-                    AppScreen.HOME -> HomeScreen(
-                        mixSection = mixSection,
-                        stationSection = stationSection,
-                        trendingSection = trendingSection,
-                        ytShelves = ytHome,
-                        ytConnected = ytMusicAccount != null,
-                        yandexConnected = hasYandexToken,
-                        ytLoading = ytHomeLoading,
-                        ytError = ytHomeError,
-                        onOpenYtSet = { set ->
-                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                            viewModel.openYtSet(set)
-                        },
-                        onPlayYtTrack = { track, queue ->
-                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                            viewModel.playQueuedTrack(track, queue)
-                        },
-                        onYtLogin = {
-                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                            viewModel.openYtMusicLogin()
-                        },
-                        onReloadYt = viewModel::loadYtHome,
-                        mixesLoading = mixesLoading,
-                        loadingMixId = loadingMixId,
-                        hasOauthToken = oauthToken.isNotBlank(),
-                        mixesError = if (screen == AppScreen.HOME) errorMessage else null,
-                        clientId = clientId,
-                        playingMixId = playingMixId,
+                    AppScreen.HOME, AppScreen.MIX_DETAIL -> Unit
+                    AppScreen.HISTORY -> HistoryScreen(
+                        tracks = history,
+                        favorites = favorites,
+                        currentTrackId = currentTrackId,
+                        downloadProgress = downloadProgress,
                         isPlaying = isPlaying,
-                        isClientIdExpired = isClientIdExpired,
-                        needsRelogin = needsRelogin,
-                        downloadedCount = downloadedTracks.size,
-                        downloadedFolderArtworkUri = downloadedFolderArtworkUri,
-                        playlists = playlists,
-                        yandexPlaylists = yandexPlaylists,
-                        yandexShelves = yandexShelves,
-                        onPlayYandexTrack = { track, queue -> viewModel.playYandexTrack(track, queue) },
-                        wave = HomeWave(
-                            on = yandexWaveOn,
-                            starting = yandexWaveStarting,
-                            picks = yandexWavePicks,
-                            onToggle = {
-                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                viewModel.toggleYandexWave()
-                            },
-                            onPick = viewModel::pickYandexWave,
-                            onReset = viewModel::resetYandexWave
-                        ),
-                        onOpenPlaylist = viewModel::openPlaylist,
-                        onOpenYandexPlaylist = { playlist ->
+                        onBack = {
                             haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                            viewModel.selectYandexPlaylist(playlist)
+                            viewModel.closeHistory()
                         },
-                        onCreatePlaylist = viewModel::createPlaylist,
-                        onRelogin = {
+                        onPlayTrack = { track ->
                             haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                            viewModel.logout()
+                            viewModel.playHistoryTrack(track)
                         },
-                        onAutoRefreshClientId = viewModel::tryAutoRefreshClientId,
-                        selectedTab = homeSelectedTab,
-                        onTabSelected = viewModel::setHomeSelectedTab,
-                        onOpenSearch = {
+                        onTogglePlay = viewModel::togglePlayPause,
+                        onShuffle = {
                             haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                            viewModel.openSearch()
+                            viewModel.playHistoryShuffled()
                         },
-                        onOpenDownloads = {
+                        onFavoriteClick = { track ->
                             haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                            viewModel.openDownloads()
+                            viewModel.toggleFavorite(track)
                         },
-                        onOpenSettings = {
+                        onClear = {
                             haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                            viewModel.openSettings()
-                        },
-                        onOpenMix = { mix ->
-                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                            viewModel.openMix(mix)
-                        },
-                        onReloadMixes = viewModel::loadMixes,
-                        updates = viewModel.updates
+                            viewModel.clearHistory()
+                        }
                     )
 
                     AppScreen.PLAYLISTS -> PlaylistsScreen(
@@ -767,7 +882,7 @@ fun MusicScreen(viewModel: MusicViewModel) {
                             },
                             onPlayPlaylistTrack = { track, queue ->
                                 haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                viewModel.playQueuedTrack(track, queue)
+                                viewModel.playQueuedTrack(track, queue, source = searchOpenedPlaylist?.let { "set-${it.id}" })
                             }
                         )
                     }
@@ -776,6 +891,7 @@ fun MusicScreen(viewModel: MusicViewModel) {
                         tracks = downloadedTracks,
                         folderArtworkUri = downloadedFolderArtworkUri,
                         currentTrackId = currentTrackId,
+                        playerOpen = selectedTrack != null,
                         downloadProgress = downloadProgress,
                         isPlaying = isPlaying,
                         onBack = {
@@ -787,10 +903,11 @@ fun MusicScreen(viewModel: MusicViewModel) {
                             haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                             viewModel.playFavorite(track)
                         },
-                        onDeleteDownload = { track ->
+                        onDeleteDownloads = { tracks ->
                             haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                            viewModel.deleteDownloadedTrack(track)
+                            tracks.forEach(viewModel::deleteDownloadedTrack)
                         },
+                        onPickingChange = { downloadsPicking = it },
                         onImportTracks = viewModel::importLocalTracks,
                         onShuffle = {
                             haptic.performHapticFeedback(HapticFeedbackType.LongPress)
@@ -906,7 +1023,7 @@ fun MusicScreen(viewModel: MusicViewModel) {
                                 },
                                 onPlayTrack = { track ->
                                     haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                    viewModel.playQueuedTrack(track, playlist.tracks)
+                                    viewModel.playQueuedTrack(track, playlist.tracks, source = "set-${playlist.id}")
                                 },
                                 onFavoriteClick = { track ->
                                     haptic.performHapticFeedback(HapticFeedbackType.LongPress)
@@ -944,7 +1061,7 @@ fun MusicScreen(viewModel: MusicViewModel) {
                                 },
                                 onPlayTrack = { track ->
                                     haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                    viewModel.playQueuedTrack(track, set.tracks)
+                                    viewModel.playQueuedTrack(track, set.tracks, source = "set-${set.id}")
                                 },
                                 onFavoriteClick = { track ->
                                     haptic.performHapticFeedback(HapticFeedbackType.LongPress)
@@ -971,6 +1088,7 @@ fun MusicScreen(viewModel: MusicViewModel) {
                         val currentArtistTracks by viewModel.currentArtistTracks.collectAsState()
                         val currentArtistPlaylists by viewModel.currentArtistPlaylists.collectAsState()
                         val artistLoading by viewModel.artistLoading.collectAsState()
+                        val artistAlbumLoading by viewModel.artistAlbumLoading.collectAsState()
                         val artistError by viewModel.artistError.collectAsState()
                         val selectedArtistPlaylist by viewModel.selectedArtistPlaylist.collectAsState()
                         val artistFollow by viewModel.artistFollow.collectAsState()
@@ -1022,7 +1140,7 @@ fun MusicScreen(viewModel: MusicViewModel) {
                                 onPlayTrack = { track ->
                                     haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                                     val queue = selectedArtistPlaylist?.tracks ?: currentArtistTracks
-                                    viewModel.playQueuedTrack(track, queue)
+                                    viewModel.playQueuedTrack(track, queue, source = selectedArtistPlaylist?.let { "set-${it.id}" })
                                 },
                                 onFavoriteClick = { track ->
                                     haptic.performHapticFeedback(HapticFeedbackType.LongPress)
@@ -1033,6 +1151,7 @@ fun MusicScreen(viewModel: MusicViewModel) {
                                     viewModel.selectArtistPlaylist(playlist)
                                 },
                                 selectedPlaylist = selectedArtistPlaylist,
+                                isAlbumLoading = artistAlbumLoading,
                                 onDeselectPlaylist = {
                                     haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                                     viewModel.deselectArtistPlaylist()
@@ -1055,12 +1174,15 @@ fun MusicScreen(viewModel: MusicViewModel) {
                         }
                     }
 
-                    AppScreen.MIX_DETAIL -> Unit // Handled by selectedMix visibility
+                }
                 }
             }
+            }
 
+            // Under the player, still and not drawn, as the pages are.
+            androidx.compose.runtime.CompositionLocalProvider(LocalCovered provides pagesCovered) {
             AnimatedVisibility(
-                visible = selectedMix != null && selectedTrack == null,
+                visibleState = mixShown,
                 enter = slideInVertically(initialOffsetY = { it }) + fadeIn(),
                 exit = slideOutVertically(targetOffsetY = { it }) + fadeOut()
             ) {
@@ -1095,12 +1217,14 @@ fun MusicScreen(viewModel: MusicViewModel) {
             }
             }
             }
+            }
 
             // On home the floating toolbar owns the bottom edge; the mini player sits on top of it.
             val searchTabsShown = screen == AppScreen.SEARCH && selectedMix == null && searchOpenedPlaylist == null
             val miniPlayerLift by animateDpAsState(
                 targetValue = when {
                     screen == AppScreen.HOME && selectedMix == null -> HomeToolbarClearance
+                    screen == AppScreen.DOWNLOADS && downloadsPicking && selectedMix == null -> HomeToolbarClearance
                     searchTabsShown -> searchDockHeight(hasYandexToken || ytMusicAccount != null) - 4.dp
                     else -> 0.dp
                 },
@@ -1380,6 +1504,7 @@ private fun ytShelfItems(
                 title = track.title ?: "Без названия",
                 subtitle = track.user?.username,
                 artworkUrl = track.artworkUrl,
+                trackId = track.id,
                 onClick = { onPlay(track, shelf.tracks) }
             )
         )
@@ -1391,11 +1516,36 @@ private fun ytShelfItems(
                 title = set.title ?: "Без названия",
                 subtitle = set.user?.username,
                 artworkUrl = set.artworkUrl,
+                source = "set-${set.id}",
                 onClick = { onOpen(set) }
             )
         )
     }
 }.distinctBy { it.key }
+
+/**
+ * Home under the pages opened over it: drawn, and there for TalkBack, only while [hidden] says it
+ * shows — while a page comes in or goes, or is pulled off it. [shown] is how much of it: fading
+ * back a touch as it goes, as the screens did when one replaced another.
+ */
+@Composable
+private fun UnderPages(hidden: () -> Boolean, shown: () -> Float = { 1f }, content: @Composable () -> Unit) {
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .drawWithContent { if (!hidden()) drawContent() }
+            .graphicsLayer {
+                val amount = shown()
+                alpha = amount
+                val scale = 1f + 0.02f * (1f - amount)
+                scaleX = scale
+                scaleY = scale
+            }
+            .then(if (hidden()) Modifier.clearAndSetSemantics { } else Modifier)
+    ) {
+        content()
+    }
+}
 
 /** What home's floating toolbar takes off the bottom edge, including its gap to the mini player. */
 private val HomeToolbarClearance = 64.dp + 12.dp
@@ -1425,6 +1575,7 @@ private fun HomeScreen(
     needsRelogin: Boolean,
     downloadedCount: Int,
     downloadedFolderArtworkUri: String?,
+    history: List<SoundCloudTrack>,
     playlists: List<Playlist>,
     yandexPlaylists: List<SoundCloudPlaylist>,
     yandexShelves: List<YtShelf>,
@@ -1439,6 +1590,7 @@ private fun HomeScreen(
     onTabSelected: (Int) -> Unit,
     onOpenSearch: () -> Unit,
     onOpenDownloads: () -> Unit,
+    onOpenHistory: () -> Unit,
     onOpenSettings: () -> Unit,
     onOpenMix: (SoundCloudMix) -> Unit,
     onReloadMixes: () -> Unit,
@@ -1760,6 +1912,7 @@ private fun HomeScreen(
                                             subtitle = plural(playlist.trackCount, "трек", "трека", "треков"),
                                             artworkUrl = playlist.artworkUrl,
                                             icon = if (playlist.id == -100L) Icons.Rounded.Favorite else Icons.Default.Album,
+                                            source = "set-${playlist.id}",
                                             onClick = { onOpenYandexPlaylist(playlist) }
                                         )
                                     }
@@ -1776,7 +1929,22 @@ private fun HomeScreen(
                                         subtitle = plural(downloadedCount, "трек", "трека", "треков"),
                                         artworkUrl = downloadedFolderArtworkUri,
                                         icon = Icons.Default.Download,
+                                        source = "downloads",
                                         onClick = onOpenDownloads
+                                    )
+                                )
+                                // What was listened to, between the phone's own tracks and the
+                                // collections: its latest covers together, as a folder of them.
+                                add(
+                                    HeroItem(
+                                        key = "history",
+                                        title = "История",
+                                        subtitle = if (history.isEmpty()) "Пока пусто" else plural(history.size, "трек", "трека", "треков"),
+                                        artworkUrl = null,
+                                        collage = recentCovers(history),
+                                        icon = Icons.Default.History,
+                                        source = "history",
+                                        onClick = onOpenHistory
                                     )
                                 )
                                 // Liked albums sit right next to "Скачанное", newest first;
@@ -1795,6 +1963,7 @@ private fun HomeScreen(
                                             },
                                             artworkUrl = playlist.artworkUrl,
                                             icon = if (playlist.isLikedAlbum) Icons.Default.Album else Icons.AutoMirrored.Filled.QueueMusic,
+                                            source = "playlist-${playlist.id}",
                                             onClick = { onOpenPlaylist(playlist) }
                                         )
                                     )
@@ -1830,7 +1999,10 @@ private fun HomeScreen(
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(NextSectionHintHeight),
+                        .height(NextSectionHintHeight)
+                        // Sideways it stands under the title and the subtitle, its word starting
+                        // where theirs do: their inset less the pill's own.
+                        .padding(start = if (landscape) 20.dp - NextSectionHintPadding else 0.dp),
                     contentAlignment = Alignment.Center
                 ) {
                     if (sections.size > 1) {
@@ -1839,6 +2011,7 @@ private fun HomeScreen(
                         NextSectionHint(
                             title = if (atEnd) sections.first().title else sections[current + 1].title,
                             upward = atEnd,
+                            alignment = if (landscape) Alignment.CenterStart else Alignment.Center,
                             onClick = {
                                 haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                                 serviceScope.launch {
@@ -1988,17 +2161,23 @@ private fun SectionIndicator(pager: androidx.compose.foundation.pager.PagerState
 }
 
 private val NextSectionHintHeight = 36.dp
+private val NextSectionHintPadding = 14.dp
 
 /** The next section's name under the carousel, with a nudging chevron: the page goes on below. */
 @Composable
-private fun NextSectionHint(title: String, upward: Boolean, onClick: () -> Unit) {
+private fun NextSectionHint(
+    title: String,
+    upward: Boolean,
+    onClick: () -> Unit,
+    alignment: Alignment = Alignment.Center
+) {
     val clock = rememberLoopClock()
-    Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+    Box(modifier = Modifier.fillMaxWidth(), contentAlignment = alignment) {
         Row(
             modifier = Modifier
                 .clip(CircleShape)
                 .clickable(onClick = onClick)
-                .padding(horizontal = 14.dp, vertical = 6.dp),
+                .padding(horizontal = NextSectionHintPadding, vertical = 6.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(4.dp)
         ) {
@@ -2503,7 +2682,13 @@ private data class HeroItem(
     val title: String,
     val subtitle: String?,
     val artworkUrl: String?,
+    // Several covers in one, as a folder of tracks shows (see [CoverCollage]); before [artworkUrl].
+    val collage: List<String> = emptyList(),
     val icon: ImageVector? = null,
+    // Lit as playing (see [NowPlaying.lights]): what the card stands for, a collection by where a
+    // queue is started from, or a track by its id; [isPlaying] lights it whatever they say.
+    val source: String? = null,
+    val trackId: Long? = null,
     val isPlaying: Boolean = false,
     val isLoading: Boolean = false,
     val onClick: () -> Unit
@@ -2727,7 +2912,9 @@ private fun HomeHeroCarousel(items: List<HeroItem>) {
                             .background(MaterialTheme.colorScheme.surfaceContainerHigh),
                         contentAlignment = Alignment.Center
                     ) {
-                        if (!item.artworkUrl.isNullOrBlank()) {
+                        if (item.collage.isNotEmpty()) {
+                            CoverCollage(urls = item.collage)
+                        } else if (!item.artworkUrl.isNullOrBlank()) {
                             AsyncImage(
                                 model = item.artworkUrl,
                                 contentDescription = item.title,
@@ -2746,11 +2933,13 @@ private fun HomeHeroCarousel(items: List<HeroItem>) {
                                 IconCover(icon = item.icon, iconSize = 84.dp)
                             }
                         }
-                        if (item.isPlaying) {
+                        if (item.isPlaying || LocalNowPlaying.current.lights(item.source, item.trackId)) {
                             NowPlayingBadge(
                                 modifier = Modifier
                                     .align(Alignment.TopEnd)
-                                    .padding(14.dp)
+                                    .padding(14.dp),
+                                // Moving on the card in front only: aside it is a sliver.
+                                running = page == pagerState.currentPage
                             )
                         }
                         if (item.isLoading) {
@@ -2837,14 +3026,36 @@ private class HeroStripShape(
         )
 }
 
-/** Animated equaliser bars — the playing cue that replaced morphing the cover itself. */
+/**
+ * What plays, for the cards of the carousels to light the one it came from: whether it plays,
+ * where its queue was started ([MusicViewModel.playingFrom]) and the track.
+ */
+@androidx.compose.runtime.Immutable
+internal data class NowPlaying(val isPlaying: Boolean, val from: String?, val trackId: Long?) {
+    /** Whether a card standing for [source] (a collection) or [trackId] (a track) is what plays. */
+    fun lights(source: String?, trackId: Long?): Boolean =
+        isPlaying && ((source != null && source == from) || (trackId != null && trackId == this.trackId))
+}
+
+/**
+ * Read only by the cards that show it: a track changing, or playing stopping, composes those
+ * again, not the screens around them.
+ */
+internal val LocalNowPlaying = androidx.compose.runtime.compositionLocalOf { NowPlaying(false, null, null) }
+
+/**
+ * Animated equaliser bars — the playing cue that replaced morphing the cover itself. [running]
+ * false holds them still: on a card off to the side, where a moving badge redrew the screen
+ * sixty times a second for a sliver of it.
+ */
 @Composable
-private fun NowPlayingBadge(
+internal fun NowPlayingBadge(
     modifier: Modifier = Modifier,
     onClick: (() -> Unit)? = null,
+    running: Boolean = true,
     glass: (@Composable BoxScope.() -> Unit)? = null
 ) {
-    val clock = rememberLoopClock()
+    val clock = rememberLoopClock(running = running)
     val barCount = 4
 
     Surface(
@@ -3117,6 +3328,8 @@ private fun SettingsScreen(
         item {
             val backgroundMotion by settingsRepository.backgroundMotion.collectAsState()
             val playerCoverColors by settingsRepository.playerCoverColors.collectAsState()
+            val openPlayerOnTap by settingsRepository.openPlayerOnTap.collectAsState()
+            val smoothMotion by settingsRepository.smoothMotion.collectAsState()
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text(
                     text = "ОФОРМЛЕНИЕ",
@@ -3146,6 +3359,17 @@ private fun SettingsScreen(
                             modifier = Modifier.padding(horizontal = 18.dp)
                         )
                         SettingsSwitchRow(
+                            icon = Icons.Default.Animation,
+                            title = "Плавность 120 Гц",
+                            subtitle = "Фон, «Моя форма» и индикаторы двигаются с частотой экрана. Выключите — 60 кадров в секунду, экономнее для батареи",
+                            checked = smoothMotion,
+                            onCheckedChange = settingsRepository::setSmoothMotion
+                        )
+                        HorizontalDivider(
+                            color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.25f),
+                            modifier = Modifier.padding(horizontal = 18.dp)
+                        )
+                        SettingsSwitchRow(
                             icon = Icons.Default.Palette,
                             title = "Цвета плеера из обложки",
                             subtitle = "Только плеер перекрашивается в оттенок обложки трека, остальное — по обоям",
@@ -3156,10 +3380,21 @@ private fun SettingsScreen(
                             color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.25f),
                             modifier = Modifier.padding(horizontal = 18.dp)
                         )
+                        SettingsSwitchRow(
+                            icon = Icons.Default.PlayArrow,
+                            title = "Открывать плеер по нажатию",
+                            subtitle = "Нажатый в списке трек сразу открывает плеер. Выключите — трек заиграет в мини-плеере, а плеер откроется, если нажать на него",
+                            checked = openPlayerOnTap,
+                            onCheckedChange = settingsRepository::setOpenPlayerOnTap
+                        )
+                        HorizontalDivider(
+                            color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.25f),
+                            modifier = Modifier.padding(horizontal = 18.dp)
+                        )
                         SettingsActionRow(
                             icon = Icons.Rounded.TouchApp,
                             title = "Обучение жестам",
-                            subtitle = "Мини-плеер, «Моя форма» и обложка — показать ещё раз",
+                            subtitle = "Мини-плеер, плеер, окна и «Моя форма» — показать ещё раз",
                             onClick = { settingsRepository.setOnboardingDone(false) }
                         )
                     }
@@ -3170,7 +3405,6 @@ private fun SettingsScreen(
         // Section 0.25: Videos
         item {
             val playerVideos by settingsRepository.playerVideos.collectAsState()
-            val videoYouTube by settingsRepository.videoYouTube.collectAsState()
             val videoYandex by settingsRepository.videoYandex.collectAsState()
             val videoGlow by settingsRepository.videoGlow.collectAsState()
             val videoGlowStyle by settingsRepository.videoGlowStyle.collectAsState()
@@ -3205,15 +3439,6 @@ private fun SettingsScreen(
                             subtitle = "Видео трека вместо обложки, вертикальное — на весь плеер. Выключите, и в плеере останутся только обложки",
                             checked = playerVideos,
                             onCheckedChange = settingsRepository::setPlayerVideos
-                        )
-                        divider()
-                        SettingsSwitchRow(
-                            icon = Icons.Default.OndemandVideo,
-                            title = "Клипы с YouTube",
-                            subtitle = "Клипы треков YouTube Music, а для треков Яндекса — найденные на YouTube. Тратит трафик",
-                            checked = videoYouTube,
-                            onCheckedChange = settingsRepository::setVideoYouTube,
-                            enabled = playerVideos
                         )
                         divider()
                         SettingsSwitchRow(
@@ -3860,7 +4085,23 @@ private fun SettingsScreen(
                         }
                     }
                 }
-                val ytArtistShowAll by settingsRepository.ytArtistShowAll.collectAsState()
+            }
+        }
+
+        // Everything that changes how YouTube is used, together: it was spread over the video, the
+        // accounts and the debugging sections. Signing in stays with the other accounts.
+        item {
+            val playerVideos by settingsRepository.playerVideos.collectAsState()
+            val videoYouTube by settingsRepository.videoYouTube.collectAsState()
+            val ytArtistShowAll by settingsRepository.ytArtistShowAll.collectAsState()
+            val ytWebSearch by settingsRepository.ytWebSearch.collectAsState()
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(
+                    text = "YOUTUBE",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.padding(start = 12.dp)
+                )
                 Card(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -3868,13 +4109,42 @@ private fun SettingsScreen(
                     shape = MaterialTheme.shapes.extraLarge,
                     colors = CardDefaults.cardColors(containerColor = glassFill(MaterialTheme.colorScheme.surfaceContainer))
                 ) {
-                    SettingsSwitchRow(
-                        icon = Icons.Default.SmartDisplay,
-                        title = "Вся страница автора YouTube",
-                        subtitle = "Все ряды: видео, синглы, плейлисты, похожие исполнители. Выключено — треки, альбомы и трансляции",
-                        checked = ytArtistShowAll,
-                        onCheckedChange = settingsRepository::setYtArtistShowAll
-                    )
+                    Column(modifier = Modifier.padding(vertical = 4.dp)) {
+                        val divider: @Composable () -> Unit = {
+                            HorizontalDivider(
+                                color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.25f),
+                                modifier = Modifier.padding(horizontal = 18.dp)
+                            )
+                        }
+                        SettingsSwitchRow(
+                            icon = Icons.Default.Search,
+                            title = "Обычный поиск YouTube",
+                            subtitle = "Вкладка YouTube ищет по youtube.com, а не по YouTube Music: все видео и трансляции, с их каналами",
+                            checked = ytWebSearch,
+                            onCheckedChange = settingsRepository::setYtWebSearch
+                        )
+                        divider()
+                        SettingsSwitchRow(
+                            icon = Icons.Default.SmartDisplay,
+                            title = "Вся страница автора",
+                            subtitle = "Все ряды: видео, синглы, плейлисты, похожие исполнители. Выключено — треки, альбомы и трансляции",
+                            checked = ytArtistShowAll,
+                            onCheckedChange = settingsRepository::setYtArtistShowAll
+                        )
+                        divider()
+                        SettingsSwitchRow(
+                            icon = Icons.Default.OndemandVideo,
+                            title = "Клипы с YouTube",
+                            subtitle = if (playerVideos) {
+                                "Клипы треков YouTube Music, а для треков Яндекса — найденные на YouTube. Тратит трафик"
+                            } else {
+                                "Включаются вместе с «Клипами в плеере» в разделе «Видео»"
+                            },
+                            checked = videoYouTube,
+                            onCheckedChange = settingsRepository::setVideoYouTube,
+                            enabled = playerVideos
+                        )
+                    }
                 }
             }
         }
@@ -3989,22 +4259,6 @@ private fun SettingsScreen(
                     modifier = Modifier.padding(start = 12.dp)
                 )
 
-                val ytWebSearch by settingsRepository.ytWebSearch.collectAsState()
-                Card(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .glassOr(MaterialTheme.shapes.extraLarge, MaterialTheme.colorScheme.surfaceContainer),
-                    shape = MaterialTheme.shapes.extraLarge,
-                    colors = CardDefaults.cardColors(containerColor = glassFill(MaterialTheme.colorScheme.surfaceContainer))
-                ) {
-                    SettingsSwitchRow(
-                        icon = Icons.Default.Search,
-                        title = "Обычный поиск YouTube",
-                        subtitle = "Вкладка YouTube ищет по youtube.com, а не по YouTube Music: все видео и трансляции, с их каналами",
-                        checked = ytWebSearch,
-                        onCheckedChange = settingsRepository::setYtWebSearch
-                    )
-                }
                 val showDebugPercentageVal by settingsRepository.showDebugPercentage.collectAsState()
                 Card(
                     modifier = Modifier
@@ -4727,9 +4981,10 @@ private fun DetailFrame(
                     .weight(1f)
                     .fillMaxHeight()
                     .windowInsetsPadding(WindowInsets.displayCutout.only(WindowInsetsSides.Start)),
-                // Clear of the back button above; the mini player is in the pane, not over the list.
+                // Nothing of the bar above is over the list (its actions are over the pane); the
+                // mini player is in the pane, not over the list.
                 contentPadding = PaddingValues(
-                    top = WindowInsets.statusBars.asPaddingValues().calculateTopPadding() + 72.dp,
+                    top = WindowInsets.statusBars.asPaddingValues().calculateTopPadding() + 16.dp,
                     bottom = 24.dp + WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
                 ),
                 content = content
@@ -4890,12 +5145,18 @@ private fun DownloadsScreen(
     tracks: List<FavoriteTrack>,
     folderArtworkUri: String?,
     currentTrackId: Long?,
+    // The player opened over the screen: picking ends, or the first "back" from the player
+    // would unpick tracks out of sight instead of closing it.
+    playerOpen: Boolean = false,
     downloadProgress: DownloadProgressOf = NoDownloadProgress,
     isPlaying: Boolean = false,
     onBack: () -> Unit,
     onChangeArtwork: (String?) -> Unit,
     onPlayTrack: (FavoriteTrack) -> Unit,
-    onDeleteDownload: (FavoriteTrack) -> Unit,
+    onDeleteDownloads: (List<FavoriteTrack>) -> Unit,
+    // Whether tracks are being picked: their toolbar then takes the bottom edge, and the mini
+    // player stands on it, as on home.
+    onPickingChange: (Boolean) -> Unit = {},
     onImportTracks: (List<android.net.Uri>) -> Unit,
     onShuffle: () -> Unit = {},
     showDebugPercentage: Boolean = false,
@@ -4928,19 +5189,48 @@ private fun DownloadsScreen(
     val isActive = currentTrackId != null && tracks.any { it.id == currentTrackId }
     val listState = rememberLazyListState()
     val collapsed = rememberCollapsed(listState, MixCoverHeight - 140.dp)
-    // The track whose bin was tapped, until the deletion is confirmed or called off: one stray
-    // tap on a row's bin used to throw a download away.
-    var pendingDelete by remember { mutableStateOf<FavoriteTrack?>(null) }
+    // The tracks asked to be deleted, until that is confirmed or called off.
+    var pendingDelete by remember { mutableStateOf<List<FavoriteTrack>?>(null) }
+    // A row held: its menu, to delete the track or start picking tracks.
+    var menuFor by remember { mutableStateOf<Long?>(null) }
+    // The tracks picked, to delete together; null while nothing is being picked. The last one
+    // unpicked ends the picking, as Android's own lists do.
+    var picked by remember { mutableStateOf<Set<Long>?>(null) }
+    // A track still downloading is neither held nor picked: there is no file yet to delete.
+    val pickable = remember(tracks) { tracks.filter { it.downloadState != DownloadState.DOWNLOADING } }
+    // Deleted from elsewhere meanwhile: what's gone is no longer picked.
+    LaunchedEffect(pickable) {
+        val ids = pickable.mapTo(HashSet()) { it.id }
+        picked = picked?.filterTo(HashSet()) { it in ids }?.ifEmpty { null }
+    }
+    fun togglePicked(id: Long) {
+        val now = picked.orEmpty()
+        picked = (if (id in now) now - id else now + id).ifEmpty { null }
+    }
+    LaunchedEffect(playerOpen) {
+        if (playerOpen) {
+            picked = null
+            menuFor = null
+        }
+    }
+    BackHandler(enabled = picked != null) { picked = null }
+    val picking = picked != null
+    val currentOnPickingChange by rememberUpdatedState(onPickingChange)
+    LaunchedEffect(picking) { currentOnPickingChange(picking) }
+    DisposableEffect(Unit) { onDispose { currentOnPickingChange(false) } }
 
     // A folder, opened as a mix is: its cover across the top, the big play button, the tracks.
     Box(
         modifier = Modifier
             .fillMaxSize()
+            // No back button: pulled down, the page closes (see pullToClose).
+            .pullToClose(onBack)
             .pageGlass(MaterialTheme.colorScheme.background)
     ) {
         DetailFrame(
             listState = listState,
-            bottomPadding = 120.dp,
+            // The last rows clear of the mini player, and of the toolbar under it while picking.
+            bottomPadding = if (picking) 120.dp + HomeToolbarClearance else 120.dp,
             header = {
                 CoverHeader(
                     artwork = {
@@ -4997,38 +5287,118 @@ private fun DownloadsScreen(
                 }
             } else {
                 itemsIndexed(tracks, key = { _, track -> "downloaded-${track.id}" }) { _, track ->
+                    val canPick = track.downloadState != DownloadState.DOWNLOADING
+                    val picking = picked
+                    // No bin on every row: one stray tap on it threw a download away, and a column
+                    // of them was all the list showed. Holding a row offers deleting instead.
                     Box(modifier = Modifier.padding(horizontal = 8.dp)) {
                         DownloadedTrackCard(
                             track = track,
                             isSelected = track.id == currentTrackId,
                             progress = { downloadProgress[track.id] },
                             isPlaying = isPlaying,
-                            onClick = { onPlayTrack(track) },
-                            onDeleteDownload = { pendingDelete = track },
+                            onClick = {
+                                when {
+                                    picking == null -> onPlayTrack(track)
+                                    canPick -> togglePicked(track.id)
+                                }
+                            },
+                            onLongClick = if (!canPick) null else {
+                                { if (picking == null) menuFor = track.id else togglePicked(track.id) }
+                            },
+                            // One still downloading keeps its progress in the mark's place.
+                            checked = picking?.let { track.id in it },
                             showDebugPercentage = showDebugPercentage,
                             debugPercentage = downloadedPercentages[track.id],
                             flat = true
                         )
+                        DropdownMenu(
+                            expanded = menuFor == track.id,
+                            onDismissRequest = { menuFor = null },
+                            // Under the row's text, not its cover.
+                            offset = DpOffset(x = 76.dp, y = 0.dp)
+                        ) {
+                            DropdownMenuItem(
+                                text = { Text("Выбрать") },
+                                leadingIcon = { Icon(Icons.Rounded.Checklist, contentDescription = null) },
+                                onClick = {
+                                    menuFor = null
+                                    picked = setOf(track.id)
+                                }
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Удалить") },
+                                leadingIcon = { Icon(Icons.Default.Delete, contentDescription = null) },
+                                onClick = {
+                                    menuFor = null
+                                    pendingDelete = listOf(track)
+                                }
+                            )
+                        }
                     }
                 }
             }
         }
 
-        CollapsingTopBar(title = "Скачанное", collapsed = collapsed, onBack = onBack)
+        CollapsingTopBar(title = "Скачанное", collapsed = collapsed)
+
+        // Picking: what to do with the picked tracks, down where the thumb is.
+        // The count stays put while the toolbar slides away.
+        val lastCount = remember { intArrayOf(0) }
+        val shownCount = picked?.size?.also { lastCount[0] = it } ?: lastCount[0]
+        AnimatedVisibility(
+            visible = picking,
+            enter = slideInVertically(initialOffsetY = { it }) + fadeIn(),
+            exit = slideOutVertically(targetOffsetY = { it }) + fadeOut(),
+            modifier = if (isLandscape()) {
+                Modifier
+                    .align(Alignment.BottomEnd)
+                    .navigationBarsPadding()
+                    .windowInsetsPadding(WindowInsets.displayCutout.only(WindowInsetsSides.End))
+                    .width(LandscapePaneWidth)
+                    .padding(16.dp)
+            } else {
+                Modifier
+                    .align(Alignment.BottomCenter)
+                    .navigationBarsPadding()
+                    .padding(16.dp)
+            }
+        ) {
+            val all = picked?.size == pickable.size
+            PickingToolbar(
+                count = shownCount,
+                allPicked = all,
+                onCancel = { picked = null },
+                onToggleAll = { picked = if (all) null else pickable.mapTo(HashSet()) { it.id } },
+                onDelete = {
+                    val ids = picked.orEmpty()
+                    pendingDelete = pickable.filter { it.id in ids }.ifEmpty { null }
+                }
+            )
+        }
     }
 
-    pendingDelete?.let { track ->
+    pendingDelete?.let { doomed ->
+        val single = doomed.singleOrNull()
         AlertDialog(
             onDismissRequest = { pendingDelete = null },
             title = { Text("Удалить с устройства?") },
             text = {
-                Text("«${track.title}» — ${track.displayArtist}. Скачанный файл удалится с телефона, в любимых трек останется.")
+                Text(
+                    if (single != null) {
+                        "«${single.title}» — ${single.displayArtist}. Скачанный файл удалится с телефона, в любимых трек останется."
+                    } else {
+                        plural(doomed.size, "трек", "трека", "треков") +
+                            ": скачанные файлы удалятся с телефона, в любимых треки останутся."
+                    }
+                )
             },
             confirmButton = {
                 Button(
                     onClick = {
                         pendingDelete = null
-                        onDeleteDownload(track)
+                        picked = null
+                        onDeleteDownloads(doomed)
                     }
                 ) {
                     Text("Удалить")
@@ -5040,6 +5410,255 @@ private fun DownloadsScreen(
                 }
             }
         )
+    }
+}
+
+/** The latest distinct covers of [tracks], as many as a [CoverCollage] shows. */
+private fun recentCovers(tracks: List<SoundCloudTrack>): List<String> =
+    tracks.asSequence()
+        .mapNotNull { it.artworkUrl?.takeIf(String::isNotBlank) }
+        .distinct()
+        .take(4)
+        .toList()
+
+/**
+ * A folder's cover made of the covers of what is in it: four in a square once there are four,
+ * otherwise the latest alone.
+ */
+@Composable
+private fun CoverCollage(urls: List<String>, modifier: Modifier = Modifier) {
+    @Composable
+    fun Cover(url: String, cell: Modifier) = AsyncImage(
+        model = ArtworkUrls.highRes(url) ?: url,
+        contentDescription = null,
+        modifier = cell,
+        contentScale = ContentScale.Crop
+    )
+    if (urls.size < 4) {
+        urls.firstOrNull()?.let { Cover(it, modifier.fillMaxSize()) }
+        return
+    }
+    Column(modifier = modifier.fillMaxSize()) {
+        urls.take(4).chunked(2).forEach { row ->
+            Row(modifier = Modifier.weight(1f).fillMaxWidth()) {
+                row.forEach { url -> Cover(url, Modifier.weight(1f).fillMaxHeight()) }
+            }
+        }
+    }
+}
+
+/**
+ * "История": the last [com.example.myapplication.data.ListeningHistory.LIMIT] tracks listened to,
+ * newest first, opened as a folder is. A track plays on through what was heard before it.
+ */
+@Composable
+private fun HistoryScreen(
+    tracks: List<SoundCloudTrack>,
+    favorites: List<FavoriteTrack>,
+    currentTrackId: Long?,
+    downloadProgress: DownloadProgressOf = NoDownloadProgress,
+    isPlaying: Boolean = false,
+    onBack: () -> Unit,
+    onPlayTrack: (SoundCloudTrack) -> Unit,
+    onTogglePlay: () -> Unit,
+    onShuffle: () -> Unit,
+    onFavoriteClick: (SoundCloudTrack) -> Unit,
+    onClear: () -> Unit
+) {
+    val listState = rememberLazyListState()
+    val collapsed = rememberCollapsed(listState, MixCoverHeight - 140.dp)
+    val favoritesMap = remember(favorites) { favorites.associateBy { it.id } }
+    var confirmClear by remember { mutableStateOf(false) }
+    // What plays goes to the top of the history once heard: the top playing is the history
+    // playing, and the big button pauses it rather than starting it over.
+    val topPlaying = currentTrackId != null && tracks.firstOrNull()?.id == currentTrackId
+    val covers = remember(tracks) { recentCovers(tracks) }
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            // No back button: pulled down, the page closes (see pullToClose).
+            .pullToClose(onBack)
+            .pageGlass(MaterialTheme.colorScheme.background)
+    ) {
+        DetailFrame(
+            listState = listState,
+            bottomPadding = 120.dp,
+            header = {
+                CoverHeader(
+                    artwork = {
+                        if (covers.isEmpty()) IconCover(icon = Icons.Default.History) else CoverCollage(urls = covers)
+                    },
+                    kicker = "Папка",
+                    title = "История",
+                    subtitle = "Что ты слушал, последнее сверху",
+                    isActive = topPlaying,
+                    isPlaying = isPlaying,
+                    onPlay = if (tracks.isEmpty()) null else {
+                        { if (topPlaying) onTogglePlay() else onPlayTrack(tracks.first()) }
+                    },
+                    onShuffle = if (tracks.size < 2) null else onShuffle
+                )
+            }
+        ) {
+            item(key = "history-count") {
+                CountRule(if (tracks.isEmpty()) "Пока пусто" else plural(tracks.size, "трек", "трека", "треков")) {
+                    if (tracks.isNotEmpty()) {
+                        PanelIconButton(
+                            icon = Icons.Default.DeleteSweep,
+                            contentDescription = "Очистить историю",
+                            onClick = { confirmClear = true },
+                            size = RuleButtonSize,
+                            iconSize = RuleIconSize
+                        )
+                    }
+                }
+            }
+
+            if (tracks.isEmpty()) {
+                item(key = "history-empty") {
+                    Box(modifier = Modifier.padding(horizontal = 16.dp)) {
+                        EmptyState("Здесь появятся треки, которые ты слушал.")
+                    }
+                }
+            } else {
+                itemsIndexed(tracks, key = { _, track -> "history-${track.id}" }) { _, track ->
+                    val favorite = favoritesMap[track.id]
+                    Box(modifier = Modifier.padding(horizontal = 8.dp)) {
+                        TrackCard(
+                            track = track,
+                            isFavorite = favorite != null,
+                            isSelected = track.id == currentTrackId,
+                            downloadState = favorite?.downloadState,
+                            progress = { downloadProgress[track.id] },
+                            isPlaying = isPlaying,
+                            onClick = { onPlayTrack(track) },
+                            onFavoriteClick = { onFavoriteClick(track) },
+                            flat = true
+                        )
+                    }
+                }
+            }
+        }
+
+        CollapsingTopBar(title = "История", collapsed = collapsed)
+    }
+
+    if (confirmClear) {
+        AlertDialog(
+            onDismissRequest = { confirmClear = false },
+            title = { Text("Очистить историю?") },
+            text = { Text("Список прослушанного удалится. Сами треки, любимые и скачанное останутся.") },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        confirmClear = false
+                        onClear()
+                    }
+                ) {
+                    Text("Очистить")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmClear = false }) {
+                    Text("Отмена")
+                }
+            }
+        )
+    }
+}
+
+/**
+ * The tracks picked in "Скачанное" and what to do with them, as home's floating toolbar is laid
+ * out: how many on the panel-tone pill, with the cross that stops picking, and on the right the
+ * two actions as its floating buttons — picking them all, and deleting, in the accent.
+ */
+@Composable
+private fun PickingToolbar(
+    count: Int,
+    allPicked: Boolean,
+    onCancel: () -> Unit,
+    onToggleAll: () -> Unit,
+    onDelete: () -> Unit
+) {
+    val haptic = LocalHapticFeedback.current
+    val glass = LocalGlass.current
+    Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        Surface(
+            modifier = Modifier
+                .padding(end = 8.dp)
+                .height(64.dp)
+                .glassOr(CircleShape, PanelColors.container),
+            shape = CircleShape,
+            color = if (glass) Color.Transparent else PanelColors.container,
+            contentColor = PanelColors.content,
+            shadowElevation = if (glass) 0.dp else 6.dp
+        ) {
+            Row(
+                modifier = Modifier.padding(start = 8.dp, end = 20.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Surface(
+                    onClick = {
+                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                        onCancel()
+                    },
+                    modifier = Modifier.size(48.dp),
+                    shape = CircleShape,
+                    color = PanelColors.content.copy(alpha = 0.12f),
+                    contentColor = PanelColors.content
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Icon(Icons.Default.Close, contentDescription = "Отменить выбор", modifier = Modifier.size(24.dp))
+                    }
+                }
+                Text(
+                    text = "Выбрано: $count",
+                    style = MaterialTheme.typography.titleMedium,
+                    maxLines = 1
+                )
+            }
+        }
+        Spacer(modifier = Modifier.weight(1f))
+        val toggleFill = androidx.compose.ui.graphics.lerp(PanelColors.container, PanelColors.content, 0.08f)
+        Surface(
+            onClick = {
+                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                onToggleAll()
+            },
+            modifier = Modifier
+                .size(64.dp)
+                .glassOr(RoundedCornerShape(20.dp), toggleFill),
+            shape = RoundedCornerShape(20.dp),
+            color = if (glass) Color.Transparent else toggleFill,
+            contentColor = PanelColors.accent,
+            shadowElevation = if (glass) 0.dp else 6.dp
+        ) {
+            Box(contentAlignment = Alignment.Center) {
+                Icon(
+                    imageVector = if (allPicked) Icons.Default.Deselect else Icons.Default.SelectAll,
+                    contentDescription = if (allPicked) "Снять выбор" else "Выбрать все",
+                    modifier = Modifier.size(26.dp)
+                )
+            }
+        }
+        Spacer(modifier = Modifier.width(8.dp))
+        Surface(
+            onClick = {
+                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                onDelete()
+            },
+            modifier = Modifier.size(64.dp),
+            shape = RoundedCornerShape(20.dp),
+            color = PanelColors.accent,
+            contentColor = PanelColors.onAccent,
+            shadowElevation = if (glass) 0.dp else 6.dp
+        ) {
+            Box(contentAlignment = Alignment.Center) {
+                Icon(Icons.Default.Delete, contentDescription = "Удалить выбранные", modifier = Modifier.size(26.dp))
+            }
+        }
     }
 }
 
@@ -5386,7 +6005,8 @@ private class AlbumLibrary(
     val onToggleLike: (album: SoundCloudPlaylist, artistName: String?) -> Unit,
     val onDownload: (Playlist) -> Unit,
     val onTogglePlay: () -> Unit,
-    val onShuffle: (List<SoundCloudTrack>) -> Unit
+    // With the card it is from (see MusicViewModel.playingFrom).
+    val onShuffle: (List<SoundCloudTrack>, source: String?) -> Unit
 )
 
 private val LocalAlbumLibrary = androidx.compose.runtime.staticCompositionLocalOf<AlbumLibrary?> { null }
@@ -5439,17 +6059,17 @@ private fun PlaylistDownloadButton(playlist: Playlist, onDownload: () -> Unit, s
 }
 
 /**
- * The bar over a screen that opens on a big picture: just the back button while the picture is in
- * view, then the backdrop tone and the title once it has scrolled away.
+ * The bar over a screen that opens on a big picture: nothing while the picture is in view but the
+ * screen's own actions ([trailing]), then the backdrop tone and the title once it has scrolled away.
+ * There is no back button: these screens close when pulled down (see [pullToClose]).
  */
 @Composable
 private fun CollapsingTopBar(
     title: String,
     collapsed: Boolean,
-    onBack: () -> Unit,
     trailing: (@Composable () -> Unit)? = null
 ) {
-    // Sideways the title stands in the pane beside the list: the bar stays a back button.
+    // Sideways the title stands in the pane beside the list: the bar never takes over.
     @Suppress("NAME_SHADOWING")
     val collapsed = collapsed && !isLandscape()
     val barColor by animateColorAsState(
@@ -5489,24 +6109,8 @@ private fun CollapsingTopBar(
         contentAlignment = Alignment.CenterStart
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            val backFill = if (collapsed) PanelColors.container else MaterialTheme.colorScheme.background.copy(alpha = 0.55f)
-            Surface(
-                onClick = onBack,
-                modifier = Modifier
-                    .size(48.dp)
-                    // Over the picture it stays see-through: glass there would blur the backdrop
-                    // behind the page, not the picture under the button.
-                    .then(if (collapsed) Modifier.glassOr(RoundedCornerShape(16.dp), backFill) else Modifier),
-                shape = RoundedCornerShape(16.dp),
-                color = if (collapsed) glassFill(backFill) else backFill,
-                contentColor = if (collapsed) PanelColors.accent else MaterialTheme.colorScheme.onSurface
-            ) {
-                Box(contentAlignment = Alignment.Center) {
-                    Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Назад")
-                }
-            }
-            Spacer(modifier = Modifier.width(14.dp))
-            Box(modifier = Modifier.weight(1f)) {
+            // In line with the page's own text below it.
+            Box(modifier = Modifier.weight(1f).padding(start = 4.dp)) {
                 androidx.compose.animation.AnimatedVisibility(
                     visible = collapsed,
                     enter = fadeIn() + slideInVertically { it / 2 },
@@ -6056,6 +6660,8 @@ private fun MixDetailScreen(
     Box(
         modifier = Modifier
             .fillMaxSize()
+            // No back button: pulled down, the page closes (see pullToClose).
+            .pullToClose(onBack)
             .pageGlass(MaterialTheme.colorScheme.background)
     ) {
         DetailFrame(
@@ -6102,7 +6708,7 @@ private fun MixDetailScreen(
             }
         }
 
-        CollapsingTopBar(title = title, collapsed = collapsed, onBack = onBack)
+        CollapsingTopBar(title = title, collapsed = collapsed)
     }
 }
 
@@ -6119,6 +6725,7 @@ private fun TrackRowFrame(
     // Straight on the backdrop, without the shared container: the mix and station screens,
     // where the cover above is the only block. Only the playing row gets a fill there.
     flat: Boolean = false,
+    onLongClick: (() -> Unit)? = null,
     content: @Composable RowScope.() -> Unit
 ) {
     val haptic = LocalHapticFeedback.current
@@ -6129,11 +6736,8 @@ private fun TrackRowFrame(
         else -> MaterialTheme.colorScheme.surfaceContainerHigh
     }
     val glass = LocalGlass.current && fill != Color.Transparent
+    // The surface clips to its shape, so the ripple of the clickable inside keeps to the row.
     Surface(
-        onClick = {
-            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-            onClick()
-        },
         modifier = Modifier
             .fillMaxWidth()
             .then(if (glass) Modifier.glassOr(shape, fill, if (isSelected) 0.8f else GlassAlpha) else Modifier),
@@ -6145,7 +6749,21 @@ private fun TrackRowFrame(
             MaterialTheme.colorScheme.onSurface
         }
     ) {
-        Column {
+        Column(
+            modifier = Modifier.combinedClickable(
+                role = Role.Button,
+                onClick = {
+                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                    onClick()
+                },
+                onLongClick = onLongClick?.let { longClick ->
+                    {
+                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                        longClick()
+                    }
+                }
+            )
+        ) {
             if (position.hasDividerAbove && !flat) GroupDivider()
             Row(
                 modifier = Modifier
@@ -6206,25 +6824,33 @@ private fun EqualizerBars(animate: Boolean, color: Color, modifier: Modifier = M
 }
 
 /**
- * Milliseconds since the loop began, moved on sixty times a second at most: the clock of the small
- * looping animations (the playing bars, the chevron under home's carousel). Each of their frames
- * repaints the whole screen, backdrop and glass and all, and on a 90 or 120 Hz screen the frames
- * past sixty were that much more work for a movement no one can tell from it — the backdrop has
- * kept to sixty for the same reason.
+ * Milliseconds since the loop began: the clock of the small looping animations (the playing bars,
+ * the chevron under home's carousel). Moved on as often as [MotionPace] says — every frame with
+ * "Плавность 120 Гц", sixty a second without — and on the same frames as the backdrop and every
+ * other clock: each of their frames repaints the whole screen, backdrop and glass and all.
  */
 @Composable
 internal fun rememberLoopClock(running: Boolean = true): androidx.compose.runtime.MutableLongState {
     val clock = remember { androidx.compose.runtime.mutableLongStateOf(0L) }
-    LaunchedEffect(running) {
+    // Under a page or the player it stands still: a clock that ran on there kept the window drawing
+    // frames for a screen no one could see. Watched, not read: nothing composes again for it.
+    val covered = LocalCovered.current
+    LaunchedEffect(running, covered) {
         if (!running) return@LaunchedEffect
-        var start = 0L
-        var shown = 0L
-        while (true) {
-            withFrameNanos { now ->
-                if (start == 0L) start = now - clock.longValue * 1_000_000L
-                if (now - shown >= LoopFrameNanos) {
-                    shown = now
-                    clock.longValue = (now - start) / 1_000_000L
+        snapshotFlow { covered() }.collectLatest { hidden ->
+            if (hidden) return@collectLatest
+            var start = 0L
+            var shown = -1L
+            while (true) {
+                withFrameNanos { now ->
+                    if (start == 0L) start = now - clock.longValue * 1_000_000L
+                    // As often as MotionPace says, on the frames the backdrop and every other clock
+                    // move on (see frameSlot).
+                    val slot = frameSlot(now, MotionPace.slotNanos(lively = true))
+                    if (slot != shown) {
+                        shown = slot
+                        clock.longValue = (now - start) / 1_000_000L
+                    }
                 }
             }
         }
@@ -6232,7 +6858,13 @@ internal fun rememberLoopClock(running: Boolean = true): androidx.compose.runtim
     return clock
 }
 
-private const val LoopFrameNanos = 15_000_000L
+
+/**
+ * Whether the screen this is in is covered whole — by a page opened over it, or by the full
+ * player — and not drawn meanwhile. What moves by itself there (the looping clocks, the wave's
+ * turning shape) waits, and its back handling leaves the back gesture to what is on top.
+ */
+internal val LocalCovered = androidx.compose.runtime.staticCompositionLocalOf<() -> Boolean> { { false } }
 
 /**
  * What `infiniteRepeatable(tween(durationMs, FastOutSlowInEasing), RepeatMode.Reverse)` from [from]
@@ -6345,16 +6977,31 @@ private fun DownloadedTrackCard(
     progress: () -> Float? = NoProgress,
     isPlaying: Boolean = false,
     onClick: () -> Unit,
-    onDeleteDownload: () -> Unit,
+    // The bin at the row's end; without it the row has nothing there (see [DownloadsScreen]).
+    onDeleteDownload: (() -> Unit)? = null,
+    onLongClick: (() -> Unit)? = null,
+    // Picking tracks: whether this one is picked, shown by a mark in the bin's place; null
+    // when nothing is being picked.
+    checked: Boolean? = null,
     showDebugPercentage: Boolean = false,
     debugPercentage: Int? = null,
     position: GroupPosition = GroupPosition.Single,
     flat: Boolean = false
 ) {
-    TrackRowFrame(position = position, isSelected = isSelected, onClick = onClick, flat = flat) {
+    val downloading = track.downloadState == DownloadState.DOWNLOADING
+    val trailing = downloading || checked != null || onDeleteDownload != null
+    TrackRowFrame(
+        position = position,
+        // While tracks are picked the fill marks the picked ones; the playing one keeps its bars.
+        isSelected = checked ?: isSelected,
+        onClick = onClick,
+        flat = flat,
+        onLongClick = onLongClick
+    ) {
         // Cached cover when the track is downloaded, so the row still shows artwork offline.
         TrackRowArtwork(track.displayArtworkUrl, isCurrent = isSelected, isPlaying = isPlaying)
-        Column(modifier = Modifier.weight(1f)) {
+        // Nothing at the end: the text stops as far from the edge as the cover starts.
+        Column(modifier = Modifier.weight(1f).then(if (trailing) Modifier else Modifier.padding(end = 8.dp))) {
             Text(
                 text = track.title,
                 style = MaterialTheme.typography.titleMedium,
@@ -6386,15 +7033,21 @@ private fun DownloadedTrackCard(
                 }
             }
         }
-        if (track.downloadState == DownloadState.DOWNLOADING) {
-            AppCircularProgress(
+        when {
+            downloading -> AppCircularProgress(
                 progress = progress,
                 modifier = Modifier
                     .padding(end = 8.dp)
                     .size(36.dp)
             )
-        } else {
-            IconButton(onClick = onDeleteDownload) {
+            checked != null -> Box(modifier = Modifier.size(48.dp), contentAlignment = Alignment.Center) {
+                Icon(
+                    imageVector = if (checked) Icons.Rounded.CheckCircle else Icons.Rounded.RadioButtonUnchecked,
+                    contentDescription = if (checked) "Выбран" else "Не выбран",
+                    tint = if (checked) MaterialTheme.colorScheme.primary else LocalContentColor.current.copy(alpha = 0.5f)
+                )
+            }
+            onDeleteDownload != null -> IconButton(onClick = onDeleteDownload) {
                 Icon(
                     Icons.Default.Delete,
                     contentDescription = "Удалить",
@@ -7054,14 +7707,14 @@ private fun TrackDetailScreen(
 private enum class PlayerPull { Undecided, Queue, Player }
 
 // Pulled down this far (of its height), or flung, the player folds away; its corners round to this.
-private const val CollapseMeantFraction = 0.22f
-private val PulledCorner = 36.dp
+internal const val CollapseMeantFraction = 0.22f
+internal val PulledCorner = 36.dp
 // Folding away: no bounce, quick, and it takes up the fling's speed.
-private val CollapseSpring = spring<Float>(dampingRatio = 1f, stiffness = 900f, visibilityThreshold = 1f)
+internal val CollapseSpring = spring<Float>(dampingRatio = 1f, stiffness = 900f, visibilityThreshold = 1f)
 // How dark the screen behind is as the player starts coming down.
-private const val PulledScrim = 0.45f
+internal const val PulledScrim = 0.45f
 // From this far down the player fades into the mini player.
-private const val CollapseFadeFrom = 0.7f
+internal const val CollapseFadeFrom = 0.7f
 
 /**
  * Cover on top, panel at the bottom. The panel is measured first and keeps its natural height;
@@ -9083,8 +9736,8 @@ private fun QueueManagerPanel(
 // and how it settles — with the flick's speed carried in, a little give, no wobble.
 private const val QueueHeightFraction = 0.9f
 private const val QueueMeantFraction = 0.2f
-private val QueueFlingVelocity = 700.dp
-private val QueueSpring = spring<Float>(dampingRatio = 0.86f, stiffness = 360f)
+internal val QueueFlingVelocity = 700.dp
+internal val QueueSpring = spring<Float>(dampingRatio = 0.86f, stiffness = 360f)
 
 @Composable
 private fun FolderArtwork(artworkUri: String?, size: Dp) {
@@ -10277,6 +10930,8 @@ private fun PlaylistDetailScreen(
     Box(
         modifier = Modifier
             .fillMaxSize()
+            // No back button: pulled down, the page closes (see pullToClose).
+            .pullToClose(onBack)
             .pageGlass(MaterialTheme.colorScheme.background)
     ) {
         DetailFrame(
@@ -10360,7 +11015,6 @@ private fun PlaylistDetailScreen(
         CollapsingTopBar(
             title = playlist.name,
             collapsed = collapsed,
-            onBack = onBack,
             trailing = {
                 var showMenu by remember { mutableStateOf(false) }
                 val hasDownloaded = tracks.any { it.downloadState == DownloadState.DOWNLOADED }
@@ -10514,6 +11168,8 @@ private fun YandexPlaylistDetailScreen(
     Box(
         modifier = Modifier
             .fillMaxSize()
+            // No back button: pulled down, the page closes (see pullToClose).
+            .pullToClose(onBack)
             .pageGlass(MaterialTheme.colorScheme.background)
     ) {
         DetailFrame(
@@ -10546,7 +11202,7 @@ private fun YandexPlaylistDetailScreen(
                         }
                     },
                     onShuffle = if (tracks.size < 2 || albumLibrary == null) null else {
-                        { albumLibrary.onShuffle(tracks) }
+                        { albumLibrary.onShuffle(tracks, "set-${playlist.id}") }
                     },
                     onArtworkClick = { imagePicker.launch(arrayOf("image/*")) }
                 )
@@ -10602,7 +11258,6 @@ private fun YandexPlaylistDetailScreen(
         CollapsingTopBar(
             title = title,
             collapsed = collapsed,
-            onBack = onBack,
             trailing = {
                 HomeIconButton(
                     icon = Icons.Default.VisibilityOff,
@@ -10630,6 +11285,8 @@ private fun ArtistDetailScreen(
     onFavoriteClick: (SoundCloudTrack) -> Unit,
     onPlaylistClick: (SoundCloudPlaylist) -> Unit,
     selectedPlaylist: SoundCloudPlaylist? = null,
+    // Its tracks on the way: the album's own loading, not the page's.
+    isAlbumLoading: Boolean = false,
     onDeselectPlaylist: () -> Unit = {},
     isAllTracksLoaded: Boolean = false,
     onLoadAllTracks: () -> Unit = {},
@@ -10643,23 +11300,108 @@ private fun ArtistDetailScreen(
     onRetry: (() -> Unit)? = null,
     tracksTitle: String = "Популярные треки"
 ) {
-    if (selectedPlaylist != null) {
-        SetDetailContent(
-            playlist = selectedPlaylist,
-            subtitle = artist.username.orEmpty(),
-            isLoading = isLoading,
-            favorites = favorites,
-            currentTrackId = currentTrackId,
-            isPlaying = isPlaying,
-            downloadProgress = downloadProgress,
-            onBack = onDeselectPlaylist,
-            onPlayTrack = onPlayTrack,
-            onFavoriteClick = onFavoriteClick,
-            artistName = artist.username
-        )
-        return
+    // An album opened on the artist's page lies over the page, which stays as it was left under
+    // it: pulled down, the album shows the page there, and closing it lands where the page was
+    // scrolled, its albums' carousel where it was turned to. Covered by the album that has come
+    // in, the page isn't drawn, and nothing on it moves by itself.
+    var albumPulled by remember { mutableStateOf(false) }
+    val albums = androidx.compose.animation.core.updateTransition(selectedPlaylist, label = "artistAlbum")
+    val pageHidden by remember {
+        derivedStateOf { albums.currentState != null && albums.targetState != null && !albumPulled }
     }
+    val outerCovered = LocalCovered.current
+    val pageCovered = remember(outerCovered) { { pageHidden || outerCovered() } }
+    Box(modifier = Modifier.fillMaxSize()) {
+        UnderPages(hidden = { pageHidden }) {
+            androidx.compose.runtime.CompositionLocalProvider(LocalCovered provides pageCovered) {
+                ArtistPage(
+                artist = artist,
+                tracks = tracks,
+                playlists = playlists,
+                isLoading = isLoading,
+                error = error,
+                currentTrackId = currentTrackId,
+                downloadProgress = downloadProgress,
+                isPlaying = isPlaying,
+                favorites = favorites,
+                onBack = onBack,
+                onPlayTrack = onPlayTrack,
+                onFavoriteClick = onFavoriteClick,
+                onPlaylistClick = onPlaylistClick,
+                isAllTracksLoaded = isAllTracksLoaded,
+                onLoadAllTracks = onLoadAllTracks,
+                onShuffle = onShuffle,
+                follow = follow,
+                onToggleFollow = onToggleFollow,
+                lives = lives,
+                shelves = shelves,
+                onPlayFrom = onPlayFrom,
+                onOpenArtist = onOpenArtist,
+                onRetry = onRetry,
+                tracksTitle = tracksTitle
+                )
+            }
+        }
+        albums.AnimatedContent(
+            transitionSpec = {
+                ((fadeIn(tween(240)) + scaleIn(initialScale = 0.97f, animationSpec = tween(240))) togetherWith
+                    (fadeOut(tween(160)) + scaleOut(targetScale = 1.02f, animationSpec = tween(160)))) using null
+            },
+            // The same album filled in as its tracks arrive is the same page, not a new one.
+            contentKey = { it?.id }
+        ) { album ->
+            if (album != null) {
+                // Its pull shows the artist's page under it, not home: told here, not to the screen.
+                androidx.compose.runtime.CompositionLocalProvider(LocalPagePulled provides { albumPulled = it }) {
+                    Box(modifier = Modifier.fillMaxSize().pointerInput(Unit) { }) {
+                        SetDetailContent(
+                            playlist = album,
+                            subtitle = artist.username.orEmpty(),
+                            isLoading = isAlbumLoading,
+                            favorites = favorites,
+                            currentTrackId = currentTrackId,
+                            isPlaying = isPlaying,
+                            downloadProgress = downloadProgress,
+                            onBack = onDeselectPlaylist,
+                            onPlayTrack = onPlayTrack,
+                            onFavoriteClick = onFavoriteClick,
+                            artistName = artist.username
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
 
+/** The artist's own page, under whatever album is opened on it (see [ArtistDetailScreen]). */
+@Composable
+private fun ArtistPage(
+    artist: SoundCloudUser,
+    tracks: List<SoundCloudTrack>,
+    playlists: List<SoundCloudPlaylist>,
+    isLoading: Boolean,
+    error: String?,
+    currentTrackId: Long?,
+    downloadProgress: DownloadProgressOf = NoDownloadProgress,
+    isPlaying: Boolean = false,
+    favorites: List<FavoriteTrack>,
+    onBack: () -> Unit,
+    onPlayTrack: (SoundCloudTrack) -> Unit,
+    onFavoriteClick: (SoundCloudTrack) -> Unit,
+    onPlaylistClick: (SoundCloudPlaylist) -> Unit,
+    isAllTracksLoaded: Boolean = false,
+    onLoadAllTracks: () -> Unit = {},
+    onShuffle: () -> Unit = {},
+    follow: ArtistFollow? = null,
+    onToggleFollow: () -> Unit = {},
+    lives: List<SoundCloudTrack> = emptyList(),
+    shelves: List<YtShelf> = emptyList(),
+    onPlayFrom: (SoundCloudTrack, List<SoundCloudTrack>) -> Unit = { track, _ -> onPlayTrack(track) },
+    onOpenArtist: (SoundCloudUser) -> Unit = {},
+    onRetry: (() -> Unit)? = null,
+    tracksTitle: String = "Популярные треки"
+) {
     val listState = rememberLazyListState()
     val collapsed = rememberCollapsed(listState, ArtistPortraitHeight - 160.dp)
     // Five tracks until asked for the rest, then the whole list — loading it if only the
@@ -10676,6 +11418,8 @@ private fun ArtistDetailScreen(
     Box(
         modifier = Modifier
             .fillMaxSize()
+            // No back button: pulled down, the page closes (see pullToClose).
+            .pullToClose(onBack)
             .pageGlass(MaterialTheme.colorScheme.background)
     ) {
         DetailFrame(
@@ -10821,7 +11565,7 @@ private fun ArtistDetailScreen(
             }
         }
 
-        CollapsingTopBar(title = artist.username.orEmpty(), collapsed = collapsed, onBack = onBack)
+        CollapsingTopBar(title = artist.username.orEmpty(), collapsed = collapsed)
     }
 }
 
@@ -10880,6 +11624,7 @@ private fun ArtistSetsCarousel(
                     setCaption(playlist)
                 },
                 artworkUrl = playlist.displayArtworkUrl,
+                source = "set-${playlist.id}",
                 onClick = { onPlaylistClick(playlist) }
             )
         },
@@ -10996,6 +11741,8 @@ private fun SetDetailContent(
     Box(
         modifier = Modifier
             .fillMaxSize()
+            // No back button: pulled down, the page closes (see pullToClose).
+            .pullToClose(onBack)
             .pageGlass(MaterialTheme.colorScheme.background)
     ) {
         DetailFrame(
@@ -11030,7 +11777,7 @@ private fun SetDetailContent(
                         }
                     },
                     onShuffle = if (tracks.size < 2 || albumLibrary == null) null else {
-                        { albumLibrary.onShuffle(tracks) }
+                        { albumLibrary.onShuffle(tracks, "set-${playlist.id}") }
                     }
                 )
             }
@@ -11106,31 +11853,18 @@ private fun SetDetailContent(
             }
         }
 
-        CollapsingTopBar(title = title, collapsed = collapsed, onBack = onBack)
+        CollapsingTopBar(title = title, collapsed = collapsed)
     }
 }
 
-@Composable
-private fun SheetActionIcon(
-    icon: androidx.compose.ui.graphics.vector.ImageVector,
-    container: Color,
-    content: Color
-) {
-    Box(
-        modifier = Modifier
-            .size(40.dp)
-            .background(container, CircleShape),
-        contentAlignment = Alignment.Center
-    ) {
-        Icon(
-            imageVector = icon,
-            contentDescription = null,
-            tint = content,
-            modifier = Modifier.size(22.dp)
-        )
-    }
-}
-
+/**
+ * What can be done with a track: the menu a held cover or clip opens. In the app's own look — the
+ * backdrop's tone with panels on it, the accent only where something is on — as a Material 3
+ * Expressive sheet: the track on top, its three actions as tiles, what concerns its file below.
+ *
+ * "В плейлист" opens the playlists right under the tiles, lit while they are open, instead of a
+ * second page with a back arrow: a tap on the tile again folds them away.
+ */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun TrackActionsDialog(
@@ -11149,8 +11883,9 @@ fun TrackActionsDialog(
 ) {
     // A real M3 modal bottom sheet rather than a Dialog imitating one: this brings the
     // spec scrim, drag handle, swipe-to-dismiss, predictive back and inset handling.
-    val sheetState = rememberModalBottomSheetState()
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val sheetScope = rememberCoroutineScope()
+    val haptic = LocalHapticFeedback.current
     // Actions taken inside the sheet should play the same close animation as a swipe or a
     // scrim tap, so hide the sheet first and only then tear down the composition.
     val dismissSheet: () -> Unit = {
@@ -11158,326 +11893,346 @@ fun TrackActionsDialog(
             if (!sheetState.isVisible) onDismiss()
         }
     }
-    var showPlaylistSelection by remember { mutableStateOf(false) }
+    var choosingPlaylist by remember { mutableStateOf(false) }
     var showCreatePlaylistDialog by remember { mutableStateOf(false) }
     var playlistNameInput by remember { mutableStateOf("") }
+    val colors = MaterialTheme.colorScheme
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
-        sheetState = sheetState
+        sheetState = sheetState,
+        containerColor = colors.background,
+        contentColor = colors.onBackground,
+        dragHandle = {
+            Box(
+                modifier = Modifier
+                    .padding(top = 12.dp, bottom = 8.dp)
+                    .size(width = 36.dp, height = 4.dp)
+                    .clip(CircleShape)
+                    .background(colors.onSurfaceVariant.copy(alpha = 0.4f))
+            )
+        }
     ) {
-                Column(
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 20.dp)
+                .padding(bottom = 20.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp)
+        ) {
+            // The track: where it is from over its name, as the player's chip says it.
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(16.dp)
+            ) {
+                TrackArtwork(artworkUrl = track.artworkUrl, size = 64.dp, useMorphing = false)
+                Column(modifier = Modifier.weight(1f)) {
+                    Kicker(
+                        text = when {
+                            track.urn?.startsWith("local:") == true -> "С телефона"
+                            track.liveVideoId != null -> "YouTube · в эфире"
+                            track.urn?.startsWith("yandex:") == true -> "Яндекс Музыка"
+                            track.youTubeVideoId != null -> "YouTube Music"
+                            else -> "SoundCloud"
+                        },
+                        color = PanelColors.accent
+                    )
+                    Text(
+                        text = track.title ?: "Без названия",
+                        style = MaterialTheme.typography.titleLarge,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    Text(
+                        text = track.artistLine(),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = colors.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+            }
+
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                SheetTile(
+                    icon = Icons.AutoMirrored.Filled.PlaylistAdd,
+                    label = "В плейлист",
+                    selected = choosingPlaylist,
+                    onClick = {
+                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                        choosingPlaylist = !choosingPlaylist
+                    },
+                    modifier = Modifier.weight(1f)
+                )
+                SheetTile(
+                    icon = Icons.Default.Share,
+                    label = "Поделиться",
+                    onClick = {
+                        onShare()
+                        dismissSheet()
+                    },
+                    modifier = Modifier.weight(1f)
+                )
+                if (onRadio != null) {
+                    SheetTile(
+                        icon = Icons.Default.Radio,
+                        label = "Радио",
+                        description = radioDescription,
+                        onClick = {
+                            onRadio()
+                            dismissSheet()
+                        },
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+            }
+
+            AnimatedVisibility(
+                visible = choosingPlaylist,
+                enter = expandVertically(spring(dampingRatio = 0.85f, stiffness = Spring.StiffnessMediumLow)) + fadeIn(),
+                exit = shrinkVertically(spring(dampingRatio = 1f, stiffness = Spring.StiffnessMedium)) + fadeOut()
+            ) {
+                LazyColumn(
                     modifier = Modifier
-                        .padding(horizontal = 20.dp)
-                        .padding(bottom = 16.dp)
-                        .fillMaxWidth(),
-                    verticalArrangement = Arrangement.spacedBy(16.dp)
+                        .fillMaxWidth()
+                        .heightIn(max = 300.dp)
+                        .clip(RoundedCornerShape(24.dp))
+                        .background(PanelColors.container)
                 ) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(vertical = 4.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(16.dp)
-                    ) {
-                        TrackArtwork(artworkUrl = track.artworkUrl, size = 56.dp)
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                text = track.title ?: "Unknown Track",
-                                style = MaterialTheme.typography.titleMedium,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                            Text(
-                                text = track.user?.username ?: "SoundCloud Artist",
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                        }
-                    }
-
-                    if (!showPlaylistSelection) {
-                        Card(
-                            modifier = Modifier.fillMaxWidth(),
-                            shape = MaterialTheme.shapes.extraLarge,
-                            colors = CardDefaults.cardColors(
-                                containerColor = MaterialTheme.colorScheme.surfaceContainer
-                            )
-                        ) {
-                            Column {
-                                // M3 ListItem gives these rows the spec's two-line height,
-                                // headline/supporting type roles and content colors, instead
-                                // of a hand-built Row + Column approximating them.
-                                ListItem(
-                                    headlineContent = { Text("Добавить в плейлист") },
-                                    supportingContent = { Text("Сохраните этот трек в свои подборки") },
-                                    leadingContent = {
-                                        SheetActionIcon(
-                                            icon = Icons.AutoMirrored.Filled.PlaylistAdd,
-                                            container = MaterialTheme.colorScheme.primaryContainer,
-                                            content = MaterialTheme.colorScheme.onPrimaryContainer
-                                        )
-                                    },
-                                    colors = ListItemDefaults.colors(
-                                        containerColor = MaterialTheme.colorScheme.surfaceContainer
-                                    ),
-                                    modifier = Modifier.clickable { showPlaylistSelection = true }
-                                )
-
-                                HorizontalDivider(
-                                    modifier = Modifier.padding(horizontal = 16.dp),
-                                    color = MaterialTheme.colorScheme.outlineVariant
-                                )
-
-                                ListItem(
-                                    headlineContent = { Text("Отправить ссылку на трек") },
-                                    supportingContent = { Text("Поделитесь треком с друзьями") },
-                                    leadingContent = {
-                                        SheetActionIcon(
-                                            icon = Icons.Default.Share,
-                                            container = MaterialTheme.colorScheme.primaryContainer,
-                                            content = MaterialTheme.colorScheme.onPrimaryContainer
-                                        )
-                                    },
-                                    colors = ListItemDefaults.colors(
-                                        containerColor = MaterialTheme.colorScheme.surfaceContainer
-                                    ),
-                                    modifier = Modifier.clickable {
-                                        onShare()
-                                        dismissSheet()
-                                    }
-                                )
-
-                                HorizontalDivider(
-                                    modifier = Modifier.padding(horizontal = 16.dp),
-                                    color = MaterialTheme.colorScheme.outlineVariant
-                                )
-
-                                if (onRadio != null) {
-                                    ListItem(
-                                        headlineContent = { Text("Радио по треку") },
-                                        supportingContent = { Text(radioDescription) },
-                                        leadingContent = {
-                                            SheetActionIcon(
-                                                icon = Icons.Default.Radio,
-                                                container = MaterialTheme.colorScheme.tertiaryContainer,
-                                                content = MaterialTheme.colorScheme.onTertiaryContainer
-                                            )
-                                        },
-                                        colors = ListItemDefaults.colors(
-                                            containerColor = MaterialTheme.colorScheme.surfaceContainer
-                                        ),
-                                        modifier = Modifier.clickable {
-                                            onRadio()
-                                            dismissSheet()
-                                        }
-                                    )
-
-                                    HorizontalDivider(
-                                        modifier = Modifier.padding(horizontal = 16.dp),
-                                        color = MaterialTheme.colorScheme.outlineVariant
-                                    )
-                                }
-
-                                if (onRedownload != null) ListItem(
-                                    headlineContent = { Text("Перескачать трек") },
-                                    supportingContent = { Text("Скачать файл заново на устройство") },
-                                    leadingContent = {
-                                        SheetActionIcon(
-                                            icon = Icons.Default.Refresh,
-                                            container = MaterialTheme.colorScheme.primaryContainer,
-                                            content = MaterialTheme.colorScheme.onPrimaryContainer
-                                        )
-                                    },
-                                    colors = ListItemDefaults.colors(
-                                        containerColor = MaterialTheme.colorScheme.surfaceContainer
-                                    ),
-                                    modifier = Modifier.clickable {
-                                        onRedownload()
-                                        dismissSheet()
-                                    }
-                                )
-
-                                if (onDeleteDownload != null) {
-                                    ListItem(
-                                        headlineContent = { Text("Удалить с устройства") },
-                                        supportingContent = { Text("Файл удалится с телефона, в любимых трек останется") },
-                                        leadingContent = {
-                                            SheetActionIcon(
-                                                icon = Icons.Default.Delete,
-                                                container = MaterialTheme.colorScheme.errorContainer,
-                                                content = MaterialTheme.colorScheme.onErrorContainer
-                                            )
-                                        },
-                                        colors = ListItemDefaults.colors(
-                                            containerColor = MaterialTheme.colorScheme.surfaceContainer
-                                        ),
-                                        modifier = Modifier.clickable {
-                                            onDeleteDownload()
-                                            dismissSheet()
-                                        }
-                                    )
-                                }
-                            }
-                        }
-
-                    } else {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween
-                        ) {
-                            IconButton(
-                                onClick = { showPlaylistSelection = false }
-                            ) {
-                                Icon(
-                                    Icons.AutoMirrored.Filled.ArrowBack,
-                                    contentDescription = "Назад"
-                                )
-                            }
-                            Text(
-                                text = "Выберите плейлист",
-                                style = MaterialTheme.typography.titleMedium
-                            )
-                            FilledIconButton(
-                                onClick = { showCreatePlaylistDialog = true }
-                            ) {
-                                Icon(
-                                    Icons.Default.Add,
-                                    contentDescription = "Создать плейлист"
-                                )
-                            }
-                        }
-
-                        if (playlists.isEmpty()) {
-                            Box(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .height(120.dp),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Text(
-                                    text = "У вас пока нет плейлистов",
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            }
-                        } else {
-                            Card(
-                                modifier = Modifier.fillMaxWidth(),
-                                shape = MaterialTheme.shapes.extraLarge,
-                                colors = CardDefaults.cardColors(
-                                    containerColor = MaterialTheme.colorScheme.surfaceContainer
-                                )
-                            ) {
-                                LazyColumn(
+                    item(key = "new-playlist") {
+                        SheetRow(
+                            leading = {
+                                Box(
                                     modifier = Modifier
-                                        .fillMaxWidth()
-                                        .heightIn(max = 300.dp)
+                                        .size(44.dp)
+                                        .clip(RoundedCornerShape(14.dp))
+                                        .background(PanelColors.accent),
+                                    contentAlignment = Alignment.Center
                                 ) {
-                                    itemsIndexed(playlists) { index, playlist ->
-                                        Row(
-                                            modifier = Modifier
-                                                .fillMaxWidth()
-                                                .clickable {
-                                                    onAddToPlaylist(playlist)
-                                                    dismissSheet()
-                                                }
-                                                .padding(14.dp),
-                                            verticalAlignment = Alignment.CenterVertically,
-                                            horizontalArrangement = Arrangement.spacedBy(14.dp)
-                                        ) {
-                                            if (!playlist.artworkUrl.isNullOrBlank()) {
-                                                FolderArtwork(playlist.artworkUrl, size = 44.dp)
-                                            } else {
-                                                Box(
-                                                    modifier = Modifier
-                                                        .size(44.dp)
-                                                        .background(MaterialTheme.colorScheme.primaryContainer, MaterialTheme.shapes.medium),
-                                                    contentAlignment = Alignment.Center
-                                                ) {
-                                                    Icon(
-                                                        imageVector = Icons.AutoMirrored.Filled.QueueMusic,
-                                                        contentDescription = null,
-                                                        tint = MaterialTheme.colorScheme.onPrimaryContainer,
-                                                        modifier = Modifier.size(24.dp)
-                                                    )
-                                                }
-                                            }
-                                            Column(modifier = Modifier.weight(1f)) {
-                                                Text(
-                                                    text = playlist.name,
-                                                    style = MaterialTheme.typography.titleSmall
-                                                )
-                                                Text(
-                                                    text = "${playlist.tracks.size} треков",
-                                                    style = MaterialTheme.typography.bodySmall,
-                                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                                )
-                                            }
-                                        }
-                                        if (index < playlists.size - 1) {
-                                            HorizontalDivider(
-                                                modifier = Modifier.padding(horizontal = 14.dp),
-                                                color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.2f)
-                                            )
-                                        }
+                                    Icon(Icons.Default.Add, contentDescription = null, tint = PanelColors.onAccent)
+                                }
+                            },
+                            title = "Новый плейлист",
+                            subtitle = "С этим треком в нём",
+                            onClick = { showCreatePlaylistDialog = true }
+                        )
+                    }
+                    itemsIndexed(playlists, key = { _, playlist -> "playlist-${playlist.id}" }) { _, playlist ->
+                        SheetDivider()
+                        SheetRow(
+                            leading = {
+                                if (!playlist.artworkUrl.isNullOrBlank()) {
+                                    FolderArtwork(playlist.artworkUrl, size = 44.dp)
+                                } else {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(44.dp)
+                                            .clip(RoundedCornerShape(14.dp))
+                                            .background(PanelColors.content.copy(alpha = 0.1f)),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.AutoMirrored.Filled.QueueMusic,
+                                            contentDescription = null,
+                                            tint = PanelColors.accent,
+                                            modifier = Modifier.size(24.dp)
+                                        )
                                     }
                                 }
+                            },
+                            title = playlist.name,
+                            subtitle = plural(playlist.tracks.size, "трек", "трека", "треков"),
+                            onClick = {
+                                onAddToPlaylist(playlist)
+                                dismissSheet()
                             }
-                        }
-
-                        TextButton(
-                            onClick = dismissSheet,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .height(48.dp),
-                            shape = MaterialTheme.shapes.large
-                        ) {
-                            Text(
-                                "Отмена",
-                                style = MaterialTheme.typography.labelLarge,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
+                        )
                     }
                 }
+            }
 
-            if (showCreatePlaylistDialog) {
-                AlertDialog(
-                    onDismissRequest = { showCreatePlaylistDialog = false },
-                    title = { Text("Создать плейлист") },
-                    text = {
-                        OutlinedTextField(
-                            value = playlistNameInput,
-                            onValueChange = { playlistNameInput = it },
-                            placeholder = { Text("Название плейлиста") },
-                            singleLine = true
-                        )
-                    },
-                    confirmButton = {
-                        Button(
+            // What concerns the file on the phone, apart from what is done with the track.
+            if (onRedownload != null || onDeleteDownload != null) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(24.dp))
+                        .background(PanelColors.container)
+                ) {
+                    if (onRedownload != null) {
+                        SheetRow(
+                            leading = { SheetRowIcon(Icons.Default.Refresh) },
+                            title = "Перескачать",
+                            subtitle = "Скачать файл заново на устройство",
                             onClick = {
-                                if (playlistNameInput.isNotBlank()) {
-                                    onCreatePlaylist(playlistNameInput)
-                                    showCreatePlaylistDialog = false
-                                    playlistNameInput = ""
-                                }
+                                onRedownload()
+                                dismissSheet()
                             }
-                        ) {
-                            Text("Создать")
-                        }
-                    },
-                    dismissButton = {
-                        TextButton(onClick = { showCreatePlaylistDialog = false }) {
-                            Text("Отмена")
-                        }
+                        )
                     }
+                    if (onRedownload != null && onDeleteDownload != null) SheetDivider()
+                    if (onDeleteDownload != null) {
+                        SheetRow(
+                            leading = { SheetRowIcon(Icons.Default.Delete, tint = colors.error) },
+                            title = "Удалить с устройства",
+                            subtitle = "Файл удалится с телефона, в любимых трек останется",
+                            titleColor = colors.error,
+                            onClick = {
+                                onDeleteDownload()
+                                dismissSheet()
+                            }
+                        )
+                    }
+                }
+            }
+        }
+
+        if (showCreatePlaylistDialog) {
+            AlertDialog(
+                onDismissRequest = { showCreatePlaylistDialog = false },
+                title = { Text("Новый плейлист") },
+                text = {
+                    OutlinedTextField(
+                        value = playlistNameInput,
+                        onValueChange = { playlistNameInput = it },
+                        placeholder = { Text("Название плейлиста") },
+                        singleLine = true
+                    )
+                },
+                confirmButton = {
+                    Button(
+                        onClick = {
+                            if (playlistNameInput.isNotBlank()) {
+                                onCreatePlaylist(playlistNameInput)
+                                showCreatePlaylistDialog = false
+                                playlistNameInput = ""
+                            }
+                        }
+                    ) {
+                        Text("Создать")
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { showCreatePlaylistDialog = false }) {
+                        Text("Отмена")
+                    }
+                }
+            )
+        }
+    }
+}
+
+/**
+ * One of the sheet's three actions: the accent glyph over its name on a panel-tone tile — the
+ * launcher's themed-icon look. A tile that opens something (the playlists) is lit while it is
+ * open, and rounds out, as the app's toggles do.
+ */
+@Composable
+private fun SheetTile(
+    icon: ImageVector,
+    label: String,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    selected: Boolean = false,
+    description: String? = null
+) {
+    val container by animateColorAsState(
+        if (selected) PanelColors.accent else PanelColors.container,
+        tween(250),
+        label = "sheetTileContainer"
+    )
+    val content by animateColorAsState(
+        if (selected) PanelColors.onAccent else PanelColors.accent,
+        tween(250),
+        label = "sheetTileContent"
+    )
+    val corner by animateDpAsState(
+        if (selected) 32.dp else 22.dp,
+        spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessLow),
+        label = "sheetTileCorner"
+    )
+    Surface(
+        onClick = onClick,
+        modifier = modifier
+            .height(88.dp)
+            .semantics { if (description != null) contentDescription = "$label. $description" },
+        shape = RoundedCornerShape(corner),
+        color = container,
+        contentColor = content
+    ) {
+        Column(
+            modifier = Modifier.padding(horizontal = 6.dp, vertical = 12.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center
+        ) {
+            Icon(icon, contentDescription = null, modifier = Modifier.size(26.dp))
+            Spacer(modifier = Modifier.height(8.dp))
+            Text(
+                text = label,
+                style = MaterialTheme.typography.labelLarge,
+                color = if (selected) PanelColors.onAccent else PanelColors.content,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+    }
+}
+
+/** A row of the sheet's panels: a picture or icon, a name and a line under it. */
+@Composable
+private fun SheetRow(
+    leading: @Composable () -> Unit,
+    title: String,
+    subtitle: String?,
+    onClick: () -> Unit,
+    titleColor: Color = PanelColors.content
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(horizontal = 14.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(14.dp)
+    ) {
+        leading()
+        Column(modifier = Modifier.weight(1f)) {
+            Text(title, style = MaterialTheme.typography.titleSmall, color = titleColor, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            if (subtitle != null) {
+                Text(
+                    subtitle,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = PanelColors.content.copy(alpha = 0.7f),
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
                 )
             }
+        }
     }
+}
+
+@Composable
+private fun SheetRowIcon(icon: ImageVector, tint: Color = PanelColors.accent) {
+    Box(
+        modifier = Modifier
+            .size(44.dp)
+            .clip(RoundedCornerShape(14.dp))
+            .background(PanelColors.content.copy(alpha = 0.1f)),
+        contentAlignment = Alignment.Center
+    ) {
+        Icon(icon, contentDescription = null, tint = tint, modifier = Modifier.size(22.dp))
+    }
+}
+
+@Composable
+private fun SheetDivider() {
+    Box(
+        modifier = Modifier
+            .padding(start = 72.dp, end = 14.dp)
+            .fillMaxWidth()
+            .height(1.dp)
+            .background(PanelColors.content.copy(alpha = 0.08f))
+    )
 }
 
 /**

@@ -223,6 +223,24 @@ class SettingsRepository(
         preferences.edit().putBoolean(KEY_YT_WEB_SEARCH, enabled).apply()
     }
 
+    // What moves by itself drawn on every frame of a 120 Hz screen while it moves; off, sixty a
+    // second (and thirty while only drifting), lighter on a weak phone. See MotionPace.
+    val smoothMotion = MutableStateFlow(preferences.getBoolean(KEY_SMOOTH_MOTION, true))
+
+    fun setSmoothMotion(enabled: Boolean) {
+        smoothMotion.value = enabled
+        preferences.edit().putBoolean(KEY_SMOOTH_MOTION, enabled).apply()
+    }
+
+    // A track tapped in a list opens the player over it; off, it only starts, in the mini player,
+    // and the player opens from that.
+    val openPlayerOnTap = MutableStateFlow(preferences.getBoolean(KEY_OPEN_PLAYER_ON_TAP, true))
+
+    fun setOpenPlayerOnTap(enabled: Boolean) {
+        openPlayerOnTap.value = enabled
+        preferences.edit().putBoolean(KEY_OPEN_PLAYER_ON_TAP, enabled).apply()
+    }
+
     // The player's button for a track's effects (reverb, speed), off unless asked for.
     val playerFxButton = MutableStateFlow(preferences.getBoolean(KEY_PLAYER_FX_BUTTON, false))
 
@@ -445,6 +463,8 @@ class SettingsRepository(
         const val KEY_YANDEX_WAVE_SESSION = "yandex_wave_session"
         const val KEY_YANDEX_WAVE_PICKS = "yandex_wave_picks"
         const val KEY_PLAYER_FX_BUTTON = "player_fx_button"
+        const val KEY_OPEN_PLAYER_ON_TAP = "open_player_on_tap"
+        const val KEY_SMOOTH_MOTION = "smooth_motion"
         const val KEY_ONBOARDING_DONE = "onboarding_done"
         const val KEY_YT_WEB_SEARCH = "yt_web_search"
         const val KEY_YT_ARTIST_SHOW_ALL = "yt_artist_show_all"
