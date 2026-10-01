@@ -33,6 +33,8 @@ import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.node.DrawModifierNode
 import androidx.compose.ui.node.GlobalPositionAwareModifierNode
 import androidx.compose.ui.node.ModifierNodeElement
+import androidx.compose.ui.node.TraversableNode
+import androidx.compose.ui.node.findNearestAncestor
 import androidx.compose.ui.node.invalidateDraw
 import androidx.compose.ui.platform.InspectorInfo
 import androidx.compose.ui.unit.Dp
@@ -170,6 +172,8 @@ private class SoftFrostNode(var sources: List<FrostSource>, var tint: Color) :
     private var at = Offset.Zero
 
     override fun onGloballyPositioned(coordinates: LayoutCoordinates) {
+        // On a page being pulled away the glass keeps what it showed (see holdFrost).
+        if ((findNearestAncestor(HoldFrostKey) as? HoldFrostNode)?.held?.invoke() == true) return
         val position = coordinates.positionInRoot()
         if (position != at) {
             at = position
@@ -184,6 +188,32 @@ private class SoftFrostNode(var sources: List<FrostSource>, var tint: Color) :
         drawRect(tint)
         drawContent()
     }
+}
+
+/**
+ * Over a page that moves as a whole while [held] says so — pulled off its place: the glass on it
+ * keeps the part of the backdrop it showed instead of drawing it again on every frame of the move,
+ * so the page goes on as the picture it already is. Under the pages' wash of colour the backdrop
+ * moving along with them a little can't be told; the page redrawn all over each frame could.
+ */
+internal fun Modifier.holdFrost(held: () -> Boolean): Modifier = this then HoldFrostElement(held)
+
+private object HoldFrostKey
+
+private data class HoldFrostElement(val held: () -> Boolean) : ModifierNodeElement<HoldFrostNode>() {
+    override fun create() = HoldFrostNode(held)
+
+    override fun update(node: HoldFrostNode) {
+        node.held = held
+    }
+
+    override fun InspectorInfo.inspectableProperties() {
+        name = "holdFrost"
+    }
+}
+
+private class HoldFrostNode(var held: () -> Boolean) : Modifier.Node(), TraversableNode {
+    override val traverseKey: Any get() = HoldFrostKey
 }
 
 // Where a glass box is, read only while drawing: moving it redraws the glass, not the screen.

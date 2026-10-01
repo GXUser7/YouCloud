@@ -40,6 +40,8 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import kotlinx.coroutines.flow.collectLatest
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -193,7 +195,10 @@ internal fun MyWavePage(
             )
         }
     }
-    if (tuning) BackHandler { tuning = false }
+    // Not from under a page opened over home, or the player: the back gesture is theirs.
+    val covered = LocalCovered.current
+    val hidden by remember(covered) { androidx.compose.runtime.derivedStateOf(covered) }
+    if (tuning && !hidden) BackHandler { tuning = false }
 }
 
 /** The wave's settings on frosted glass: the moods and the modes, a connected button group each. */
@@ -355,23 +360,29 @@ internal fun WaveShape(
     // slowing. Redrawn thirty times a second while it only turns, the backdrop's own pace when it
     // is still; sixty while playing or spun.
     val turn = remember { androidx.compose.runtime.mutableFloatStateOf(0f) }
-    LaunchedEffect(playing) {
-        BackdropShake.take()
-        var angle = turn.floatValue
-        var spin = 0f
-        var last = 0L
-        var shown = 0L
-        while (true) {
-            androidx.compose.runtime.withFrameNanos { now ->
-                val dt = if (last == 0L) 0f else ((now - last) / 1_000_000_000f).coerceAtMost(0.05f)
-                last = now
-                spin = (spin + BackdropShake.take() * SHAKE_SPIN).coerceIn(-MAX_SPIN, MAX_SPIN)
-                spin *= kotlin.math.exp(-SPIN_DAMPING * dt)
-                angle += ((if (playing) PLAYING_TURN else IDLE_TURN) + spin) * dt
-                val interval = if (playing || kotlin.math.abs(spin) > 0.05f) FAST_FRAME_NANOS else CALM_FRAME_NANOS
-                if (now - shown >= interval) {
-                    shown = now
-                    turn.floatValue = angle
+    // Still under a page or the player, where it isn't drawn: turning on there redrew the window.
+    val covered = LocalCovered.current
+    LaunchedEffect(playing, covered) {
+        snapshotFlow { covered() }.collectLatest { hidden ->
+            if (hidden) return@collectLatest
+            BackdropShake.take()
+            var angle = turn.floatValue
+            var spin = 0f
+            var last = 0L
+            var shown = -1L
+            while (true) {
+                androidx.compose.runtime.withFrameNanos { now ->
+                    val dt = if (last == 0L) 0f else ((now - last) / 1_000_000_000f).coerceAtMost(0.05f)
+                    last = now
+                    spin = (spin + BackdropShake.take() * SHAKE_SPIN).coerceIn(-MAX_SPIN, MAX_SPIN)
+                    spin *= kotlin.math.exp(-SPIN_DAMPING * dt)
+                    angle += ((if (playing) PLAYING_TURN else IDLE_TURN) + spin) * dt
+                    // On the frames the backdrop and the clocks move on (see frameSlot).
+                    val slot = frameSlot(now, MotionPace.slotNanos(lively = playing || kotlin.math.abs(spin) > 0.05f))
+                    if (slot != shown) {
+                        shown = slot
+                        turn.floatValue = angle
+                    }
                 }
             }
         }
@@ -426,7 +437,5 @@ private const val PLAYING_TURN = 0.35f
 private const val SHAKE_SPIN = 3f
 private const val MAX_SPIN = 14f
 private const val SPIN_DAMPING = 1.1f
-private const val FAST_FRAME_NANOS = 15_000_000L
-private const val CALM_FRAME_NANOS = 32_000_000L
 private const val DEFAULT_LOBES = 8
 private const val DEFAULT_DEPTH = 0.07f

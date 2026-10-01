@@ -94,7 +94,8 @@ enum class AppScreen {
     PLAYLIST_DETAIL,
     ARTIST_DETAIL,
     YANDEX_PLAYLIST_DETAIL,
-    YTM_SET_DETAIL
+    YTM_SET_DETAIL,
+    HISTORY
 }
 
 /** Where search looks. YouTube Music and Yandex only once they are connected. */
@@ -128,6 +129,10 @@ class MusicViewModel(
     val settingsRepo: SettingsRepository get() = settingsRepository
 
     /** New versions from GitHub releases; see [UpdateRepository]. */
+    /** What was listened to; see [ListeningHistory]. */
+    private val listeningHistory = com.example.myapplication.data.ListeningHistory(context.applicationContext, viewModelScope)
+    val history = listeningHistory.tracks
+
     val updates = UpdateRepository(
         context = context.applicationContext,
         service = UpdateService(userAgent = "YouCloud/${com.example.myapplication.BuildConfig.VERSION_NAME}"),
@@ -352,6 +357,10 @@ class MusicViewModel(
 
     private val _artistLoading = MutableStateFlow(false)
     val artistLoading = _artistLoading.asStateFlow()
+    // An album opened on the artist's page, its tracks on the way: apart from the page's own
+    // loading, so the page under the album keeps showing what it has.
+    private val _artistAlbumLoading = MutableStateFlow(false)
+    val artistAlbumLoading = _artistAlbumLoading.asStateFlow()
 
     private val _artistError = MutableStateFlow<String?>(null)
     val artistError = _artistError.asStateFlow()
@@ -484,6 +493,12 @@ class MusicViewModel(
 
     private val _playingMixId = MutableStateFlow<String?>(null)
     val playingMixId = _playingMixId.asStateFlow()
+    // Where the queue playing was started from, as the carousels' cards name it, to light the one
+    // it came from: "downloads", "history", "playlist-<id>" (one of the app's), "set-<id>" (an
+    // album or playlist of a service), "mix-<id>". Null for a lone track, a search's results, a
+    // radio.
+    private val _playingFrom = MutableStateFlow<String?>(null)
+    val playingFrom = _playingFrom.asStateFlow()
 
     private val _screen = MutableStateFlow(AppScreen.HOME)
     val screen = _screen.asStateFlow()
@@ -692,6 +707,20 @@ class MusicViewModel(
                     _activeQueue.value.getOrNull(nextIndex)
                         ?.takeIf { next -> freshVideoLookup(next.id) == null }
                         ?.let(::videoLookup)
+                }
+        }
+
+        // A track goes into the history once it has been heard for a moment: not one skipped past,
+        // nor one put back in the queue at launch and never played.
+        viewModelScope.launch {
+            combine(_currentPlayingTrack, musicPlayer.isPlaying) { track, playing -> track?.takeIf { playing } }
+                .distinctUntilChangedBy { it?.id }
+                .collectLatest { track ->
+                    if (track == null) return@collectLatest
+                    delay(HISTORY_HEARD_MS)
+                    // The same track as it is now: resolving it may have filled it in meanwhile.
+                    val heard = _currentPlayingTrack.value?.takeIf { it.id == track.id } ?: track
+                    listeningHistory.record(heard)
                 }
         }
 
@@ -1135,6 +1164,7 @@ class MusicViewModel(
                 }
                 musicPlayer.playQueue(stubs, 0)
                 _playingMixId.value = mix.id
+                _playingFrom.value = "mix-${mix.id}"
             } catch (e: Exception) {
                 Log.e("MusicViewModel", "playMix error", e)
                 handleSoundCloudApiError(e)
@@ -1335,6 +1365,14 @@ class MusicViewModel(
             .distinctBy { it.id }
     }
 
+    /**
+     * A track started from a list: the player opens over it, unless the settings say the mini
+     * player is enough ([SettingsRepository.openPlayerOnTap]).
+     */
+    private fun showPlayerFor(track: SoundCloudTrack) {
+        if (settingsRepository.openPlayerOnTap.value) _selectedTrack.value = track
+    }
+
     fun playMixTrack(track: SoundCloudTrack) {
         viewModelScope.launch {
             Log.d("MusicViewModel", "playMixTrack: trackId=${track.id}")
@@ -1389,6 +1427,9 @@ class MusicViewModel(
                 }
                 musicPlayer.playQueue(stubs, newStartIndex)
                 _playingMixId.value = _selectedMix.value?.id
+                _playingFrom.value = _selectedMix.value?.id?.let { "mix-$it" }
+                // As anywhere else: a mix's track opened the player nowhere but here did it not.
+                startTrack?.let(::showPlayerFor)
             } catch (e: Exception) {
                 Log.e("MusicViewModel", "playMixTrack error", e)
                 handleSoundCloudApiError(e)
@@ -1484,8 +1525,9 @@ class MusicViewModel(
                     startIndex = 0
                 )
                 _playingMixId.value = null
+                _playingFrom.value = null
                 _currentPlayingTrack.value = track
-                _selectedTrack.value = track
+                showPlayerFor(track)
             } catch (e: Exception) {
                 handleSoundCloudApiError(e)
                 _errorMessage.value = readableMessage(e)
@@ -1743,6 +1785,27 @@ class MusicViewModel(
 
     fun closeDownloads() {
         _screen.value = AppScreen.HOME
+    }
+
+    fun openHistory() {
+        _screen.value = AppScreen.HISTORY
+    }
+
+    fun closeHistory() {
+        _screen.value = AppScreen.HOME
+    }
+
+    /** From the history: on from [track] through what was heard before it. */
+    fun playHistoryTrack(track: SoundCloudTrack) {
+        playQueuedTrack(track, listeningHistory.tracks.value, source = "history")
+    }
+
+    fun playHistoryShuffled() {
+        playShuffled(listeningHistory.tracks.value, source = "history")
+    }
+
+    fun clearHistory() {
+        listeningHistory.clear()
     }
 
     fun openSettings() {
@@ -2189,7 +2252,7 @@ class MusicViewModel(
         val isYandexAlbum = playlist.permalinkUrl?.startsWith("yandex:album:") == true
         if (playlist.permalinkUrl?.startsWith(YT_SET_REF) == true) {
             viewModelScope.launch {
-                _artistLoading.value = true
+                _artistAlbumLoading.value = true
                 try {
                     val tracks = ytMusic.setTracks(playlist)
                     if (_selectedArtistPlaylist.value?.id == playlist.id) {
@@ -2201,12 +2264,12 @@ class MusicViewModel(
                 } catch (e: Exception) {
                     Log.e("MusicViewModel", "YouTube Music set ${playlist.permalinkUrl} failed", e)
                 } finally {
-                    _artistLoading.value = false
+                    _artistAlbumLoading.value = false
                 }
             }
         } else if (isYandexAlbum) {
             viewModelScope.launch {
-                _artistLoading.value = true
+                _artistAlbumLoading.value = true
                 try {
                     val albumId = playlist.permalinkUrl!!.substringAfter("yandex:album:").toLongOrNull()
                     if (albumId != null) {
@@ -2218,14 +2281,14 @@ class MusicViewModel(
                 } catch (e: Exception) {
                     Log.e("MusicViewModel", "Failed to fetch Yandex album tracks", e)
                 } finally {
-                    _artistLoading.value = false
+                    _artistAlbumLoading.value = false
                 }
             }
         } else if (playlist.permalinkUrl?.startsWith("yandex:") != true) {
             // Stream sets arrive with id-only stubs past the first few tracks, which showed up as
             // "Unknown Track" rows that could not play.
             viewModelScope.launch {
-                _artistLoading.value = true
+                _artistAlbumLoading.value = true
                 try {
                     val tracks = loadSoundCloudPlaylistTracks(playlist)
                     if (_selectedArtistPlaylist.value?.id == playlist.id) {
@@ -2236,7 +2299,7 @@ class MusicViewModel(
                     Log.e("MusicViewModel", "Failed to fetch SoundCloud playlist tracks", e)
                     handleSoundCloudApiError(e)
                 } finally {
-                    _artistLoading.value = false
+                    _artistAlbumLoading.value = false
                 }
             }
         }
@@ -2711,8 +2774,9 @@ class MusicViewModel(
             startIndex = safeStartIndex
         )
         _playingMixId.value = null
+        _playingFrom.value = "downloads"
         _currentPlayingTrack.value = playable
-        _selectedTrack.value = playable
+        showPlayerFor(playable)
     }
 
     fun togglePlayPause() {
@@ -3271,10 +3335,10 @@ class MusicViewModel(
      * "Перемешать": switches shuffle on (it stays on, as if pressed in the player) and starts
      * [queue] from a random track; the play paths already shuffle the rest once the flag is set.
      */
-    fun playShuffled(queue: List<SoundCloudTrack>, fromMix: Boolean = false) {
+    fun playShuffled(queue: List<SoundCloudTrack>, fromMix: Boolean = false, source: String? = null) {
         val start = queue.randomOrNull() ?: return
         if (!musicPlayer.shuffleEnabled.value) musicPlayer.toggleShuffle()
-        if (fromMix) playMixTrack(start) else playQueuedTrack(start, queue)
+        if (fromMix) playMixTrack(start) else playQueuedTrack(start, queue, source = source)
     }
 
     /** Everything downloaded, shuffled. */
@@ -3312,6 +3376,8 @@ class MusicViewModel(
 
     private companion object {
         const val AUTH_RECOVERY_COOLDOWN_MS = 30_000L
+        // How long a track plays before it counts as listened to, for the history.
+        const val HISTORY_HEARD_MS = 5_000L
 
         // The Yandex radio asks for more once fewer tracks than this are left after the one playing.
         const val RADIO_AHEAD = 3
@@ -3488,8 +3554,9 @@ class MusicViewModel(
 
             musicPlayer.playQueue(stubs, newStartIndex)
             _playingMixId.value = null
+            _playingFrom.value = "playlist-${playlist.id}"
             _currentPlayingTrack.value = playable
-            _selectedTrack.value = playable
+            showPlayerFor(playable)
         }
     }
 
@@ -3871,7 +3938,9 @@ class MusicViewModel(
     fun playQueuedTrack(
         track: SoundCloudTrack,
         customQueue: List<SoundCloudTrack>? = null,
-        fromQueueManager: Boolean = false
+        fromQueueManager: Boolean = false,
+        // What the queue is, for the card it came from (see [playingFrom]).
+        source: String? = null
     ) {
         viewModelScope.launch {
             _errorMessage.value = null
@@ -3937,8 +4006,10 @@ class MusicViewModel(
                 }
                 musicPlayer.playQueue(stubs, newStartIndex)
                 _playingMixId.value = null
+                // Moved about in the queue, it is still the queue it was.
+                if (!fromQueueManager) _playingFrom.value = source
                 _currentPlayingTrack.value = track
-                _selectedTrack.value = track
+                showPlayerFor(track)
             } catch (e: Exception) {
                 Log.e("MusicViewModel", "playQueuedTrack error", e)
                 _errorMessage.value = readableMessage(e)
