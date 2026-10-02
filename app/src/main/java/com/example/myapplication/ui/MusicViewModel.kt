@@ -46,6 +46,8 @@ import com.example.myapplication.data.SoundCloudWebRequests
 import com.example.myapplication.data.SoundCloudPlaylist
 import com.example.myapplication.data.SoundCloudMeResponse
 import com.example.myapplication.data.SoundCloudUser
+import com.example.myapplication.data.SharedLink
+import com.example.myapplication.data.SharedLinks
 import com.example.myapplication.data.Playlist
 import com.example.myapplication.data.PlaylistsRepository
 import com.example.myapplication.data.sourceKey
@@ -1651,7 +1653,12 @@ class MusicViewModel(
         ytSetJob = viewModelScope.launch {
             _ytSetLoading.value = true
             try {
-                val tracks = if (set.permalinkUrl?.startsWith("yandex:") == true) loadYandexSetTracks(set) else ytMusic.setTracks(set)
+                val tracks = when {
+                    set.permalinkUrl?.startsWith("yandex:") == true -> loadYandexSetTracks(set)
+                    set.permalinkUrl?.startsWith(YT_SET_REF) == true -> ytMusic.setTracks(set)
+                    // A SoundCloud set, opened from a link.
+                    else -> loadSoundCloudPlaylistTracks(set)
+                }
                 if (_ytOpenedSet.value?.id == set.id) {
                     _ytOpenedSet.value = set.copy(tracks = tracks, trackCount = tracks.size)
                 }
@@ -1666,6 +1673,182 @@ class MusicViewModel(
             }
         }
     }
+
+    // region Links
+
+    // A link being opened: a second one shared meanwhile takes its place.
+    private var linkJob: Job? = null
+
+    /**
+     * Opens what a link shared to the app, or opened with it, points at — [text] may be the link
+     * alone or words around it: a track plays with the player up (followed, for Yandex Music and
+     * YouTube Music, by its radio, as their own apps do); an album or playlist opens as a set; an
+     * artist or channel opens its page.
+     */
+    fun openSharedText(text: String) {
+        val url = SharedLinks.findUrl(text)
+        if (url == null) {
+            Toast.makeText(context, "Здесь нет ссылки", Toast.LENGTH_SHORT).show()
+            return
+        }
+        linkJob?.cancel()
+        linkJob = viewModelScope.launch {
+            var link = SharedLinks.parse(url)
+            if (link is SharedLink.Short) link = SharedLinks.follow(link.url)
+            if (link == null) {
+                Toast.makeText(context, "Такие ссылки YouCloud пока не открывает", Toast.LENGTH_SHORT).show()
+                return@launch
+            }
+            Log.d("MusicViewModel", "Opening link $link")
+            try {
+                openLink(link)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.e("MusicViewModel", "Link $url failed", e)
+                Toast.makeText(context, "Не удалось открыть ссылку: ${readableMessage(e)}", Toast.LENGTH_LONG).show()
+            }
+        }
+    }
+
+    private suspend fun openLink(link: SharedLink) {
+        when (link) {
+            is SharedLink.YandexTrack -> {
+                if (settingsRepository.yandexTokenValue().isBlank()) {
+                    Toast.makeText(context, "Чтобы слушать треки Яндекс Музыки, войдите в неё в настройках", Toast.LENGTH_LONG).show()
+                    return
+                }
+                val ids = if (link.albumId != null) "${link.trackId}:${link.albumId}" else link.trackId
+                val track = yandexService.getTracksDetails(ids).result.orEmpty().firstOrNull()
+                    ?.toSoundCloudTrack(customAlbumId = link.albumId)
+                    ?: throw IllegalStateException("трек не найден")
+                playFromLink(track)
+                // Then on with its radio: the queue grows behind the track as it plays.
+                playYandexRadio(track)
+            }
+            is SharedLink.YandexAlbum -> openSetFromLink(
+                yandexAlbum(link.albumId) ?: throw IllegalStateException("альбом не найден")
+            )
+            is SharedLink.YandexArtist -> openArtistFromLink {
+                openArtistDetails(link.artistId.toLongOrNull() ?: 0L, "yandex:artist:${link.artistId}", null)
+            }
+            is SharedLink.YandexPlaylist -> openSetFromLink(
+                yandexPlaylist(yandexService.getPlaylistByOwner(link.owner, link.kind).result)
+            )
+            is SharedLink.YandexPlaylistUuid -> openSetFromLink(
+                yandexPlaylist(yandexService.getPlaylistByUuid(link.uuid).result)
+            )
+            is SharedLink.YouTubeVideo -> {
+                val queue = ytMusic.radio(link.videoId)
+                val id = com.example.myapplication.data.youTubeTrackId(link.videoId)
+                val track = queue.firstOrNull { it.id == id || it.youTubeVideoId == link.videoId || it.liveVideoId == link.videoId }
+                    ?: queue.firstOrNull()
+                    ?: throw IllegalStateException("видео не найдено")
+                playFromLink(track, queue)
+            }
+            is SharedLink.YouTubeSet -> {
+                val set = ytMusic.setFromLink(link.browseId, link.playlistId)
+                if (set.knownTracks.isEmpty()) throw IllegalStateException("в этой подборке нет треков")
+                openSetFromLink(if (set.title.isNullOrBlank()) set.copy(title = "Микс YouTube Music") else set)
+            }
+            is SharedLink.YouTubeChannel -> openArtistFromLink {
+                openArtistDetails(0L, YT_ARTIST_REF + link.channelId, null)
+            }
+            is SharedLink.SoundCloud -> openSoundCloudLink(link.url)
+            is SharedLink.Short -> Unit // followed already in openSharedText
+        }
+    }
+
+    private suspend fun openSoundCloudLink(url: String) {
+        val clientId = settingsRepository.clientId.value
+        if (clientId.isBlank()) {
+            Toast.makeText(context, "Укажите SoundCloud client_id в настройках", Toast.LENGTH_LONG).show()
+            return
+        }
+        val found = try {
+            service.resolve(url, clientId)
+        } catch (e: Exception) {
+            handleSoundCloudApiError(e)
+            throw e
+        }
+        val gson = com.google.gson.Gson()
+        when (found.get("kind")?.takeIf { it.isJsonPrimitive }?.asString) {
+            "track" -> playFromLink(gson.fromJson(found, SoundCloudTrack::class.java))
+            "playlist", "system-playlist" -> {
+                val set = gson.fromJson(found, SoundCloudPlaylist::class.java)
+                openSetFromLink(set.copy(tracks = loadSoundCloudPlaylistTracks(set)))
+            }
+            "user" -> {
+                val user = gson.fromJson(found, SoundCloudUser::class.java)
+                openArtistFromLink { openArtistDetails(user.id ?: 0L, user.permalinkUrl ?: url, user.username, avatarUrl = user.avatarUrl) }
+            }
+            else -> throw IllegalStateException("на этой странице SoundCloud нет трека")
+        }
+    }
+
+    /** A track from a link: playing at once, with the player up over whatever screen is open. */
+    private fun playFromLink(track: SoundCloudTrack, queue: List<SoundCloudTrack> = listOf(track)) {
+        _selectedMix.value = null
+        playQueuedTrack(track, queue, openPlayer = true)
+    }
+
+    /** An album or playlist from a link, its tracks known already, on the set screen. */
+    private fun openSetFromLink(set: SoundCloudPlaylist) {
+        _selectedTrack.value = null
+        _selectedMix.value = null
+        closeSearchPlaylist()
+        openYtSet(set.copy(trackCount = maxOf(set.trackCount, set.knownTracks.size)))
+    }
+
+    private fun openArtistFromLink(open: () -> Unit) {
+        _selectedTrack.value = null
+        _selectedMix.value = null
+        closeSearchPlaylist()
+        open()
+    }
+
+    /** A Yandex album as a set, with its tracks. */
+    private suspend fun yandexAlbum(albumId: Long, fallbackArtwork: String? = null): SoundCloudPlaylist? {
+        val detail = yandexService.getAlbumWithTracks(albumId).result ?: return null
+        val tracks = detail.volumes.orEmpty().flatten()
+            .map { it.toSoundCloudTrack(customAlbumId = albumId.toString()) }
+            .filter { isPlayableTrack(it) }
+            .distinctBy { it.id }
+        return SoundCloudPlaylist(
+            id = albumId + 10_000_000L,
+            title = detail.title,
+            tracks = tracks,
+            trackCount = tracks.size,
+            artworkUrl = detail.coverUri?.let { "https://" + it.replace("%%", "400x400") } ?: fallbackArtwork,
+            permalinkUrl = "yandex:album:$albumId",
+            user = tracks.firstOrNull()?.user,
+            isAlbum = true,
+            setType = "album"
+        )
+    }
+
+    /** Someone's Yandex playlist as a set, with its tracks. */
+    private fun yandexPlaylist(detail: com.example.myapplication.data.YandexPlaylistDetail?): SoundCloudPlaylist {
+        detail ?: throw IllegalStateException("плейлист не найден")
+        val tracks = detail.tracks.orEmpty().mapNotNull { it.track?.toSoundCloudTrack() }
+            .filter { isPlayableTrack(it) }
+            .distinctBy { it.id }
+        val owner = detail.owner
+        return SoundCloudPlaylist(
+            // Apart from the listener's own playlists (their kind as the id) and albums.
+            id = 20_000_000_000L + (owner?.uid ?: 0L) * 1_000L + detail.kind,
+            title = detail.title,
+            tracks = tracks,
+            trackCount = tracks.size,
+            artworkUrl = detail.cover?.url() ?: detail.ogImage?.let { "https://" + it.replace("%%", "400x400") }
+                ?: tracks.firstNotNullOfOrNull { it.artworkUrl },
+            permalinkUrl = owner?.uid?.let { "yandex:playlist:$it:${detail.kind}" },
+            user = SoundCloudUser(username = owner?.name ?: owner?.login),
+            isAlbum = false
+        )
+    }
+
+    // endregion
 
     /**
      * Opens the album [track] is from, as the player's title does: Yandex Music's (the track
@@ -1698,22 +1881,7 @@ class MusicViewModel(
             val albumId = parts.getOrNull(1)?.toLongOrNull()
                 ?: yandexService.getTracksDetails(parts.first()).result.orEmpty().firstOrNull()?.albums?.firstOrNull()?.id
                 ?: return null
-            val detail = yandexService.getAlbumWithTracks(albumId).result ?: return null
-            val tracks = detail.volumes.orEmpty().flatten()
-                .map { it.toSoundCloudTrack(customAlbumId = albumId.toString()) }
-                .filter { isPlayableTrack(it) }
-                .distinctBy { it.id }
-            return SoundCloudPlaylist(
-                id = albumId + 10_000_000L,
-                title = detail.title,
-                tracks = tracks,
-                trackCount = tracks.size,
-                artworkUrl = detail.coverUri?.let { "https://" + it.replace("%%", "400x400") } ?: track.artworkUrl,
-                permalinkUrl = "yandex:album:$albumId",
-                user = tracks.firstOrNull()?.user,
-                isAlbum = true,
-                setType = "album"
-            )
+            return yandexAlbum(albumId, fallbackArtwork = track.artworkUrl)
         }
         val videoId = track.youTubeVideoId ?: return null
         return ytMusic.albumOf(videoId)?.let { it.copy(artworkUrl = track.artworkUrl ?: it.artworkUrl) }
@@ -3940,7 +4108,9 @@ class MusicViewModel(
         customQueue: List<SoundCloudTrack>? = null,
         fromQueueManager: Boolean = false,
         // What the queue is, for the card it came from (see [playingFrom]).
-        source: String? = null
+        source: String? = null,
+        // The player opened whatever the settings say: a track opened from a link.
+        openPlayer: Boolean = false
     ) {
         viewModelScope.launch {
             _errorMessage.value = null
@@ -4009,7 +4179,7 @@ class MusicViewModel(
                 // Moved about in the queue, it is still the queue it was.
                 if (!fromQueueManager) _playingFrom.value = source
                 _currentPlayingTrack.value = track
-                showPlayerFor(track)
+                if (openPlayer) _selectedTrack.value = track else showPlayerFor(track)
             } catch (e: Exception) {
                 Log.e("MusicViewModel", "playQueuedTrack error", e)
                 _errorMessage.value = readableMessage(e)

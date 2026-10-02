@@ -162,6 +162,13 @@ interface SoundCloudService {
         @Query("limit") limit: Int = 30
     ): SoundCloudTracksResponse
 
+    /** Whatever a soundcloud.com page is — a track, a set, a profile — as its `kind` says. */
+    @GET("resolve")
+    suspend fun resolve(
+        @Query("url") url: String,
+        @Query("client_id") clientId: String
+    ): com.google.gson.JsonObject
+
     @GET("resolve")
     suspend fun resolveUrl(
         @Query("url") url: String,

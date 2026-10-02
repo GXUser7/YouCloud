@@ -43,9 +43,12 @@
 
         <!-- Turning the phone doesn't recreate the activity: Compose lays itself out again, and a
              music video playing in the player carries on instead of starting to load over. -->
+        <!-- singleTask: a link shared from another app opens in YouCloud's own window, playing
+             through the same player, rather than in a second copy of the app on top of that app. -->
         <activity
             android:name=".MainActivity"
             android:exported="true"
+            android:launchMode="singleTask"
             android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden"
             android:windowSoftInputMode="adjustResize"
             android:label="@string/app_name"
@@ -54,6 +57,37 @@
                 <action android:name="android.intent.action.MAIN" />
 
                 <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+
+            <!-- "Поделиться" in the services' apps: a track, album, playlist or artist sent as text. -->
+            <intent-filter android:label="@string/open_link_label">
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="text/plain" />
+            </intent-filter>
+
+            <!-- The services' links themselves. Not verified (the domains aren't ours), so Android
+                 opens them here only once they are allowed in the app's "Open by default"
+                 settings, which Настройки → Ссылки leads to. -->
+            <intent-filter android:label="@string/open_link_label">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="https" />
+                <data android:scheme="http" />
+                <data android:host="soundcloud.com" />
+                <data android:host="m.soundcloud.com" />
+                <data android:host="www.soundcloud.com" />
+                <data android:host="on.soundcloud.com" />
+                <data android:host="music.yandex.ru" />
+                <data android:host="music.yandex.com" />
+                <data android:host="music.yandex.by" />
+                <data android:host="music.yandex.kz" />
+                <data android:host="music.youtube.com" />
+                <data android:host="youtube.com" />
+                <data android:host="www.youtube.com" />
+                <data android:host="m.youtube.com" />
+                <data android:host="youtu.be" />
             </intent-filter>
         </activity>
 

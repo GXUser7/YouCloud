@@ -165,6 +165,19 @@ interface YandexMusicService {
         @Path("artistId") artistId: String
     ): com.google.gson.JsonObject
 
+    /** Anyone's playlist by its owner's login or uid and its number, as `users/<owner>/playlists/<kind>` links name it. */
+    @GET("users/{owner}/playlists/{kind}")
+    suspend fun getPlaylistByOwner(
+        @Path("owner") owner: String,
+        @Path("kind") kind: String
+    ): YandexPlaylistDetailResponse
+
+    /** A playlist by the id the newer links carry (`playlists/<uuid>`). */
+    @GET("playlist/{uuid}")
+    suspend fun getPlaylistByUuid(
+        @Path("uuid") uuid: String
+    ): YandexPlaylistDetailResponse
+
     @GET("albums/{albumId}/with-tracks")
     suspend fun getAlbumWithTracks(
         @Path("albumId") albumId: Long
