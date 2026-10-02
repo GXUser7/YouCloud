@@ -27,6 +27,8 @@
 
 # Gson reads and writes the models by reflection: the saved library, the queue, the APIs' JSON.
 -keep class com.example.myapplication.data.** { *; }
+# Listening together sends its messages as JSON with Gson, read by field name on the other phone.
+-keep class com.example.myapplication.together.TogetherMessage { *; }
 -keep,allowobfuscation,allowshrinking class com.google.gson.reflect.TypeToken
 -keep,allowobfuscation,allowshrinking class * extends com.google.gson.reflect.TypeToken
 -keepclassmembers,allowobfuscation class * { @com.google.gson.annotations.SerializedName <fields>; }
