@@ -82,21 +82,35 @@ class MusicPlayer(context: Context) {
         }
     }
 
-    fun playQueue(tracks: List<QueueTrack>, startIndex: Int) {
+    /** [tracks] from [startIndex], from [startPositionMs] into it; paused there unless [playWhenReady]. */
+    fun playQueue(tracks: List<QueueTrack>, startIndex: Int, startPositionMs: Long = 0L, playWhenReady: Boolean = true) {
         if (tracks.isEmpty()) return
 
         val safeIndex = startIndex.coerceIn(0, tracks.lastIndex)
         val player = controller
         if (player == null) {
-            pendingQueueRequest = QueueRequest(tracks, safeIndex)
+            pendingQueueRequest = QueueRequest(tracks, safeIndex, startPositionMs, playWhenReady)
             return
         }
 
         val items = tracks.map(::toMediaItem)
-        player.setMediaItems(items, safeIndex, 0L)
+        player.setMediaItems(items, safeIndex, startPositionMs.coerceAtLeast(0L))
         player.prepare()
-        player.play()
+        if (playWhenReady) player.play() else player.pause()
         syncState()
+    }
+
+    /** Playing or paused, as said, rather than the other way round from where it is. */
+    fun setPlaying(playing: Boolean) {
+        controller?.let { player -> if (playing) player.play() else player.pause() }
+    }
+
+    /**
+     * The speed, its pitch kept: listening together nudges it a few percent to catch up with the
+     * host or let it catch up, too slightly to be heard.
+     */
+    fun setSpeed(speed: Float) {
+        controller?.setPlaybackSpeed(speed)
     }
 
     /**
@@ -267,7 +281,7 @@ class MusicPlayer(context: Context) {
     }
 
     private fun playQueue(request: QueueRequest) {
-        playQueue(request.tracks, request.startIndex)
+        playQueue(request.tracks, request.startIndex, request.startPositionMs, request.playWhenReady)
     }
 
     private fun toMediaItem(track: QueueTrack): MediaItem {
@@ -343,6 +357,8 @@ class MusicPlayer(context: Context) {
 
     private data class QueueRequest(
         val tracks: List<QueueTrack>,
-        val startIndex: Int
+        val startIndex: Int,
+        val startPositionMs: Long = 0L,
+        val playWhenReady: Boolean = true
     )
 }

@@ -75,6 +75,7 @@ import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.material.icons.rounded.Forum
+import androidx.compose.material.icons.rounded.Groups
 import androidx.compose.material.icons.rounded.TouchApp
 import androidx.compose.material.icons.rounded.KeyboardArrowDown
 import androidx.compose.material.icons.rounded.HowToReg
@@ -507,6 +508,8 @@ fun MusicScreen(viewModel: MusicViewModel) {
 
     val searchOpenedPlaylist by viewModel.searchOpenedPlaylist.collectAsState()
     val playingFrom by viewModel.playingFrom.collectAsState()
+    val togetherState by viewModel.together.state.collectAsState()
+    var showTogether by remember { mutableStateOf(false) }
 
     val downloadedTracks = remember(favorites) { favorites.filter { it.downloadState == DownloadState.DOWNLOADED } }
     val history by viewModel.history.collectAsState()
@@ -617,7 +620,8 @@ fun MusicScreen(viewModel: MusicViewModel) {
         } else androidx.compose.runtime.CompositionLocalProvider(
             LocalAlbumLibrary provides albumLibrary,
             LocalFrostSources provides listOf(backdropFrost),
-            LocalNowPlaying provides NowPlaying(isPlaying, playingFrom, currentTrackId)
+            LocalNowPlaying provides NowPlaying(isPlaying, playingFrom, currentTrackId),
+            LocalTogether provides togetherLabel(togetherState)?.let { label -> TogetherBadge(label) { showTogether = true } }
         ) {
             Box(modifier = Modifier.fillMaxSize().drawWithContent { if (!playerCovers) drawContent() }.frostSource(screensFrost)) {
             // Every screen stands on the moving backdrop: their pages, panels, buttons and cards
@@ -923,6 +927,7 @@ fun MusicScreen(viewModel: MusicViewModel) {
                         val yandexLikesSyncStatus by viewModel.yandexLikesSyncStatus.collectAsState()
                         val likesPushStatus by viewModel.likesPushStatus.collectAsState()
                         SettingsScreen(
+                            onOpenTogether = { showTogether = true },
                             settingsRepository = viewModel.settingsRepo,
                             soundcloudLikesSyncStatus = soundcloudLikesSyncStatus,
                             likesPushStatus = likesPushStatus,
@@ -1396,6 +1401,23 @@ fun MusicScreen(viewModel: MusicViewModel) {
     }
 
     val context = LocalContext.current
+    if (showTogether) {
+        TogetherSheet(
+            together = viewModel.together,
+            onHost = viewModel::hostTogether,
+            onSearch = viewModel::searchTogether,
+            onJoin = viewModel::joinTogether,
+            onLeave = viewModel::leaveTogether,
+            onDismiss = { showTogether = false }
+        )
+    }
+    (togetherState as? com.example.myapplication.together.TogetherState.Hosting)?.request?.let { request ->
+        TogetherRequestDialog(request) { accept ->
+            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+            viewModel.answerTogether(request, accept)
+        }
+    }
+
     if (showTrackActionsDialog && selectedTrack != null) {
         // Capture to local val to prevent NPE if state changes (#3)
         val capturedTrack = selectedTrack ?: return
@@ -1443,6 +1465,10 @@ fun MusicScreen(viewModel: MusicViewModel) {
                 "Трек и то, что YouTube Music поставит за ним"
             } else {
                 "Трек, а за ним радио Яндекс Музыки — без конца, под то, что слушаешь"
+            },
+            onTogether = {
+                showTrackActionsDialog = false
+                showTogether = true
             }
         )
     }
@@ -3308,7 +3334,8 @@ private fun SettingsScreen(
     ytMusicAccount: String?,
     onYtMusicLoginClick: () -> Unit,
     onYtMusicLogoutClick: () -> Unit,
-    updates: com.example.myapplication.data.UpdateRepository
+    updates: com.example.myapplication.data.UpdateRepository,
+    onOpenTogether: () -> Unit = {}
 ) {
     val yandexToken by settingsRepository.yandexToken.collectAsState()
     val hasYandexToken = yandexToken.isNotEmpty()
@@ -3324,6 +3351,32 @@ private fun SettingsScreen(
     ) {
         item {
             TopBar(title = "Настройки", onBack = onBack)
+        }
+
+        // Listening together: in settings too, for a guest with nothing playing yet.
+        item {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(
+                    text = "ВМЕСТЕ",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.padding(start = 12.dp)
+                )
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .glassOr(MaterialTheme.shapes.extraLarge, MaterialTheme.colorScheme.surfaceContainer),
+                    shape = MaterialTheme.shapes.extraLarge,
+                    colors = CardDefaults.cardColors(containerColor = glassFill(MaterialTheme.colorScheme.surfaceContainer))
+                ) {
+                    SettingsActionRow(
+                        icon = Icons.Rounded.Groups,
+                        title = "Слушать вместе",
+                        subtitle = "С друзьями рядом: одна музыка на нескольких телефонах, напрямую, без интернета между ними",
+                        onClick = onOpenTogether
+                    )
+                }
+            }
         }
 
         // Section 0: Look
@@ -8148,6 +8201,8 @@ private fun PlayerPanel(
                 val live = track.liveVideoId != null
                 var fxOpen by remember { mutableStateOf(false) }
                 Row(verticalAlignment = Alignment.CenterVertically) {
+                // Gives way first when the row is full: the session's chip and the effects stay.
+                Box(modifier = Modifier.weight(1f)) {
                 OnPanelChip(
                     text = buildString {
                         append(
@@ -8162,8 +8217,13 @@ private fun PlayerPanel(
                         if (!fromPhone && downloadState == DownloadState.DOWNLOADED) append(" · на устройстве")
                     }
                 )
+                }
+                LocalTogether.current?.let { badge ->
+                    Spacer(modifier = Modifier.width(8.dp))
+                    OnPanelChip(text = badge.label, modifier = Modifier.clip(RoundedCornerShape(12.dp)).clickable(onClick = badge.onClick))
+                }
                 if (trackFx != null) {
-                    Spacer(modifier = Modifier.weight(1f))
+                    Spacer(modifier = Modifier.width(8.dp))
                     TrackFxButton(fx = trackFx, live = live, color = onPanel, onClick = {
                         haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                         fxOpen = true
@@ -11999,7 +12059,9 @@ fun TrackActionsDialog(
     onDeleteDownload: (() -> Unit)? = null,
     // Only for tracks with a radio to start — YouTube Music's.
     onRadio: (() -> Unit)? = null,
-    radioDescription: String = "Трек и то, что YouTube Music поставит за ним"
+    radioDescription: String = "Трек и то, что YouTube Music поставит за ним",
+    // "Слушать вместе", opened from here.
+    onTogether: (() -> Unit)? = null
 ) {
     // A real M3 modal bottom sheet rather than a Dialog imitating one: this brings the
     // spec scrim, drag handle, swipe-to-dismiss, predictive back and inset handling.
@@ -12102,6 +12164,15 @@ fun TrackActionsDialog(
                             onRadio()
                             dismissSheet()
                         },
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+                if (onTogether != null) {
+                    SheetTile(
+                        icon = Icons.Rounded.Groups,
+                        label = "Вместе",
+                        description = "Слушать вместе с друзьями рядом",
+                        onClick = onTogether,
                         modifier = Modifier.weight(1f)
                     )
                 }

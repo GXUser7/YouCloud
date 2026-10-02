@@ -1376,6 +1376,7 @@ class MusicViewModel(
     }
 
     fun playMixTrack(track: SoundCloudTrack) {
+        if (together.relayPlay(track, _mixTracks.value)) return
         viewModelScope.launch {
             Log.d("MusicViewModel", "playMixTrack: trackId=${track.id}")
             _errorMessage.value = null
@@ -1673,6 +1674,102 @@ class MusicViewModel(
             }
         }
     }
+
+    // region Listening together
+
+    // The phones nearby, found and talked to directly.
+    private val togetherSession = com.example.myapplication.together.TogetherSession(context.applicationContext)
+
+    /** Listening together with phones nearby; see [ListenTogether]. */
+    val together = com.example.myapplication.together.ListenTogether(
+        session = togetherSession,
+        player = object : com.example.myapplication.together.TogetherPlayer {
+            override val currentTrack = _currentPlayingTrack.asStateFlow()
+            override val isPlaying = musicPlayer.isPlaying
+            override val currentTrackId = musicPlayer.currentTrackId
+            override val isBuffering = musicPlayer.isBuffering
+            override fun livePositionMs() = musicPlayer.livePositionMs()
+            override fun togglePlayPause() = musicPlayer.togglePlayPause()
+            override fun skip(next: Boolean) = if (next) musicPlayer.skipNext() else musicPlayer.skipPrevious()
+            override fun seekTo(positionMs: Long) = musicPlayer.seekTo(positionMs)
+            override fun playQueue(track: SoundCloudTrack, queue: List<SoundCloudTrack>) =
+                playQueuedTrack(track, queue, fromGuest = true)
+            override fun follow(track: SoundCloudTrack, url: String?, startMs: Long, playing: Boolean) =
+                followHost(track, url, startMs, playing)
+            override fun setPlaying(playing: Boolean) = musicPlayer.setPlaying(playing)
+            override fun setSpeed(speed: Float) = musicPlayer.setSpeed(speed)
+            override suspend fun directUrlFor(track: SoundCloudTrack): String? {
+                val id = track.urn?.takeIf { it.startsWith("yandex:track:") }?.removePrefix("yandex:track:") ?: return null
+                val token = settingsRepository.yandexTokenValue().takeIf { it.isNotBlank() } ?: return null
+                return YandexMusicApi.resolveTrackStream(id, token)
+            }
+        },
+        scope = viewModelScope
+    )
+
+    /** What this phone is called to the phones nearby: its own name, as set in Android. */
+    private fun deviceName(): String =
+        android.provider.Settings.Global.getString(context.contentResolver, android.provider.Settings.Global.DEVICE_NAME)
+            ?.takeIf { it.isNotBlank() }
+            ?: android.os.Build.MODEL
+
+    fun hostTogether() = togetherSession.host(deviceName())
+
+    fun searchTogether() = togetherSession.search(deviceName())
+
+    fun joinTogether(host: com.example.myapplication.together.TogetherPeer) = togetherSession.join(host)
+
+    fun answerTogether(request: com.example.myapplication.together.TogetherRequest, accept: Boolean) =
+        togetherSession.answer(request, accept)
+
+    fun leaveTogether() = together.leave()
+
+    /**
+     * A track from the library picked on a guest: sent to the host to play, unless it is a file of
+     * this phone's own, which the host has no way to play.
+     */
+    private fun relayFromLibrary(track: SoundCloudTrack, library: List<FavoriteTrack>): Boolean {
+        if (!together.isGuest) return false
+        if (track.urn?.startsWith("local:") == true) {
+            Toast.makeText(context, "Этот трек есть только на вашем телефоне", Toast.LENGTH_SHORT).show()
+            return true
+        }
+        val queue = library.map { it.toSoundCloudTrack() }.filterNot { it.urn?.startsWith("local:") == true }
+        return together.relayPlay(track, queue)
+    }
+
+    /**
+     * On a guest: the host's track, from where the host is in it. Played by this phone's own means
+     * — its copy, its own service — or, a Yandex track without Yandex Music here, by the address
+     * the host sent.
+     */
+    private fun followHost(track: SoundCloudTrack, url: String?, startMs: Long, playing: Boolean) {
+        viewModelScope.launch {
+            val own = localStreamUrl(track.id)?.takeIf { it.isNotBlank() }
+            val isYandex = track.urn?.startsWith("yandex:") == true
+            if (own == null && track.urn?.startsWith("local:") == true) {
+                Toast.makeText(context, "«${track.title}» есть только на телефоне ведущего", Toast.LENGTH_SHORT).show()
+                return@launch
+            }
+            val streamUrl = when {
+                own != null -> own
+                isYandex && settingsRepository.yandexTokenValue().isBlank() && url != null -> url
+                else -> serviceStreamUrl(track)
+                    ?: runCatching { playbackResolver.resolve(track, settingsRepository.clientId.value) }.getOrNull()
+                    ?: placeholderStreamUrl(track)
+            }
+            resolvedUrls[track.id] = streamUrl
+            originalQueue = listOf(track)
+            _activeQueue.value = listOf(track)
+            musicPlayer.playQueue(listOf(track.toQueueTrack(streamUrl)), 0, startMs, playing)
+            _playingMixId.value = null
+            _playingFrom.value = null
+            _currentPlayingTrack.value = track
+            if (_selectedTrack.value != null) _selectedTrack.value = track
+        }
+    }
+
+    // endregion
 
     // region Links
 
@@ -2901,6 +2998,7 @@ class MusicViewModel(
 
     fun playFavorite(track: FavoriteTrack) {
         val playable = track.toSoundCloudTrack()
+        if (relayFromLibrary(playable, favoritesRepository.favorites.value.filter { it.downloadState == DownloadState.DOWNLOADED })) return
         val streamUrl = track.streamUrl
         if (streamUrl == null) {
             _errorMessage.value = "У этого любимого трека пока нет сохранённого потока."
@@ -2948,10 +3046,12 @@ class MusicViewModel(
     }
 
     fun togglePlayPause() {
+        if (together.relay("toggle")) return
         musicPlayer.togglePlayPause()
     }
 
     fun seekTo(positionMs: Long) {
+        if (together.relay("seek", positionMs)) return
         musicPlayer.seekTo(positionMs)
     }
 
@@ -2959,16 +3059,20 @@ class MusicViewModel(
     fun livePositionMs(): Long = musicPlayer.livePositionMs()
 
     fun skipNext() {
+        if (together.relay("next")) return
         musicPlayer.skipNext()
     }
 
     fun skipPrevious() {
+        if (together.relay("prev")) return
         musicPlayer.skipPrevious()
     }
 
-    fun hasNeighbourTrack(next: Boolean): Boolean = musicPlayer.hasNeighbourTrack(next)
+    // A guest's queue is the one track the host plays: a swipe goes to the host, who has the rest.
+    fun hasNeighbourTrack(next: Boolean): Boolean = together.isGuest || musicPlayer.hasNeighbourTrack(next)
 
     fun skipToNeighbourTrack(next: Boolean) {
+        if (together.relay(if (next) "next" else "prev")) return
         musicPlayer.skipToNeighbourTrack(next)
     }
 
@@ -3172,6 +3276,7 @@ class MusicViewModel(
 
     override fun onCleared() {
         super.onCleared()
+        together.leave()
         musicPlayer.release()
     }
 
@@ -3674,6 +3779,7 @@ class MusicViewModel(
     }
 
     fun playPlaylistTrack(playlist: Playlist, track: FavoriteTrack) {
+        if (relayFromLibrary(track.toSoundCloudTrack(), playlist.tracks)) return
         viewModelScope.launch {
             _errorMessage.value = null
             val playable = track.toSoundCloudTrack()
@@ -4110,8 +4216,11 @@ class MusicViewModel(
         // What the queue is, for the card it came from (see [playingFrom]).
         source: String? = null,
         // The player opened whatever the settings say: a track opened from a link.
-        openPlayer: Boolean = false
+        openPlayer: Boolean = false,
+        // Picked by a guest listening together: the host's player stays as it is, open or not.
+        fromGuest: Boolean = false
     ) {
+        if (!fromQueueManager && together.relayPlay(track, customQueue ?: listOf(track))) return
         viewModelScope.launch {
             _errorMessage.value = null
             val isYandexTrack = track.urn?.startsWith("yandex:track:") == true
@@ -4179,7 +4288,11 @@ class MusicViewModel(
                 // Moved about in the queue, it is still the queue it was.
                 if (!fromQueueManager) _playingFrom.value = source
                 _currentPlayingTrack.value = track
-                if (openPlayer) _selectedTrack.value = track else showPlayerFor(track)
+                when {
+                    openPlayer -> _selectedTrack.value = track
+                    fromGuest -> if (_selectedTrack.value != null) _selectedTrack.value = track
+                    else -> showPlayerFor(track)
+                }
             } catch (e: Exception) {
                 Log.e("MusicViewModel", "playQueuedTrack error", e)
                 _errorMessage.value = readableMessage(e)
