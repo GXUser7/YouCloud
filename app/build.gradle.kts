@@ -137,7 +137,10 @@ dependencies {
     implementation(libs.material.color.utilities)
     implementation(libs.newpipe.extractor)
     implementation(libs.youtubedl.android)
+    implementation(libs.play.services.nearby)
     testImplementation(libs.junit)
+    // Virtual time for the tests of listening together: a host and a guest, minutes in a moment.
+    testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.9.0")
     androidTestImplementation(platform(libs.androidx.compose.bom))
     androidTestImplementation(libs.androidx.compose.ui.test.junit4)
     androidTestImplementation(libs.androidx.espresso.core)

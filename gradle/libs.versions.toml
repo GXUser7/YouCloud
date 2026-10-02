@@ -24,8 +24,12 @@ materialColorUtilities = "3.0.1"
 newpipeExtractor = "v0.26.5"
 # yt-dlp for Android: Python, yt-dlp and QuickJS, run as a process. Plays YouTube Music tracks.
 youtubedlAndroid = "0.18.1"
+# Google Play services' Nearby Connections: two phones side by side find each other over
+# Bluetooth and talk directly (Bluetooth, or Wi-Fi Direct when it is faster), for listening together.
+playServicesNearby = "19.3.0"
 
 [libraries]
+play-services-nearby = { group = "com.google.android.gms", name = "play-services-nearby", version.ref = "playServicesNearby" }
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
 junit = { group = "junit", name = "junit", version.ref = "junit" }
 androidx-junit = { group = "androidx.test.ext", name = "junit", version.ref = "junitVersion" }
