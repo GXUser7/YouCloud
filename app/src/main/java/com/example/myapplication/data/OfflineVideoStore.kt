@@ -13,6 +13,7 @@ import java.util.concurrent.TimeUnit
  * again every time the app starts; a video may still turn up for it later.
  */
 class OfflineVideoStore(context: Context) {
+    private val app = context.applicationContext
     private val dir = File(context.filesDir, "offline_video").apply { mkdirs() }
     private val gson = Gson()
 
@@ -62,12 +63,15 @@ class OfflineVideoStore(context: Context) {
 
     /**
      * Looked into already: a video is saved, or it was found lately to have none. A YouTube
-     * video picked from YouTube's formats as they were chosen before is looked into again.
+     * video picked from YouTube's formats as they were chosen before is looked into again, and so
+     * is one in VP9 on a phone that doesn't decode it well ([VideoDecoders]).
      */
     fun isSettled(trackId: Long): Boolean {
         if (videoFile(trackId).exists() && metaFile(trackId).exists()) {
             val meta = meta(trackId) ?: return false
-            return meta.loop || meta.formats >= YOUTUBE_FORMATS
+            if (meta.loop || meta.local) return true
+            if (meta.codec?.let(::codecFamily) == "vp9" && !VideoDecoders.vp9(app)) return false
+            return meta.formats >= YOUTUBE_FORMATS
         }
         val none = noneFile(trackId)
         return none.exists() && System.currentTimeMillis() - none.lastModified() < NONE_REMEMBERED_MS

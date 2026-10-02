@@ -58,10 +58,11 @@ object YouTubeStreams {
      * Blocking — seconds for a track not heard lately; call it off the main thread.
      *
      * @param auth the YouTube Music session, when there is one.
+     * @param urgent whether it is wanted now, not fetched ahead; see [YtDlp.resolve].
      */
-    fun resolve(context: Context, videoId: String, auth: YtAuth? = null): Stream? =
+    fun resolve(context: Context, videoId: String, auth: YtAuth? = null, urgent: () -> Boolean = { true }): Stream? =
         cached("audio:$videoId") {
-            YtDlp.resolve(context, videoId, auth, YtDlp.Kind.AUDIO) ?: anonymousStream(videoId)
+            YtDlp.resolve(context, videoId, auth, YtDlp.Kind.AUDIO, urgent) ?: anonymousStream(videoId)
         }
 
     /**
@@ -88,9 +89,12 @@ object YouTubeStreams {
     fun resolveLiveVideo(context: Context, videoId: String, auth: YtAuth? = null): Stream? =
         cached("livevideo:$videoId") { YtDlp.resolve(context, videoId, auth, YtDlp.Kind.LIVE_VIDEO) }
 
-    /** The picture of a music video, without its sound: the player shows it in the cover's place. */
-    fun resolveVideo(context: Context, videoId: String, auth: YtAuth? = null): Stream? =
-        cached("video:$videoId") { YtDlp.resolve(context, videoId, auth, YtDlp.Kind.VIDEO) }
+    /**
+     * The picture of a music video, without its sound: the player shows it in the cover's place.
+     * Kept apart by codec: once VP9 has failed here, one resolved in it isn't handed out again.
+     */
+    fun resolveVideo(context: Context, videoId: String, auth: YtAuth? = null, urgent: () -> Boolean = { true }): Stream? =
+        cached("video:${VideoDecoders.vp9(context)}:$videoId") { YtDlp.resolve(context, videoId, auth, YtDlp.Kind.VIDEO, urgent) }
 
     private inline fun cached(key: String, resolve: () -> Stream?): Stream? {
         cache[key]?.let { (stream, validUntil) ->

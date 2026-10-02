@@ -11,12 +11,14 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ExecutionException
 import java.util.concurrent.Executors
 import java.util.concurrent.FutureTask
-import java.util.concurrent.Semaphore
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.locks.ReentrantLock
 import java.util.concurrent.locks.ReentrantReadWriteLock
 import kotlin.concurrent.read
 import kotlin.concurrent.thread
+import kotlin.concurrent.withLock
 import kotlin.concurrent.write
 
 /**
@@ -53,12 +55,14 @@ object YtDlp {
         AUDIO("140/bestaudio[ext=m4a][protocol=https]/bestaudio[protocol=https]"),
 
         /**
-         * A music video's picture alone, no larger than the screen needs, VP9 first. YouTube's
-         * H.264 of a busy scene can be missing frames — a third of them, in an anime opening —
-         * where its VP9 and the YouTube app are smooth. The clients yt-dlp asks when signed in
-         * only hand out H.264 at that size; the full TV client has them all. The pared-down one
-         * stays for when it won't answer, and the web clients are left out: they need a player
-         * script of their own, seconds more, for no formats the TV ones lack.
+         * A music video's picture alone, no larger than the screen needs, VP9 first — where the
+         * phone decodes it in hardware: [VideoDecoders.videoFormat] has the format asked for, this
+         * is it on such a phone. YouTube's H.264 of a busy scene can be missing frames — a third
+         * of them, in an anime opening — where its VP9 and the YouTube app are smooth. The clients
+         * yt-dlp asks when signed in only hand out H.264 at that size; the full TV client has them
+         * all. The pared-down one stays for when it won't answer, and the web clients are left
+         * out: they need a player script of their own, seconds more, for no formats the TV ones
+         * lack.
          */
         VIDEO(
             "bv[height<=720][vcodec^=vp][protocol=https]/bv[height<=720][vcodec^=avc1][protocol=https]/" +
@@ -165,9 +169,13 @@ main()
     // An update replaces the script in place, and Python reads it lazily while it runs.
     private val scriptLock = ReentrantReadWriteLock()
 
-    // Each run is a Python process of its own, tens of MB: the playing track and the next one.
-    private val runs = Semaphore(2)
-    private val pending = ConcurrentHashMap<String, FutureTask<YouTubeStreams.Stream?>>()
+    /**
+     * A stream being resolved, and whether someone wants it now: one fetched ahead (the next
+     * track's) that the player then asks for itself goes as wanted now.
+     */
+    private class Pending(val task: FutureTask<YouTubeStreams.Stream?>, val wantedNow: AtomicBoolean)
+
+    private val pending = ConcurrentHashMap<String, Pending>()
     private val lastUpdateAttempt = AtomicLong(0)
     private val watchdog = Executors.newSingleThreadScheduledExecutor { r ->
         Thread(r, "yt-dlp watchdog").apply { isDaemon = true }
@@ -181,13 +189,19 @@ main()
         val app = context.applicationContext
         thread(name = "yt-dlp warm-up", isDaemon = true) {
             if (!ensureReady(app)) return@thread
-            scriptLock.read {
-                synchronized(idleServers) { if (idleServers.isNotEmpty()) return@read }
-                val server = startServer(app, auth) ?: return@read
-                // A first request fetches YouTube's player script and solves its challenges from
-                // scratch; made now, it spares the first track that wait.
-                release(server)
-                askServer(app, WARM_UP_VIDEO, auth, Kind.AUDIO)
+            // Only with nothing else to do: a track asked for warms yt-dlp up itself.
+            if (!Runs.acquireWarmUp()) return@thread
+            try {
+                scriptLock.read {
+                    synchronized(idleServers) { if (idleServers.isNotEmpty()) return@read }
+                    val server = startServer(app, auth) ?: return@read
+                    // A first request fetches YouTube's player script and solves its challenges from
+                    // scratch; made now, it spares the first track that wait.
+                    release(server)
+                    askServer(app, WARM_UP_VIDEO, auth, Kind.AUDIO)
+                }
+            } finally {
+                Runs.releaseWarmUp()
             }
         }
     }
@@ -196,33 +210,46 @@ main()
      * The [kind] of stream of [videoId], or null when yt-dlp couldn't get one. Blocking — a Python
      * process and several round trips, seconds on a phone; call it off the main thread. Asking
      * again for a stream already being resolved waits for that run instead of starting another.
+     *
+     * [urgent]: whether it is wanted now (the track playing, its video) rather than fetched ahead
+     * (the next track, a download), asked again while it waits its turn; see [Runs].
      */
-    fun resolve(context: Context, videoId: String, auth: YtAuth?, kind: Kind): YouTubeStreams.Stream? {
+    fun resolve(
+        context: Context,
+        videoId: String,
+        auth: YtAuth?,
+        kind: Kind,
+        urgent: () -> Boolean = { true }
+    ): YouTubeStreams.Stream? {
         val app = context.applicationContext
         val key = "$kind:$videoId"
-        val task = FutureTask { resolveOrUpdate(app, videoId, auth, kind) }
-        val running = pending.putIfAbsent(key, task)
+        val wantedNow = AtomicBoolean(false)
+        val mine = Pending(FutureTask { resolveOrUpdate(app, videoId, auth, kind) { wantedNow.get() || urgent() } }, wantedNow)
+        val running = pending.putIfAbsent(key, mine)
         if (running == null) {
             try {
-                task.run()
+                mine.task.run()
             } finally {
-                pending.remove(key, task)
+                pending.remove(key, mine)
             }
+        } else if (urgent()) {
+            // Fetched ahead, and wanted now: it goes before what is still only fetched ahead.
+            running.wantedNow.set(true)
         }
         return try {
-            (running ?: task).get()
+            (running ?: mine).task.get()
         } catch (e: ExecutionException) {
             Log.w(TAG, "$videoId: ${e.cause}")
             null
         }
     }
 
-    private fun resolveOrUpdate(context: Context, videoId: String, auth: YtAuth?, kind: Kind): YouTubeStreams.Stream? {
+    private fun resolveOrUpdate(context: Context, videoId: String, auth: YtAuth?, kind: Kind, urgent: () -> Boolean): YouTubeStreams.Stream? {
         if (!ensureReady(context)) return null
-        extract(context, videoId, auth, kind)?.let { return it }
+        extract(context, videoId, auth, kind, urgent)?.let { return it }
         // Most failures are YouTube having changed something a newer yt-dlp already handles.
         if (!update(context, minInterval = FAILED_UPDATE_RETRY_MS)) return null
-        return extract(context, videoId, auth, kind)
+        return extract(context, videoId, auth, kind, urgent)
     }
 
     private fun ensureReady(context: Context): Boolean {
@@ -277,14 +304,78 @@ main()
         }
     }
 
-    private fun extract(context: Context, videoId: String, auth: YtAuth?, kind: Kind): YouTubeStreams.Stream? {
-        runs.acquire()
+    private fun extract(context: Context, videoId: String, auth: YtAuth?, kind: Kind, urgent: () -> Boolean): YouTubeStreams.Stream? {
+        val now = Runs.acquire(urgent)
         try {
             return scriptLock.read { runYtDlp(context, videoId, auth, kind) }
         } finally {
-            runs.release()
+            Runs.release(ahead = !now)
         }
     }
+
+    /**
+     * yt-dlp's runs, two at a time — each a Python process of its own, tens of MB, and as much work
+     * as a phone's cores take — given to what is wanted now before what is fetched ahead. What is
+     * fetched ahead (the next tracks, downloads, the warm-up) takes one of the two at most, and none
+     * while something wanted now waits. Queued behind the next tracks' sound, the playing track's
+     * video waited its turn for seconds on a fast phone; on a slower one, for most of the track.
+     */
+    private object Runs {
+        private const val ALL = 2
+        private const val AHEAD = 1
+        private val lock = ReentrantLock()
+        private val freed = lock.newCondition()
+        private var busy = 0
+        private var busyAhead = 0
+        private val waiting = mutableListOf<() -> Boolean>()
+
+        /** Waits for a run of its own; true when it was given as wanted now. */
+        fun acquire(urgent: () -> Boolean): Boolean = lock.withLock {
+            waiting += urgent
+            try {
+                var now = urgent()
+                while (!(busy < ALL && (now || (busyAhead < AHEAD && waiting.none { it !== urgent && it() })))) {
+                    // Asked again now and then: the next track may have become the one playing.
+                    freed.await(250, TimeUnit.MILLISECONDS)
+                    now = urgent()
+                }
+                busy++
+                if (!now) busyAhead++
+                now
+            } finally {
+                waiting.remove(urgent)
+            }
+        }
+
+        fun release(ahead: Boolean) = lock.withLock {
+            busy--
+            if (ahead) busyAhead--
+            freed.signalAll()
+        }
+
+        /**
+         * The warm-up's turn, when nothing else runs or waits: in the lane of what is fetched
+         * ahead, but none of the two runs — a track asked for while it runs has both. Held, a run
+         * kept the first track's video waiting on the warm-up at every start.
+         */
+        fun acquireWarmUp(): Boolean = lock.withLock {
+            if (busy > 0 || busyAhead >= AHEAD || waiting.isNotEmpty()) {
+                false
+            } else {
+                busyAhead++
+                true
+            }
+        }
+
+        fun releaseWarmUp() = lock.withLock {
+            busyAhead--
+            freed.signalAll()
+        }
+    }
+
+    /** What to ask yt-dlp for: a video in the codec this phone decodes well ([VideoDecoders]). */
+    private fun formatOf(context: Context, kind: Kind): String =
+        if (kind == Kind.VIDEO) VideoDecoders.videoFormat(context) else kind.format
 
     private fun runYtDlp(context: Context, videoId: String, auth: YtAuth?, kind: Kind): YouTubeStreams.Stream? {
         when (val answer = askServer(context, videoId, auth, kind)) {
@@ -296,7 +387,7 @@ main()
         val request = YoutubeDLRequest("https://www.youtube.com/watch?v=$videoId")
             .addOption("--dump-json")
             .addOption("--no-playlist")
-            .addOption("-f", kind.format)
+            .addOption("-f", formatOf(context, kind))
             .addOption("--socket-timeout", 15)
             // Keeps the player script and its solved challenges between runs; the library
             // otherwise turns the cache off.
@@ -433,7 +524,7 @@ main()
         val request = JsonObject().apply {
             addProperty("id", id)
             addProperty("url", "https://www.youtube.com/watch?v=$videoId")
-            addProperty("format", kind.format)
+            addProperty("format", formatOf(context, kind))
             kind.clients?.let { addProperty("clients", it) }
             addProperty("skip", kind.skip)
         }

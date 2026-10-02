@@ -282,6 +282,12 @@ fun rememberPlayerVideoState(video: TrackVideo?, isPlaying: Boolean, trackPositi
             override fun onPlayerError(error: PlaybackException) {
                 Log.w(TAG, "${state.video.url}: ${error.errorCodeName}", error)
                 state.rendering = false
+                // A phone that said it decodes VP9 and doesn't: the video is looked up again in
+                // H.264, and every one after it. Left so, it never showed a music video at all.
+                val decoding = error.errorCode in PlaybackException.ERROR_CODE_DECODER_INIT_FAILED..PlaybackException.ERROR_CODE_DECODING_FORMAT_UNSUPPORTED
+                val vp9 = state.video.codec?.startsWith("vp") == true ||
+                    state.player.videoFormat?.sampleMimeType == androidx.media3.common.MimeTypes.VIDEO_VP9
+                if (decoding && vp9) com.example.myapplication.data.VideoDecoders.vp9Failed(context)
             }
         }
         state.player.addListener(listener)
