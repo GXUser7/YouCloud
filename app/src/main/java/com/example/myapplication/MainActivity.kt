@@ -1,5 +1,6 @@
 package com.example.myapplication
 
+import android.content.Intent
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -10,6 +11,9 @@ import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.contentColorFor
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
@@ -22,10 +26,17 @@ import com.example.myapplication.player.MusicPlayer
 import com.example.myapplication.ui.MusicScreen
 import com.example.myapplication.ui.MusicViewModel
 import com.example.myapplication.ui.theme.MyApplicationTheme
+import kotlinx.coroutines.flow.MutableStateFlow
 
 class MainActivity : ComponentActivity() {
+    // A link shared to the app, or opened with it, until the screen has taken it.
+    private val incomingLink = MutableStateFlow<String?>(null)
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // Only the intent the app was opened with: brought back after the system let it go, the
+        // activity is handed that same intent again, and the link was opened a second time.
+        if (savedInstanceState == null) takeLink(intent)
         enableEdgeToEdge()
         // The app's backdrop is opaque and covers the whole window, so the window's own background
         // under it was a screenful of colour painted on every frame and never seen.
@@ -56,6 +67,13 @@ class MainActivity : ComponentActivity() {
                     }
                 )
                 
+                val link by incomingLink.collectAsState()
+                LaunchedEffect(link) {
+                    val text = link ?: return@LaunchedEffect
+                    incomingLink.value = null
+                    viewModel.openSharedText(text)
+                }
+
                 // What a Surface in the background colour gave, without its fill: the backdrop
                 // covers it on every screen, and it too was painted on every frame for nothing.
                 CompositionLocalProvider(
@@ -67,5 +85,23 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
+    }
+
+    // The app open already (it is single-task): a link shared or opened with it arrives here.
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        takeLink(intent)
+    }
+
+    /** The text of a link opened with the app (VIEW) or shared to it (SEND). */
+    private fun takeLink(intent: Intent?) {
+        val text = when (intent?.action) {
+            Intent.ACTION_VIEW -> intent.dataString
+            Intent.ACTION_SEND -> intent.getStringExtra(Intent.EXTRA_TEXT)
+                ?: intent.getCharSequenceExtra(Intent.EXTRA_TEXT)?.toString()
+            else -> null
+        }
+        if (!text.isNullOrBlank()) incomingLink.value = text
     }
 }

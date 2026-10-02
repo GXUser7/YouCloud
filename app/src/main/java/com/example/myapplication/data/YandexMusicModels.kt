@@ -250,7 +250,9 @@ data class YandexPlaylist(
 
 data class YandexPlaylistOwner(
     val uid: Long,
-    val name: String?
+    val name: String?,
+    // Absent from the listener's own playlists; a playlist from a link names it.
+    val login: String? = null
 )
 
 data class YandexPlaylistDetailResponse(
@@ -261,8 +263,21 @@ data class YandexPlaylistDetail(
     val kind: Long,
     val title: String?,
     val trackCount: Int = 0,
-    val tracks: List<YandexPlaylistTrackContainer>? = emptyList()
+    val tracks: List<YandexPlaylistTrackContainer>? = emptyList(),
+    // Who made it and its cover: for a playlist opened from a link, not from the listener's own list.
+    val owner: YandexPlaylistOwner? = null,
+    val cover: YandexPlaylistCover? = null,
+    val ogImage: String? = null
 )
+
+/** A playlist's cover: its own picture ([uri]) or a mosaic of its tracks' ([itemsUri]). */
+data class YandexPlaylistCover(
+    val uri: String? = null,
+    val itemsUri: List<String>? = null
+) {
+    fun url(size: String = "400x400"): String? =
+        (uri ?: itemsUri?.firstOrNull())?.let { "https://" + it.replace("%%", size) }
+}
 
 data class YandexPlaylistTrackContainer(
     val id: Long,

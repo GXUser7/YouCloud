@@ -210,6 +210,44 @@ class YouTubeMusicClient(private val authProvider: () -> YtAuth?) {
     }
 
     /**
+     * An album or playlist opened from a link, which carries only its ids: its name, cover and
+     * artist as its page's header shows them, and its tracks, as [setTracks] gives them. A mix
+     * has no page: its name is left for the screen to say.
+     */
+    suspend fun setFromLink(browseId: String, playlistId: String): SoundCloudPlaylist {
+        val page = if (browseId.isNotBlank()) optional { post("browse", json { addProperty("browseId", browseId) }) } else null
+        val header = page?.findAll("musicResponsiveHeaderRenderer")?.firstOrNull()
+            ?: page?.findAll("musicDetailHeaderRenderer")?.firstOrNull()
+        val isAlbum = browseId.startsWith("MPRE") || playlistId.startsWith("OLAK5uy_")
+        val set = SoundCloudPlaylist(
+            id = youTubeTrackId("set:${browseId.ifBlank { playlistId }}"),
+            title = header.runs("title"),
+            artworkUrl = header?.findAll("thumbnails")?.firstOrNull()?.takeIf { it.isJsonArray }
+                ?.let { bestThumbnail(it.asJsonArray.toList()) },
+            permalinkUrl = "$YT_SET_REF$browseId:$playlistId",
+            user = artistsOf(header.arr("straplineTextOne", "runs")).firstOrNull()
+                ?: header.runs("straplineTextOne")?.let { SoundCloudUser(username = it) },
+            isAlbum = isAlbum,
+            setType = if (isAlbum) "album" else null
+        )
+        val tracks = setTracks(set)
+        // An album shared as a playlist (`OLAK5uy_…`) has a page with its tracks and no header:
+        // its name and cover are the album's its first track's queue names.
+        val album = if (set.title == null && isAlbum) {
+            tracks.firstNotNullOfOrNull { it.youTubeVideoId }?.let { optional { albumOf(it) } }
+        } else {
+            null
+        }
+        return set.copy(
+            title = set.title ?: album?.title,
+            tracks = tracks,
+            trackCount = tracks.size,
+            artworkUrl = set.artworkUrl ?: album?.artworkUrl ?: tracks.firstNotNullOfOrNull { it.artworkUrl },
+            user = set.user ?: album?.user ?: tracks.firstOrNull()?.user
+        )
+    }
+
+    /**
      * What music.youtube.com shows for [query]: its own results page first — the top result and a
      * list mixing songs, videos, artists and albums — and then, for depth, the site's filtered
      * searches. The songs filter alone misses every track that YouTube has only as a video, which

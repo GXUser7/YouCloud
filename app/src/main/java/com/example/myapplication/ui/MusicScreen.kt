@@ -143,6 +143,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Animation
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Link
 import androidx.compose.material.icons.filled.DeleteSweep
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Deselect
@@ -4149,6 +4150,20 @@ private fun SettingsScreen(
             }
         }
 
+        // The services' links: opened here when shared from their apps, and when Android is
+        // allowed to send them here.
+        item {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(
+                    text = "ССЫЛКИ",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.padding(start = 12.dp)
+                )
+                LinksSettingsCard()
+            }
+        }
+
         // Section 3: Data & Cache
         item {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -4342,6 +4357,67 @@ private fun GlowStyleRow(
 
 /** A settings row with a tinted icon puck, a title, a quiet caption and a switch. */
 /** A settings row that does something rather than switching something. */
+/**
+ * Whether the services' links open in YouCloud. Shared from their apps ("Поделиться" →
+ * YouCloud) they always do. Tapped anywhere else they do once Android is allowed to send them
+ * here: the domains aren't ours to verify, so it is the listener who adds them, on the app's
+ * "Open by default" screen, which this opens. How many are added is read again on coming back.
+ */
+@Composable
+private fun LinksSettingsCard() {
+    val context = LocalContext.current
+    val lifecycle = androidx.lifecycle.compose.LocalLifecycleOwner.current.lifecycle
+    var counted by remember { mutableStateOf(linkHostsAllowed(context)) }
+    DisposableEffect(lifecycle) {
+        val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
+            if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) counted = linkHostsAllowed(context)
+        }
+        lifecycle.addObserver(observer)
+        onDispose { lifecycle.removeObserver(observer) }
+    }
+    val (allowed, total) = counted
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .glassOr(MaterialTheme.shapes.extraLarge, MaterialTheme.colorScheme.surfaceContainer),
+        shape = MaterialTheme.shapes.extraLarge,
+        colors = CardDefaults.cardColors(containerColor = glassFill(MaterialTheme.colorScheme.surfaceContainer))
+    ) {
+        SettingsActionRow(
+            icon = Icons.Default.Link,
+            title = "Открывать ссылки сервисов",
+            subtitle = when {
+                total == 0 -> "Ссылки SoundCloud, Яндекс Музыки и YouTube открываются в YouCloud"
+                allowed == 0 -> "Сейчас ссылки открываются в браузере. Нажмите и добавьте адреса — или делитесь ссылкой из приложения сервиса в YouCloud"
+                allowed < total -> "Добавлено адресов: $allowed из $total. Нажмите, чтобы добавить остальные"
+                else -> "Все ссылки SoundCloud, Яндекс Музыки и YouTube открываются в YouCloud"
+            },
+            onClick = {
+                val intent = Intent(
+                    android.provider.Settings.ACTION_APP_OPEN_BY_DEFAULT_SETTINGS,
+                    android.net.Uri.parse("package:${context.packageName}")
+                )
+                runCatching { context.startActivity(intent) }
+                    .onFailure {
+                        context.startActivity(
+                            Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS, android.net.Uri.parse("package:${context.packageName}"))
+                        )
+                    }
+            }
+        )
+    }
+}
+
+/** How many of the link addresses the app asks for Android sends here, of how many. */
+private fun linkHostsAllowed(context: Context): Pair<Int, Int> {
+    val manager = context.getSystemService(android.content.pm.verify.domain.DomainVerificationManager::class.java)
+        ?: return 0 to 0
+    val hosts = runCatching { manager.getDomainVerificationUserState(context.packageName)?.hostToStateMap }
+        .getOrNull().orEmpty()
+    val allowed = hosts.count { it.value != android.content.pm.verify.domain.DomainVerificationUserState.DOMAIN_STATE_NONE }
+    return allowed to hosts.size
+}
+
 @Composable
 private fun SettingsActionRow(
     icon: ImageVector,
@@ -8851,23 +8927,19 @@ private fun LiveChatOverlay(chat: com.example.myapplication.data.YouTubeLiveChat
         0
     }
     val lift = with(density) { liftPx.toDp() }
+    val listState = rememberLazyListState()
+    val hasMessages = (state as? LiveChatState.Messages)?.list?.isNotEmpty() == true
     Box(
         modifier = Modifier
             .fillMaxSize()
             .onGloballyPositioned { overlayBottom = it.boundsInWindow().bottom.toInt() }
-            // The shade the chat stands on, fading out by the panel's top edge.
+            // The shade the chat stands on: around the messages shown, fading out above the
+            // oldest and below the newest — which rise over the keyboard while one is written.
+            // It covered the whole cover down to the panel, a few lines or many. A word in the
+            // middle (connecting, quiet, failed) keeps the whole of it.
             .drawBehind {
-                val h = size.height
-                val clear = h - PlayerPanelOverlap.toPx()
-                val solid = (clear - LyricsFade.toPx()).coerceAtLeast(0f)
-                drawRect(
-                    Brush.verticalGradient(
-                        0f to scrim,
-                        solid / h to scrim,
-                        clear / h to Color.Transparent,
-                        1f to Color.Transparent
-                    )
-                )
+                val span = if (hasMessages) listState.visibleSpan() else null
+                drawTextShade(scrim, span = span, bottom = span?.endInclusive)
             }
     ) {
         when (state) {
@@ -8896,7 +8968,6 @@ private fun LiveChatOverlay(chat: com.example.myapplication.data.YouTubeLiveChat
             } else {
                 // Upside down: the newest is item 0, at the bottom, where the list rests.
                 val newestFirst = remember(state.list) { state.list.asReversed() }
-                val listState = rememberLazyListState()
                 val scope = rememberCoroutineScope()
                 // Following the newest, as YouTube's chat does: settled at the bottom, the list
                 // keeps to each new message; read back, it stays put, then returns by itself a few
@@ -9299,20 +9370,11 @@ private fun LyricsOverlay(
     BoxWithConstraints(
         modifier = Modifier
             .fillMaxSize()
-            // The shade behind the lines fades out as they do, by the panel's top edge: it used
-            // to run on under the panel and stop there in a hard line across it.
+            // The shade behind the lines: down to just under the last one shown, then fading out
+            // — no further than the panel's top edge, where the lines fade too. It used to run
+            // down to the panel whatever was on it, and on past the last lines of a song.
             .drawBehind {
-                val h = size.height
-                val clear = h - PlayerPanelOverlap.toPx()
-                val solid = (clear - LyricsFade.toPx()).coerceAtLeast(0f)
-                drawRect(
-                    Brush.verticalGradient(
-                        0f to scrim,
-                        solid / h to scrim,
-                        clear / h to Color.Transparent,
-                        1f to Color.Transparent
-                    )
-                )
+                drawTextShade(scrim, span = null, bottom = listState.visibleSpan()?.endInclusive)
             }
     ) {
         LazyColumn(
@@ -9406,6 +9468,63 @@ private const val LyricsLitScale = 1.16f
 
 // Height of the fades lyrics dissolve into, above the lit line and above the panel.
 private val LyricsFade = 64.dp
+
+// How far the shade under lyrics or a chat reaches past their lines before it starts to fade.
+private val TextShadeMargin = 12.dp
+
+/**
+ * Where the items shown begin and end, down from the list's top edge, in pixels; null while none
+ * are. Read as it draws, so a shade drawn by it follows the list as it moves.
+ */
+private fun androidx.compose.foundation.lazy.LazyListState.visibleSpan(): ClosedFloatingPointRange<Float>? {
+    val info = layoutInfo
+    val items = info.visibleItemsInfo
+    if (items.isEmpty()) return null
+    val height = (info.viewportEndOffset - info.viewportStartOffset).toFloat()
+    var top = Float.MAX_VALUE
+    var bottom = -Float.MAX_VALUE
+    for (item in items) {
+        // Along the list from the edge it starts at: the bottom one in a reversed list.
+        val start = (item.offset - info.viewportStartOffset).toFloat()
+        val end = start + item.size
+        val itemTop = if (info.reverseLayout) height - end else start
+        val itemBottom = if (info.reverseLayout) height - start else end
+        top = minOf(top, itemTop)
+        bottom = maxOf(bottom, itemBottom)
+    }
+    return top.coerceAtLeast(0f)..bottom.coerceAtMost(height)
+}
+
+/**
+ * The shade text over the cover stands on: from [span]'s top (or the top of the box, without one)
+ * to [bottom] (or the panel, without one), solid a margin past the text and fading out beyond it.
+ * Never further down than the panel's top edge, where the text fades out too.
+ */
+private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawTextShade(
+    scrim: Color,
+    span: ClosedFloatingPointRange<Float>?,
+    bottom: Float?
+) {
+    val h = size.height
+    if (h <= 0f) return
+    val fade = LyricsFade.toPx()
+    val margin = TextShadeMargin.toPx()
+    val panel = h - PlayerPanelOverlap.toPx()
+    val clear = minOf(panel, (bottom ?: panel) + margin + fade)
+    val solidEnd = (clear - fade).coerceAtLeast(0f)
+    val solidStart = span?.let { (it.start - margin).coerceIn(0f, solidEnd) } ?: 0f
+    val clearAbove = (solidStart - fade).coerceAtLeast(0f)
+    drawRect(
+        Brush.verticalGradient(
+            0f to if (solidStart <= 0f) scrim else Color.Transparent,
+            clearAbove / h to if (solidStart <= 0f) scrim else Color.Transparent,
+            solidStart / h to scrim,
+            solidEnd / h to scrim,
+            clear / h to Color.Transparent,
+            1f to Color.Transparent
+        )
+    )
+}
 
 // How far the player's panel reaches up over the cover (see PlayerLayout).
 private val PlayerPanelOverlap = 44.dp
