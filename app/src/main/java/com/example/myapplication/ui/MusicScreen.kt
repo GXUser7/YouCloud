@@ -1454,7 +1454,8 @@ private enum class HomeService(val title: String, val icon: (() -> ImageVector)?
     SoundCloud("SoundCloud", { ServiceIcons.SoundCloud }),
     Yandex("Яндекс Музыка", { ServiceIcons.YandexMusic }),
     YouTube("YouTube Music", { ServiceIcons.YouTubeMusic }),
-    Downloads("Скачанное", { Icons.Default.Download })
+    // Not only downloads: history and playlists too, a library.
+    Downloads("Моя музыка", { Icons.Default.LibraryMusic })
 }
 
 // The order is persisted (the saved tab is an ordinal): new sections go at the end.
