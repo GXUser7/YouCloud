@@ -7741,8 +7741,9 @@ private fun TrackDetailScreen(
                                     val frost = when {
                                         backdropVideo != null && videoShown > 0f -> 1f - 0.58f * videoShown
                                         // A cover's glow is as bright as the cover, often brighter than
-                                        // a video's: a little more colour keeps the panel readable.
-                                        else -> CoverFrost
+                                        // a video's: a little more colour keeps the panel readable —
+                                        // and in a light theme most of it, or the panel was the glow.
+                                        else -> lightened(CoverFrost)
                                     }
                                     val panel = PanelColors.container
                                     Box(

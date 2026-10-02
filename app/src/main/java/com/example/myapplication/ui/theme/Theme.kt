@@ -210,8 +210,11 @@ fun panelColorRoles(
         onAccent = colorScheme.onPrimary
     )
 } else {
+    // In a light theme tone 90 laid as glass over a light backdrop came out the backdrop's own
+    // tone, and every panel ran into it. A step deeper and more of the wallpaper's colour: the
+    // panels stand off the backdrop by their colour, as the launcher's widgets do, still glass.
     PanelColorRoles(
-        container = colorScheme.secondaryContainer,
+        container = androidx.compose.ui.graphics.lerp(colorScheme.secondaryContainer, colorScheme.secondary, 0.12f),
         content = colorScheme.onSecondaryContainer,
         accent = colorScheme.primary,
         onAccent = colorScheme.onPrimary

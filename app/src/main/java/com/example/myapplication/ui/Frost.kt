@@ -17,6 +17,7 @@ import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.BlurEffect
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.TileMode
@@ -110,11 +111,13 @@ fun Modifier.frosted(
     // under the mini player. Over the backdrop alone (blurred already) the glass draws it as it
     // is under a wash of colour — which still hides whatever else passes behind, a list under a
     // bar, as glass does.
+    // Light glass catches the light as a faint shadow at its edge; a light rim on it was invisible.
+    val rimColor = if (isLightTheme()) Color.Black.copy(alpha = 0.07f) else Color.White.copy(alpha = 0.07f)
     if (sources.all { it.soft }) {
         return this
             .clip(shape)
             .then(SoftFrostElement(sources, tint))
-            .then(if (rim) Modifier.border(1.dp, Color.White.copy(alpha = 0.07f), shape) else Modifier)
+            .then(if (rim) Modifier.border(1.dp, rimColor, shape) else Modifier)
     }
     val here = remember { FrostOrigin() }
     return this
@@ -144,7 +147,7 @@ fun Modifier.frosted(
                 drawRect(tint)
             }
         }
-        .then(if (rim) Modifier.border(1.dp, Color.White.copy(alpha = 0.07f), shape) else Modifier)
+        .then(if (rim) Modifier.border(1.dp, rimColor, shape) else Modifier)
 }
 
 /**
@@ -225,7 +228,20 @@ private class FrostOrigin {
 /** The glass version of a solid fill of [color], or the fill itself where there's no glass. */
 @Composable
 fun Modifier.glassOr(shape: Shape, color: Color, glassAlpha: Float = GlassAlpha): Modifier =
-    if (LocalGlass.current) frosted(shape, color.copy(alpha = color.alpha * glassAlpha)) else this
+    if (LocalGlass.current) frosted(shape, color.copy(alpha = color.alpha * lightened(glassAlpha))) else this
+
+/**
+ * Whether the theme is light: its glass has to be denser — light glass over a light backdrop let
+ * so much of it through that panels and backdrop were one tone.
+ */
+@Composable
+@androidx.compose.runtime.ReadOnlyComposable
+internal fun isLightTheme(): Boolean = androidx.compose.material3.MaterialTheme.colorScheme.background.luminance() > 0.5f
+
+/** A glass [alpha] as the theme has it: as it is in a dark theme, a third of the way to solid in a light one. */
+@Composable
+@androidx.compose.runtime.ReadOnlyComposable
+internal fun lightened(alpha: Float): Float = if (isLightTheme()) alpha + (1f - alpha) * 0.3f else alpha
 
 /** A solid fill's colour, or none where the box is glass instead. */
 @Composable
@@ -237,7 +253,7 @@ fun glassFill(color: Color): Color = if (LocalGlass.current) Color.Transparent e
  */
 @Composable
 fun Modifier.pageGlass(color: Color): Modifier =
-    if (LocalGlass.current) frosted(RectangleShape, color.copy(alpha = PageGlassAlpha), rim = false) else background(color)
+    if (LocalGlass.current) frosted(RectangleShape, color.copy(alpha = lightened(PageGlassAlpha)), rim = false) else background(color)
 
 internal val FrostBlur = 28.dp
 internal const val PageGlassAlpha = 0.68f

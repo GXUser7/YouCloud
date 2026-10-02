@@ -346,7 +346,9 @@ internal fun ExpressiveBackground(motionEnabled: Boolean, animated: Boolean = tr
     // scene reads as one material at different depths rather than a handful of coloured stickers.
     val palette = BackdropPalette(
         ground = ground,
-        body = scheme.secondaryContainer,
+        // Light, tone 90 shapes on a tone 96 ground were barely there: deepened towards the
+        // secondary colour, so the near-white panels over them read as panels.
+        body = if (darkTheme) scheme.secondaryContainer else lerp(scheme.secondaryContainer, scheme.secondary, 0.12f),
         light = if (darkTheme) scheme.secondary else Color.White,
         dark = if (darkTheme) Color.Black else scheme.secondary,
         darkTheme = darkTheme

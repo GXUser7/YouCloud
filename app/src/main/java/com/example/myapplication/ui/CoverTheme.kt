@@ -221,14 +221,17 @@ private fun coverPalette(colors: CoverColors, darkTheme: Boolean): CoverPalette 
     // The accent is the cover's colour at full strength — a red bar gives a red button, not the
     // pastel tone 80 a dark scheme would otherwise use. A greyscale cover gets a white one.
     val (accentColor, onAccentColor) = if (accent != null) {
-        Color(primary.tone(50)) to Color.White
+        // A step darker on a light panel: tone 50 of a pale cover's colour was lost on white.
+        Color(primary.tone(if (darkTheme) 50 else 42)) to Color.White
     } else if (darkTheme) {
         Color(neutral.tone(92)) to Color(neutral.tone(10))
     } else {
         Color(neutral.tone(15)) to Color.White
     }
     val panel = PanelColorRoles(
-        container = if (darkTheme) Color(secondary.tone(20)) else Color(secondary.tone(90)),
+        // Light: a little lighter than the cover's light under it — tone 90 there was the light's
+        // own tone, and the controls floated on nothing — still the cover's colour.
+        container = if (darkTheme) Color(secondary.tone(20)) else Color(secondary.tone(93)),
         // Near-neutral text, so the colour on the panel belongs to the controls.
         content = if (darkTheme) Color(neutral.tone(92)) else Color(neutral.tone(12)),
         accent = accentColor,
