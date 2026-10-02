@@ -138,6 +138,8 @@ dependencies {
     implementation(libs.newpipe.extractor)
     implementation(libs.youtubedl.android)
     implementation(libs.play.services.nearby)
+    implementation(libs.androidx.glance.appwidget)
+    implementation(libs.androidx.glance.material3)
     testImplementation(libs.junit)
     // Virtual time for the tests of listening together: a host and a guest, minutes in a moment.
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.9.0")

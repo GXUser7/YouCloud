@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Launcher shortcuts in the wallpaper's colours: a light tint of its accent, the glyph darker. -->
+<resources>
+    <color name="shortcut_background">@android:color/system_accent1_100</color>
+    <color name="shortcut_glyph">@android:color/system_accent1_700</color>
+</resources>

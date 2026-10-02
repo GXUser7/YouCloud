@@ -1,4 +1,9 @@
 <resources>
     <string name="app_name">YouCloud</string>
     <string name="open_link_label">Открыть в YouCloud</string>
+    <string name="shortcut_wave">Моя волна</string>
+    <string name="shortcut_my_music">Моя музыка</string>
+    <string name="shortcut_search">Поиск</string>
+    <string name="widget_now_playing">Сейчас играет</string>
+    <string name="widget_now_playing_description">Обложка, кнопки и «Моя волна» в цветах обоев</string>
 </resources>

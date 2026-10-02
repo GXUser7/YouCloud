@@ -32,11 +32,17 @@ class MainActivity : ComponentActivity() {
     // A link shared to the app, or opened with it, until the screen has taken it.
     private val incomingLink = MutableStateFlow<String?>(null)
 
+    // A shortcut's, the quick settings tile's or the widget's action, until the screen has taken it.
+    private val incomingAction = MutableStateFlow<String?>(null)
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         // Only the intent the app was opened with: brought back after the system let it go, the
         // activity is handed that same intent again, and the link was opened a second time.
-        if (savedInstanceState == null) takeLink(intent)
+        if (savedInstanceState == null) {
+            takeLink(intent)
+            takeAction(intent)
+        }
         enableEdgeToEdge()
         // The app's backdrop is opaque and covers the whole window, so the window's own background
         // under it was a screenful of colour painted on every frame and never seen.
@@ -73,6 +79,16 @@ class MainActivity : ComponentActivity() {
                     incomingLink.value = null
                     viewModel.openSharedText(text)
                 }
+                val action by incomingAction.collectAsState()
+                LaunchedEffect(action) {
+                    val wanted = action ?: return@LaunchedEffect
+                    incomingAction.value = null
+                    when (wanted) {
+                        ACTION_WAVE -> viewModel.startWaveFromOutside()
+                        ACTION_MY_MUSIC -> viewModel.openDownloads()
+                        ACTION_SEARCH -> viewModel.openSearch()
+                    }
+                }
 
                 // What a Surface in the background colour gave, without its fill: the backdrop
                 // covers it on every screen, and it too was painted on every frame for nothing.
@@ -92,6 +108,19 @@ class MainActivity : ComponentActivity() {
         super.onNewIntent(intent)
         setIntent(intent)
         takeLink(intent)
+        takeAction(intent)
+    }
+
+    private fun takeAction(intent: Intent?) {
+        intent?.action?.takeIf { it in ACTIONS }?.let { incomingAction.value = it }
+    }
+
+    companion object {
+        /** "Моя волна", played: from the icon's shortcut, the quick settings tile and the widget. */
+        const val ACTION_WAVE = "com.example.myapplication.action.WAVE"
+        const val ACTION_MY_MUSIC = "com.example.myapplication.action.MY_MUSIC"
+        const val ACTION_SEARCH = "com.example.myapplication.action.SEARCH"
+        private val ACTIONS = setOf(ACTION_WAVE, ACTION_MY_MUSIC, ACTION_SEARCH)
     }
 
     /** The text of a link opened with the app (VIEW) or shared to it (SEND). */

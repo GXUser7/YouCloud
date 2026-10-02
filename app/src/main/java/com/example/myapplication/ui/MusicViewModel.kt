@@ -166,6 +166,7 @@ class MusicViewModel(
     )
     private val yandexService = YandexMusicApi.createService(settingsRepository::yandexTokenValue)
     private val lyricsRepository = YandexLyricsRepository(context, yandexService)
+    private val lrcLib = com.example.myapplication.data.LrcLibLyrics(context)
 
     // YouTube Music: signed in through its own site; see onYtMusicLoginCaptured.
     private val ytMusic = YouTubeMusicClient { settingsRepository.ytMusicAuth() }
@@ -544,17 +545,26 @@ class MusicViewModel(
     private fun freshVideoLookup(trackId: Long): Pair<TrackVideo?, Long>? =
         videoLookups[trackId]?.takeIf { System.currentTimeMillis() - it.second < VIDEO_LOOKUP_TTL_MS }
 
+    // Tracks whose video YouTube didn't hand out this time — yt-dlp out of time on a slow phone,
+    // the network gone — rather than found to have none: looked up again after a little while.
+    private val videoLookupMissed = java.util.concurrent.ConcurrentHashMap.newKeySet<Long>()
+
     private fun videoLookup(track: SoundCloudTrack): kotlinx.coroutines.Deferred<Pair<TrackVideo?, Long>> =
         videoLookupsInFlight[track.id] ?: viewModelScope.async(Dispatchers.IO, start = kotlinx.coroutines.CoroutineStart.LAZY) {
+            var missed = false
             val video = try {
                 findTrackVideo(track)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
                 Log.w("MusicViewModel", "No video for ${track.urn}: $e")
+                missed = true
                 null
             }
-            (video to System.currentTimeMillis()).also {
+            missed = videoLookupMissed.remove(track.id) || missed
+            // A miss is kept as if looked up long ago, so that it goes stale in a couple of minutes.
+            val at = System.currentTimeMillis() - if (missed && video == null) VIDEO_LOOKUP_TTL_MS - VIDEO_MISS_RETRY_MS else 0L
+            (video to at).also {
                 videoLookups[track.id] = it
                 videoLookupsInFlight.remove(track.id)
             }
@@ -584,6 +594,9 @@ class MusicViewModel(
     val activeQueue = _activeQueue.asStateFlow()
 
     fun reorderActiveQueue(fromIndex: Int, toIndex: Int) {
+        // A Yandex radio's queue is the radio's: what comes next is what it gave, in its order
+        // (the queue sheet offers no dragging there either).
+        if (yandexRadio != null) return
         val list = _activeQueue.value.toMutableList()
         if (fromIndex in list.indices && toIndex in list.indices) {
             val element = list.removeAt(fromIndex)
@@ -671,12 +684,14 @@ class MusicViewModel(
             // Looked up only while the full player is open: what plays in the background has
             // no picture to show, and every lookup costs traffic (and yt-dlp, on YouTube).
             // Videos looked up under other settings aren't the ones to show now.
-            var lookedUpFor: Pair<Boolean, Boolean>? = null
+            var lookedUpFor: Pair<Pair<Boolean, Boolean>, Boolean>? = null
             combine(
                 _currentPlayingTrack,
                 _selectedTrack.map { it != null },
                 settingsRepository.playerVideos,
-                settingsRepository.videoYouTube,
+                // YouTube's videos, and whether they come in VP9: one this phone failed to decode
+                // after all is looked up again, in H.264.
+                combine(settingsRepository.videoYouTube, com.example.myapplication.data.VideoDecoders.vp9Allowed(context)) { on, vp9 -> on to vp9 },
                 settingsRepository.videoYandex
             ) { track, playerOpen, enabled, youTube, yandex ->
                 Triple(track.takeIf { playerOpen && enabled }, youTube, yandex)
@@ -729,8 +744,12 @@ class MusicViewModel(
         viewModelScope.launch {
             _currentPlayingTrack.distinctUntilChangedBy { it?.id }.collectLatest { track ->
                 _lyrics.value = null
-                val urn = track?.urn?.takeIf { it.startsWith("yandex:track:") } ?: return@collectLatest
-                val lines = lyricsRepository.syncedLyrics(urn) ?: return@collectLatest
+                // A broadcast has its chat where lyrics would be.
+                if (track == null || track.liveVideoId != null) return@collectLatest
+                // Yandex's own first; LRCLIB's for everything else, and for Yandex's without.
+                val lines = track.urn?.takeIf { it.startsWith("yandex:track:") }?.let { lyricsRepository.syncedLyrics(it) }
+                    ?: lrcLib.syncedLyrics(track)
+                    ?: return@collectLatest
                 _lyrics.value = TrackLyrics(track.id, lines)
             }
         }
@@ -3325,8 +3344,20 @@ class MusicViewModel(
                 ?.joinToString(", ")
                 ?: user?.username
                 ?: "Unknown Artist",
-            artworkUrl = artworkUrl
+            artworkUrl = artworkUrl,
+            leadArtist = artists?.firstNotNullOfOrNull { it.username?.takeIf(String::isNotBlank) } ?: user?.username,
+            source = sourceOf(urn)
         )
+    }
+
+    /** The service a track is from, as "Итоги" counts them; see PlayLog. */
+    private fun sourceOf(urn: String?): String = when {
+        urn == null -> ""
+        urn.startsWith("yandex:") -> "yandex"
+        urn.startsWith(YT_TRACK_URN) || urn.startsWith("ytmusic:") -> "youtube"
+        urn.startsWith("soundcloud:") -> "soundcloud"
+        urn.startsWith("local:") -> "phone"
+        else -> ""
     }
 
     private fun FavoriteTrack.toQueueTrack(streamUrl: String): QueueTrack {
@@ -3340,7 +3371,9 @@ class MusicViewModel(
             url = finalUrl,
             title = title,
             artist = displayArtist,
-            artworkUrl = artworkUrl
+            artworkUrl = artworkUrl,
+            leadArtist = artists?.firstNotNullOfOrNull { it.username?.takeIf(String::isNotBlank) } ?: artist,
+            source = sourceOf(urn)
         )
     }
 
@@ -3512,7 +3545,7 @@ class MusicViewModel(
         val youTubeId = track.youTubeVideoId
         try {
             val stored: String? = if (youTubeId != null) {
-                withContext(Dispatchers.IO) { YouTubeStreams.resolve(context, youTubeId, settingsRepository.ytMusicAuth()) }?.let { audio ->
+                withContext(Dispatchers.IO) { YouTubeStreams.resolve(context, youTubeId, settingsRepository.ytMusicAuth(), urgent = { false }) }?.let { audio ->
                     val path = withContext(Dispatchers.IO) {
                         offlineMusicStore.downloadProgressive(audio.url, "pl_yt_$youTubeId", extension = "m4a", chunked = true, userAgent = audio.userAgent) { progress ->
                             updateDownloadProgress(track.id, progress)
@@ -3686,6 +3719,10 @@ class MusicViewModel(
 
         // A found video URL (YouTube's) holds for hours; an absent video stays absent a while.
         const val VIDEO_LOOKUP_TTL_MS = 60 * 60 * 1000L
+        const val VIDEO_MISS_RETRY_MS = 2 * 60 * 1000L
+
+        // How many tracks the queue goes on by at a time; the last of them goes on again.
+        const val AUTO_CONTINUE_TRACKS = 25
     }
 
     /** Confirms a credential pair actually works before we treat the session as healthy. */
@@ -4221,6 +4258,10 @@ class MusicViewModel(
         fromGuest: Boolean = false
     ) {
         if (!fromQueueManager && together.relayPlay(track, customQueue ?: listOf(track))) return
+        // Picked in a Yandex radio's queue: played where it is, as a skip would. Rebuilt from the
+        // list on screen, the queue lost what the radio had just added, the radio its last track
+        // with it, and it took itself for over — nothing more came.
+        if (fromQueueManager && yandexRadio != null && musicPlayer.playQueuedItem(track.id)) return
         viewModelScope.launch {
             _errorMessage.value = null
             val isYandexTrack = track.urn?.startsWith("yandex:track:") == true
@@ -4356,7 +4397,8 @@ class MusicViewModel(
 
         try {
             val youTubeAudio = youTubeId?.let { id ->
-                withContext(Dispatchers.IO) { YouTubeStreams.resolve(context, id, settingsRepository.ytMusicAuth()) }
+                // A download waits for what plays now.
+                withContext(Dispatchers.IO) { YouTubeStreams.resolve(context, id, settingsRepository.ytMusicAuth(), urgent = { false }) }
             }
             val streamUrl = if (youTubeId != null) {
                 youTubeAudio?.url
@@ -4511,7 +4553,9 @@ class MusicViewModel(
      */
     private suspend fun downloadExtras(track: SoundCloudTrack) {
         val urn = track.urn.orEmpty()
-        if (urn.startsWith("yandex:track:")) lyricsRepository.syncedLyrics(urn)
+        if (track.liveVideoId == null) {
+            (if (urn.startsWith("yandex:track:")) lyricsRepository.syncedLyrics(urn) else null) ?: lrcLib.syncedLyrics(track)
+        }
         if (!settingsRepository.playerVideos.value || !settingsRepository.videoDownload.value || isNetworkMetered()) return
         // Neither kind of video wanted: nothing to look for, and nothing to mark as not found.
         if (!settingsRepository.videoYouTube.value && !settingsRepository.videoYandex.value) return
@@ -4622,6 +4666,8 @@ class MusicViewModel(
         )
         if (video == null) return null
         val workDir = java.io.File(context.cacheDir, "clip-align")
+        // Wanted now while its track plays; the next track's, looked up ahead, waits its turn.
+        val urgent = { _currentPlayingTrack.value?.id == track.id }
         return coroutineScope {
             // The track's own sound doesn't depend on the video: it is fetched and decoded while
             // yt-dlp looks for the video's.
@@ -4629,15 +4675,19 @@ class MusicViewModel(
             val trackOnsets = if (video.itself || (video.paired && video.segments.isNotEmpty())) {
                 null
             } else {
-                async { trackOnsets(track, videoId, auth, workDir) }
+                async { trackOnsets(track, videoId, auth, workDir, urgent) }
             }
-            val stream = YouTubeStreams.resolveVideo(context, video.videoId, auth) ?: return@coroutineScope null
+            val stream = YouTubeStreams.resolveVideo(context, video.videoId, auth, urgent) ?: run {
+                videoLookupMissed += track.id
+                return@coroutineScope null
+            }
             // Buffered unseen while the sound is compared, but only once the sound is in: over a
             // VPN the two downloads side by side each took as long as both.
             val startBuffering = {
                 if (_currentPlayingTrack.value?.id == track.id && trackOnsets != null) {
                     _pendingTrackVideo.value = TrackVideo(
-                        track.id, stream.url, loop = false, vertical = false, userAgent = stream.userAgent, ready = false
+                        track.id, stream.url, loop = false, vertical = false, userAgent = stream.userAgent, ready = false,
+                        codec = stream.codec
                     )
                 }
             }
@@ -4678,21 +4728,27 @@ class MusicViewModel(
         track: SoundCloudTrack,
         videoId: String?,
         auth: com.example.myapplication.data.YtAuth,
-        workDir: java.io.File
+        workDir: java.io.File,
+        urgent: () -> Boolean
     ): FloatArray? {
         onsetCache.get(track.id)?.let { return it }
-        val source = trackSound(track, videoId, auth) ?: return null
+        val source = trackSound(track, videoId, auth, urgent) ?: return null
         return ClipAligner.onsetsOf(source, workDir)?.also { onsetCache.put(track.id, it) }
     }
 
     /** Where to read the track's own sound from: its file, when it is downloaded. */
-    private suspend fun trackSound(track: SoundCloudTrack, videoId: String?, auth: com.example.myapplication.data.YtAuth): ClipAligner.AudioSource? {
+    private suspend fun trackSound(
+        track: SoundCloudTrack,
+        videoId: String?,
+        auth: com.example.myapplication.data.YtAuth,
+        urgent: () -> Boolean
+    ): ClipAligner.AudioSource? {
         favoritesRepository.get(track.id)
             ?.takeIf { it.downloadState == DownloadState.DOWNLOADED }
             ?.streamUrl?.takeIf { it.startsWith("/") && java.io.File(it).exists() }
             ?.let { return ClipAligner.AudioSource(it) }
         if (videoId != null) {
-            val stream = YouTubeStreams.resolve(context, videoId, auth) ?: return null
+            val stream = YouTubeStreams.resolve(context, videoId, auth, urgent) ?: return null
             return ClipAligner.AudioSource(stream.url, mapOf("User-Agent" to stream.userAgent))
         }
         val yandexId = track.urn.orEmpty().removePrefix("yandex:track:").substringBefore(':')
@@ -4822,7 +4878,12 @@ class MusicViewModel(
         set(value) {
             field = value
             _yandexWaveOn.value = value?.wave == true
+            _yandexRadioOn.value = value != null
         }
+
+    // Whether the queue is a Yandex radio's, the wave's or a track's: its order is the radio's.
+    private val _yandexRadioOn = MutableStateFlow(false)
+    val yandexRadioOn = _yandexRadioOn.asStateFlow()
 
     // Whether the radio playing is "Моя волна".
     private val _yandexWaveOn = MutableStateFlow(false)
@@ -4957,6 +5018,22 @@ class MusicViewModel(
         musicPlayer.skipNext()
     }
 
+    /**
+     * "Моя волна" asked for from outside the app — its icon's shortcut, the quick settings tile,
+     * the widget: played, or played on if it is the one paused; left as it is if it plays already.
+     */
+    fun startWaveFromOutside() {
+        if (settingsRepository.yandexTokenValue().isBlank()) {
+            android.widget.Toast.makeText(context, "Чтобы слушать волну, войдите в Яндекс Музыку в настройках", android.widget.Toast.LENGTH_LONG).show()
+            return
+        }
+        if (_yandexWaveOn.value && yandexRadio != null) {
+            if (!musicPlayer.isPlaying.value) musicPlayer.togglePlayPause()
+        } else {
+            playYandexWave()
+        }
+    }
+
     /** "Моя волна": played, or paused and played on where it is when it is the one playing. */
     fun toggleYandexWave() {
         if (_yandexWaveOn.value && yandexRadio != null) {
@@ -5062,7 +5139,8 @@ class MusicViewModel(
     /**
      * Asks the radio for more once fewer than [RADIO_AHEAD] tracks are left after [index], and adds
      * them to the end of the queue. A session the radio no longer knows is started again from the
-     * same seed, with everything given so far as heard.
+     * same seed, with everything given so far as heard. A queue that has played out meanwhile
+     * (more couldn't be had in time) plays on into what came.
      */
     private fun refillYandexRadio(index: Int) {
         val radio = yandexRadio ?: return
@@ -5102,6 +5180,7 @@ class MusicViewModel(
                     })
                     radio.tailId = fresh.last().id
                     Log.d("MusicViewModel", "Yandex radio: ${fresh.size} more tracks, ${extended.size} queued")
+                    if (musicPlayer.ended.value) musicPlayer.skipNext()
                 }
             } catch (e: CancellationException) {
                 throw e
@@ -5138,7 +5217,9 @@ class MusicViewModel(
                     val id = track?.urn?.removePrefix("yandex:track:")
                     if (batch != null && id != null) {
                         val duration = track.duration
-                        val finished = duration > 0 && radioPlayedMs >= duration - RADIO_FINISHED_SLACK_MS
+                        // A crossfade leaves a track that many seconds early, heard to its end.
+                        val slack = RADIO_FINISHED_SLACK_MS + settingsRepository.crossfadeSeconds.value * 1000L
+                        val finished = duration > 0 && radioPlayedMs >= duration - slack
                         sendRadioFeedback(
                             radio,
                             YandexRotorEvent(
@@ -5164,6 +5245,15 @@ class MusicViewModel(
                 refillYandexRadio(index)
             }
         }
+        viewModelScope.launch {
+            // The queue played out: a refill that failed (no network as the last track began)
+            // would otherwise leave the radio silent for good.
+            musicPlayer.ended.collect { ended ->
+                if (!ended || yandexRadio == null) return@collect
+                val index = _activeQueue.value.indexOfFirst { it.id == musicPlayer.currentTrackId.value }
+                if (index >= 0) refillYandexRadio(index)
+            }
+        }
     }
 
     private fun sendRadioFeedback(radio: YandexRadio, event: YandexRotorEvent, batchId: String?) {
@@ -5182,9 +5272,121 @@ class MusicViewModel(
     private fun rotorNow(): String =
         java.time.Instant.now().truncatedTo(java.time.temporal.ChronoUnit.MILLIS).toString()
 
+    /**
+     * The notification's and the car's "Нравится" and "Не нравится" ([com.example.myapplication.player.SessionBridge]):
+     * what they show follows the track playing, and what they ask is done as the player's own
+     * buttons do it. Asked while the app's screen was closed, it is done once the screen is back.
+     */
+    private fun followSessionButtons() {
+        val bridge = com.example.myapplication.player.SessionBridge
+        viewModelScope.launch {
+            combine(_currentPlayingTrack, favoritesRepository.favorites) { track, saved ->
+                track?.let { playing -> playing.id to saved.any { it.id == playing.id } }
+            }.collect { bridge.liked.value = it }
+        }
+        viewModelScope.launch { _yandexWaveOn.collect { bridge.canDislike.value = it } }
+        viewModelScope.launch {
+            bridge.actions.collect { action ->
+                val track = _activeQueue.value.firstOrNull { it.id == action.trackId }
+                    ?: _currentPlayingTrack.value?.takeIf { it.id == action.trackId }
+                    ?: return@collect
+                when (action) {
+                    is com.example.myapplication.player.SessionBridge.Action.Like -> toggleFavorite(track)
+                    // Only for the track still playing: one pressed long ago is past.
+                    is com.example.myapplication.player.SessionBridge.Action.Dislike -> if (musicPlayer.currentTrackId.value == track.id) {
+                        if (_yandexWaveOn.value) dislikeYandexTrack() else musicPlayer.skipNext()
+                    }
+                }
+            }
+        }
+    }
+
+    // region Autocontinue
+
+    private var continuing: Job? = null
+
+    /**
+     * The queue down to its last track: the music goes on after it with radio from it, as the
+     * services' own apps go on — Yandex Music's radio after its track (which then keeps itself
+     * going), YouTube Music's after its, tracks like it after SoundCloud's. Not after a radio, which
+     * goes on by itself, nor with the queue on repeat, nor for a guest listening together.
+     */
+    private fun followQueueEnd() {
+        viewModelScope.launch {
+            musicPlayer.currentTrackId.collect { trackId ->
+                if (trackId == null || !settingsRepository.autoContinue.value || yandexRadio != null || together.isGuest) return@collect
+                if (musicPlayer.repeatMode.value != androidx.media3.common.Player.REPEAT_MODE_OFF) return@collect
+                val queue = _activeQueue.value
+                val index = queue.indexOfFirst { it.id == trackId }
+                if (index < 0 || index != queue.lastIndex) return@collect
+                continueAfter(queue[index])
+            }
+        }
+    }
+
+    private fun continueAfter(track: SoundCloudTrack) {
+        if (continuing?.isActive == true) return
+        continuing = viewModelScope.launch {
+            try {
+                val urn = track.urn.orEmpty()
+                val youTubeId = track.youTubeVideoId
+                when {
+                    urn.startsWith("yandex:track:") -> continueWithYandexRadio(track, urn.removePrefix("yandex:track:"))
+                    youTubeId != null -> appendAfter(track, ytMusic.radio(youTubeId))
+                    urn.startsWith("soundcloud:tracks:") -> {
+                        val clientId = settingsRepository.clientId.value.takeIf { it.isNotBlank() } ?: return@launch
+                        appendAfter(track, service.getRelatedTracks(track.id, clientId).collection.filter(::isPlayableTrack))
+                    }
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.w("MusicViewModel", "Couldn't go on after ${track.urn}", e)
+            }
+        }
+    }
+
+    /** Yandex's radio from [track], its tracks after it: from then on the queue is the radio's. */
+    private suspend fun continueWithYandexRadio(track: SoundCloudTrack, trackId: String) {
+        val seed = "track:" + trackId.substringBefore(':')
+        val session = yandexService.rotorSessionNew(
+            YandexRotorSessionRequest(seeds = listOf(seed), queue = listOf(trackId))
+        ).result ?: return
+        val sessionId = session.radioSessionId ?: return
+        val radio = YandexRadio(sessionId, listOf(seed)).apply { give(trackId) }
+        val added = appendAfter(track, acceptRadioBatch(radio, session.batchId, session.sequence))
+        if (added.isEmpty()) return
+        radio.tailId = added.last().id
+        yandexRadio = radio
+        sendRadioFeedback(radio, YandexRotorEvent(type = "radioStarted", timestamp = rotorNow()), session.batchId)
+    }
+
+    /**
+     * Adds [more] after [last], when it is still the queue's last track (the listener may have put
+     * on something else meanwhile); what is queued already isn't added twice. What was added.
+     */
+    private suspend fun appendAfter(last: SoundCloudTrack, more: List<SoundCloudTrack>): List<SoundCloudTrack> = queueMutex.withLock {
+        val current = _activeQueue.value
+        if (current.lastOrNull()?.id != last.id) return@withLock emptyList()
+        val fresh = more.filter { track -> track.id != last.id && current.none { it.id == track.id } }
+            .distinctBy { it.id }
+            .take(AUTO_CONTINUE_TRACKS)
+        if (fresh.isEmpty()) return@withLock emptyList()
+        val extended = current + fresh
+        _activeQueue.value = extended
+        originalQueue = originalQueue + fresh
+        musicPlayer.updateQueue(extended.map { t -> t.toQueueTrack(localStreamUrl(t.id) ?: resolvedUrls[t.id] ?: placeholderStreamUrl(t)) })
+        Log.d("MusicViewModel", "Going on after ${last.urn}: ${fresh.size} tracks")
+        fresh
+    }
+
+    // endregion
+
     init {
         // Last in the class, so everything it touches is there by the time it runs.
         followYandexRadio()
+        followSessionButtons()
+        followQueueEnd()
         viewModelScope.launch {
             musicPlayer.currentTrackId.collect { id ->
                 _trackFx.value = id?.let(settingsRepository::trackFx) ?: com.example.myapplication.data.TrackFx()

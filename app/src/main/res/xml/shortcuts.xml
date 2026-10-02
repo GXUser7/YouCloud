@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- A long press on the app's icon: straight to the wave, "Моя музыка" or search. -->
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+    <shortcut
+        android:shortcutId="wave"
+        android:enabled="true"
+        android:icon="@drawable/shortcut_wave"
+        android:shortcutShortLabel="@string/shortcut_wave">
+        <intent
+            android:action="com.example.myapplication.action.WAVE"
+            android:targetClass="com.example.myapplication.MainActivity"
+            android:targetPackage="com.example.myapplication" />
+    </shortcut>
+    <shortcut
+        android:shortcutId="my_music"
+        android:enabled="true"
+        android:icon="@drawable/shortcut_library"
+        android:shortcutShortLabel="@string/shortcut_my_music">
+        <intent
+            android:action="com.example.myapplication.action.MY_MUSIC"
+            android:targetClass="com.example.myapplication.MainActivity"
+            android:targetPackage="com.example.myapplication" />
+    </shortcut>
+    <shortcut
+        android:shortcutId="search"
+        android:enabled="true"
+        android:icon="@drawable/shortcut_search"
+        android:shortcutShortLabel="@string/shortcut_search">
+        <intent
+            android:action="com.example.myapplication.action.SEARCH"
+            android:targetClass="com.example.myapplication.MainActivity"
+            android:targetPackage="com.example.myapplication" />
+    </shortcut>
+</shortcuts>

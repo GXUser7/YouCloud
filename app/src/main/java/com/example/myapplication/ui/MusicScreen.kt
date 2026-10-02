@@ -133,6 +133,10 @@ import androidx.compose.material.icons.rounded.Shuffle
 import androidx.compose.material.icons.rounded.Favorite
 import androidx.compose.material.icons.rounded.FavoriteBorder
 import androidx.compose.material.icons.rounded.DragHandle
+import androidx.compose.material.icons.rounded.Waves
+import androidx.compose.material.icons.rounded.BarChart
+import androidx.compose.material.icons.automirrored.rounded.CallMerge
+import androidx.compose.material.icons.rounded.Bedtime
 import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.ui.zIndex
 import androidx.compose.runtime.withFrameNanos
@@ -497,6 +501,7 @@ fun MusicScreen(viewModel: MusicViewModel) {
     val yandexPlaylists by viewModel.yandexPlaylists.collectAsState()
     val yandexShelves by viewModel.yandexShelves.collectAsState()
     val yandexWaveOn by viewModel.yandexWaveOn.collectAsState()
+    val yandexRadioOn by viewModel.yandexRadioOn.collectAsState()
     val yandexWavePicks by viewModel.yandexWavePicks.collectAsState()
     val trackFx by viewModel.trackFx.collectAsState()
     val playerFxButton by viewModel.settingsRepo.playerFxButton.collectAsState()
@@ -509,7 +514,9 @@ fun MusicScreen(viewModel: MusicViewModel) {
     val searchOpenedPlaylist by viewModel.searchOpenedPlaylist.collectAsState()
     val playingFrom by viewModel.playingFrom.collectAsState()
     val togetherState by viewModel.together.state.collectAsState()
+    val crossfadeSeconds by viewModel.settingsRepo.crossfadeSeconds.collectAsState()
     var showTogether by remember { mutableStateOf(false) }
+    var showStats by remember { mutableStateOf(false) }
 
     val downloadedTracks = remember(favorites) { favorites.filter { it.downloadState == DownloadState.DOWNLOADED } }
     val history by viewModel.history.collectAsState()
@@ -928,6 +935,7 @@ fun MusicScreen(viewModel: MusicViewModel) {
                         val likesPushStatus by viewModel.likesPushStatus.collectAsState()
                         SettingsScreen(
                             onOpenTogether = { showTogether = true },
+                            onOpenStats = { showStats = true },
                             settingsRepository = viewModel.settingsRepo,
                             soundcloudLikesSyncStatus = soundcloudLikesSyncStatus,
                             likesPushStatus = likesPushStatus,
@@ -1312,7 +1320,13 @@ fun MusicScreen(viewModel: MusicViewModel) {
                     TrackDetailScreen(
                         track = track,
                         activeQueue = activeQueue,
-                        onReorderQueue = viewModel::reorderActiveQueue,
+                        // A Yandex radio's order is the radio's; picking a track in it still plays it.
+                        onReorderQueue = if (yandexRadioOn) null else viewModel::reorderActiveQueue,
+                        queueNote = if (yandexRadioOn) {
+                            "${if (yandexWaveOn) "Порядок «Моей волны»" else "Порядок радио"} подбирает Яндекс и сам добавляет новые треки. Нажмите на трек, чтобы перейти к нему"
+                        } else {
+                            null
+                        },
                         onPlayTrackFromQueue = { qTrack ->
                             viewModel.playQueuedTrack(qTrack, activeQueue, fromQueueManager = true)
                         },
@@ -1401,6 +1415,9 @@ fun MusicScreen(viewModel: MusicViewModel) {
     }
 
     val context = LocalContext.current
+    if (showStats) {
+        StatsSheet(onDismiss = { showStats = false })
+    }
     if (showTogether) {
         TogetherSheet(
             together = viewModel.together,
@@ -1469,7 +1486,9 @@ fun MusicScreen(viewModel: MusicViewModel) {
             onTogether = {
                 showTrackActionsDialog = false
                 showTogether = true
-            }
+            },
+            crossfadeSeconds = crossfadeSeconds,
+            onCrossfade = viewModel.settingsRepo::setCrossfadeSeconds
         )
     }
 }
@@ -3335,7 +3354,8 @@ private fun SettingsScreen(
     onYtMusicLoginClick: () -> Unit,
     onYtMusicLogoutClick: () -> Unit,
     updates: com.example.myapplication.data.UpdateRepository,
-    onOpenTogether: () -> Unit = {}
+    onOpenTogether: () -> Unit = {},
+    onOpenStats: () -> Unit = {}
 ) {
     val yandexToken by settingsRepository.yandexToken.collectAsState()
     val hasYandexToken = yandexToken.isNotEmpty()
@@ -3374,6 +3394,32 @@ private fun SettingsScreen(
                         title = "Слушать вместе",
                         subtitle = "С друзьями рядом: одна музыка на нескольких телефонах, напрямую, без интернета между ними",
                         onClick = onOpenTogether
+                    )
+                }
+            }
+        }
+
+        // What has been heard: minutes, favourite artists and tracks, and a card of it to share.
+        item {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(
+                    text = "ИТОГИ",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.padding(start = 12.dp)
+                )
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .glassOr(MaterialTheme.shapes.extraLarge, MaterialTheme.colorScheme.surfaceContainer),
+                    shape = MaterialTheme.shapes.extraLarge,
+                    colors = CardDefaults.cardColors(containerColor = glassFill(MaterialTheme.colorScheme.surfaceContainer))
+                ) {
+                    SettingsActionRow(
+                        icon = Icons.Rounded.BarChart,
+                        title = "Итоги прослушиваний",
+                        subtitle = "Минуты, любимые артисты и треки за неделю, месяц, год — и карточка для сторис",
+                        onClick = onOpenStats
                     )
                 }
             }
@@ -4190,7 +4236,10 @@ private fun SettingsScreen(
                         SettingsSwitchRow(
                             icon = Icons.Default.OndemandVideo,
                             title = "Клипы с YouTube",
-                            subtitle = if (playerVideos) {
+                            subtitle = if (playerVideos && ytMusicAccount == null) {
+                                // Signed out, YouTube hands yt-dlp no video: nothing would ever show.
+                                "Нужен вход в YouTube Music в «Аккаунтах»: без него YouTube не отдаёт клипы"
+                            } else if (playerVideos) {
                                 "Клипы треков YouTube Music, а для треков Яндекса — найденные на YouTube. Тратит трафик"
                             } else {
                                 "Включаются вместе с «Клипами в плеере» в разделе «Видео»"
@@ -4307,13 +4356,27 @@ private fun SettingsScreen(
                     shape = MaterialTheme.shapes.extraLarge,
                     colors = CardDefaults.cardColors(containerColor = glassFill(MaterialTheme.colorScheme.surfaceContainer))
                 ) {
-                    SettingsSwitchRow(
-                        icon = Icons.Rounded.Tune,
-                        title = "Эффекты в плеере",
-                        subtitle = "Кнопка реверба, замедления и ускорения — для каждого трека свои",
-                        checked = fxButton,
-                        onCheckedChange = settingsRepository::setPlayerFxButton
-                    )
+                    val autoContinue by settingsRepository.autoContinue.collectAsState()
+                    Column(modifier = Modifier.padding(vertical = 4.dp)) {
+                        SettingsSwitchRow(
+                            icon = Icons.Rounded.Tune,
+                            title = "Эффекты в плеере",
+                            subtitle = "Кнопка реверба, замедления и ускорения — для каждого трека свои",
+                            checked = fxButton,
+                            onCheckedChange = settingsRepository::setPlayerFxButton
+                        )
+                        HorizontalDivider(
+                            color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.25f),
+                            modifier = Modifier.padding(horizontal = 18.dp)
+                        )
+                        SettingsSwitchRow(
+                            icon = Icons.Default.Radio,
+                            title = "Автопродолжение",
+                            subtitle = "Альбом, плейлист или поиск закончились — дальше играет радио от последнего трека",
+                            checked = autoContinue,
+                            onCheckedChange = settingsRepository::setAutoContinue
+                        )
+                    }
                 }
             }
         }
@@ -4374,6 +4437,25 @@ private fun SettingsScreen(
                             onCheckedChange = { settingsRepository.setShowDebugPercentage(it) }
                         )
                     }
+                }
+                // For when something doesn't work on a friend's phone: what the app saw, sent on.
+                val reportContext = LocalContext.current
+                val reportScope = rememberCoroutineScope()
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .glassOr(MaterialTheme.shapes.extraLarge, MaterialTheme.colorScheme.surfaceContainer),
+                    shape = MaterialTheme.shapes.extraLarge,
+                    colors = CardDefaults.cardColors(containerColor = glassFill(MaterialTheme.colorScheme.surfaceContainer))
+                ) {
+                    SettingsActionRow(
+                        icon = Icons.Default.BugReport,
+                        title = "Отправить журнал",
+                        subtitle = "Если что-то не работает: журнал приложения и сведения о телефоне файлом — тому, кто разберётся. Ссылки, ключи и имена аккаунтов из него убраны",
+                        onClick = {
+                            reportScope.launch { com.example.myapplication.data.DiagnosticsReport.share(reportContext, settingsRepository) }
+                        }
+                    )
                 }
             }
         }
@@ -7192,8 +7274,10 @@ private fun DownloadedTrackCard(
 private fun TrackDetailScreen(
     track: SoundCloudTrack,
     activeQueue: List<SoundCloudTrack>,
-    onReorderQueue: (Int, Int) -> Unit,
+    // Null when the queue's order isn't the listener's to change; [queueNote] says why.
+    onReorderQueue: ((Int, Int) -> Unit)?,
     onPlayTrackFromQueue: (SoundCloudTrack) -> Unit,
+    queueNote: String? = null,
     isFavorite: Boolean,
     favoriteTrack: FavoriteTrack?,
     downloadState: DownloadState?,
@@ -7817,6 +7901,7 @@ private fun TrackDetailScreen(
                 isPlaying = isPlaying,
                 onDismiss = { setQueueOpen(false) },
                 onReorder = onReorderQueue,
+                note = queueNote,
                 onPlayTrack = onPlayTrackFromQueue,
                 sheetOffset = { queueHidden.value * queueHeightPx },
                 onSheetDragStart = { queueDragFrom = queueHidden.value },
@@ -9601,7 +9686,8 @@ private fun QueueManagerPanel(
     currentTrack: SoundCloudTrack,
     isPlaying: Boolean,
     onDismiss: () -> Unit,
-    onReorder: (Int, Int) -> Unit,
+    // Null: the order can't be changed, no row is dragged.
+    onReorder: ((Int, Int) -> Unit)?,
     onPlayTrack: (SoundCloudTrack) -> Unit,
     // The sheet's own movement, done by the screen that holds it: how far down it is, moving it,
     // and letting it go with a speed.
@@ -9609,7 +9695,9 @@ private fun QueueManagerPanel(
     onSheetDragStart: () -> Unit,
     onSheetDrag: (Float) -> Float,
     onSheetRelease: (Float) -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    // A line over the queue: whose order it is, when not the listener's.
+    note: String? = null
 ) {
     val haptic = LocalHapticFeedback.current
     val density = androidx.compose.ui.platform.LocalDensity.current
@@ -9639,7 +9727,7 @@ private fun QueueManagerPanel(
                 candidate.index != from && y >= candidate.offset && y <= candidate.offset + candidate.size
             }
             if (target != null) {
-                onReorder(from, target.index)
+                onReorder?.invoke(from, target.index)
                 draggedIndex = target.index
                 lastSwapAt = now
                 haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
@@ -9740,6 +9828,29 @@ private fun QueueManagerPanel(
                 contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
+                if (note != null) {
+                    item(key = "queue-note") {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 8.dp, vertical = 2.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.Waves,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(20.dp)
+                            )
+                            Text(
+                                text = note,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                }
                 if (activeQueue.isEmpty()) {
                     item {
                         Box(
@@ -9810,7 +9921,8 @@ private fun QueueManagerPanel(
                             // The dragged card is positioned by hand; letting the item
                             // animation also drive it is what made it jump around.
                             .then(if (isThisDragged) Modifier else Modifier.animateItem())
-                            .pointerInput(trackItem.id) {
+                            .pointerInput(trackItem.id, onReorder != null) {
+                                if (onReorder == null) return@pointerInput
                                 detectDragGesturesAfterLongPress(
                                     onDragStart = { start ->
                                         val info = lazyListState.layoutInfo
@@ -9867,19 +9979,21 @@ private fun QueueManagerPanel(
                                 .padding(12.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Box(
-                                modifier = Modifier.size(40.dp),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Rounded.DragHandle,
-                                    contentDescription = "Drag to reorder",
-                                    tint = if (isCurrent) MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f) else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
-                                    modifier = Modifier.size(24.dp)
-                                )
-                            }
+                            if (onReorder != null) {
+                                Box(
+                                    modifier = Modifier.size(40.dp),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Rounded.DragHandle,
+                                        contentDescription = "Drag to reorder",
+                                        tint = if (isCurrent) MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f) else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                                        modifier = Modifier.size(24.dp)
+                                    )
+                                }
 
-                            Spacer(modifier = Modifier.width(8.dp))
+                                Spacer(modifier = Modifier.width(8.dp))
+                            }
 
                             TrackArtwork(
                                 artworkUrl = trackItem.artworkUrl,
@@ -12062,7 +12176,11 @@ fun TrackActionsDialog(
     onRadio: (() -> Unit)? = null,
     radioDescription: String = "Трек и то, что YouTube Music поставит за ним",
     // "Слушать вместе", opened from here.
-    onTogether: (() -> Unit)? = null
+    onTogether: (() -> Unit)? = null,
+    // The crossfade between tracks, in seconds, and setting it. Null: neither it nor the sleep
+    // timer is offered (the onboarding's demo menu).
+    crossfadeSeconds: Int = 0,
+    onCrossfade: ((Int) -> Unit)? = null
 ) {
     // A real M3 modal bottom sheet rather than a Dialog imitating one: this brings the
     // spec scrim, drag handle, swipe-to-dismiss, predictive back and inset handling.
@@ -12077,6 +12195,9 @@ fun TrackActionsDialog(
         }
     }
     var choosingPlaylist by remember { mutableStateOf(false) }
+    // The sleep timer's and the crossfade's choices; one open at a time, with the playlists.
+    var choosingSleep by remember { mutableStateOf(false) }
+    var choosingCrossfade by remember { mutableStateOf(false) }
     var showCreatePlaylistDialog by remember { mutableStateOf(false) }
     var playlistNameInput by remember { mutableStateOf("") }
     val colors = MaterialTheme.colorScheme
@@ -12144,6 +12265,8 @@ fun TrackActionsDialog(
                     onClick = {
                         haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                         choosingPlaylist = !choosingPlaylist
+                        choosingSleep = false
+                        choosingCrossfade = false
                     },
                     modifier = Modifier.weight(1f)
                 )
@@ -12175,6 +12298,98 @@ fun TrackActionsDialog(
                         description = "Слушать вместе с друзьями рядом",
                         onClick = onTogether,
                         modifier = Modifier.weight(1f)
+                    )
+                }
+            }
+
+            // How the music goes on: the sleep timer and the crossfade between tracks. For all of it,
+            // not this track alone, but where the hand already is.
+            if (onCrossfade != null) {
+                val timer by com.example.myapplication.player.SleepTimer.state.collectAsState()
+                var minutesLeft by remember { mutableStateOf(com.example.myapplication.player.SleepTimer.minutesLeft()) }
+                LaunchedEffect(timer) {
+                    while (timer is com.example.myapplication.player.SleepTimer.State.At) {
+                        minutesLeft = com.example.myapplication.player.SleepTimer.minutesLeft()
+                        delay(5_000)
+                    }
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    SheetTile(
+                        icon = Icons.Rounded.Bedtime,
+                        label = when (timer) {
+                            is com.example.myapplication.player.SleepTimer.State.At -> "Сон · ${minutesLeft ?: 0} мин"
+                            com.example.myapplication.player.SleepTimer.State.EndOfTrack -> "Сон · трек"
+                            com.example.myapplication.player.SleepTimer.State.Off -> "Таймер сна"
+                        },
+                        description = "Музыка плавно стихнет и остановится",
+                        selected = choosingSleep || timer != com.example.myapplication.player.SleepTimer.State.Off,
+                        onClick = {
+                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                            choosingSleep = !choosingSleep
+                            choosingCrossfade = false
+                            choosingPlaylist = false
+                        },
+                        modifier = Modifier.weight(1f)
+                    )
+                    SheetTile(
+                        icon = Icons.AutoMirrored.Rounded.CallMerge,
+                        label = if (crossfadeSeconds > 0) "Кроссфейд · $crossfadeSeconds с" else "Кроссфейд",
+                        description = "Треки плавно перетекают друг в друга",
+                        selected = choosingCrossfade || crossfadeSeconds > 0,
+                        onClick = {
+                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                            choosingCrossfade = !choosingCrossfade
+                            choosingSleep = false
+                            choosingPlaylist = false
+                        },
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+                AnimatedVisibility(
+                    visible = choosingSleep,
+                    enter = expandVertically(spring(dampingRatio = 0.85f, stiffness = Spring.StiffnessMediumLow)) + fadeIn(),
+                    exit = shrinkVertically(spring(dampingRatio = 1f, stiffness = Spring.StiffnessMedium)) + fadeOut()
+                ) {
+                    val at = timer as? com.example.myapplication.player.SleepTimer.State.At
+                    SheetChoices(
+                        caption = when (timer) {
+                            is com.example.myapplication.player.SleepTimer.State.At -> "Остановится через ${minutesLeft ?: 0} мин — последние полминуты музыка стихает"
+                            com.example.myapplication.player.SleepTimer.State.EndOfTrack -> "Остановится, когда закончится этот трек"
+                            com.example.myapplication.player.SleepTimer.State.Off -> "Через сколько остановить музыку. Последние полминуты она плавно стихает"
+                        },
+                        choices = SLEEP_MINUTES.map { minutes ->
+                            SheetChoice("$minutes мин", selected = at?.minutes == minutes) {
+                                com.example.myapplication.player.SleepTimer.set(minutes)
+                                dismissSheet()
+                            }
+                        } + SheetChoice("Конец трека", selected = timer == com.example.myapplication.player.SleepTimer.State.EndOfTrack) {
+                            com.example.myapplication.player.SleepTimer.endOfTrack()
+                            dismissSheet()
+                        } + listOfNotNull(
+                            SheetChoice("Выключить", selected = false) {
+                                com.example.myapplication.player.SleepTimer.cancel()
+                                choosingSleep = false
+                            }.takeIf { timer != com.example.myapplication.player.SleepTimer.State.Off }
+                        )
+                    )
+                }
+                AnimatedVisibility(
+                    visible = choosingCrossfade,
+                    enter = expandVertically(spring(dampingRatio = 0.85f, stiffness = Spring.StiffnessMediumLow)) + fadeIn(),
+                    exit = shrinkVertically(spring(dampingRatio = 1f, stiffness = Spring.StiffnessMedium)) + fadeOut()
+                ) {
+                    SheetChoices(
+                        caption = if (crossfadeSeconds > 0) {
+                            "Конец трека стихает, а следующий уже начинается — $crossfadeSeconds с одновременно"
+                        } else {
+                            "Конец трека стихает, а следующий уже начинается. Для всех треков"
+                        },
+                        choices = CROSSFADE_SECONDS.map { seconds ->
+                            SheetChoice(if (seconds == 0) "Выкл" else "$seconds с", selected = crossfadeSeconds == seconds) {
+                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                onCrossfade(seconds)
+                            }
+                        }
                     )
                 }
             }
@@ -12366,6 +12581,43 @@ private fun SheetTile(
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )
+        }
+    }
+}
+
+private val SLEEP_MINUTES = listOf(15, 30, 45, 60, 90)
+private val CROSSFADE_SECONDS = listOf(0, 3, 5, 8, 12)
+
+private class SheetChoice(val label: String, val selected: Boolean, val onClick: () -> Unit)
+
+/** A line of what it does over pills to choose from, on a panel of the sheet. */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun SheetChoices(caption: String, choices: List<SheetChoice>) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(24.dp))
+            .background(PanelColors.container)
+            .padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        Text(caption, style = MaterialTheme.typography.bodySmall, color = PanelColors.content.copy(alpha = 0.75f))
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            choices.forEach { choice ->
+                Surface(
+                    onClick = choice.onClick,
+                    shape = CircleShape,
+                    color = if (choice.selected) PanelColors.accent else PanelColors.content.copy(alpha = 0.1f),
+                    contentColor = if (choice.selected) PanelColors.onAccent else PanelColors.content
+                ) {
+                    Text(
+                        choice.label,
+                        style = MaterialTheme.typography.labelLarge,
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp)
+                    )
+                }
+            }
         }
     }
 }

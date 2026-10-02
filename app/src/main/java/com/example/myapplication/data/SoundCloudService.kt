@@ -155,6 +155,14 @@ interface SoundCloudService {
         @Query("client_id") clientId: String
     ): SoundCloudUser
 
+    /** Tracks like this one, as SoundCloud plays them after it. */
+    @GET("tracks/{id}/related")
+    suspend fun getRelatedTracks(
+        @Path("id") trackId: Long,
+        @Query("client_id") clientId: String,
+        @Query("limit") limit: Int = 20
+    ): SoundCloudTracksResponse
+
     @GET("users/{id}/tracks")
     suspend fun getUserTracks(
         @Path("id") userId: Long,

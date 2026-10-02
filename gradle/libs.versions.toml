@@ -27,8 +27,13 @@ youtubedlAndroid = "0.18.1"
 # Google Play services' Nearby Connections: two phones side by side find each other over
 # Bluetooth and talk directly (Bluetooth, or Wi-Fi Direct when it is faster), for listening together.
 playServicesNearby = "19.3.0"
+# Jetpack Glance: the home screen widget, in Compose, with Material You's colours and buttons.
+# 1.1.x is built on Kotlin 1.9, which this compiler reads.
+glance = "1.1.1"
 
 [libraries]
+androidx-glance-appwidget = { group = "androidx.glance", name = "glance-appwidget", version.ref = "glance" }
+androidx-glance-material3 = { group = "androidx.glance", name = "glance-material3", version.ref = "glance" }
 play-services-nearby = { group = "com.google.android.gms", name = "play-services-nearby", version.ref = "playServicesNearby" }
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
 junit = { group = "junit", name = "junit", version.ref = "junit" }

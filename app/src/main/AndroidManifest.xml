@@ -68,6 +68,9 @@
 
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+            <meta-data
+                android:name="android.app.shortcuts"
+                android:resource="@xml/shortcuts" />
 
             <!-- "Поделиться" in the services' apps: a track, album, playlist or artist sent as text. -->
             <intent-filter android:label="@string/open_link_label">
@@ -124,6 +127,31 @@
 
         <!-- Exported so the Android Auto host process can bind to the browser service; the session
              itself still decides who may connect. -->
+        <!-- The home screen widget: what plays, its buttons, "Моя волна". -->
+        <receiver
+            android:name=".widget.NowPlayingWidgetReceiver"
+            android:exported="true"
+            android:label="@string/widget_now_playing">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/now_playing_widget_info" />
+        </receiver>
+
+        <!-- "Моя волна" in the quick settings: a tap starts it. -->
+        <service
+            android:name=".player.WaveTileService"
+            android:exported="true"
+            android:icon="@drawable/ic_glyph_wave"
+            android:label="@string/shortcut_wave"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE" />
+            </intent-filter>
+        </service>
+
         <service
             android:name=".player.PlaybackService"
             android:exported="true"

@@ -242,6 +242,14 @@ class SettingsRepository(
     }
 
     // The player's button for a track's effects (reverb, speed), off unless asked for.
+    // When the queue runs out, the music goes on with radio from its last track.
+    val autoContinue = MutableStateFlow(preferences.getBoolean(KEY_AUTO_CONTINUE, true))
+
+    fun setAutoContinue(enabled: Boolean) {
+        autoContinue.value = enabled
+        preferences.edit().putBoolean(KEY_AUTO_CONTINUE, enabled).apply()
+    }
+
     val playerFxButton = MutableStateFlow(preferences.getBoolean(KEY_PLAYER_FX_BUTTON, false))
 
     fun setPlayerFxButton(enabled: Boolean) {
@@ -306,6 +314,14 @@ class SettingsRepository(
 
     fun markUpdateChecked() {
         preferences.edit().putLong(KEY_LAST_UPDATE_CHECK, System.currentTimeMillis()).apply()
+    }
+
+    // Crossfade between tracks, in seconds; 0 for none. Read by the playback service as it changes.
+    val crossfadeSeconds = MutableStateFlow(preferences.getInt(com.example.myapplication.player.PlaybackService.KEY_CROSSFADE_SECONDS, 0))
+
+    fun setCrossfadeSeconds(seconds: Int) {
+        crossfadeSeconds.value = seconds
+        preferences.edit().putInt(com.example.myapplication.player.PlaybackService.KEY_CROSSFADE_SECONDS, seconds).apply()
     }
 
     val equalizerEnabled = MutableStateFlow(preferences.getBoolean(KEY_EQ_ENABLED, false))
@@ -463,6 +479,7 @@ class SettingsRepository(
         const val KEY_YANDEX_WAVE_SESSION = "yandex_wave_session"
         const val KEY_YANDEX_WAVE_PICKS = "yandex_wave_picks"
         const val KEY_PLAYER_FX_BUTTON = "player_fx_button"
+        const val KEY_AUTO_CONTINUE = "auto_continue"
         const val KEY_OPEN_PLAYER_ON_TAP = "open_player_on_tap"
         const val KEY_SMOOTH_MOTION = "smooth_motion"
         const val KEY_ONBOARDING_DONE = "onboarding_done"

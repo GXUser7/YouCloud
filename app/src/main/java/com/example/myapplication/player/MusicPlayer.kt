@@ -55,6 +55,10 @@ class MusicPlayer(context: Context) {
     private val _isBuffering = MutableStateFlow(false)
     val isBuffering = _isBuffering.asStateFlow()
 
+    // Played to the end of the queue and stopped there: a radio that ran short finds more then.
+    private val _ended = MutableStateFlow(false)
+    val ended = _ended.asStateFlow()
+
     /** Set once the controller is connected, so [queueSnapshot] tells the truth. */
     private val _connected = MutableStateFlow(false)
     val connected = _connected.asStateFlow()
@@ -246,6 +250,19 @@ class MusicPlayer(context: Context) {
         _shuffleEnabled.value = enabled
     }
 
+    /**
+     * Plays the queued track [trackId] from its start, where it stands in the queue: the queue
+     * itself is left as it is, as a skip leaves it. False when the track isn't queued.
+     */
+    fun playQueuedItem(trackId: Long): Boolean {
+        val player = controller ?: return false
+        val id = trackId.toString()
+        val index = (0 until player.mediaItemCount).firstOrNull { player.getMediaItemAt(it).mediaId == id } ?: return false
+        player.seekTo(index, 0L)
+        player.play()
+        return true
+    }
+
     fun moveMediaItem(fromIndex: Int, toIndex: Int) {
         controller?.moveMediaItem(fromIndex, toIndex)
     }
@@ -294,6 +311,12 @@ class MusicPlayer(context: Context) {
                     .setArtist(track.artist)
                     .apply {
                         track.artworkUrl?.let { setArtworkUri(Uri.parse(it)) }
+                        if (track.leadArtist != null || track.source != null) {
+                            setExtras(android.os.Bundle().apply {
+                                track.leadArtist?.let { putString(PlayLog.EXTRA_LEAD_ARTIST, it) }
+                                track.source?.let { putString(PlayLog.EXTRA_SOURCE, it) }
+                            })
+                        }
                     }
                     .build()
             )
@@ -309,6 +332,7 @@ class MusicPlayer(context: Context) {
         if (player == null || player.mediaItemCount == 0) {
             _currentTrack.value = null
             _currentTrackId.value = null
+            _ended.value = false
             return
         }
         _isPlaying.value = player.isPlaying
@@ -319,6 +343,7 @@ class MusicPlayer(context: Context) {
         _currentTrackId.value = player.currentMediaItem?.mediaId?.toLongOrNull()
         _repeatMode.value = player.repeatMode
         _isBuffering.value = player.playbackState == Player.STATE_BUFFERING
+        _ended.value = player.playbackState == Player.STATE_ENDED
     }
 
     private val playerListener = object : Player.Listener {
@@ -344,7 +369,10 @@ class MusicPlayer(context: Context) {
         val url: String,
         val title: String,
         val artist: String,
-        val artworkUrl: String?
+        val artworkUrl: String?,
+        // For "Итоги" (see PlayLog): the first artist alone, and the track's service.
+        val leadArtist: String? = null,
+        val source: String? = null
     )
 
     data class QueueItem(

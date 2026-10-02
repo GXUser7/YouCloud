@@ -48,3 +48,17 @@
 -dontwarn com.fasterxml.jackson.**
 -keep class org.apache.commons.compress.** { *; }
 -dontwarn org.apache.commons.compress.**
+
+# "Итоги" read the play log back through Gson: every field of a play, as it was written.
+-keep class com.example.myapplication.player.PlayLog$Play { *; }
+# The widget's buttons: Glance makes its callback by name.
+-keep class com.example.myapplication.widget.MediaCommand { <init>(); }
+# WorkManager, which Glance runs widget sessions on: Room makes its database by name
+# ("WorkDatabase_Impl") and WorkManager its workers by class, neither of which R8's full mode
+# keeps for the old rules WorkManager 2.7 ships with. Without them the app died at its start.
+# Its input mergers too, and more besides it makes by name: kept whole, it is small.
+-keep class * extends androidx.room.RoomDatabase { <init>(); }
+-keep class androidx.work.** { *; }
+-keep class * extends androidx.work.ListenableWorker {
+    <init>(android.content.Context, androidx.work.WorkerParameters);
+}

@@ -21,6 +21,8 @@ import com.example.myapplication.data.StreamCache
 import com.google.common.collect.ImmutableList
 import com.google.common.util.concurrent.Futures
 import com.google.common.util.concurrent.ListenableFuture
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
 import java.io.IOException
 
 // MediaLibraryService rather than MediaSessionService: Android Auto needs a browsable content
@@ -40,11 +42,24 @@ class PlaybackService : MediaLibraryService() {
     // The reverb of a track's effects, in the player's own sound chain.
     private val reverbProcessor = ReverbAudioProcessor()
 
+    // The crossfade between tracks and the sleep timer's fade.
+    private var fades: PlaybackFades? = null
+
+    // Every track heard, for "Итоги".
+    private var playLog: PlayLog.Tracker? = null
+
+    // Follows what the app says of the track playing, for the buttons beside play and skip.
+    private val scope = kotlinx.coroutines.MainScope()
+
     private val prefListener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
         if (key == null) return@OnSharedPreferenceChangeListener
         // The track playing had its effects changed, in the player on screen.
         if (key.startsWith(com.example.myapplication.data.TrackFx.KEY_PREFIX)) {
             (mediaSession?.player as? ExoPlayer)?.let(::applyTrackFx)
+            return@OnSharedPreferenceChangeListener
+        }
+        if (key == KEY_CROSSFADE_SECONDS) {
+            fades?.ensureTicking()
             return@OnSharedPreferenceChangeListener
         }
         val eq = equalizer ?: return@OnSharedPreferenceChangeListener
@@ -209,9 +224,35 @@ class PlaybackService : MediaLibraryService() {
             override fun onMediaItemTransition(mediaItem: androidx.media3.common.MediaItem?, reason: Int) {
                 prefetchNextYouTubeTrack(player)
                 applyTrackFx(player)
+                updateButtons()
             }
         })
         prefetcher = StreamPrefetcher(this, player, resolver).also(player::addListener)
+        playLog = PlayLog.Tracker(this, player).also(player::addListener)
+        // A new run of the player, empty until the app hands it its queue: the widget hears so.
+        publishToWidget(player)
+        // The home screen widget follows what plays.
+        player.addListener(object : Player.Listener {
+            override fun onEvents(player: Player, events: Player.Events) {
+                if (events.containsAny(
+                        Player.EVENT_MEDIA_ITEM_TRANSITION,
+                        Player.EVENT_MEDIA_METADATA_CHANGED,
+                        Player.EVENT_PLAY_WHEN_READY_CHANGED,
+                        Player.EVENT_PLAYBACK_STATE_CHANGED,
+                        Player.EVENT_TIMELINE_CHANGED
+                    )
+                ) {
+                    publishToWidget(player)
+                }
+            }
+        })
+        fades = PlaybackFades(
+            context = this,
+            main = player,
+            mediaSourceFactory = DefaultMediaSourceFactory(resolvingFactory),
+            crossfadeMs = { preferences.getInt(KEY_CROSSFADE_SECONDS, 0) * 1000L },
+            reverbOfCurrent = { reverbProcessor.amount }
+        )
 
         // A stream that breaks off over a slow connection (a VPN's, say) is tried again, a little
         // later each time, rather than the player stopping at an error until touched. Preparing
@@ -256,6 +297,51 @@ class PlaybackService : MediaLibraryService() {
         mediaSession = MediaLibraryService.MediaLibrarySession.Builder(this, player, librarySessionCallback)
             .setSessionActivity(pendingIntent)
             .build()
+        scope.launch {
+            kotlinx.coroutines.flow.combine(SessionBridge.liked, SessionBridge.canDislike) { _, _ -> }.collect { updateButtons() }
+        }
+    }
+
+    /**
+     * "Нравится" (filled once liked) and, while the wave plays, "Не нравится": beside play and
+     * skip in the notification, on the lock screen and in the car.
+     */
+    private fun buttons(): List<androidx.media3.session.CommandButton> {
+        val trackId = mediaSession?.player?.currentMediaItem?.mediaId?.toLongOrNull()
+        val liked = SessionBridge.liked.value?.takeIf { it.first == trackId }?.second == true
+        val like = androidx.media3.session.CommandButton.Builder(
+            if (liked) androidx.media3.session.CommandButton.ICON_HEART_FILLED else androidx.media3.session.CommandButton.ICON_HEART_UNFILLED
+        )
+            .setDisplayName(if (liked) "Убрать из любимых" else "Нравится")
+            .setSessionCommand(LIKE_COMMAND)
+            .setSlots(androidx.media3.session.CommandButton.SLOT_OVERFLOW)
+            .build()
+        if (!SessionBridge.canDislike.value) return listOf(like)
+        val dislike = androidx.media3.session.CommandButton.Builder(androidx.media3.session.CommandButton.ICON_THUMB_DOWN_UNFILLED)
+            .setDisplayName("Не нравится")
+            .setSessionCommand(DISLIKE_COMMAND)
+            .setSlots(androidx.media3.session.CommandButton.SLOT_OVERFLOW)
+            .build()
+        return listOf(like, dislike)
+    }
+
+    private fun updateButtons() {
+        mediaSession?.setMediaButtonPreferences(buttons())
+    }
+
+    private fun publishToWidget(player: Player) {
+        val metadata = player.mediaMetadata
+        com.example.myapplication.widget.NowPlayingState.publish(
+            this,
+            com.example.myapplication.widget.NowPlayingState.Snapshot(
+                title = metadata.title?.toString(),
+                artist = metadata.artist?.toString(),
+                artwork = metadata.artworkUri?.toString(),
+                // Pause shown while it loads, as the player on screen shows it.
+                playing = player.playWhenReady && player.playbackState != Player.STATE_ENDED,
+                active = player.mediaItemCount > 0
+            )
+        )
     }
 
     /**
@@ -264,6 +350,37 @@ class PlaybackService : MediaLibraryService() {
      * as a broken app.
      */
     private val librarySessionCallback = object : MediaLibraryService.MediaLibrarySession.Callback {
+
+        // Every controller may press "Нравится" and "Не нравится": the notification's, the
+        // system's media controls, the car.
+        override fun onConnect(
+            session: MediaSession,
+            controller: MediaSession.ControllerInfo
+        ): MediaSession.ConnectionResult = MediaSession.ConnectionResult.AcceptedResultBuilder(session)
+            .setAvailableSessionCommands(
+                MediaSession.ConnectionResult.DEFAULT_SESSION_AND_LIBRARY_COMMANDS.buildUpon()
+                    .add(LIKE_COMMAND)
+                    .add(DISLIKE_COMMAND)
+                    .build()
+            )
+            .setMediaButtonPreferences(buttons())
+            .build()
+
+        override fun onCustomCommand(
+            session: MediaSession,
+            controller: MediaSession.ControllerInfo,
+            customCommand: androidx.media3.session.SessionCommand,
+            args: Bundle
+        ): ListenableFuture<androidx.media3.session.SessionResult> {
+            val trackId = session.player.currentMediaItem?.mediaId?.toLongOrNull()
+            if (trackId != null) {
+                when (customCommand.customAction) {
+                    LIKE_COMMAND.customAction -> SessionBridge.ask(SessionBridge.Action.Like(trackId))
+                    DISLIKE_COMMAND.customAction -> SessionBridge.ask(SessionBridge.Action.Dislike(trackId))
+                }
+            }
+            return Futures.immediateFuture(androidx.media3.session.SessionResult(androidx.media3.session.SessionResult.RESULT_SUCCESS))
+        }
 
         override fun onGetLibraryRoot(
             session: MediaLibraryService.MediaLibrarySession,
@@ -383,6 +500,12 @@ class PlaybackService : MediaLibraryService() {
             androidx.media3.common.PlaybackException.ERROR_CODE_TIMEOUT
         )
 
+        // The crossfade's length in seconds, 0 for none; set in the app's settings.
+        const val KEY_CROSSFADE_SECONDS = "crossfade_seconds"
+
+        private val LIKE_COMMAND = androidx.media3.session.SessionCommand("com.example.myapplication.LIKE", Bundle.EMPTY)
+        private val DISLIKE_COMMAND = androidx.media3.session.SessionCommand("com.example.myapplication.DISLIKE", Bundle.EMPTY)
+
         // Set once what playback had left in the downloads' cache has been cleared out.
         private const val KEY_STREAM_LEFTOVERS_DROPPED = "stream_leftovers_dropped"
         // Set once what the stream cache kept under a track alone, without its file, is gone.
@@ -416,7 +539,8 @@ class PlaybackService : MediaLibraryService() {
         if (downloadedYouTubeTrack(videoId) != null) return
         val auth = youTubeAuth()
         youTubePrefetch.execute {
-            com.example.myapplication.data.YouTubeStreams.resolve(this, videoId, auth)
+            // Fetched ahead: what plays now, and its video, go first.
+            com.example.myapplication.data.YouTubeStreams.resolve(this, videoId, auth, urgent = { false })
         }
     }
 
@@ -644,6 +768,13 @@ class PlaybackService : MediaLibraryService() {
     }
 
     override fun onDestroy() {
+        // Nothing queued any more: the widget offers the wave and "Моя музыка" instead.
+        com.example.myapplication.widget.NowPlayingState.publish(this, com.example.myapplication.widget.NowPlayingState.Snapshot())
+        scope.cancel()
+        playLog?.release()
+        playLog = null
+        fades?.release()
+        fades = null
         youTubePrefetch.shutdownNow()
         prefetcher?.release()
         prefetcher = null
