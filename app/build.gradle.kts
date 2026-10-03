@@ -59,6 +59,18 @@ android {
             "DEFAULT_SOUNDCLOUD_OAUTH_TOKEN",
             "\"${localProperty("soundcloud.oauthToken")}\""
         )
+        // Accounts and friends. The publishable key is meant to ship in the app: what it may
+        // reach is fenced off by the database's row level security, not by keeping it secret.
+        buildConfigField(
+            "String",
+            "SUPABASE_URL",
+            "\"${localProperty("supabase.url").ifBlank { "https://eolrdgyugwgjkmpzihar.supabase.co" }}\""
+        )
+        buildConfigField(
+            "String",
+            "SUPABASE_KEY",
+            "\"${localProperty("supabase.key").ifBlank { "sb_publishable_JmC1zt5tZS3TjVAcXARDOw_PgCmide6" }}\""
+        )
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 

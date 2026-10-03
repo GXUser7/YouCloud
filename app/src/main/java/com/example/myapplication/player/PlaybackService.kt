@@ -48,6 +48,7 @@ class PlaybackService : MediaLibraryService() {
 
     // Every track heard, for "Итоги".
     private var playLog: PlayLog.Tracker? = null
+    private var nowPlaying: com.example.myapplication.data.social.NowPlayingPublisher? = null
 
     // Follows what the app says of the track playing, for the buttons beside play and skip.
     private val scope = kotlinx.coroutines.MainScope()
@@ -230,6 +231,8 @@ class PlaybackService : MediaLibraryService() {
         })
         prefetcher = StreamPrefetcher(this, player, resolver).also(player::addListener)
         playLog = PlayLog.Tracker(this, player).also(player::addListener)
+        // Friends see what plays (when signed in, and only if the account lets them).
+        nowPlaying = com.example.myapplication.data.social.NowPlayingPublisher(this, player).also(player::addListener)
         // A new run of the player, empty until the app hands it its queue: the widget hears so.
         publishToWidget(player)
         // The home screen widget follows what plays.
@@ -788,6 +791,8 @@ class PlaybackService : MediaLibraryService() {
         scope.cancel()
         playLog?.release()
         playLog = null
+        nowPlaying?.release()
+        nowPlaying = null
         fades?.release()
         fades = null
         youTubePrefetch.shutdownNow()
