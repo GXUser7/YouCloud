@@ -2,6 +2,8 @@
 
 package com.example.myapplication.ui
 
+import com.example.myapplication.i18n.english
+import com.example.myapplication.i18n.tr
 import android.content.Intent
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -207,6 +209,8 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.FilterChip
 import androidx.compose.material.icons.rounded.Tune
+import androidx.compose.material.icons.rounded.Contrast
+import androidx.compose.material.icons.rounded.Translate
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -491,11 +495,17 @@ fun MusicScreen(viewModel: MusicViewModel) {
     val coverGlowStyle by viewModel.settingsRepo.coverGlowStyle.collectAsState()
 
     // The playing track's cover colours are worked out before the player opens, so it opens in
-    // them instead of fading over from the app's own every time.
+    // them instead of fading over from the app's own every time; and its neighbours' in the queue
+    // as well, so the player turns to the next track's colours with its cover, not a while later.
     val coverContext = LocalContext.current
-    LaunchedEffect(playerCoverColors, currentPlayingTrack?.artworkUrl) {
-        val url = currentPlayingTrack?.artworkUrl
-        if (playerCoverColors && !url.isNullOrBlank()) prefetchCoverColors(coverContext, url)
+    LaunchedEffect(playerCoverColors, currentPlayingTrack?.id, activeQueue) {
+        if (!playerCoverColors) return@LaunchedEffect
+        val current = currentPlayingTrack ?: return@LaunchedEffect
+        val index = activeQueue.indexOfFirst { it.id == current.id }
+        val neighbours = if (index < 0) emptyList() else activeQueue.drop(index + 1).take(2) + listOfNotNull(activeQueue.getOrNull(index - 1))
+        (listOf(current) + neighbours)
+            .mapNotNull { it.artworkUrl?.takeIf(String::isNotBlank) }
+            .forEach { prefetchCoverColors(coverContext, it) }
     }
 
     val yandexPlaylists by viewModel.yandexPlaylists.collectAsState()
@@ -1115,7 +1125,7 @@ fun MusicScreen(viewModel: MusicViewModel) {
                                 artist = artist,
                                 tracks = currentArtistTracks,
                                 playlists = currentArtistPlaylists,
-                                tracksTitle = if (artistTracksAreVideos) "Видео" else "Популярные треки",
+                                tracksTitle = if (artistTracksAreVideos) tr("Видео") else tr("Популярные треки"),
                                 follow = artistFollow,
                                 onToggleFollow = {
                                     haptic.performHapticFeedback(HapticFeedbackType.LongPress)
@@ -1323,7 +1333,7 @@ fun MusicScreen(viewModel: MusicViewModel) {
                         // A Yandex radio's order is the radio's; picking a track in it still plays it.
                         onReorderQueue = if (yandexRadioOn) null else viewModel::reorderActiveQueue,
                         queueNote = if (yandexRadioOn) {
-                            "${if (yandexWaveOn) "Порядок «Моей волны»" else "Порядок радио"} подбирает Яндекс и сам добавляет новые треки. Нажмите на трек, чтобы перейти к нему"
+                            tr("%s подбирает Яндекс и сам добавляет новые треки. Нажмите на трек, чтобы перейти к нему", if (yandexWaveOn) tr("Порядок «Моей волны»") else tr("Порядок радио"))
                         } else {
                             null
                         },
@@ -1421,6 +1431,7 @@ fun MusicScreen(viewModel: MusicViewModel) {
     if (showTogether) {
         TogetherSheet(
             together = viewModel.together,
+            missingServices = remember { com.example.myapplication.together.TogetherServices.ALL - viewModel.signedInServices() },
             onHost = viewModel::hostTogether,
             onSearch = viewModel::searchTogether,
             onJoin = viewModel::joinTogether,
@@ -1479,9 +1490,9 @@ fun MusicScreen(viewModel: MusicViewModel) {
                 else -> null
             },
             radioDescription = if (capturedTrack.youTubeVideoId != null) {
-                "Трек и то, что YouTube Music поставит за ним"
+                tr("Трек и то, что YouTube Music поставит за ним")
             } else {
-                "Трек, а за ним радио Яндекс Музыки — без конца, под то, что слушаешь"
+                tr("Трек, а за ним радио Яндекс Музыки — без конца, под то, что слушаешь")
             },
             onTogether = {
                 showTrackActionsDialog = false
@@ -1495,16 +1506,19 @@ fun MusicScreen(viewModel: MusicViewModel) {
 
 /** The places home switches between, in the order the floating toolbar shows them. */
 /** What home's toolbar picks between: a service, or what is on the device. */
-private enum class HomeService(val title: String, val icon: (() -> ImageVector)?, val letter: String? = null) {
+private enum class HomeService(private val ru: String, val icon: (() -> ImageVector)?, val letter: String? = null) {
     SoundCloud("SoundCloud", { ServiceIcons.SoundCloud }),
     Yandex("Яндекс Музыка", { ServiceIcons.YandexMusic }),
     YouTube("YouTube Music", { ServiceIcons.YouTubeMusic }),
     // Not only downloads: history and playlists too, a library.
-    Downloads("Моя музыка", { Icons.Default.LibraryMusic })
+    Downloads("Моя музыка", { Icons.Default.LibraryMusic });
+
+    // In the app's language as it is shown, not as the enum was made: it may change meanwhile.
+    val title: String get() = tr(ru)
 }
 
 // The order is persisted (the saved tab is an ordinal): new sections go at the end.
-private enum class HomeCategory(val title: String, val service: HomeService) {
+private enum class HomeCategory(private val ru: String, val service: HomeService) {
     Mixes("Миксы", HomeService.SoundCloud),
     Stations("Станции", HomeService.SoundCloud),
     Trending("Тренды", HomeService.SoundCloud),
@@ -1512,7 +1526,9 @@ private enum class HomeCategory(val title: String, val service: HomeService) {
     Library("Медиатека", HomeService.Yandex),
     MyMusic("Моя музыка", HomeService.Downloads),
     MyWave("Моя форма", HomeService.Yandex),
-    YandexShelf("Яндекс Музыка", HomeService.Yandex)
+    YandexShelf("Яндекс Музыка", HomeService.Yandex);
+
+    val title: String get() = tr(ru)
 }
 
 /** Yandex's wave as home shows it, as "Моя форма"; see [MyWavePage]. */
@@ -1548,7 +1564,7 @@ private fun ytShelfItems(
         add(
             HeroItem(
                 key = "yt-track-${track.id}",
-                title = track.title ?: "Без названия",
+                title = track.title ?: tr("Без названия"),
                 subtitle = track.user?.username,
                 artworkUrl = track.artworkUrl,
                 trackId = track.id,
@@ -1560,7 +1576,7 @@ private fun ytShelfItems(
         add(
             HeroItem(
                 key = "yt-set-${set.id}",
-                title = set.title ?: "Без названия",
+                title = set.title ?: tr("Без названия"),
                 subtitle = set.user?.username,
                 artworkUrl = set.artworkUrl,
                 source = "set-${set.id}",
@@ -1678,25 +1694,25 @@ private fun HomeScreen(
                 category = HomeCategory.Mixes,
                 title = HomeCategory.Mixes.title,
                 subtitle = if (mixes.isEmpty()) {
-                    "Подборки для тебя"
+                    tr("Подборки для тебя")
                 } else {
-                    plural(mixes.size, "подборка", "подборки", "подборок") + " для тебя"
+                    plural(mixes.size, tr("подборка"), tr("подборки"), tr("подборок")) + tr(" для тебя")
                 }
             ),
             HomeSection(
                 key = "stations",
                 category = HomeCategory.Stations,
                 title = HomeCategory.Stations.title,
-                subtitle = if (stations.isEmpty()) "Станции по артистам" else plural(stations.size, "станция", "станции", "станций")
+                subtitle = if (stations.isEmpty()) tr("Станции по артистам") else plural(stations.size, tr("станция"), tr("станции"), tr("станций"))
             ),
             HomeSection(
                 key = "trending",
                 category = HomeCategory.Trending,
                 title = HomeCategory.Trending.title,
                 subtitle = if (trending.isEmpty()) {
-                    "Чарты SoundCloud по жанрам"
+                    tr("Чарты SoundCloud по жанрам")
                 } else {
-                    "Чарты: " + plural(trending.size, "жанр", "жанра", "жанров")
+                    tr("Чарты: ") + plural(trending.size, tr("жанр"), tr("жанра"), tr("жанров"))
                 }
             )
         )
@@ -1705,16 +1721,16 @@ private fun HomeScreen(
                 key = "wave",
                 category = HomeCategory.MyWave,
                 title = HomeCategory.MyWave.title,
-                subtitle = "Бесконечный поток под твой вкус"
+                subtitle = tr("Бесконечный поток под твой вкус")
             ),
             HomeSection(
                 key = "library",
                 category = HomeCategory.Library,
                 title = HomeCategory.Library.title,
                 subtitle = if (yandexPlaylists.isEmpty()) {
-                    "Плейлисты Яндекс Музыки"
+                    tr("Плейлисты Яндекс Музыки")
                 } else {
-                    plural(yandexPlaylists.size, "плейлист", "плейлиста", "плейлистов") + " Яндекс Музыки"
+                    plural(yandexPlaylists.size, tr("плейлист"), tr("плейлиста"), tr("плейлистов")) + tr(" Яндекс Музыки")
                 }
             )
         ) + yandexShelves.map { shelf ->
@@ -1724,8 +1740,8 @@ private fun HomeScreen(
                 category = HomeCategory.YandexShelf,
                 title = shelf.title,
                 subtitle = listOfNotNull(
-                    shelf.tracks.size.takeIf { it > 0 }?.let { plural(it, "трек", "трека", "треков") },
-                    shelf.sets.size.takeIf { it > 0 }?.let { plural(it, "подборка", "подборки", "подборок") }
+                    shelf.tracks.size.takeIf { it > 0 }?.let { plural(it, tr("трек"), tr("трека"), tr("треков")) },
+                    shelf.sets.size.takeIf { it > 0 }?.let { plural(it, tr("подборка"), tr("подборки"), tr("подборок")) }
                 ).joinToString(" · "),
                 shelf = shelf
             )
@@ -1737,20 +1753,20 @@ private fun HomeScreen(
                 category = HomeCategory.YouTube,
                 title = shelf.title,
                 subtitle = listOfNotNull(
-                    shelf.tracks.size.takeIf { it > 0 }?.let { plural(it, "трек", "трека", "треков") },
-                    shelf.sets.size.takeIf { it > 0 }?.let { plural(it, "подборка", "подборки", "подборок") }
+                    shelf.tracks.size.takeIf { it > 0 }?.let { plural(it, tr("трек"), tr("трека"), tr("треков")) },
+                    shelf.sets.size.takeIf { it > 0 }?.let { plural(it, tr("подборка"), tr("подборки"), tr("подборок")) }
                 ).joinToString(" · "),
                 shelf = shelf
             )
         }.ifEmpty {
-            listOf(HomeSection("yt", HomeCategory.YouTube, "YouTube Music", "Подборки для тебя"))
+            listOf(HomeSection("yt", HomeCategory.YouTube, "YouTube Music", tr("Подборки для тебя")))
         }
         HomeService.Downloads -> listOf(
             HomeSection(
                 key = "mine",
                 category = HomeCategory.MyMusic,
                 title = HomeCategory.MyMusic.title,
-                subtitle = plural(downloadedCount, "трек", "трека", "треков") + " на устройстве"
+                subtitle = plural(downloadedCount, tr("трек"), tr("трека"), tr("треков")) + tr(" на устройстве")
             )
         )
     }
@@ -1921,13 +1937,13 @@ private fun HomeScreen(
                                 )
                                 ytError != null -> CarouselMessage(
                                     text = ytError,
-                                    actionLabel = "Повторить",
+                                    actionLabel = tr("Повторить"),
                                     onAction = onReloadYt
                                 )
                                 ytLoading -> CarouselSkeleton()
                                 else -> CarouselMessage(
-                                    text = "Подборки YouTube Music пока не загрузились.",
-                                    actionLabel = "Обновить",
+                                    text = tr("Подборки YouTube Music пока не загрузились."),
+                                    actionLabel = tr("Обновить"),
                                     onAction = onReloadYt
                                 )
                             }
@@ -1949,14 +1965,14 @@ private fun HomeScreen(
 
                         HomeCategory.Library -> {
                             if (yandexPlaylists.isEmpty()) {
-                                CarouselEmptyText("Плейлисты Яндекс Музыки пока не загрузились.")
+                                CarouselEmptyText(tr("Плейлисты Яндекс Музыки пока не загрузились."))
                             } else {
                                 HomeHeroCarousel(
                                     items = yandexPlaylists.map { playlist ->
                                         HeroItem(
                                             key = "yandex-${playlist.id}",
-                                            title = playlist.title ?: "Без названия",
-                                            subtitle = plural(playlist.trackCount, "трек", "трека", "треков"),
+                                            title = playlist.title ?: tr("Без названия"),
+                                            subtitle = plural(playlist.trackCount, tr("трек"), tr("трека"), tr("треков")),
                                             artworkUrl = playlist.artworkUrl,
                                             icon = if (playlist.id == -100L) Icons.Rounded.Favorite else Icons.Default.Album,
                                             source = "set-${playlist.id}",
@@ -1972,8 +1988,8 @@ private fun HomeScreen(
                                 add(
                                     HeroItem(
                                         key = "downloads",
-                                        title = "Скачанное",
-                                        subtitle = plural(downloadedCount, "трек", "трека", "треков"),
+                                        title = tr("Скачанное"),
+                                        subtitle = plural(downloadedCount, tr("трек"), tr("трека"), tr("треков")),
                                         artworkUrl = downloadedFolderArtworkUri,
                                         icon = Icons.Default.Download,
                                         source = "downloads",
@@ -1985,8 +2001,8 @@ private fun HomeScreen(
                                 add(
                                     HeroItem(
                                         key = "history",
-                                        title = "История",
-                                        subtitle = if (history.isEmpty()) "Пока пусто" else plural(history.size, "трек", "трека", "треков"),
+                                        title = tr("История"),
+                                        subtitle = if (history.isEmpty()) tr("Пока пусто") else plural(history.size, tr("трек"), tr("трека"), tr("треков")),
                                         artworkUrl = null,
                                         collage = recentCovers(history),
                                         icon = Icons.Default.History,
@@ -1997,7 +2013,7 @@ private fun HomeScreen(
                                 // Liked albums sit right next to "Скачанное", newest first;
                                 // hand-made playlists follow.
                                 playlists.sortedByDescending { it.isLikedAlbum }.forEach { playlist ->
-                                    val count = plural(playlist.tracks.size, "трек", "трека", "треков")
+                                    val count = plural(playlist.tracks.size, tr("трек"), tr("трека"), tr("треков"))
                                     add(
                                         HeroItem(
                                             key = "local-${playlist.id}",
@@ -2018,8 +2034,8 @@ private fun HomeScreen(
                                 add(
                                     HeroItem(
                                         key = "create",
-                                        title = "Создать плейлист",
-                                        subtitle = "Своя подборка",
+                                        title = tr("Создать плейлист"),
+                                        subtitle = tr("Своя подборка"),
                                         artworkUrl = null,
                                         icon = Icons.Default.Add,
                                         onClick = { showCreatePlaylistDialog = true }
@@ -2147,12 +2163,12 @@ private fun HomeScreen(
     if (showCreatePlaylistDialog) {
         AlertDialog(
             onDismissRequest = { showCreatePlaylistDialog = false },
-            title = { Text("Создать плейлист") },
+            title = { Text(tr("Создать плейлист")) },
             text = {
                 OutlinedTextField(
                     value = playlistNameInput,
                     onValueChange = { playlistNameInput = it },
-                    placeholder = { Text("Название плейлиста") },
+                    placeholder = { Text(tr("Название плейлиста")) },
                     singleLine = true
                 )
             },
@@ -2166,12 +2182,12 @@ private fun HomeScreen(
                         }
                     }
                 ) {
-                    Text("Создать")
+                    Text(tr("Создать"))
                 }
             },
             dismissButton = {
                 TextButton(onClick = { showCreatePlaylistDialog = false }) {
-                    Text("Отмена")
+                    Text(tr("Отмена"))
                 }
             }
         )
@@ -2341,7 +2357,7 @@ private fun HomeToolbar(
             shadowElevation = if (glass) 0.dp else 6.dp
         ) {
             Box(contentAlignment = Alignment.Center) {
-                Icon(Icons.Default.Settings, contentDescription = "Настройки", modifier = Modifier.size(26.dp))
+                Icon(Icons.Default.Settings, contentDescription = tr("Настройки"), modifier = Modifier.size(26.dp))
             }
         }
         Spacer(modifier = Modifier.width(8.dp))
@@ -2356,7 +2372,7 @@ private fun HomeToolbar(
             shadowElevation = if (glass) 0.dp else 6.dp
         ) {
             Box(contentAlignment = Alignment.Center) {
-                Icon(Icons.Default.Search, contentDescription = "Поиск", modifier = Modifier.size(28.dp))
+                Icon(Icons.Default.Search, contentDescription = tr("Поиск"), modifier = Modifier.size(28.dp))
             }
         }
     }
@@ -2551,18 +2567,19 @@ private fun PagedTrackList(
     }
 }
 
-/** 45678 -> "45,7 тыс.". Raw six-digit follower counts are unreadable at a glance. */
+/** 45678 -> "45,7 тыс.", or "45.7K" in English. Raw six-digit follower counts are unreadable at a glance. */
 private fun compactCount(value: Int): String {
-    // Formatted against a fixed locale and then switched to a comma: the app's UI is Russian
-    // regardless of the device locale, and "1.5 тыс." mixes conventions.
-    fun short(amount: Float, unit: String): String =
-        String.format(java.util.Locale.US, "%.1f", amount)
-            .removeSuffix(".0")
-            .replace('.', ',') + " " + unit
+    // Formatted against a fixed locale and then, in Russian, switched to a comma: the app's
+    // language is its own whatever the device's, and "1.5 тыс." mixes conventions.
+    val russian = !english()
+    fun short(amount: Float, unit: String): String {
+        val number = String.format(java.util.Locale.US, "%.1f", amount).removeSuffix(".0")
+        return if (russian) number.replace('.', ',') + " " + unit else number + unit
+    }
     return when {
-        value >= 1_000_000 -> short(value / 1_000_000f, "млн")
-        value >= 10_000 -> "${value / 1000} тыс."
-        value >= 1_000 -> short(value / 1000f, "тыс.")
+        value >= 1_000_000 -> short(value / 1_000_000f, tr("млн"))
+        value >= 10_000 -> tr("%s тыс.", value / 1000)
+        value >= 1_000 -> short(value / 1000f, tr("тыс."))
         else -> value.toString()
     }
 }
@@ -2602,7 +2619,7 @@ private fun ExpandableDescription(text: String) {
             )
             Icon(
                 imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
-                contentDescription = if (expanded) "Свернуть" else "Читать полностью",
+                contentDescription = if (expanded) tr("Свернуть") else tr("Читать полностью"),
                 tint = MaterialTheme.colorScheme.primary,
                 modifier = Modifier.graphicsLayer { rotationZ = chevronTurn }
             )
@@ -2610,8 +2627,12 @@ private fun ExpandableDescription(text: String) {
     }
 }
 
-/** Russian needs three forms, and "1 треков" in the corner of the home screen looks broken. */
+/**
+ * Russian needs three forms, and "1 треков" in the corner of the home screen looks broken. In
+ * English, the words being translated already, [one] for one and [many] for the rest.
+ */
 private fun plural(count: Int, one: String, few: String, many: String): String {
+    if (english()) return "$count ${if (count == 1) one else many}"
     val mod100 = count % 100
     val mod10 = count % 10
     val noun = when {
@@ -2637,15 +2658,15 @@ private fun LibraryLaunchRow(
     ) {
         LibraryLaunchCard(
             icon = Icons.Default.Download,
-            label = "Скачанное",
-            caption = plural(downloadedCount, "трек", "трека", "треков"),
+            label = tr("Скачанное"),
+            caption = plural(downloadedCount, tr("трек"), tr("трека"), tr("треков")),
             onClick = onOpenDownloads,
             modifier = Modifier.weight(1f)
         )
         LibraryLaunchCard(
             icon = Icons.Default.LibraryMusic,
-            label = "Плейлисты",
-            caption = plural(playlistCount, "плейлист", "плейлиста", "плейлистов"),
+            label = tr("Плейлисты"),
+            caption = plural(playlistCount, tr("плейлист"), tr("плейлиста"), tr("плейлистов")),
             onClick = onOpenPlaylists,
             modifier = Modifier.weight(1f)
         )
@@ -2759,8 +2780,8 @@ private fun MixCarousel(
     val isTrending = kind == HomeCategory.Trending
     if (!hasOauthToken) {
         CarouselMessage(
-            text = "Добавь OAuth-токен в настройках, чтобы увидеть персональные миксы.",
-            actionLabel = "Открыть настройки",
+            text = tr("Добавь OAuth-токен в настройках, чтобы увидеть персональные миксы."),
+            actionLabel = tr("Открыть настройки"),
             onAction = onOpenSettings
         )
         return
@@ -2770,17 +2791,17 @@ private fun MixCarousel(
         when {
             errorMessage != null -> CarouselMessage(
                 text = errorMessage,
-                actionLabel = "Повторить",
+                actionLabel = tr("Повторить"),
                 onAction = onReload
             )
             isLoading -> CarouselSkeleton()
             else -> CarouselMessage(
                 text = when {
-                    isStations -> "Станции пока не загрузились."
-                    isTrending -> "Тренды пока не загрузились."
-                    else -> "Подборка пока не загрузилась."
+                    isStations -> tr("Станции пока не загрузились.")
+                    isTrending -> tr("Тренды пока не загрузились.")
+                    else -> tr("Подборка пока не загрузилась.")
                 },
-                actionLabel = "Обновить",
+                actionLabel = tr("Обновить"),
                 onAction = onReload
             )
         }
@@ -2800,8 +2821,8 @@ private fun MixCarousel(
                 // there, which is not a caption — the station's artist is its title. A genre's
                 // description is an English sentence about the chart.
                 subtitle = when {
-                    isStations -> "Станция"
-                    isTrending -> "Чарт недели"
+                    isStations -> tr("Станция")
+                    isTrending -> tr("Чарт недели")
                     else -> mix.description?.takeIf { it.isNotBlank() }
                 },
                 artworkUrl = artworkUrlForSize(mix.artworkUrl, 500.dp),
@@ -3239,7 +3260,7 @@ private fun PlaylistsScreen(
         verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
         item {
-            TopBar(title = "Плейлисты", onBack = onBack)
+            TopBar(title = tr("Плейлисты"), onBack = onBack)
         }
 
         item {
@@ -3249,7 +3270,7 @@ private fun PlaylistsScreen(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
-                    text = "Мои плейлисты",
+                    text = tr("Мои плейлисты"),
                     style = MaterialTheme.typography.titleLarge
                 )
                 FilledTonalIconButton(
@@ -3259,14 +3280,14 @@ private fun PlaylistsScreen(
                     },
                     modifier = Modifier.size(48.dp)
                 ) {
-                    Icon(Icons.Default.Add, contentDescription = "Создать плейлист")
+                    Icon(Icons.Default.Add, contentDescription = tr("Создать плейлист"))
                 }
             }
         }
 
         if (playlists.isEmpty() && (!hasYandexToken || yandexPlaylists.isEmpty())) {
             item {
-                EmptyState("Создайте свой первый плейлист, нажав кнопку выше.")
+                EmptyState(tr("Создайте свой первый плейлист, нажав кнопку выше."))
             }
         } else {
             if (playlists.isNotEmpty()) {
@@ -3282,7 +3303,7 @@ private fun PlaylistsScreen(
             if (hasYandexToken && yandexPlaylists.isNotEmpty()) {
                 item {
                     Text(
-                        text = "Плейлисты Яндекс Музыки",
+                        text = tr("Плейлисты Яндекс Музыки"),
                         style = MaterialTheme.typography.titleLarge,
                         modifier = Modifier.padding(top = 16.dp, bottom = 8.dp)
                     )
@@ -3301,12 +3322,12 @@ private fun PlaylistsScreen(
     if (showCreatePlaylistDialog) {
         AlertDialog(
             onDismissRequest = { showCreatePlaylistDialog = false },
-            title = { Text("Создать плейлист") },
+            title = { Text(tr("Создать плейлист")) },
             text = {
                 OutlinedTextField(
                     value = playlistNameInput,
                     onValueChange = { playlistNameInput = it },
-                    placeholder = { Text("Название плейлиста") },
+                    placeholder = { Text(tr("Название плейлиста")) },
                     singleLine = true
                 )
             },
@@ -3320,12 +3341,12 @@ private fun PlaylistsScreen(
                         }
                     }
                 ) {
-                    Text("Создать")
+                    Text(tr("Создать"))
                 }
             },
             dismissButton = {
                 TextButton(onClick = { showCreatePlaylistDialog = false }) {
-                    Text("Отмена")
+                    Text(tr("Отмена"))
                 }
             }
         )
@@ -3370,14 +3391,14 @@ private fun SettingsScreen(
         verticalArrangement = Arrangement.spacedBy(18.dp)
     ) {
         item {
-            TopBar(title = "Настройки", onBack = onBack)
+            TopBar(title = tr("Настройки"), onBack = onBack)
         }
 
         // Listening together: in settings too, for a guest with nothing playing yet.
         item {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text(
-                    text = "ВМЕСТЕ",
+                    text = tr("ВМЕСТЕ"),
                     style = MaterialTheme.typography.labelLarge,
                     color = MaterialTheme.colorScheme.primary,
                     modifier = Modifier.padding(start = 12.dp)
@@ -3391,8 +3412,8 @@ private fun SettingsScreen(
                 ) {
                     SettingsActionRow(
                         icon = Icons.Rounded.Groups,
-                        title = "Слушать вместе",
-                        subtitle = "С друзьями рядом: одна музыка на нескольких телефонах, напрямую, без интернета между ними",
+                        title = tr("Слушать вместе"),
+                        subtitle = tr("С друзьями рядом: одна музыка на нескольких телефонах, напрямую, без интернета между ними"),
                         onClick = onOpenTogether
                     )
                 }
@@ -3403,7 +3424,7 @@ private fun SettingsScreen(
         item {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text(
-                    text = "ИТОГИ",
+                    text = tr("ИТОГИ"),
                     style = MaterialTheme.typography.labelLarge,
                     color = MaterialTheme.colorScheme.primary,
                     modifier = Modifier.padding(start = 12.dp)
@@ -3417,8 +3438,8 @@ private fun SettingsScreen(
                 ) {
                     SettingsActionRow(
                         icon = Icons.Rounded.BarChart,
-                        title = "Итоги прослушиваний",
-                        subtitle = "Минуты, любимые артисты и треки за неделю, месяц, год — и карточка для сторис",
+                        title = tr("Итоги прослушиваний"),
+                        subtitle = tr("Минуты, любимые артисты и треки за неделю, месяц, год — и карточка для сторис"),
                         onClick = onOpenStats
                     )
                 }
@@ -3433,7 +3454,7 @@ private fun SettingsScreen(
             val smoothMotion by settingsRepository.smoothMotion.collectAsState()
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text(
-                    text = "ОФОРМЛЕНИЕ",
+                    text = tr("ОФОРМЛЕНИЕ"),
                     style = MaterialTheme.typography.labelLarge,
                     color = MaterialTheme.colorScheme.primary,
                     modifier = Modifier.padding(start = 12.dp)
@@ -3448,10 +3469,51 @@ private fun SettingsScreen(
                     )
                 ) {
                     Column(modifier = Modifier.padding(vertical = 4.dp)) {
+                        val themeMode by settingsRepository.themeMode.collectAsState()
+                        val themeModes = listOf(Appearance.SYSTEM, Appearance.LIGHT, Appearance.DARK)
+                        SettingsChoiceRow(
+                            icon = Icons.Rounded.Contrast,
+                            title = tr("Тема"),
+                            subtitle = tr("Светлая, тёмная или как в системе"),
+                            items = listOf(tr("Системная"), tr("Светлая"), tr("Тёмная")),
+                            selectedIndex = themeModes.indexOf(themeMode).coerceAtLeast(0),
+                            onSelect = { index ->
+                                val mode = themeModes[index]
+                                if (mode != themeMode) {
+                                    settingsRepository.setThemeMode(mode)
+                                    Appearance.applyTheme(context, mode)
+                                }
+                            }
+                        )
+                        HorizontalDivider(
+                            color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.25f),
+                            modifier = Modifier.padding(horizontal = 18.dp)
+                        )
+                        // Android's to keep: read from it, as the app's own language screen may change it too.
+                        var language by remember { mutableStateOf(Appearance.language(context)) }
+                        val languages = listOf(Appearance.SYSTEM, Appearance.RUSSIAN, Appearance.ENGLISH)
+                        SettingsChoiceRow(
+                            icon = Icons.Rounded.Translate,
+                            title = tr("Язык"),
+                            subtitle = tr("Язык приложения: как в системе, русский или английский"),
+                            items = listOf(tr("Системный"), tr("Русский"), "English"),
+                            selectedIndex = languages.indexOf(language).coerceAtLeast(0),
+                            onSelect = { index ->
+                                val chosen = languages[index]
+                                if (chosen != language) {
+                                    language = chosen
+                                    Appearance.setLanguage(context, chosen)
+                                }
+                            }
+                        )
+                        HorizontalDivider(
+                            color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.25f),
+                            modifier = Modifier.padding(horizontal = 18.dp)
+                        )
                         SettingsSwitchRow(
                             icon = Icons.Default.ScreenRotation,
-                            title = "Живой фон",
-                            subtitle = "Объёмные фигуры на фоне наклоняются и трясутся вместе с телефоном (акселерометр)",
+                            title = tr("Живой фон"),
+                            subtitle = tr("Объёмные фигуры на фоне наклоняются и трясутся вместе с телефоном (акселерометр)"),
                             checked = backgroundMotion,
                             onCheckedChange = settingsRepository::setBackgroundMotion
                         )
@@ -3461,8 +3523,8 @@ private fun SettingsScreen(
                         )
                         SettingsSwitchRow(
                             icon = Icons.Default.Animation,
-                            title = "Плавность 120 Гц",
-                            subtitle = "Фон, «Моя форма» и индикаторы двигаются с частотой экрана. Выключите — 60 кадров в секунду, экономнее для батареи",
+                            title = tr("Плавность 120 Гц"),
+                            subtitle = tr("Фон, «Моя форма» и индикаторы двигаются с частотой экрана. Выключите — 60 кадров в секунду, экономнее для батареи"),
                             checked = smoothMotion,
                             onCheckedChange = settingsRepository::setSmoothMotion
                         )
@@ -3472,8 +3534,8 @@ private fun SettingsScreen(
                         )
                         SettingsSwitchRow(
                             icon = Icons.Default.Palette,
-                            title = "Цвета плеера из обложки",
-                            subtitle = "Только плеер перекрашивается в оттенок обложки трека, остальное — по обоям",
+                            title = tr("Цвета плеера из обложки"),
+                            subtitle = tr("Только плеер перекрашивается в оттенок обложки трека, остальное — по обоям"),
                             checked = playerCoverColors,
                             onCheckedChange = settingsRepository::setPlayerCoverColors
                         )
@@ -3483,8 +3545,8 @@ private fun SettingsScreen(
                         )
                         SettingsSwitchRow(
                             icon = Icons.Default.PlayArrow,
-                            title = "Открывать плеер по нажатию",
-                            subtitle = "Нажатый в списке трек сразу открывает плеер. Выключите — трек заиграет в мини-плеере, а плеер откроется, если нажать на него",
+                            title = tr("Открывать плеер по нажатию"),
+                            subtitle = tr("Нажатый в списке трек сразу открывает плеер. Выключите — трек заиграет в мини-плеере, а плеер откроется, если нажать на него"),
                             checked = openPlayerOnTap,
                             onCheckedChange = settingsRepository::setOpenPlayerOnTap
                         )
@@ -3494,8 +3556,8 @@ private fun SettingsScreen(
                         )
                         SettingsActionRow(
                             icon = Icons.Rounded.TouchApp,
-                            title = "Обучение жестам",
-                            subtitle = "Мини-плеер, плеер, окна и «Моя форма» — показать ещё раз",
+                            title = tr("Обучение жестам"),
+                            subtitle = tr("Мини-плеер, плеер, окна и «Моя форма» — показать ещё раз"),
                             onClick = { settingsRepository.setOnboardingDone(false) }
                         )
                     }
@@ -3513,7 +3575,7 @@ private fun SettingsScreen(
             val videoDownload by settingsRepository.videoDownload.collectAsState()
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text(
-                    text = "ВИДЕО",
+                    text = tr("ВИДЕО"),
                     style = MaterialTheme.typography.labelLarge,
                     color = MaterialTheme.colorScheme.primary,
                     modifier = Modifier.padding(start = 12.dp)
@@ -3536,16 +3598,16 @@ private fun SettingsScreen(
                         }
                         SettingsSwitchRow(
                             icon = Icons.Default.SmartDisplay,
-                            title = "Клипы в плеере",
-                            subtitle = "Видео трека вместо обложки, вертикальное — на весь плеер. Выключите, и в плеере останутся только обложки",
+                            title = tr("Клипы в плеере"),
+                            subtitle = tr("Видео трека вместо обложки, вертикальное — на весь плеер. Выключите, и в плеере останутся только обложки"),
                             checked = playerVideos,
                             onCheckedChange = settingsRepository::setPlayerVideos
                         )
                         divider()
                         SettingsSwitchRow(
                             icon = Icons.Default.Videocam,
-                            title = "Видео Яндекс Музыки",
-                            subtitle = "Вертикальные видеошоты на весь плеер и короткие отрывки клипов",
+                            title = tr("Видео Яндекс Музыки"),
+                            subtitle = tr("Вертикальные видеошоты на весь плеер и короткие отрывки клипов"),
                             checked = videoYandex,
                             onCheckedChange = settingsRepository::setVideoYandex,
                             enabled = playerVideos
@@ -3553,25 +3615,25 @@ private fun SettingsScreen(
                         divider()
                         SettingsSwitchRow(
                             icon = Icons.Default.AutoAwesome,
-                            title = "Подсветка",
-                            subtitle = "Свет клипа или обложки заполняет фон плеера и поля при повороте. Без неё — меньше нагрузка",
+                            title = tr("Подсветка"),
+                            subtitle = tr("Свет клипа или обложки заполняет фон плеера и поля при повороте. Без неё — меньше нагрузка"),
                             checked = videoGlow,
                             onCheckedChange = settingsRepository::setVideoGlow
                         )
                         GlowStyleRow(
-                            title = "Клип",
+                            title = tr("Клип"),
                             selected = videoGlowStyle,
                             onSelect = settingsRepository::setVideoGlowStyle,
                             enabled = videoGlow && playerVideos
                         )
                         GlowStyleRow(
-                            title = "Обложка",
+                            title = tr("Обложка"),
                             selected = coverGlowStyle,
                             onSelect = settingsRepository::setCoverGlowStyle,
                             enabled = videoGlow
                         )
                         Text(
-                            text = "Ambilight — свет от краёв расходится по экрану, как у расширения для YouTube, и легче для телефона. Копии — прежние ступени увеличенных размытых копий",
+                            text = tr("Ambilight — свет от краёв расходится по экрану, как у расширения для YouTube, и легче для телефона. Копии — прежние ступени увеличенных размытых копий"),
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier
@@ -3581,8 +3643,8 @@ private fun SettingsScreen(
                         divider()
                         SettingsSwitchRow(
                             icon = Icons.Default.Download,
-                            title = "Скачивать клипы",
-                            subtitle = "Вместе с треками в медиатеке, по Wi-Fi, чтобы играли без сети. Клип YouTube — десятки МБ",
+                            title = tr("Скачивать клипы"),
+                            subtitle = tr("Вместе с треками в медиатеке, по Wi-Fi, чтобы играли без сети. Клип YouTube — десятки МБ"),
                             checked = videoDownload,
                             onCheckedChange = settingsRepository::setVideoDownload,
                             enabled = playerVideos
@@ -3597,7 +3659,7 @@ private fun SettingsScreen(
             val autoCheck by settingsRepository.updateAutoCheck.collectAsState()
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text(
-                    text = "ОБНОВЛЕНИЯ",
+                    text = tr("ОБНОВЛЕНИЯ"),
                     style = MaterialTheme.typography.labelLarge,
                     color = MaterialTheme.colorScheme.primary,
                     modifier = Modifier.padding(start = 12.dp)
@@ -3619,8 +3681,8 @@ private fun SettingsScreen(
                         )
                         SettingsSwitchRow(
                             icon = Icons.Default.Refresh,
-                            title = "Проверять автоматически",
-                            subtitle = "Спрашивать GitHub о новой версии раз в 12 часов",
+                            title = tr("Проверять автоматически"),
+                            subtitle = tr("Спрашивать GitHub о новой версии раз в 12 часов"),
                             checked = autoCheck,
                             onCheckedChange = settingsRepository::setUpdateAutoCheck
                         )
@@ -3633,7 +3695,7 @@ private fun SettingsScreen(
         item {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text(
-                    text = "СИНХРОНИЗАЦИЯ",
+                    text = tr("СИНХРОНИЗАЦИЯ"),
                     style = MaterialTheme.typography.labelLarge,
                     color = MaterialTheme.colorScheme.primary,
                     modifier = Modifier.padding(start = 12.dp)
@@ -3676,7 +3738,7 @@ private fun SettingsScreen(
                                     style = MaterialTheme.typography.titleMedium
                                 )
                                 Text(
-                                    text = "Автоскачивание лайкнутых треков SoundCloud",
+                                    text = tr("Автоскачивание лайкнутых треков SoundCloud"),
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
@@ -3685,10 +3747,10 @@ private fun SettingsScreen(
 
                         if (soundcloudLikesSyncStatus.state != SyncState.IDLE) {
                             val statusText = when (soundcloudLikesSyncStatus.state) {
-                                SyncState.FETCHING_LIKES -> "Получение лайкнутых треков..."
-                                SyncState.DOWNLOADING -> "Скачивание треков: ${soundcloudLikesSyncStatus.currentTrackIndex} из ${soundcloudLikesSyncStatus.totalTracks}"
-                                SyncState.COMPLETED -> "Синхронизация завершена!"
-                                SyncState.FAILED -> "Ошибка: ${soundcloudLikesSyncStatus.errorMessage}"
+                                SyncState.FETCHING_LIKES -> tr("Получение лайкнутых треков...")
+                                SyncState.DOWNLOADING -> tr("Скачивание треков: %s из %s", soundcloudLikesSyncStatus.currentTrackIndex, soundcloudLikesSyncStatus.totalTracks)
+                                SyncState.COMPLETED -> tr("Синхронизация завершена!")
+                                SyncState.FAILED -> tr("Ошибка: %s", soundcloudLikesSyncStatus.errorMessage)
                                 else -> ""
                             }
 
@@ -3701,7 +3763,7 @@ private fun SettingsScreen(
 
                             if (soundcloudLikesSyncStatus.state == SyncState.DOWNLOADING) {
                                 Text(
-                                    text = "Скачивается: ${soundcloudLikesSyncStatus.currentTrackTitle}",
+                                    text = tr("Скачивается: %s", soundcloudLikesSyncStatus.currentTrackTitle),
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     maxLines = 1,
@@ -3721,7 +3783,7 @@ private fun SettingsScreen(
                                 )
 
                                 Text(
-                                    text = "Успешно: ${soundcloudLikesSyncStatus.downloadedCount} | Ошибки: ${soundcloudLikesSyncStatus.failedCount}",
+                                    text = tr("Успешно: %s | Ошибки: %s", soundcloudLikesSyncStatus.downloadedCount, soundcloudLikesSyncStatus.failedCount),
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
@@ -3742,7 +3804,7 @@ private fun SettingsScreen(
                                         contentColor = MaterialTheme.colorScheme.onErrorContainer
                                     )
                                 ) {
-                                    Text("Остановить")
+                                    Text(tr("Остановить"))
                                 }
                             } else {
                                 Button(
@@ -3755,7 +3817,7 @@ private fun SettingsScreen(
                                     )
                                 ) {
                                     Text(
-                                        text = if (soundcloudLikesSyncStatus.state == SyncState.COMPLETED || soundcloudLikesSyncStatus.state == SyncState.FAILED) "Синхронизировать заново" else "Синхронизировать лайки"
+                                        text = if (soundcloudLikesSyncStatus.state == SyncState.COMPLETED || soundcloudLikesSyncStatus.state == SyncState.FAILED) tr("Синхронизировать заново") else tr("Синхронизировать лайки")
                                     )
                                 }
 
@@ -3765,7 +3827,7 @@ private fun SettingsScreen(
                                         modifier = Modifier.weight(1f),
                                         shape = MaterialTheme.shapes.large
                                     ) {
-                                        Text("Сбросить")
+                                        Text(tr("Сбросить"))
                                     }
                                 }
                             }
@@ -3796,11 +3858,11 @@ private fun SettingsScreen(
                             }
                             Column(modifier = Modifier.weight(1f)) {
                                 Text(
-                                    text = "Лайки на SoundCloud",
+                                    text = tr("Лайки на SoundCloud"),
                                     style = MaterialTheme.typography.titleMedium
                                 )
                                 Text(
-                                    text = "Лайкнуть на SoundCloud скачанные треки, чьи лайки туда не дошли",
+                                    text = tr("Лайкнуть на SoundCloud скачанные треки, чьи лайки туда не дошли"),
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
@@ -3811,12 +3873,12 @@ private fun SettingsScreen(
                             likesPushStatus.state == LikesPushState.SENDING
                         if (likesPushStatus.state != LikesPushState.IDLE) {
                             val statusText = when (likesPushStatus.state) {
-                                LikesPushState.CHECKING -> "Сверяю с лайками SoundCloud..."
-                                LikesPushState.SENDING -> "Отправлено ${likesPushStatus.sent} из ${likesPushStatus.total}"
-                                LikesPushState.PAUSED -> "Отправлено ${likesPushStatus.sent} из ${likesPushStatus.total}, пауза"
+                                LikesPushState.CHECKING -> tr("Сверяю с лайками SoundCloud...")
+                                LikesPushState.SENDING -> tr("Отправлено %s из %s", likesPushStatus.sent, likesPushStatus.total)
+                                LikesPushState.PAUSED -> tr("Отправлено %s из %s, пауза", likesPushStatus.sent, likesPushStatus.total)
                                 LikesPushState.COMPLETED -> likesPushStatus.message
-                                    ?: "Готово: отправлено ${likesPushStatus.sent} из ${likesPushStatus.total}"
-                                LikesPushState.FAILED -> "Ошибка: ${likesPushStatus.message}"
+                                    ?: tr("Готово: отправлено %s из %s", likesPushStatus.sent, likesPushStatus.total)
+                                LikesPushState.FAILED -> tr("Ошибка: %s", likesPushStatus.message)
                                 LikesPushState.IDLE -> ""
                             }
                             Text(
@@ -3860,9 +3922,9 @@ private fun SettingsScreen(
                             ) {
                                 Text(
                                     text = when (likesPushStatus.state) {
-                                        LikesPushState.PAUSED -> "Продолжить"
-                                        LikesPushState.COMPLETED, LikesPushState.FAILED -> "Проверить снова"
-                                        else -> "Отправить лайки"
+                                        LikesPushState.PAUSED -> tr("Продолжить")
+                                        LikesPushState.COMPLETED, LikesPushState.FAILED -> tr("Проверить снова")
+                                        else -> tr("Отправить лайки")
                                     }
                                 )
                             }
@@ -3872,7 +3934,7 @@ private fun SettingsScreen(
                                     modifier = Modifier.weight(1f),
                                     shape = MaterialTheme.shapes.large
                                 ) {
-                                    Text("Сбросить")
+                                    Text(tr("Сбросить"))
                                 }
                             }
                         }
@@ -3903,11 +3965,11 @@ private fun SettingsScreen(
                                 }
                                 Column(modifier = Modifier.weight(1f)) {
                                     Text(
-                                        text = "Яндекс.Музыка",
+                                        text = tr("Яндекс.Музыка"),
                                         style = MaterialTheme.typography.titleMedium
                                     )
                                     Text(
-                                        text = "Автоскачивание треков из плейлиста 'Мне нравится'",
+                                        text = tr("Автоскачивание треков из плейлиста 'Мне нравится'"),
                                         style = MaterialTheme.typography.bodySmall,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant
                                     )
@@ -3916,10 +3978,10 @@ private fun SettingsScreen(
 
                             if (yandexLikesSyncStatus.state != SyncState.IDLE) {
                                 val statusText = when (yandexLikesSyncStatus.state) {
-                                    SyncState.FETCHING_LIKES -> "Получение лайкнутых треков..."
-                                    SyncState.DOWNLOADING -> "Скачивание треков: ${yandexLikesSyncStatus.currentTrackIndex} из ${yandexLikesSyncStatus.totalTracks}"
-                                    SyncState.COMPLETED -> "Синхронизация завершена!"
-                                    SyncState.FAILED -> "Ошибка: ${yandexLikesSyncStatus.errorMessage}"
+                                    SyncState.FETCHING_LIKES -> tr("Получение лайкнутых треков...")
+                                    SyncState.DOWNLOADING -> tr("Скачивание треков: %s из %s", yandexLikesSyncStatus.currentTrackIndex, yandexLikesSyncStatus.totalTracks)
+                                    SyncState.COMPLETED -> tr("Синхронизация завершена!")
+                                    SyncState.FAILED -> tr("Ошибка: %s", yandexLikesSyncStatus.errorMessage)
                                     else -> ""
                                 }
 
@@ -3932,7 +3994,7 @@ private fun SettingsScreen(
 
                                 if (yandexLikesSyncStatus.state == SyncState.DOWNLOADING) {
                                     Text(
-                                        text = "Скачивается: ${yandexLikesSyncStatus.currentTrackTitle}",
+                                        text = tr("Скачивается: %s", yandexLikesSyncStatus.currentTrackTitle),
                                         style = MaterialTheme.typography.bodySmall,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                                         maxLines = 1,
@@ -3950,7 +4012,7 @@ private fun SettingsScreen(
                                     )
 
                                     Text(
-                                        text = "Успешно: ${yandexLikesSyncStatus.downloadedCount} | Ошибки: ${yandexLikesSyncStatus.failedCount}",
+                                        text = tr("Успешно: %s | Ошибки: %s", yandexLikesSyncStatus.downloadedCount, yandexLikesSyncStatus.failedCount),
                                         style = MaterialTheme.typography.bodySmall,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant
                                     )
@@ -3971,7 +4033,7 @@ private fun SettingsScreen(
                                             contentColor = MaterialTheme.colorScheme.onErrorContainer
                                         )
                                     ) {
-                                        Text("Остановить")
+                                        Text(tr("Остановить"))
                                     }
                                 } else {
                                     Button(
@@ -3984,7 +4046,7 @@ private fun SettingsScreen(
                                         )
                                     ) {
                                         Text(
-                                            text = if (yandexLikesSyncStatus.state == SyncState.COMPLETED || yandexLikesSyncStatus.state == SyncState.FAILED) "Синхронизировать заново" else "Синхронизировать лайки"
+                                            text = if (yandexLikesSyncStatus.state == SyncState.COMPLETED || yandexLikesSyncStatus.state == SyncState.FAILED) tr("Синхронизировать заново") else tr("Синхронизировать лайки")
                                         )
                                     }
 
@@ -3994,7 +4056,7 @@ private fun SettingsScreen(
                                             modifier = Modifier.weight(1f),
                                             shape = MaterialTheme.shapes.large
                                         ) {
-                                            Text("Сбросить")
+                                            Text(tr("Сбросить"))
                                         }
                                     }
                                 }
@@ -4009,7 +4071,7 @@ private fun SettingsScreen(
         item {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text(
-                    text = "АККАУНТЫ",
+                    text = tr("АККАУНТЫ"),
                     style = MaterialTheme.typography.labelLarge,
                     color = MaterialTheme.colorScheme.primary,
                     modifier = Modifier.padding(start = 12.dp)
@@ -4052,7 +4114,7 @@ private fun SettingsScreen(
                                     style = MaterialTheme.typography.titleMedium
                                 )
                                 Text(
-                                    text = "Вы вошли в аккаунт",
+                                    text = tr("Вы вошли в аккаунт"),
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
@@ -4061,7 +4123,7 @@ private fun SettingsScreen(
                                 onClick = onRelogin,
                                 shape = MaterialTheme.shapes.medium
                             ) {
-                                Text("Перезайти")
+                                Text(tr("Перезайти"))
                             }
                         }
 
@@ -4090,11 +4152,11 @@ private fun SettingsScreen(
                             }
                             Column(modifier = Modifier.weight(1f)) {
                                 Text(
-                                    text = "Яндекс.Музыка",
+                                    text = tr("Яндекс.Музыка"),
                                     style = MaterialTheme.typography.titleMedium
                                 )
                                 Text(
-                                    text = if (hasYandexToken) "Подключен" else "Не подключен",
+                                    text = if (hasYandexToken) tr("Подключен") else tr("Не подключен"),
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
@@ -4108,7 +4170,7 @@ private fun SettingsScreen(
                                         contentColor = MaterialTheme.colorScheme.error
                                     )
                                 ) {
-                                    Text("Выйти")
+                                    Text(tr("Выйти"))
                                 }
                             } else {
                                 Button(
@@ -4119,7 +4181,7 @@ private fun SettingsScreen(
                                         contentColor = MaterialTheme.colorScheme.onPrimary
                                     )
                                 ) {
-                                    Text("Войти")
+                                    Text(tr("Войти"))
                                 }
                             }
                         }
@@ -4153,7 +4215,7 @@ private fun SettingsScreen(
                                     style = MaterialTheme.typography.titleMedium
                                 )
                                 Text(
-                                    text = ytMusicAccount ?: "Не подключен",
+                                    text = ytMusicAccount ?: tr("Не подключен"),
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     maxLines = 1,
@@ -4169,7 +4231,7 @@ private fun SettingsScreen(
                                         contentColor = MaterialTheme.colorScheme.error
                                     )
                                 ) {
-                                    Text("Выйти")
+                                    Text(tr("Выйти"))
                                 }
                             } else {
                                 Button(
@@ -4180,7 +4242,7 @@ private fun SettingsScreen(
                                         contentColor = MaterialTheme.colorScheme.onPrimary
                                     )
                                 ) {
-                                    Text("Войти")
+                                    Text(tr("Войти"))
                                 }
                             }
                         }
@@ -4219,30 +4281,30 @@ private fun SettingsScreen(
                         }
                         SettingsSwitchRow(
                             icon = Icons.Default.Search,
-                            title = "Обычный поиск YouTube",
-                            subtitle = "Вкладка YouTube ищет по youtube.com, а не по YouTube Music: все видео и трансляции, с их каналами",
+                            title = tr("Обычный поиск YouTube"),
+                            subtitle = tr("Вкладка YouTube ищет по youtube.com, а не по YouTube Music: все видео и трансляции, с их каналами"),
                             checked = ytWebSearch,
                             onCheckedChange = settingsRepository::setYtWebSearch
                         )
                         divider()
                         SettingsSwitchRow(
                             icon = Icons.Default.SmartDisplay,
-                            title = "Вся страница автора",
-                            subtitle = "Все ряды: видео, синглы, плейлисты, похожие исполнители. Выключено — треки, альбомы и трансляции",
+                            title = tr("Вся страница автора"),
+                            subtitle = tr("Все ряды: видео, синглы, плейлисты, похожие исполнители. Выключено — треки, альбомы и трансляции"),
                             checked = ytArtistShowAll,
                             onCheckedChange = settingsRepository::setYtArtistShowAll
                         )
                         divider()
                         SettingsSwitchRow(
                             icon = Icons.Default.OndemandVideo,
-                            title = "Клипы с YouTube",
+                            title = tr("Клипы с YouTube"),
                             subtitle = if (playerVideos && ytMusicAccount == null) {
                                 // Signed out, YouTube hands yt-dlp no video: nothing would ever show.
-                                "Нужен вход в YouTube Music в «Аккаунтах»: без него YouTube не отдаёт клипы"
+                                tr("Нужен вход в YouTube Music в «Аккаунтах»: без него YouTube не отдаёт клипы")
                             } else if (playerVideos) {
-                                "Клипы треков YouTube Music, а для треков Яндекса — найденные на YouTube. Тратит трафик"
+                                tr("Клипы треков YouTube Music, а для треков Яндекса — найденные на YouTube. Тратит трафик")
                             } else {
-                                "Включаются вместе с «Клипами в плеере» в разделе «Видео»"
+                                tr("Включаются вместе с «Клипами в плеере» в разделе «Видео»")
                             },
                             checked = videoYouTube,
                             onCheckedChange = settingsRepository::setVideoYouTube,
@@ -4258,7 +4320,7 @@ private fun SettingsScreen(
         item {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text(
-                    text = "ССЫЛКИ",
+                    text = tr("ССЫЛКИ"),
                     style = MaterialTheme.typography.labelLarge,
                     color = MaterialTheme.colorScheme.primary,
                     modifier = Modifier.padding(start = 12.dp)
@@ -4271,7 +4333,7 @@ private fun SettingsScreen(
         item {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text(
-                    text = "ХРАНИЛИЩЕ И КЭШ",
+                    text = tr("ХРАНИЛИЩЕ И КЭШ"),
                     style = MaterialTheme.typography.labelLarge,
                     color = MaterialTheme.colorScheme.primary,
                     modifier = Modifier.padding(start = 12.dp)
@@ -4308,11 +4370,11 @@ private fun SettingsScreen(
                         }
                         Column(modifier = Modifier.weight(1f)) {
                             Text(
-                                text = "Очистка кэша",
+                                text = tr("Очистка кэша"),
                                 style = MaterialTheme.typography.titleMedium
                             )
                             Text(
-                                text = "Сброс кэша миксов и станций",
+                                text = tr("Сброс кэша миксов и станций"),
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
@@ -4320,11 +4382,11 @@ private fun SettingsScreen(
                         FilledTonalButton(
                             onClick = {
                                 onClearCache()
-                                Toast.makeText(context, "Кэш очищен", Toast.LENGTH_SHORT).show()
+                                Toast.makeText(context, tr("Кэш очищен"), Toast.LENGTH_SHORT).show()
                             },
                             shape = MaterialTheme.shapes.medium
                         ) {
-                            Text("Очистить")
+                            Text(tr("Очистить"))
                         }
                     }
                 }
@@ -4335,7 +4397,7 @@ private fun SettingsScreen(
         item {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text(
-                    text = "ЗВУК",
+                    text = tr("ЗВУК"),
                     style = MaterialTheme.typography.labelLarge,
                     color = MaterialTheme.colorScheme.primary,
                     modifier = Modifier.padding(start = 12.dp)
@@ -4360,8 +4422,8 @@ private fun SettingsScreen(
                     Column(modifier = Modifier.padding(vertical = 4.dp)) {
                         SettingsSwitchRow(
                             icon = Icons.Rounded.Tune,
-                            title = "Эффекты в плеере",
-                            subtitle = "Кнопка реверба, замедления и ускорения — для каждого трека свои",
+                            title = tr("Эффекты в плеере"),
+                            subtitle = tr("Кнопка реверба, замедления и ускорения — для каждого трека свои"),
                             checked = fxButton,
                             onCheckedChange = settingsRepository::setPlayerFxButton
                         )
@@ -4371,8 +4433,8 @@ private fun SettingsScreen(
                         )
                         SettingsSwitchRow(
                             icon = Icons.Default.Radio,
-                            title = "Автопродолжение",
-                            subtitle = "Альбом, плейлист или поиск закончились — дальше играет радио от последнего трека",
+                            title = tr("Автопродолжение"),
+                            subtitle = tr("Альбом, плейлист или поиск закончились — дальше играет радио от последнего трека"),
                             checked = autoContinue,
                             onCheckedChange = settingsRepository::setAutoContinue
                         )
@@ -4385,7 +4447,7 @@ private fun SettingsScreen(
         item {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text(
-                    text = "ОТЛАДКА",
+                    text = tr("ОТЛАДКА"),
                     style = MaterialTheme.typography.labelLarge,
                     color = MaterialTheme.colorScheme.primary,
                     modifier = Modifier.padding(start = 12.dp)
@@ -4423,11 +4485,11 @@ private fun SettingsScreen(
                         }
                         Column(modifier = Modifier.weight(1f)) {
                             Text(
-                                text = "Дебаг информация",
+                                text = tr("Дебаг информация"),
                                 style = MaterialTheme.typography.titleMedium
                             )
                             Text(
-                                text = "Процент скачивания на экране загрузок",
+                                text = tr("Процент скачивания на экране загрузок"),
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
@@ -4450,8 +4512,8 @@ private fun SettingsScreen(
                 ) {
                     SettingsActionRow(
                         icon = Icons.Default.BugReport,
-                        title = "Отправить журнал",
-                        subtitle = "Если что-то не работает: журнал приложения и сведения о телефоне файлом — тому, кто разберётся. Ссылки, ключи и имена аккаунтов из него убраны",
+                        title = tr("Отправить журнал"),
+                        subtitle = tr("Если что-то не работает: журнал приложения и сведения о телефоне файлом — тому, кто разберётся. Ссылки, ключи и имена аккаунтов из него убраны"),
                         onClick = {
                             reportScope.launch { com.example.myapplication.data.DiagnosticsReport.share(reportContext, settingsRepository) }
                         }
@@ -4481,7 +4543,7 @@ private fun GlowStyleRow(
     ) {
         Text(text = title, style = MaterialTheme.typography.titleSmall, modifier = Modifier.width(72.dp))
         SegmentedControl(
-            items = styles.map { if (it == com.example.myapplication.data.GlowStyle.Ambilight) "Ambilight" else "Копии" },
+            items = styles.map { if (it == com.example.myapplication.data.GlowStyle.Ambilight) "Ambilight" else tr("Копии") },
             selectedIndex = styles.indexOf(selected),
             onSelectedIndexChanged = { if (enabled) onSelect(styles[it]) },
             modifier = Modifier.weight(1f),
@@ -4521,12 +4583,12 @@ private fun LinksSettingsCard() {
     ) {
         SettingsActionRow(
             icon = Icons.Default.Link,
-            title = "Открывать ссылки сервисов",
+            title = tr("Открывать ссылки сервисов"),
             subtitle = when {
-                total == 0 -> "Ссылки SoundCloud, Яндекс Музыки и YouTube открываются в YouCloud"
-                allowed == 0 -> "Сейчас ссылки открываются в браузере. Нажмите и добавьте адреса — или делитесь ссылкой из приложения сервиса в YouCloud"
-                allowed < total -> "Добавлено адресов: $allowed из $total. Нажмите, чтобы добавить остальные"
-                else -> "Все ссылки SoundCloud, Яндекс Музыки и YouTube открываются в YouCloud"
+                total == 0 -> tr("Ссылки SoundCloud, Яндекс Музыки и YouTube открываются в YouCloud")
+                allowed == 0 -> tr("Сейчас ссылки открываются в браузере. Нажмите и добавьте адреса — или делитесь ссылкой из приложения сервиса в YouCloud")
+                allowed < total -> tr("Добавлено адресов: %s из %s. Нажмите, чтобы добавить остальные", allowed, total)
+                else -> tr("Все ссылки SoundCloud, Яндекс Музыки и YouTube открываются в YouCloud")
             },
             onClick = {
                 val intent = Intent(
@@ -4567,14 +4629,73 @@ private fun SettingsActionRow(
             .clickable(onClick = onClick)
             .padding(horizontal = 18.dp, vertical = 14.dp),
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(16.dp)
+        horizontalArrangement = Arrangement.spacedBy(14.dp)
     ) {
-        Icon(icon, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(24.dp))
+        SettingsIcon(icon)
         Column(modifier = Modifier.weight(1f)) {
             Text(title, style = MaterialTheme.typography.titleMedium)
             Text(subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
         Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
+    }
+}
+
+/** A settings row choosing one of a few: its title over the choices, side by side. */
+@Composable
+private fun SettingsChoiceRow(
+    icon: ImageVector,
+    title: String,
+    subtitle: String,
+    items: List<String>,
+    selectedIndex: Int,
+    onSelect: (Int) -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 18.dp, vertical = 14.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(14.dp)
+        ) {
+            SettingsIcon(icon)
+            Column(modifier = Modifier.weight(1f)) {
+                Text(text = title, style = MaterialTheme.typography.titleMedium)
+                Text(
+                    text = subtitle,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+        SegmentedControl(
+            items = items,
+            selectedIndex = selectedIndex,
+            onSelectedIndexChanged = onSelect,
+            modifier = Modifier.padding(start = 56.dp),
+            height = 44.dp,
+            textStyle = MaterialTheme.typography.labelLarge
+        )
+    }
+}
+
+/** A settings row's glyph, on the tinted disc every row of the settings has. */
+@Composable
+private fun SettingsIcon(icon: ImageVector) {
+    Box(
+        modifier = Modifier
+            .size(42.dp)
+            .background(MaterialTheme.colorScheme.primaryContainer, CircleShape),
+        contentAlignment = Alignment.Center
+    ) {
+        Icon(
+            imageVector = icon,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.onPrimaryContainer,
+            modifier = Modifier.size(22.dp)
+        )
     }
 }
 
@@ -4596,19 +4717,7 @@ private fun SettingsSwitchRow(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(14.dp)
     ) {
-        Box(
-            modifier = Modifier
-                .size(42.dp)
-                .background(MaterialTheme.colorScheme.primaryContainer, CircleShape),
-            contentAlignment = Alignment.Center
-        ) {
-            Icon(
-                imageVector = icon,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.onPrimaryContainer,
-                modifier = Modifier.size(22.dp)
-            )
-        }
+        SettingsIcon(icon)
         Column(modifier = Modifier.weight(1f)) {
             Text(text = title, style = MaterialTheme.typography.titleMedium)
             Text(
@@ -4769,7 +4878,7 @@ private fun SearchScreen(
             // shifts the title and back button downward and the transition reads as a jump.
             if (!landscape) {
                 Box(modifier = Modifier.padding(horizontal = 16.dp)) {
-                    TopBar(title = "Поиск", onBack = onBack)
+                    TopBar(title = tr("Поиск"), onBack = onBack)
                 }
             }
             HorizontalPager(
@@ -4830,7 +4939,7 @@ private fun SearchScreen(
                     .windowInsetsPadding(WindowInsets.displayCutout.only(WindowInsetsSides.End))
                     .padding(horizontal = 16.dp)
             ) {
-                TopBar(title = "Поиск", onBack = onBack)
+                TopBar(title = tr("Поиск"), onBack = onBack)
             }
         }
         }
@@ -4864,7 +4973,7 @@ private fun SearchScreen(
                     labels = sources.map { option ->
                         when (option) {
                             SearchSource.SOUNDCLOUD -> "SoundCloud"
-                            SearchSource.YANDEX -> if (sources.size > 2) "Яндекс" else "Яндекс Музыка"
+                            SearchSource.YANDEX -> if (sources.size > 2) tr("Яндекс") else tr("Яндекс Музыка")
                             SearchSource.YOUTUBE -> if (sources.size > 2) "YouTube" else "YouTube Music"
                         }
                     },
@@ -4935,15 +5044,15 @@ private fun SearchResultsList(
         if (topResult != null) {
             item(key = "search-top-result") {
                 Column(modifier = Modifier.padding(top = 24.dp)) {
-                    Kicker(text = "Лучший результат")
+                    Kicker(text = tr("Лучший результат"))
                     Spacer(modifier = Modifier.height(10.dp))
                     TopResultCard(
                         kicker = setCaption(topResult),
-                        title = topResult.title ?: "Без названия",
+                        title = topResult.title ?: tr("Без названия"),
                         // YouTube Music doesn't say how many tracks a set has until it is opened.
                         subtitle = listOfNotNull(
                             topResult.user?.username,
-                            topResult.trackCount.takeIf { it > 0 }?.let { plural(it, "трек", "трека", "треков") }
+                            topResult.trackCount.takeIf { it > 0 }?.let { plural(it, tr("трек"), tr("трека"), tr("треков")) }
                         ).joinToString(" · "),
                         artworkUrl = topResult.displayArtworkUrl,
                         onClick = { onOpenPlaylist(topResult) }
@@ -4954,7 +5063,7 @@ private fun SearchResultsList(
 
         if (results.artists.isNotEmpty()) {
             item(key = "search-artists-header") {
-                SectionTitle("Исполнители", modifier = Modifier.padding(top = 24.dp, bottom = 8.dp))
+                SectionTitle(tr("Исполнители"), modifier = Modifier.padding(top = 24.dp, bottom = 8.dp))
             }
             item(key = "search-artists") {
                 ArtistRow(artists = results.artists, onOpen = onOpenArtist)
@@ -4963,14 +5072,14 @@ private fun SearchResultsList(
 
         if (results.albums.isNotEmpty()) {
             item(key = "search-albums-header") {
-                SectionTitle("Альбомы", modifier = Modifier.padding(top = 24.dp, bottom = 8.dp))
+                SectionTitle(tr("Альбомы"), modifier = Modifier.padding(top = 24.dp, bottom = 8.dp))
             }
             item(key = "search-albums") {
                 AlbumCarousel(
                     albums = results.albums.map { album ->
                         CarouselAlbum(
                             key = album.id,
-                            title = album.title ?: "Без названия",
+                            title = album.title ?: tr("Без названия"),
                             subtitle = album.user?.username.orEmpty(),
                             caption = setCaption(album),
                             artworkUrl = album.displayArtworkUrl,
@@ -4984,7 +5093,7 @@ private fun SearchResultsList(
         if (results.playlists.isNotEmpty()) {
             item(key = "search-playlists-header") {
                 SectionTitle(
-                    "Плейлисты и сборники",
+                    tr("Плейлисты и сборники"),
                     modifier = Modifier.padding(top = 24.dp, bottom = 8.dp)
                 )
             }
@@ -4999,9 +5108,9 @@ private fun SearchResultsList(
                     ) {
                         pair.forEach { playlist ->
                             CompactCollectionCard(
-                                title = playlist.title ?: "Без названия",
+                                title = playlist.title ?: tr("Без названия"),
                                 caption = if (playlist.trackCount > 0) {
-                                    plural(playlist.trackCount, "трек", "трека", "треков")
+                                    plural(playlist.trackCount, tr("трек"), tr("трека"), tr("треков"))
                                 } else {
                                     setCaption(playlist)
                                 },
@@ -5019,7 +5128,7 @@ private fun SearchResultsList(
         if (results.tracks.isNotEmpty()) {
             if (results.albums.isNotEmpty() || results.playlists.isNotEmpty() || results.artists.isNotEmpty() || topResult != null) {
                 item(key = "search-tracks-header") {
-                    SectionTitle("Треки", modifier = Modifier.padding(top = 18.dp, bottom = 8.dp))
+                    SectionTitle(tr("Треки"), modifier = Modifier.padding(top = 18.dp, bottom = 8.dp))
                 }
             } else {
                 item(key = "search-tracks-gap") { Spacer(modifier = Modifier.height(20.dp)) }
@@ -5056,7 +5165,7 @@ private fun SearchResultsList(
             results.albums.isEmpty() && results.playlists.isEmpty() && results.artists.isEmpty()
         ) {
             item(key = "search-empty") {
-                Box(modifier = Modifier.padding(top = 20.dp)) { EmptyState("Ничего не нашлось.") }
+                Box(modifier = Modifier.padding(top = 20.dp)) { EmptyState(tr("Ничего не нашлось.")) }
             }
         }
     }
@@ -5287,7 +5396,7 @@ private fun ArtistRow(artists: List<SoundCloudUser>, onOpen: (SoundCloudUser) ->
                     overflow = TextOverflow.Ellipsis
                 )
                 val caption = artist.followersCount?.takeIf { it > 0 }?.let { compactCount(it) }
-                    ?: artist.trackCount?.takeIf { it > 0 }?.let { plural(it, "трек", "трека", "треков") }
+                    ?: artist.trackCount?.takeIf { it > 0 }?.let { plural(it, tr("трек"), tr("трека"), tr("треков")) }
                 if (caption != null) {
                     Text(
                         text = caption,
@@ -5337,18 +5446,18 @@ private fun pickTopResult(
 /** "Альбом · 2017", "EP · 2020", "Плейлист · 42 трека". */
 private fun setCaption(set: SoundCloudPlaylist): String {
     val kind = when (set.setType?.lowercase()) {
-        "album" -> "Альбом"
+        "album" -> tr("Альбом")
         "ep" -> "EP"
-        "single" -> "Сингл"
-        "compilation" -> "Сборник"
-        else -> if (set.isAlbum == true) "Альбом" else "Плейлист"
+        "single" -> tr("Сингл")
+        "compilation" -> tr("Сборник")
+        else -> if (set.isAlbum == true) tr("Альбом") else tr("Плейлист")
     }
     val year = set.releaseDate?.take(4)?.takeIf { it.length == 4 && it.all(Char::isDigit) }
     return when {
         year != null -> "$kind · $year"
         // YouTube Music doesn't say how many tracks a set has until it is opened.
         set.trackCount <= 0 -> kind
-        else -> "$kind · ${plural(set.trackCount, "трек", "трека", "треков")}"
+        else -> "$kind · ${plural(set.trackCount, tr("трек"), tr("трека"), tr("треков"))}"
     }
 }
 
@@ -5457,9 +5566,9 @@ private fun DownloadsScreen(
                             IconCover(icon = Icons.Default.Download)
                         }
                     },
-                    kicker = "Папка · на устройстве",
-                    title = "Скачанное",
-                    subtitle = "Играет без сети",
+                    kicker = tr("Папка · на устройстве"),
+                    title = tr("Скачанное"),
+                    subtitle = tr("Играет без сети"),
                     isActive = isActive,
                     isPlaying = isPlaying,
                     onPlay = if (tracks.isEmpty()) null else {
@@ -5473,17 +5582,17 @@ private fun DownloadsScreen(
             }
         ) {
             item(key = "downloads-count") {
-                CountRule(if (tracks.isEmpty()) "Нет треков" else plural(tracks.size, "трек", "трека", "треков")) {
+                CountRule(if (tracks.isEmpty()) tr("Нет треков") else plural(tracks.size, tr("трек"), tr("трека"), tr("треков"))) {
                     PanelIconButton(
                         icon = Icons.Default.Image,
-                        contentDescription = "Сменить обложку",
+                        contentDescription = tr("Сменить обложку"),
                         onClick = { imagePicker.launch(arrayOf("image/*")) },
                         size = RuleButtonSize,
                         iconSize = RuleIconSize
                     )
                     PanelIconButton(
                         icon = Icons.Default.Add,
-                        contentDescription = "Импортировать треки и видео с устройства",
+                        contentDescription = tr("Импортировать треки и видео с устройства"),
                         onClick = { audioPicker.launch(arrayOf("audio/*", "video/*")) },
                         size = RuleButtonSize,
                         iconSize = RuleIconSize
@@ -5494,7 +5603,7 @@ private fun DownloadsScreen(
             if (tracks.isEmpty()) {
                 item(key = "downloads-empty") {
                     Box(modifier = Modifier.padding(horizontal = 16.dp)) {
-                        EmptyState("Здесь появятся треки, которые ты сохранишь на устройство.")
+                        EmptyState(tr("Здесь появятся треки, которые ты сохранишь на устройство."))
                     }
                 }
             } else {
@@ -5531,7 +5640,7 @@ private fun DownloadsScreen(
                             offset = DpOffset(x = 76.dp, y = 0.dp)
                         ) {
                             DropdownMenuItem(
-                                text = { Text("Выбрать") },
+                                text = { Text(tr("Выбрать")) },
                                 leadingIcon = { Icon(Icons.Rounded.Checklist, contentDescription = null) },
                                 onClick = {
                                     menuFor = null
@@ -5539,7 +5648,7 @@ private fun DownloadsScreen(
                                 }
                             )
                             DropdownMenuItem(
-                                text = { Text("Удалить") },
+                                text = { Text(tr("Удалить")) },
                                 leadingIcon = { Icon(Icons.Default.Delete, contentDescription = null) },
                                 onClick = {
                                     menuFor = null
@@ -5552,7 +5661,7 @@ private fun DownloadsScreen(
             }
         }
 
-        CollapsingTopBar(title = "Скачанное", collapsed = collapsed)
+        CollapsingTopBar(title = tr("Скачанное"), collapsed = collapsed)
 
         // Picking: what to do with the picked tracks, down where the thumb is.
         // The count stays put while the toolbar slides away.
@@ -5594,14 +5703,14 @@ private fun DownloadsScreen(
         val single = doomed.singleOrNull()
         AlertDialog(
             onDismissRequest = { pendingDelete = null },
-            title = { Text("Удалить с устройства?") },
+            title = { Text(tr("Удалить с устройства?")) },
             text = {
                 Text(
                     if (single != null) {
-                        "«${single.title}» — ${single.displayArtist}. Скачанный файл удалится с телефона, в любимых трек останется."
+                        tr("«%s» — %s. Скачанный файл удалится с телефона, в любимых трек останется.", single.title, single.displayArtist)
                     } else {
-                        plural(doomed.size, "трек", "трека", "треков") +
-                            ": скачанные файлы удалятся с телефона, в любимых треки останутся."
+                        plural(doomed.size, tr("трек"), tr("трека"), tr("треков")) +
+                            tr(": скачанные файлы удалятся с телефона, в любимых треки останутся.")
                     }
                 )
             },
@@ -5613,12 +5722,12 @@ private fun DownloadsScreen(
                         onDeleteDownloads(doomed)
                     }
                 ) {
-                    Text("Удалить")
+                    Text(tr("Удалить"))
                 }
             },
             dismissButton = {
                 TextButton(onClick = { pendingDelete = null }) {
-                    Text("Отмена")
+                    Text(tr("Отмена"))
                 }
             }
         )
@@ -5701,9 +5810,9 @@ private fun HistoryScreen(
                     artwork = {
                         if (covers.isEmpty()) IconCover(icon = Icons.Default.History) else CoverCollage(urls = covers)
                     },
-                    kicker = "Папка",
-                    title = "История",
-                    subtitle = "Что ты слушал, последнее сверху",
+                    kicker = tr("Папка"),
+                    title = tr("История"),
+                    subtitle = tr("Что ты слушал, последнее сверху"),
                     isActive = topPlaying,
                     isPlaying = isPlaying,
                     onPlay = if (tracks.isEmpty()) null else {
@@ -5714,11 +5823,11 @@ private fun HistoryScreen(
             }
         ) {
             item(key = "history-count") {
-                CountRule(if (tracks.isEmpty()) "Пока пусто" else plural(tracks.size, "трек", "трека", "треков")) {
+                CountRule(if (tracks.isEmpty()) tr("Пока пусто") else plural(tracks.size, tr("трек"), tr("трека"), tr("треков"))) {
                     if (tracks.isNotEmpty()) {
                         PanelIconButton(
                             icon = Icons.Default.DeleteSweep,
-                            contentDescription = "Очистить историю",
+                            contentDescription = tr("Очистить историю"),
                             onClick = { confirmClear = true },
                             size = RuleButtonSize,
                             iconSize = RuleIconSize
@@ -5730,7 +5839,7 @@ private fun HistoryScreen(
             if (tracks.isEmpty()) {
                 item(key = "history-empty") {
                     Box(modifier = Modifier.padding(horizontal = 16.dp)) {
-                        EmptyState("Здесь появятся треки, которые ты слушал.")
+                        EmptyState(tr("Здесь появятся треки, которые ты слушал."))
                     }
                 }
             } else {
@@ -5753,14 +5862,14 @@ private fun HistoryScreen(
             }
         }
 
-        CollapsingTopBar(title = "История", collapsed = collapsed)
+        CollapsingTopBar(title = tr("История"), collapsed = collapsed)
     }
 
     if (confirmClear) {
         AlertDialog(
             onDismissRequest = { confirmClear = false },
-            title = { Text("Очистить историю?") },
-            text = { Text("Список прослушанного удалится. Сами треки, любимые и скачанное останутся.") },
+            title = { Text(tr("Очистить историю?")) },
+            text = { Text(tr("Список прослушанного удалится. Сами треки, любимые и скачанное останутся.")) },
             confirmButton = {
                 Button(
                     onClick = {
@@ -5768,12 +5877,12 @@ private fun HistoryScreen(
                         onClear()
                     }
                 ) {
-                    Text("Очистить")
+                    Text(tr("Очистить"))
                 }
             },
             dismissButton = {
                 TextButton(onClick = { confirmClear = false }) {
-                    Text("Отмена")
+                    Text(tr("Отмена"))
                 }
             }
         )
@@ -5822,11 +5931,11 @@ private fun PickingToolbar(
                     contentColor = PanelColors.content
                 ) {
                     Box(contentAlignment = Alignment.Center) {
-                        Icon(Icons.Default.Close, contentDescription = "Отменить выбор", modifier = Modifier.size(24.dp))
+                        Icon(Icons.Default.Close, contentDescription = tr("Отменить выбор"), modifier = Modifier.size(24.dp))
                     }
                 }
                 Text(
-                    text = "Выбрано: $count",
+                    text = tr("Выбрано: %s", count),
                     style = MaterialTheme.typography.titleMedium,
                     maxLines = 1
                 )
@@ -5850,7 +5959,7 @@ private fun PickingToolbar(
             Box(contentAlignment = Alignment.Center) {
                 Icon(
                     imageVector = if (allPicked) Icons.Default.Deselect else Icons.Default.SelectAll,
-                    contentDescription = if (allPicked) "Снять выбор" else "Выбрать все",
+                    contentDescription = if (allPicked) tr("Снять выбор") else tr("Выбрать все"),
                     modifier = Modifier.size(26.dp)
                 )
             }
@@ -5868,7 +5977,7 @@ private fun PickingToolbar(
             shadowElevation = if (glass) 0.dp else 6.dp
         ) {
             Box(contentAlignment = Alignment.Center) {
-                Icon(Icons.Default.Delete, contentDescription = "Удалить выбранные", modifier = Modifier.size(26.dp))
+                Icon(Icons.Default.Delete, contentDescription = tr("Удалить выбранные"), modifier = Modifier.size(26.dp))
             }
         }
     }
@@ -5904,7 +6013,7 @@ private fun SearchLaunchCard(onClick: () -> Unit) {
         ) {
             Icon(Icons.Default.Search, contentDescription = null, modifier = Modifier.size(26.dp))
             Text(
-                text = "Найти трек",
+                text = tr("Найти трек"),
                 style = MaterialTheme.typography.titleMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -5932,7 +6041,7 @@ private fun SearchField(
         singleLine = true,
         shape = RoundedCornerShape(30.dp),
         textStyle = MaterialTheme.typography.titleMedium,
-        placeholder = { Text("Трек, альбом или артист") },
+        placeholder = { Text(tr("Трек, альбом или артист")) },
         leadingIcon = {
             Icon(
                 Icons.Default.Search,
@@ -5943,7 +6052,7 @@ private fun SearchField(
         trailingIcon = {
             if (query.isNotEmpty()) {
                 IconButton(onClick = { onQueryChange("") }) {
-                    Icon(Icons.Default.Close, contentDescription = "Очистить")
+                    Icon(Icons.Default.Close, contentDescription = tr("Очистить"))
                 }
             }
         },
@@ -5968,7 +6077,7 @@ private fun TopBar(
     // where the search button was, or entering search reads as the whole bar jumping.
     AppTopBar(
         leadingIcon = Icons.AutoMirrored.Filled.ArrowBack,
-        leadingDescription = "Назад",
+        leadingDescription = tr("Назад"),
         onLeadingClick = {
             haptic.performHapticFeedback(HapticFeedbackType.LongPress)
             onBack()
@@ -6021,8 +6130,8 @@ private fun MixesSection(
             // Only worth a second line when there's something to act on — the routine
             // "N миксов от SoundCloud" was noise on every section.
             subtitle = when {
-                !hasOauthToken -> "Добавь OAuth-токен в настройках, чтобы увидеть персональные миксы."
-                mixSection == null && !isLoading -> "Подборка пока не загрузилась."
+                !hasOauthToken -> tr("Добавь OAuth-токен в настройках, чтобы увидеть персональные миксы.")
+                mixSection == null && !isLoading -> tr("Подборка пока не загрузилась.")
                 else -> null
             }
         )
@@ -6042,7 +6151,7 @@ private fun MixesSection(
                 ) {
                     Icon(Icons.Default.Settings, contentDescription = null)
                     Text(
-                        text = "Открыть настройки и вставить OAuth",
+                        text = tr("Открыть настройки и вставить OAuth"),
                         style = MaterialTheme.typography.bodyLarge
                     )
                 }
@@ -6055,7 +6164,7 @@ private fun MixesSection(
         if (errorMessage != null && mixSection == null) {
             MessageCard(errorMessage)
             Button(onClick = onReload) {
-                Text("Повторить")
+                Text(tr("Повторить"))
             }
         }
 
@@ -6098,7 +6207,7 @@ private fun MixesSection(
 
         mixSection?.mixes?.let { mixes ->
             if (mixes.isEmpty()) {
-                EmptyState("Подборка your-moods пуста.")
+                EmptyState(tr("Подборка your-moods пуста."))
             } else {
                 LazyRow(
                     horizontalArrangement = Arrangement.spacedBy(14.dp),
@@ -6121,22 +6230,22 @@ private fun MixesSection(
 
 /** SoundCloud hands these section names back in English; surface them in Russian. */
 private fun localizedSectionTitle(raw: String?): String = when {
-    raw.isNullOrBlank() -> "Миксы"
-    raw.contains("Station", ignoreCase = true) -> "Станции"
-    raw.startsWith("Mixed for", ignoreCase = true) -> "Твои миксы"
-    raw.contains("Your Mixes", ignoreCase = true) -> "Твои миксы"
+    raw.isNullOrBlank() -> tr("Миксы")
+    raw.contains("Station", ignoreCase = true) -> tr("Станции")
+    raw.startsWith("Mixed for", ignoreCase = true) -> tr("Твои миксы")
+    raw.contains("Your Mixes", ignoreCase = true) -> tr("Твои миксы")
     else -> raw
 }
 
 private val YourMixPattern = Regex("""^Your Mix\s*(\d+)$""", RegexOption.IGNORE_CASE)
 
 private fun localizedGenre(raw: String): String = when (raw.trim().lowercase()) {
-    "all genres", "all music genres" -> "Все жанры"
+    "all genres", "all music genres" -> tr("Все жанры")
     else -> raw
 }
 
 private fun localizedMixTitle(raw: String): String =
-    YourMixPattern.find(raw.trim())?.let { "Твой микс ${it.groupValues[1]}" } ?: raw
+    YourMixPattern.find(raw.trim())?.let { tr("Твой микс %s", it.groupValues[1]) } ?: raw
 
 /**
  * An editorial mix tile: the artwork *is* the card.
@@ -6253,7 +6362,7 @@ private fun PlaylistDownloadButton(playlist: Playlist, onDownload: () -> Unit, s
 
         saved == total -> PanelIconButton(
             icon = Icons.Default.DownloadDone,
-            contentDescription = "Все треки на устройстве",
+            contentDescription = tr("Все треки на устройстве"),
             onClick = {},
             selected = true,
             size = size,
@@ -6262,7 +6371,7 @@ private fun PlaylistDownloadButton(playlist: Playlist, onDownload: () -> Unit, s
 
         else -> PanelIconButton(
             icon = Icons.Default.Download,
-            contentDescription = "Скачать все треки",
+            contentDescription = tr("Скачать все треки"),
             onClick = onDownload,
             size = size,
             iconSize = iconSize
@@ -6374,7 +6483,7 @@ private fun PlayShuffleGroup(onPlay: () -> Unit, onShuffle: () -> Unit) {
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 Icon(Icons.Default.PlayArrow, contentDescription = null, modifier = Modifier.size(24.dp))
-                Text("Слушать", style = MaterialTheme.typography.titleMedium)
+                Text(tr("Слушать"), style = MaterialTheme.typography.titleMedium)
             }
         }
         val shuffleShape = RoundedCornerShape(topStart = 8.dp, bottomStart = 8.dp, topEnd = 28.dp, bottomEnd = 28.dp)
@@ -6388,7 +6497,7 @@ private fun PlayShuffleGroup(onPlay: () -> Unit, onShuffle: () -> Unit) {
             contentColor = PanelColors.accent
         ) {
             Box(contentAlignment = Alignment.Center) {
-                Icon(Icons.Rounded.Shuffle, contentDescription = "Перемешать", modifier = Modifier.size(24.dp))
+                Icon(Icons.Rounded.Shuffle, contentDescription = tr("Перемешать"), modifier = Modifier.size(24.dp))
             }
         }
     }
@@ -6410,10 +6519,10 @@ private fun ArtistPortraitHeader(
     val followers = artist.followersCount ?: 0
     val trackTotal = artist.trackCount ?: 0
     val stats = buildList {
-        if (followers > 0) add(compactCount(followers) + " подписчиков")
-        if (trackTotal > 0) add(plural(trackTotal, "трек", "трека", "треков"))
-        if (albumCount > 0) add(plural(albumCount, "альбом", "альбома", "альбомов"))
-        if (follow?.following == true) add("вы подписаны")
+        if (followers > 0) add(compactCount(followers) + tr(" подписчиков"))
+        if (trackTotal > 0) add(plural(trackTotal, tr("трек"), tr("трека"), tr("треков")))
+        if (albumCount > 0) add(plural(albumCount, tr("альбом"), tr("альбома"), tr("альбомов")))
+        if (follow?.following == true) add(tr("вы подписаны"))
     }.joinToString(" · ")
     val backdrop = MaterialTheme.colorScheme.background
     if (LocalHeaderPane.current) {
@@ -6433,7 +6542,7 @@ private fun ArtistPortraitHeader(
             onPictureClick = null,
             text = {
                 Kicker(
-                    text = if (artist.permalinkUrl?.startsWith("yandex") == true) "Артист · Яндекс Музыка" else "Артист",
+                    text = if (artist.permalinkUrl?.startsWith("yandex") == true) tr("Артист · Яндекс Музыка") else tr("Артист"),
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
                 Text(
@@ -6499,7 +6608,7 @@ private fun ArtistPortraitHeader(
                 .padding(start = 20.dp, top = ArtistPortraitHeight - 120.dp, end = 20.dp)
         ) {
             Kicker(
-                text = if (artist.permalinkUrl?.startsWith("yandex") == true) "Артист · Яндекс Музыка" else "Артист",
+                text = if (artist.permalinkUrl?.startsWith("yandex") == true) tr("Артист · Яндекс Музыка") else tr("Артист"),
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
             Spacer(modifier = Modifier.height(4.dp))
@@ -6562,7 +6671,7 @@ private fun FollowButton(follow: ArtistFollow, onToggle: () -> Unit) {
             } else {
                 Icon(
                     imageVector = if (follow.following) Icons.Rounded.HowToReg else Icons.Rounded.PersonAddAlt1,
-                    contentDescription = if (follow.following) "Отписаться" else "Подписаться",
+                    contentDescription = if (follow.following) tr("Отписаться") else tr("Подписаться"),
                     modifier = Modifier.size(24.dp)
                 )
             }
@@ -6590,7 +6699,7 @@ private fun MixCoverHeader(
                 contentScale = ContentScale.Crop
             )
         },
-        kicker = if (isStation) "Станция" else "Микс",
+        kicker = if (isStation) tr("Станция") else tr("Микс"),
         title = title,
         // Stations put "Artist station" in the description, which their title already says.
         subtitle = if (isStation) null else mix.description?.takeIf { it.isNotBlank() },
@@ -6657,7 +6766,7 @@ private fun CoverHeader(
                             contentColor = PanelColors.accent
                         ) {
                             Box(contentAlignment = Alignment.Center) {
-                                Icon(Icons.Rounded.Shuffle, contentDescription = "Перемешать", modifier = Modifier.size(24.dp))
+                                Icon(Icons.Rounded.Shuffle, contentDescription = tr("Перемешать"), modifier = Modifier.size(24.dp))
                             }
                         }
                     }
@@ -6739,7 +6848,7 @@ private fun CoverHeader(
                             contentColor = PanelColors.accent
                         ) {
                             Box(contentAlignment = Alignment.Center) {
-                                Icon(Icons.Rounded.Shuffle, contentDescription = "Перемешать", modifier = Modifier.size(24.dp))
+                                Icon(Icons.Rounded.Shuffle, contentDescription = tr("Перемешать"), modifier = Modifier.size(24.dp))
                             }
                         }
                     }
@@ -6838,7 +6947,7 @@ private fun MixPlayButton(isActive: Boolean, isPlaying: Boolean, onClick: () -> 
         Box(contentAlignment = Alignment.Center) {
             Icon(
                 imageVector = if (playing) Icons.Default.Pause else Icons.Default.PlayArrow,
-                contentDescription = if (playing) "Пауза" else "Слушать",
+                contentDescription = if (playing) tr("Пауза") else tr("Слушать"),
                 modifier = Modifier.size(38.dp)
             )
         }
@@ -6895,7 +7004,7 @@ private fun MixDetailScreen(
         ) {
             // A rule between the cover and the list, so the two never blur together.
             item(key = "mix-count") {
-                CountRule(if (tracks.isEmpty()) "Загружаем треки" else plural(tracks.size, "трек", "трека", "треков"))
+                CountRule(if (tracks.isEmpty()) tr("Загружаем треки") else plural(tracks.size, tr("трек"), tr("трека"), tr("треков")))
             }
 
             if (tracks.isEmpty()) {
@@ -7175,7 +7284,7 @@ private fun TrackCard(
         ) {
             Icon(
                 imageVector = if (isFavorite) Icons.Filled.Favorite else Icons.Outlined.FavoriteBorder,
-                contentDescription = if (isFavorite) "Убрать из любимых" else "В любимые",
+                contentDescription = if (isFavorite) tr("Убрать из любимых") else tr("В любимые"),
                 tint = MaterialTheme.colorScheme.primary.copy(alpha = if (isFavorite) 1f else 0.6f)
             )
         }
@@ -7255,14 +7364,14 @@ private fun DownloadedTrackCard(
             checked != null -> Box(modifier = Modifier.size(48.dp), contentAlignment = Alignment.Center) {
                 Icon(
                     imageVector = if (checked) Icons.Rounded.CheckCircle else Icons.Rounded.RadioButtonUnchecked,
-                    contentDescription = if (checked) "Выбран" else "Не выбран",
+                    contentDescription = if (checked) tr("Выбран") else tr("Не выбран"),
                     tint = if (checked) MaterialTheme.colorScheme.primary else LocalContentColor.current.copy(alpha = 0.5f)
                 )
             }
             onDeleteDownload != null -> IconButton(onClick = onDeleteDownload) {
                 Icon(
                     Icons.Default.Delete,
-                    contentDescription = "Удалить",
+                    contentDescription = tr("Удалить"),
                     tint = LocalContentColor.current.copy(alpha = 0.8f)
                 )
             }
@@ -8293,14 +8402,14 @@ private fun PlayerPanel(
                     text = buildString {
                         append(
                             when {
-                                fromPhone -> "С телефона"
-                                live -> "YouTube · в эфире"
-                                track.urn?.startsWith("yandex:") == true -> "Яндекс Музыка"
+                                fromPhone -> tr("С телефона")
+                                live -> tr("YouTube · в эфире")
+                                track.urn?.startsWith("yandex:") == true -> tr("Яндекс Музыка")
                                 track.youTubeVideoId != null -> "YouTube Music"
                                 else -> "SoundCloud"
                             }
                         )
-                        if (!fromPhone && downloadState == DownloadState.DOWNLOADED) append(" · на устройстве")
+                        if (!fromPhone && downloadState == DownloadState.DOWNLOADED) append(tr(" · на устройстве"))
                     }
                 )
                 }
@@ -8403,7 +8512,7 @@ private fun PlayerPanel(
                 ) {
                     PanelIconButton(
                         icon = if (isFavorite) Icons.Rounded.Favorite else Icons.Rounded.FavoriteBorder,
-                        contentDescription = if (isFavorite) "Убрать из любимых" else "В любимые",
+                        contentDescription = if (isFavorite) tr("Убрать из любимых") else tr("В любимые"),
                         onClick = {
                             haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                             onFavoriteClick()
@@ -8413,7 +8522,7 @@ private fun PlayerPanel(
                     )
                     PanelIconButton(
                         icon = Icons.Rounded.SkipPrevious,
-                        contentDescription = "Предыдущий трек",
+                        contentDescription = tr("Предыдущий трек"),
                         onClick = onPrevious,
                         size = 68.dp,
                         iconSize = 32.dp
@@ -8421,7 +8530,7 @@ private fun PlayerPanel(
                     PanelPlayButton(isPlaying = isPlaying, onClick = onTogglePlay)
                     PanelIconButton(
                         icon = Icons.Rounded.SkipNext,
-                        contentDescription = "Следующий трек",
+                        contentDescription = tr("Следующий трек"),
                         onClick = onNext,
                         size = 68.dp,
                         iconSize = 32.dp
@@ -8429,7 +8538,7 @@ private fun PlayerPanel(
                     if (onDislike != null) {
                         PanelIconButton(
                             icon = Icons.Rounded.HeartBroken,
-                            contentDescription = "Не нравится",
+                            contentDescription = tr("Не нравится"),
                             onClick = {
                                 haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                                 onDislike()
@@ -8439,7 +8548,7 @@ private fun PlayerPanel(
                     } else {
                         PanelIconButton(
                             icon = Icons.Rounded.Shuffle,
-                            contentDescription = if (shuffleEnabled) "Перемешивание включено" else "Перемешать",
+                            contentDescription = if (shuffleEnabled) tr("Перемешивание включено") else tr("Перемешать"),
                             onClick = {
                                 haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                                 onShuffle()
@@ -8475,7 +8584,7 @@ private fun PlayerPanel(
                     // A broadcast doesn't repeat: in the repeat button's place, its chat.
                     if (liveChat != null) PanelIconButton(
                         icon = Icons.Rounded.Forum,
-                        contentDescription = if (lyricsShown) "Скрыть чат" else "Чат трансляции",
+                        contentDescription = if (lyricsShown) tr("Скрыть чат") else tr("Чат трансляции"),
                         onClick = {
                             haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                             onToggleLyrics()
@@ -8485,9 +8594,9 @@ private fun PlayerPanel(
                     ) else PanelIconButton(
                         icon = if (repeatMode == Player.REPEAT_MODE_ONE) Icons.Rounded.RepeatOne else Icons.Rounded.Repeat,
                         contentDescription = when (repeatMode) {
-                            Player.REPEAT_MODE_ONE -> "Повтор трека"
-                            Player.REPEAT_MODE_ALL -> "Повтор очереди"
-                            else -> "Повтор выключен"
+                            Player.REPEAT_MODE_ONE -> tr("Повтор трека")
+                            Player.REPEAT_MODE_ALL -> tr("Повтор очереди")
+                            else -> tr("Повтор выключен")
                         },
                         onClick = {
                             haptic.performHapticFeedback(HapticFeedbackType.LongPress)
@@ -8584,7 +8693,7 @@ private fun BoxScope.LandscapeControls(
                     onClick = { touched++; haptic.performHapticFeedback(HapticFeedbackType.LongPress); onPrevious() },
                     modifier = Modifier.size(56.dp)
                 ) {
-                    Icon(Icons.Rounded.SkipPrevious, contentDescription = "Предыдущий трек", tint = Color.White, modifier = Modifier.size(40.dp))
+                    Icon(Icons.Rounded.SkipPrevious, contentDescription = tr("Предыдущий трек"), tint = Color.White, modifier = Modifier.size(40.dp))
                 }
                 IconButton(
                     onClick = { touched++; haptic.performHapticFeedback(HapticFeedbackType.LongPress); onTogglePlay() },
@@ -8594,7 +8703,7 @@ private fun BoxScope.LandscapeControls(
                 ) {
                     Icon(
                         imageVector = if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
-                        contentDescription = if (isPlaying) "Пауза" else "Играть",
+                        contentDescription = if (isPlaying) tr("Пауза") else tr("Играть"),
                         tint = Color.White,
                         modifier = Modifier.size(52.dp)
                     )
@@ -8603,7 +8712,7 @@ private fun BoxScope.LandscapeControls(
                     onClick = { touched++; haptic.performHapticFeedback(HapticFeedbackType.LongPress); onNext() },
                     modifier = Modifier.size(56.dp)
                 ) {
-                    Icon(Icons.Rounded.SkipNext, contentDescription = "Следующий трек", tint = Color.White, modifier = Modifier.size(40.dp))
+                    Icon(Icons.Rounded.SkipNext, contentDescription = tr("Следующий трек"), tint = Color.White, modifier = Modifier.size(40.dp))
                 }
             }
             Column(
@@ -8667,8 +8776,8 @@ private fun TrackFxButton(fx: com.example.myapplication.data.TrackFx, live: Bool
             Text(
                 text = when {
                     speed != 1f -> "%.2f×".format(speed)
-                    fx.reverb > 0 -> "Реверб"
-                    else -> "Эффекты"
+                    fx.reverb > 0 -> tr("Реверб")
+                    else -> tr("Эффекты")
                 },
                 style = MaterialTheme.typography.labelLarge
             )
@@ -8699,25 +8808,25 @@ private fun TrackFxSheet(
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(modifier = Modifier.weight(1f)) {
-                    Text("Эффекты трека", style = MaterialTheme.typography.titleLarge)
+                    Text(tr("Эффекты трека"), style = MaterialTheme.typography.titleLarge)
                     Text(
-                        "Сохраняются для этого трека",
+                        tr("Сохраняются для этого трека"),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
-                if (!fx.isDefault) TextButton(onClick = { onChange(com.example.myapplication.data.TrackFx()) }) { Text("Сбросить") }
+                if (!fx.isDefault) TextButton(onClick = { onChange(com.example.myapplication.data.TrackFx()) }) { Text(tr("Сбросить")) }
             }
 
             if (live) {
                 Text(
-                    "Эфир идёт в реальном времени: его скорость не меняется",
+                    tr("Эфир идёт в реальном времени: его скорость не меняется"),
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             } else {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("Скорость", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
+                Text(tr("Скорость"), style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
                 Text("%.2f×".format(fx.speed), style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.primary)
             }
             Slider(
@@ -8727,7 +8836,7 @@ private fun TrackFxSheet(
                 steps = 19
             )
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                listOf(0.8f to "Замедлить", 1f to "Обычная", 1.25f to "Ускорить").forEach { (speed, name) ->
+                listOf(0.8f to tr("Замедлить"), 1f to tr("Обычная"), 1.25f to tr("Ускорить")).forEach { (speed, name) ->
                     FilterChip(
                         selected = fx.speed == speed,
                         onClick = { onChange(fx.copy(speed = speed)) },
@@ -8737,9 +8846,9 @@ private fun TrackFxSheet(
             }
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(modifier = Modifier.weight(1f)) {
-                    Text("Сохранять тон", style = MaterialTheme.typography.titleMedium)
+                    Text(tr("Сохранять тон"), style = MaterialTheme.typography.titleMedium)
                     Text(
-                        "Без этого голос ниже в замедлении и выше в ускорении, как у пластинки",
+                        tr("Без этого голос ниже в замедлении и выше в ускорении, как у пластинки"),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -8750,9 +8859,9 @@ private fun TrackFxSheet(
 
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(modifier = Modifier.weight(1f)) {
-                    Text("Реверб", style = MaterialTheme.typography.titleMedium)
+                    Text(tr("Реверб"), style = MaterialTheme.typography.titleMedium)
                     Text(
-                        "Эхо большого зала",
+                        tr("Эхо большого зала"),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -8779,7 +8888,7 @@ private const val DEFAULT_REVERB = 40
 @Composable
 private fun LiveBadge() {
     Text(
-        text = "В ЭФИРЕ",
+        text = tr("В ЭФИРЕ"),
         style = MaterialTheme.typography.labelSmall,
         color = Color.White,
         modifier = Modifier
@@ -8804,7 +8913,7 @@ private fun LiveMark(color: Color) {
                 .background(Color(0xFFFF3B30), CircleShape)
         )
         Text(
-            text = "В эфире",
+            text = tr("В эфире"),
             style = MaterialTheme.typography.titleSmall,
             color = color
         )
@@ -8938,7 +9047,7 @@ private fun PanelPlayButton(isPlaying: Boolean, onClick: () -> Unit) {
         Box(contentAlignment = Alignment.Center) {
             Icon(
                 imageVector = if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
-                contentDescription = if (isPlaying) "Пауза" else "Играть",
+                contentDescription = if (isPlaying) tr("Пауза") else tr("Играть"),
                 modifier = Modifier.size(44.dp)
             )
         }
@@ -8989,11 +9098,11 @@ private fun QueuePeek(
             }
             Column(modifier = Modifier.weight(1f)) {
                 Kicker(
-                    text = if (nextTrack != null) "Далее" else "Очередь",
+                    text = if (nextTrack != null) tr("Далее") else tr("Очередь"),
                     color = onPanel.copy(alpha = 0.72f)
                 )
                 Text(
-                    text = nextTrack?.title ?: plural(queueSize, "трек", "трека", "треков"),
+                    text = nextTrack?.title ?: plural(queueSize, tr("трек"), tr("трека"), tr("треков")),
                     style = MaterialTheme.typography.titleSmall,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
@@ -9021,15 +9130,15 @@ private fun QueuePeek(
                         Icon(
                             if (chat) Icons.Rounded.Forum else Icons.Default.Lyrics,
                             contentDescription = when {
-                                chat -> if (lyricsShown) "Скрыть чат" else "Чат трансляции"
-                                else -> if (lyricsShown) "Скрыть текст" else "Текст песни"
+                                chat -> if (lyricsShown) tr("Скрыть чат") else tr("Чат трансляции")
+                                else -> if (lyricsShown) tr("Скрыть текст") else tr("Текст песни")
                             },
                             modifier = Modifier.size(24.dp)
                         )
                     }
                 }
             } else {
-                Icon(Icons.Default.KeyboardArrowUp, contentDescription = "Открыть очередь")
+                Icon(Icons.Default.KeyboardArrowUp, contentDescription = tr("Открыть очередь"))
             }
         }
     }
@@ -9051,7 +9160,7 @@ private fun LiveChatOverlay(chat: com.example.myapplication.data.YouTubeLiveChat
     val state = remember(chat) {
         chat.messages
             .map<List<com.example.myapplication.data.LiveChatMessage>, LiveChatState> { LiveChatState.Messages(it) }
-            .catch { emit(LiveChatState.Failed(it.message ?: "Чат недоступен")) }
+            .catch { emit(LiveChatState.Failed(it.message ?: tr("Чат недоступен"))) }
     }.collectAsStateWithLifecycle(initialValue = LiveChatState.Loading).value
     val onPanel = PanelColors.content
     val accent = PanelColors.accent
@@ -9096,7 +9205,7 @@ private fun LiveChatOverlay(chat: com.example.myapplication.data.YouTubeLiveChat
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 androidx.compose.material3.CircularProgressIndicator(modifier = Modifier.size(32.dp), color = accent, strokeWidth = 3.dp)
-                Text("Подключаюсь к чату…", style = MaterialTheme.typography.bodyMedium, color = onPanel.copy(alpha = 0.8f))
+                Text(tr("Подключаюсь к чату…"), style = MaterialTheme.typography.bodyMedium, color = onPanel.copy(alpha = 0.8f))
             }
             is LiveChatState.Failed -> Text(
                 text = state.reason,
@@ -9107,7 +9216,7 @@ private fun LiveChatOverlay(chat: com.example.myapplication.data.YouTubeLiveChat
             )
             is LiveChatState.Messages -> if (state.list.isEmpty()) {
                 Text(
-                    "В чате пока тихо",
+                    tr("В чате пока тихо"),
                     style = MaterialTheme.typography.bodyLarge,
                     color = onPanel.copy(alpha = 0.8f),
                     modifier = Modifier.align(Alignment.Center)
@@ -9198,7 +9307,7 @@ private fun LiveChatOverlay(chat: com.example.myapplication.data.YouTubeLiveChat
                             horizontalArrangement = Arrangement.spacedBy(6.dp)
                         ) {
                             Icon(Icons.Rounded.KeyboardArrowDown, contentDescription = null, modifier = Modifier.size(20.dp))
-                            Text("Новые сообщения", style = MaterialTheme.typography.labelLarge)
+                            Text(tr("Новые сообщения"), style = MaterialTheme.typography.labelLarge)
                         }
                     }
                 }
@@ -9294,12 +9403,12 @@ private fun ChatComposerButton(
         }
     }
     val reason = when {
-        canSend -> "Сообщение в чат…"
-        subscribing -> "Оформляю подписку…"
-        resubscribe -> "YouTube считает, что подписка оформлена на детском видео — оформим заново"
-        waiting -> "Вы подписаны. " + (detail ?: "YouTube пустит в чат чуть позже")
+        canSend -> tr("Сообщение в чат…")
+        subscribing -> tr("Оформляю подписку…")
+        resubscribe -> tr("YouTube считает, что подписка оформлена на детском видео — оформим заново")
+        waiting -> tr("Вы подписаны. ") + (detail ?: tr("YouTube пустит в чат чуть позже"))
         blocked != null -> blocked!!
-        else -> "Подключаюсь к чату…"
+        else -> tr("Подключаюсь к чату…")
     }
     Surface(
         // Blocked, a tap shows the reason whole, with YouTube's explanation.
@@ -9342,9 +9451,9 @@ private fun ChatComposerButton(
                             android.widget.Toast.makeText(
                                 context,
                                 when {
-                                    !done -> "Не удалось подписаться"
-                                    again -> "Подписка оформлена заново"
-                                    else -> "Вы подписались на канал"
+                                    !done -> tr("Не удалось подписаться")
+                                    again -> tr("Подписка оформлена заново")
+                                    else -> tr("Вы подписались на канал")
                                 },
                                 android.widget.Toast.LENGTH_SHORT
                             ).show()
@@ -9365,7 +9474,7 @@ private fun ChatComposerButton(
                                 strokeWidth = 2.dp
                             )
                         } else {
-                            Text(if (resubscribe) "Заново" else "Подписаться", style = MaterialTheme.typography.labelLarge)
+                            Text(if (resubscribe) tr("Заново") else tr("Подписаться"), style = MaterialTheme.typography.labelLarge)
                         }
                     }
                 }
@@ -9413,7 +9522,7 @@ private fun FloatingChatComposer(
             if (chat.send(text)) {
                 draft = ""
             } else {
-                android.widget.Toast.makeText(context, "Сообщение не отправилось", android.widget.Toast.LENGTH_SHORT).show()
+                android.widget.Toast.makeText(context, tr("Сообщение не отправилось"), android.widget.Toast.LENGTH_SHORT).show()
             }
             sending = false
         }
@@ -9435,7 +9544,7 @@ private fun FloatingChatComposer(
         ) {
             Box(modifier = Modifier.weight(1f), contentAlignment = Alignment.CenterStart) {
                 if (draft.isEmpty()) {
-                    Text("Сообщение в чат…", style = MaterialTheme.typography.bodyLarge, color = onPanel.copy(alpha = 0.55f))
+                    Text(tr("Сообщение в чат…"), style = MaterialTheme.typography.bodyLarge, color = onPanel.copy(alpha = 0.55f))
                 }
                 androidx.compose.foundation.text.BasicTextField(
                     value = draft,
@@ -9461,7 +9570,7 @@ private fun FloatingChatComposer(
                 modifier = Modifier.size(48.dp)
             ) {
                 Box(contentAlignment = Alignment.Center) {
-                    Icon(Icons.AutoMirrored.Rounded.Send, contentDescription = "Отправить", modifier = Modifier.size(22.dp))
+                    Icon(Icons.AutoMirrored.Rounded.Send, contentDescription = tr("Отправить"), modifier = Modifier.size(22.dp))
                 }
             }
         }
@@ -9860,7 +9969,7 @@ private fun QueueManagerPanel(
                             contentAlignment = Alignment.Center
                         ) {
                             Text(
-                                text = "Очередь пуста",
+                                text = tr("Очередь пуста"),
                                 style = MaterialTheme.typography.bodyLarge,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
@@ -10206,10 +10315,10 @@ private fun DownloadBadge(state: DownloadState) {
             }
             Text(
                 text = when (state) {
-                    DownloadState.DOWNLOADED -> "Загружено"
-                    DownloadState.DOWNLOADING -> "Загрузка"
-                    DownloadState.FAILED -> "Ошибка"
-                    DownloadState.NONE -> "Онлайн"
+                    DownloadState.DOWNLOADED -> tr("Загружено")
+                    DownloadState.DOWNLOADING -> tr("Загрузка")
+                    DownloadState.FAILED -> tr("Ошибка")
+                    DownloadState.NONE -> tr("Онлайн")
                 },
                 style = MaterialTheme.typography.labelMedium
             )
@@ -10383,7 +10492,7 @@ internal fun PlayerBar(
                     overflow = TextOverflow.Ellipsis
                 )
                 Text(
-                    text = artist.ifBlank { if (isPlaying) "Сейчас играет" else "На паузе" },
+                    text = artist.ifBlank { if (isPlaying) tr("Сейчас играет") else tr("На паузе") },
                     style = MaterialTheme.typography.labelMedium,
                     color = onPanel.copy(alpha = 0.78f),
                     maxLines = 1,
@@ -10422,7 +10531,7 @@ internal fun PlayerBar(
                 Box(contentAlignment = Alignment.Center) {
                     Icon(
                         imageVector = if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
-                        contentDescription = if (isPlaying) "Пауза" else "Играть",
+                        contentDescription = if (isPlaying) tr("Пауза") else tr("Играть"),
                         modifier = Modifier.size(28.dp)
                     )
                 }
@@ -10469,12 +10578,12 @@ private fun ClientIdWarningCard(onOpenSettings: () -> Unit) {
             )
             Column(modifier = Modifier.weight(1f)) {
                 Text(
-                    text = "Не указан SoundCloud client_id",
+                    text = tr("Не указан SoundCloud client_id"),
                     style = MaterialTheme.typography.titleMedium
                 )
                 Spacer(modifier = Modifier.height(4.dp))
                 Text(
-                    text = "Нажмите, чтобы открыть настройки и ввести рабочий ключ, иначе поиск и воспроизведение работать не будут.",
+                    text = tr("Нажмите, чтобы открыть настройки и ввести рабочий ключ, иначе поиск и воспроизведение работать не будут."),
                     style = MaterialTheme.typography.bodyMedium
                 )
             }
@@ -10507,11 +10616,11 @@ private fun ReloginRequiredCard(onRelogin: () -> Unit) {
                 )
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        text = "Сессия SoundCloud истекла",
+                        text = tr("Сессия SoundCloud истекла"),
                         style = MaterialTheme.typography.titleMedium
                     )
                     Text(
-                        text = "Обновить её автоматически не вышло — войдите в аккаунт заново.",
+                        text = tr("Обновить её автоматически не вышло — войдите в аккаунт заново."),
                         style = MaterialTheme.typography.bodyMedium
                     )
                 }
@@ -10524,7 +10633,7 @@ private fun ReloginRequiredCard(onRelogin: () -> Unit) {
                     contentColor = MaterialTheme.colorScheme.onError
                 )
             ) {
-                Text("Войти заново")
+                Text(tr("Войти заново"))
             }
         }
     }
@@ -10557,12 +10666,12 @@ private fun ClientIdExpiredWarningCard(onOpenSettings: () -> Unit, onAutoRefresh
                 )
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        text = "SoundCloud client_id устарел",
+                        text = tr("SoundCloud client_id устарел"),
                         style = MaterialTheme.typography.titleMedium
                     )
                     Spacer(modifier = Modifier.height(4.dp))
                     Text(
-                        text = "Текущий ключ SoundCloud больше недействителен. Попробуйте обновить его автоматически или укажите рабочий вручную.",
+                        text = tr("Текущий ключ SoundCloud больше недействителен. Попробуйте обновить его автоматически или укажите рабочий вручную."),
                         style = MaterialTheme.typography.bodyMedium
                     )
                 }
@@ -10578,7 +10687,7 @@ private fun ClientIdExpiredWarningCard(onOpenSettings: () -> Unit, onAutoRefresh
                         onOpenSettings()
                     }
                 ) {
-                    Text("Настройки", color = MaterialTheme.colorScheme.error)
+                    Text(tr("Настройки"), color = MaterialTheme.colorScheme.error)
                 }
                 Spacer(modifier = Modifier.width(8.dp))
                 Button(
@@ -10592,7 +10701,7 @@ private fun ClientIdExpiredWarningCard(onOpenSettings: () -> Unit, onAutoRefresh
                     ),
                     shape = MaterialTheme.shapes.medium
                 ) {
-                    Text("Обновить автоматически")
+                    Text(tr("Обновить автоматически"))
                 }
             }
         }
@@ -10666,11 +10775,11 @@ private fun EqualizerCard(
                 }
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        text = "Эквалайзер",
+                        text = tr("Эквалайзер"),
                         style = MaterialTheme.typography.titleMedium
                     )
                     Text(
-                        text = "Настройка звуковых частот и пресетов",
+                        text = tr("Настройка звуковых частот и пресетов"),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -10685,7 +10794,7 @@ private fun EqualizerCard(
                 Spacer(modifier = Modifier.height(8.dp))
                 
                 Text(
-                    text = "Пресеты",
+                    text = tr("Пресеты"),
                     style = MaterialTheme.typography.titleSmall
                 )
                 LazyRow(
@@ -10723,7 +10832,7 @@ private fun EqualizerCard(
                 Spacer(modifier = Modifier.height(8.dp))
 
                 Text(
-                    text = "Полосы частот",
+                    text = tr("Полосы частот"),
                     style = MaterialTheme.typography.titleSmall
                 )
                 
@@ -10808,7 +10917,7 @@ fun SoundCloudLoginScreen(
                 )
                 Spacer(modifier = Modifier.height(8.dp))
                 Text(
-                    text = "Войдите в свой аккаунт, чтобы настроить приложение",
+                    text = tr("Войдите в свой аккаунт, чтобы настроить приложение"),
                     style = MaterialTheme.typography.bodyLarge,
                     textAlign = TextAlign.Center,
                     color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.7f)
@@ -11022,7 +11131,7 @@ fun SoundCloudLoginScreen(
                     AppLoadingIndicator(color = AppTheme.brand.soundCloud.color)
                     Spacer(modifier = Modifier.height(16.dp))
                     Text(
-                        text = "Авторизация в SoundCloud...",
+                        text = tr("Авторизация в SoundCloud..."),
                         color = Color.White,
                         style = MaterialTheme.typography.titleMedium
                     )
@@ -11176,7 +11285,7 @@ private fun PlaylistCard(playlist: Playlist, onClick: () -> Unit, onDelete: () -
                     style = MaterialTheme.typography.titleLarge,
                 )
                 Text(
-                    text = "${playlist.tracks.size} треков",
+                    text = tr("%s треков", playlist.tracks.size),
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.8f)
                 )
@@ -11246,7 +11355,7 @@ private fun PlaylistDetailScreen(
                             IconCover(icon = Icons.AutoMirrored.Filled.QueueMusic)
                         }
                     },
-                    kicker = if (playlist.isLikedAlbum) "Альбом · в медиатеке" else "Плейлист",
+                    kicker = if (playlist.isLikedAlbum) tr("Альбом · в медиатеке") else tr("Плейлист"),
                     title = playlist.name,
                     subtitle = playlist.artist?.takeIf { playlist.isLikedAlbum && it.isNotBlank() },
                     isActive = isActive,
@@ -11264,8 +11373,8 @@ private fun PlaylistDetailScreen(
             item(key = "playlist-count") {
                 CountRule(
                     text = listOfNotNull(
-                        if (tracks.isEmpty()) "Нет треков" else plural(tracks.size, "трек", "трека", "треков"),
-                        playlist.downloadedCount.takeIf { it > 0 }?.let { "$it на устройстве" }
+                        if (tracks.isEmpty()) tr("Нет треков") else plural(tracks.size, tr("трек"), tr("трека"), tr("треков")),
+                        playlist.downloadedCount.takeIf { it > 0 }?.let { tr("%s на устройстве", it) }
                     ).joinToString(" · ")
                 ) {
                     if (tracks.isNotEmpty()) {
@@ -11274,7 +11383,7 @@ private fun PlaylistDetailScreen(
                     } else {
                         PanelIconButton(
                             icon = Icons.Default.Image,
-                            contentDescription = "Сменить обложку",
+                            contentDescription = tr("Сменить обложку"),
                             onClick = { imagePicker.launch(arrayOf("image/*")) },
                             size = RuleButtonSize,
                             iconSize = RuleIconSize
@@ -11286,7 +11395,7 @@ private fun PlaylistDetailScreen(
             if (tracks.isEmpty()) {
                 item(key = "playlist-empty") {
                     Box(modifier = Modifier.padding(horizontal = 16.dp)) {
-                        EmptyState("Здесь пока нет треков. Зажмите обложку трека в плеере, чтобы добавить его.")
+                        EmptyState(tr("Здесь пока нет треков. Зажмите обложку трека в плеере, чтобы добавить его."))
                     }
                 }
             } else {
@@ -11316,12 +11425,12 @@ private fun PlaylistDetailScreen(
                 Box {
                     HomeIconButton(
                         icon = Icons.Default.MoreVert,
-                        contentDescription = "Ещё",
+                        contentDescription = tr("Ещё"),
                         onClick = { showMenu = true }
                     )
                     DropdownMenu(expanded = showMenu, onDismissRequest = { showMenu = false }) {
                         DropdownMenuItem(
-                            text = { Text("Сменить обложку") },
+                            text = { Text(tr("Сменить обложку")) },
                             leadingIcon = { Icon(Icons.Default.Image, contentDescription = null) },
                             onClick = {
                                 showMenu = false
@@ -11330,7 +11439,7 @@ private fun PlaylistDetailScreen(
                         )
                         if (hasDownloaded && !playlist.isLikedAlbum) {
                             DropdownMenuItem(
-                                text = { Text("Переместить скачанные в «Скачанное»") },
+                                text = { Text(tr("Переместить скачанные в «Скачанное»")) },
                                 leadingIcon = { Icon(Icons.Default.Download, contentDescription = null) },
                                 onClick = {
                                     showMenu = false
@@ -11340,7 +11449,7 @@ private fun PlaylistDetailScreen(
                         }
                         DropdownMenuItem(
                             text = {
-                                Text(if (playlist.isLikedAlbum) "Убрать из медиатеки" else "Удалить плейлист")
+                                Text(if (playlist.isLikedAlbum) tr("Убрать из медиатеки") else tr("Удалить плейлист"))
                             },
                             leadingIcon = { Icon(Icons.Default.Delete, contentDescription = null) },
                             onClick = {
@@ -11416,11 +11525,11 @@ private fun YandexPlaylistCard(
             Spacer(modifier = Modifier.width(16.dp))
             Column(modifier = Modifier.weight(1f)) {
                 Text(
-                    text = playlist.title ?: "Без названия",
+                    text = playlist.title ?: tr("Без названия"),
                     style = MaterialTheme.typography.titleLarge,
                 )
                 Text(
-                    text = "${playlist.trackCount} треков",
+                    text = tr("%s треков", playlist.trackCount),
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -11453,7 +11562,7 @@ private fun YandexPlaylistDetailScreen(
 
     val albumLibrary = LocalAlbumLibrary.current
     val tracks = playlist.tracks
-    val title = playlist.title ?: "Без названия"
+    val title = playlist.title ?: tr("Без названия")
     val isLikedPlaylist = playlist.id == -100L
     val isActive = currentTrackId != null && tracks.any { it.id == currentTrackId }
     val favoritesMap = remember(favorites) { favorites.associateBy { it.id } }
@@ -11486,7 +11595,7 @@ private fun YandexPlaylistDetailScreen(
                             )
                         }
                     },
-                    kicker = "Плейлист · Яндекс Музыка",
+                    kicker = tr("Плейлист · Яндекс Музыка"),
                     title = title,
                     subtitle = null,
                     isActive = isActive,
@@ -11506,14 +11615,14 @@ private fun YandexPlaylistDetailScreen(
             item(key = "yandex-playlist-count") {
                 CountRule(
                     text = when {
-                        playlist.trackCount > 0 -> plural(playlist.trackCount, "трек", "трека", "треков")
-                        isLoading -> "Загружаем треки"
-                        else -> "Нет треков"
+                        playlist.trackCount > 0 -> plural(playlist.trackCount, tr("трек"), tr("трека"), tr("треков"))
+                        isLoading -> tr("Загружаем треки")
+                        else -> tr("Нет треков")
                     }
                 ) {
                     PanelIconButton(
                         icon = Icons.Default.Image,
-                        contentDescription = "Сменить обложку",
+                        contentDescription = tr("Сменить обложку"),
                         onClick = { imagePicker.launch(arrayOf("image/*")) },
                         size = RuleButtonSize,
                         iconSize = RuleIconSize
@@ -11525,7 +11634,7 @@ private fun YandexPlaylistDetailScreen(
                 item(key = "yandex-playlist-loading") { LoadingBlock(height = 200.dp) }
             } else if (tracks.isEmpty()) {
                 item(key = "yandex-playlist-empty") {
-                    Box(modifier = Modifier.padding(horizontal = 16.dp)) { EmptyState("Здесь пока нет треков.") }
+                    Box(modifier = Modifier.padding(horizontal = 16.dp)) { EmptyState(tr("Здесь пока нет треков.")) }
                 }
             } else {
                 itemsIndexed(
@@ -11556,7 +11665,7 @@ private fun YandexPlaylistDetailScreen(
             trailing = {
                 HomeIconButton(
                     icon = Icons.Default.VisibilityOff,
-                    contentDescription = "Скрыть плейлист",
+                    contentDescription = tr("Скрыть плейлист"),
                     onClick = onHidePlaylist
                 )
             }
@@ -11593,7 +11702,7 @@ private fun ArtistDetailScreen(
     onPlayFrom: (SoundCloudTrack, List<SoundCloudTrack>) -> Unit = { track, _ -> onPlayTrack(track) },
     onOpenArtist: (SoundCloudUser) -> Unit = {},
     onRetry: (() -> Unit)? = null,
-    tracksTitle: String = "Популярные треки"
+    tracksTitle: String = tr("Популярные треки")
 ) {
     // An album opened on the artist's page lies over the page, which stays as it was left under
     // it: pulled down, the album shows the page there, and closing it lands where the page was
@@ -11695,7 +11804,7 @@ private fun ArtistPage(
     onPlayFrom: (SoundCloudTrack, List<SoundCloudTrack>) -> Unit = { track, _ -> onPlayTrack(track) },
     onOpenArtist: (SoundCloudUser) -> Unit = {},
     onRetry: (() -> Unit)? = null,
-    tracksTitle: String = "Популярные треки"
+    tracksTitle: String = tr("Популярные треки")
 ) {
     val listState = rememberLazyListState()
     val collapsed = rememberCollapsed(listState, ArtistPortraitHeight - 160.dp)
@@ -11744,7 +11853,7 @@ private fun ArtistPage(
                             FilledTonalButton(onClick = onRetry, shape = MaterialTheme.shapes.medium) {
                                 Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(20.dp))
                                 Spacer(modifier = Modifier.width(8.dp))
-                                Text("Повторить")
+                                Text(tr("Повторить"))
                             }
                         }
                     }
@@ -11756,8 +11865,8 @@ private fun ArtistPage(
                             text = tracksTitle,
                             modifier = Modifier.padding(start = 16.dp, top = 8.dp, end = 8.dp, bottom = 8.dp),
                             actionLabel = when {
-                                canShowMore -> if (countKnown) "Все $totalTracks" else "Все"
-                                showAllTracks && tracks.size > TOP_TRACKS -> "Свернуть"
+                                canShowMore -> if (countKnown) tr("Все %s", totalTracks) else tr("Все")
+                                showAllTracks && tracks.size > TOP_TRACKS -> tr("Свернуть")
                                 else -> null
                             },
                             onAction = {
@@ -11794,7 +11903,7 @@ private fun ArtistPage(
                 if (lives.isNotEmpty()) {
                     item(key = "artist-lives-title") {
                         SectionTitle(
-                            "Трансляции",
+                            tr("Трансляции"),
                             modifier = Modifier.padding(start = 16.dp, top = 24.dp, end = 16.dp, bottom = 8.dp)
                         )
                     }
@@ -11835,7 +11944,7 @@ private fun ArtistPage(
                 } else if (playlists.isNotEmpty()) {
                     item(key = "artist-sets-title") {
                         SectionTitle(
-                            "Альбомы и плейлисты",
+                            tr("Альбомы и плейлисты"),
                             modifier = Modifier.padding(start = 16.dp, top = 24.dp, end = 16.dp, bottom = 8.dp)
                         )
                     }
@@ -11847,7 +11956,7 @@ private fun ArtistPage(
                 if (!artist.description.isNullOrBlank()) {
                     item(key = "artist-about-title") {
                         SectionTitle(
-                            "Об артисте",
+                            tr("Об артисте"),
                             modifier = Modifier.padding(start = 16.dp, top = 24.dp, end = 16.dp, bottom = 8.dp)
                         )
                     }
@@ -11911,10 +12020,10 @@ private fun ArtistSetsCarousel(
             val isAlbum = isYandexArtist || playlist.permalinkUrl?.startsWith("yandex:album:") == true
             CarouselAlbum(
                 key = playlist.id,
-                title = playlist.title ?: "Альбом",
+                title = playlist.title ?: tr("Альбом"),
                 subtitle = "",
                 caption = if (isAlbum) {
-                    "Альбом · " + plural(playlist.trackCount, "трек", "трека", "треков")
+                    tr("Альбом · ") + plural(playlist.trackCount, tr("трек"), tr("трека"), tr("треков"))
                 } else {
                     setCaption(playlist)
                 },
@@ -12013,7 +12122,7 @@ private fun SetDetailContent(
     // to what's about to appear.
     val trackCount = if (isLoading) maxOf(playlist.trackCount, tracks.size) else tracks.size
     val favoritesMap = remember(favorites) { favorites.associateBy { it.id } }
-    val title = playlist.title ?: "Без названия"
+    val title = playlist.title ?: tr("Без названия")
     // Playing from this set: the big button pauses and resumes rather than starting over.
     val isActive = currentTrackId != null && tracks.any { it.id == currentTrackId }
     val listState = rememberLazyListState()
@@ -12058,7 +12167,7 @@ private fun SetDetailContent(
                             IconCover(icon = Icons.Default.Album)
                         }
                     },
-                    kicker = if (isYandex) "Альбом" else setCaption(playlist),
+                    kicker = if (isYandex) tr("Альбом") else setCaption(playlist),
                     title = title,
                     subtitle = subtitle.takeIf { it.isNotBlank() },
                     byline = setArtists.takeIf { it.isNotEmpty() && onArtistClick != null }?.let { artists ->
@@ -12080,9 +12189,9 @@ private fun SetDetailContent(
             item(key = "set-count") {
                 CountRule(
                     text = when {
-                        trackCount > 0 -> plural(trackCount, "трек", "трека", "треков")
-                        isLoading -> "Загружаем треки"
-                        else -> "Нет треков"
+                        trackCount > 0 -> plural(trackCount, tr("трек"), tr("трека"), tr("треков"))
+                        isLoading -> tr("Загружаем треки")
+                        else -> tr("Нет треков")
                     },
                     actions = if (albumLibrary != null && tracks.isNotEmpty()) {
                         {
@@ -12090,7 +12199,7 @@ private fun SetDetailContent(
                             // on it can be downloaded as a whole.
                             PanelIconButton(
                                 icon = if (liked != null) Icons.Rounded.Favorite else Icons.Rounded.FavoriteBorder,
-                                contentDescription = if (liked != null) "Убрать из медиатеки" else "Сохранить в медиатеку",
+                                contentDescription = if (liked != null) tr("Убрать из медиатеки") else tr("Сохранить в медиатеку"),
                                 onClick = { albumLibrary.onToggleLike(playlist, artistName ?: subtitle) },
                                 selected = liked != null,
                                 size = RuleButtonSize,
@@ -12121,7 +12230,7 @@ private fun SetDetailContent(
                     item(key = "set-loading") { LoadingBlock(height = 200.dp) }
                 } else if (error == null) {
                     item(key = "set-empty") {
-                        Box(modifier = Modifier.padding(horizontal = 16.dp)) { EmptyState("Здесь пока нет треков.") }
+                        Box(modifier = Modifier.padding(horizontal = 16.dp)) { EmptyState(tr("Здесь пока нет треков.")) }
                     }
                 }
             } else {
@@ -12174,13 +12283,15 @@ fun TrackActionsDialog(
     onDeleteDownload: (() -> Unit)? = null,
     // Only for tracks with a radio to start — YouTube Music's.
     onRadio: (() -> Unit)? = null,
-    radioDescription: String = "Трек и то, что YouTube Music поставит за ним",
+    radioDescription: String = tr("Трек и то, что YouTube Music поставит за ним"),
     // "Слушать вместе", opened from here.
     onTogether: (() -> Unit)? = null,
     // The crossfade between tracks, in seconds, and setting it. Null: neither it nor the sleep
-    // timer is offered (the onboarding's demo menu).
+    // timer is offered.
     crossfadeSeconds: Int = 0,
-    onCrossfade: ((Int) -> Unit)? = null
+    onCrossfade: ((Int) -> Unit)? = null,
+    // The onboarding's demo menu: the sleep timer it shows is one of its own, which stops nothing.
+    demo: Boolean = false
 ) {
     // A real M3 modal bottom sheet rather than a Dialog imitating one: this brings the
     // spec scrim, drag handle, swipe-to-dismiss, predictive back and inset handling.
@@ -12233,16 +12344,16 @@ fun TrackActionsDialog(
                 Column(modifier = Modifier.weight(1f)) {
                     Kicker(
                         text = when {
-                            track.urn?.startsWith("local:") == true -> "С телефона"
-                            track.liveVideoId != null -> "YouTube · в эфире"
-                            track.urn?.startsWith("yandex:") == true -> "Яндекс Музыка"
+                            track.urn?.startsWith("local:") == true -> tr("С телефона")
+                            track.liveVideoId != null -> tr("YouTube · в эфире")
+                            track.urn?.startsWith("yandex:") == true -> tr("Яндекс Музыка")
                             track.youTubeVideoId != null -> "YouTube Music"
                             else -> "SoundCloud"
                         },
                         color = PanelColors.accent
                     )
                     Text(
-                        text = track.title ?: "Без названия",
+                        text = track.title ?: tr("Без названия"),
                         style = MaterialTheme.typography.titleLarge,
                         maxLines = 2,
                         overflow = TextOverflow.Ellipsis
@@ -12260,7 +12371,7 @@ fun TrackActionsDialog(
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 SheetTile(
                     icon = Icons.AutoMirrored.Filled.PlaylistAdd,
-                    label = "В плейлист",
+                    label = tr("В плейлист"),
                     selected = choosingPlaylist,
                     onClick = {
                         haptic.performHapticFeedback(HapticFeedbackType.LongPress)
@@ -12272,7 +12383,7 @@ fun TrackActionsDialog(
                 )
                 SheetTile(
                     icon = Icons.Default.Share,
-                    label = "Поделиться",
+                    label = tr("Поделиться"),
                     onClick = {
                         onShare()
                         dismissSheet()
@@ -12282,7 +12393,7 @@ fun TrackActionsDialog(
                 if (onRadio != null) {
                     SheetTile(
                         icon = Icons.Default.Radio,
-                        label = "Радио",
+                        label = tr("Радио"),
                         description = radioDescription,
                         onClick = {
                             onRadio()
@@ -12294,8 +12405,8 @@ fun TrackActionsDialog(
                 if (onTogether != null) {
                     SheetTile(
                         icon = Icons.Rounded.Groups,
-                        label = "Вместе",
-                        description = "Слушать вместе с друзьями рядом",
+                        label = tr("Вместе"),
+                        description = tr("Слушать вместе с друзьями рядом"),
                         onClick = onTogether,
                         modifier = Modifier.weight(1f)
                     )
@@ -12305,11 +12416,24 @@ fun TrackActionsDialog(
             // How the music goes on: the sleep timer and the crossfade between tracks. For all of it,
             // not this track alone, but where the hand already is.
             if (onCrossfade != null) {
-                val timer by com.example.myapplication.player.SleepTimer.state.collectAsState()
+                val realTimer by com.example.myapplication.player.SleepTimer.state.collectAsState()
+                var demoTimer by remember { mutableStateOf<com.example.myapplication.player.SleepTimer.State>(com.example.myapplication.player.SleepTimer.State.Off) }
+                val timer = if (demo) demoTimer else realTimer
+                val setTimer: (com.example.myapplication.player.SleepTimer.State) -> Unit = { state ->
+                    if (demo) {
+                        demoTimer = state
+                    } else {
+                        when (state) {
+                            is com.example.myapplication.player.SleepTimer.State.At -> com.example.myapplication.player.SleepTimer.set(state.minutes)
+                            com.example.myapplication.player.SleepTimer.State.EndOfTrack -> com.example.myapplication.player.SleepTimer.endOfTrack()
+                            com.example.myapplication.player.SleepTimer.State.Off -> com.example.myapplication.player.SleepTimer.cancel()
+                        }
+                    }
+                }
                 var minutesLeft by remember { mutableStateOf(com.example.myapplication.player.SleepTimer.minutesLeft()) }
                 LaunchedEffect(timer) {
                     while (timer is com.example.myapplication.player.SleepTimer.State.At) {
-                        minutesLeft = com.example.myapplication.player.SleepTimer.minutesLeft()
+                        minutesLeft = if (demo) timer.minutes else com.example.myapplication.player.SleepTimer.minutesLeft()
                         delay(5_000)
                     }
                 }
@@ -12317,11 +12441,11 @@ fun TrackActionsDialog(
                     SheetTile(
                         icon = Icons.Rounded.Bedtime,
                         label = when (timer) {
-                            is com.example.myapplication.player.SleepTimer.State.At -> "Сон · ${minutesLeft ?: 0} мин"
-                            com.example.myapplication.player.SleepTimer.State.EndOfTrack -> "Сон · трек"
-                            com.example.myapplication.player.SleepTimer.State.Off -> "Таймер сна"
+                            is com.example.myapplication.player.SleepTimer.State.At -> tr("Сон · %s мин", minutesLeft ?: 0)
+                            com.example.myapplication.player.SleepTimer.State.EndOfTrack -> tr("Сон · трек")
+                            com.example.myapplication.player.SleepTimer.State.Off -> tr("Таймер сна")
                         },
-                        description = "Музыка плавно стихнет и остановится",
+                        description = tr("Музыка плавно стихнет и остановится"),
                         selected = choosingSleep || timer != com.example.myapplication.player.SleepTimer.State.Off,
                         onClick = {
                             haptic.performHapticFeedback(HapticFeedbackType.LongPress)
@@ -12333,8 +12457,8 @@ fun TrackActionsDialog(
                     )
                     SheetTile(
                         icon = Icons.AutoMirrored.Rounded.CallMerge,
-                        label = if (crossfadeSeconds > 0) "Кроссфейд · $crossfadeSeconds с" else "Кроссфейд",
-                        description = "Треки плавно перетекают друг в друга",
+                        label = if (crossfadeSeconds > 0) tr("Кроссфейд · %s с", crossfadeSeconds) else tr("Кроссфейд"),
+                        description = tr("Треки плавно перетекают друг в друга"),
                         selected = choosingCrossfade || crossfadeSeconds > 0,
                         onClick = {
                             haptic.performHapticFeedback(HapticFeedbackType.LongPress)
@@ -12353,21 +12477,21 @@ fun TrackActionsDialog(
                     val at = timer as? com.example.myapplication.player.SleepTimer.State.At
                     SheetChoices(
                         caption = when (timer) {
-                            is com.example.myapplication.player.SleepTimer.State.At -> "Остановится через ${minutesLeft ?: 0} мин — последние полминуты музыка стихает"
-                            com.example.myapplication.player.SleepTimer.State.EndOfTrack -> "Остановится, когда закончится этот трек"
-                            com.example.myapplication.player.SleepTimer.State.Off -> "Через сколько остановить музыку. Последние полминуты она плавно стихает"
+                            is com.example.myapplication.player.SleepTimer.State.At -> tr("Остановится через %s мин — последние полминуты музыка стихает", minutesLeft ?: 0)
+                            com.example.myapplication.player.SleepTimer.State.EndOfTrack -> tr("Остановится, когда закончится этот трек")
+                            com.example.myapplication.player.SleepTimer.State.Off -> tr("Через сколько остановить музыку. Последние полминуты она плавно стихает")
                         },
                         choices = SLEEP_MINUTES.map { minutes ->
-                            SheetChoice("$minutes мин", selected = at?.minutes == minutes) {
-                                com.example.myapplication.player.SleepTimer.set(minutes)
+                            SheetChoice(tr("%s мин", minutes), selected = at?.minutes == minutes) {
+                                setTimer(com.example.myapplication.player.SleepTimer.State.At(android.os.SystemClock.elapsedRealtime() + minutes * 60_000L, minutes))
                                 dismissSheet()
                             }
-                        } + SheetChoice("Конец трека", selected = timer == com.example.myapplication.player.SleepTimer.State.EndOfTrack) {
-                            com.example.myapplication.player.SleepTimer.endOfTrack()
+                        } + SheetChoice(tr("Конец трека"), selected = timer == com.example.myapplication.player.SleepTimer.State.EndOfTrack) {
+                            setTimer(com.example.myapplication.player.SleepTimer.State.EndOfTrack)
                             dismissSheet()
                         } + listOfNotNull(
-                            SheetChoice("Выключить", selected = false) {
-                                com.example.myapplication.player.SleepTimer.cancel()
+                            SheetChoice(tr("Выключить"), selected = false) {
+                                setTimer(com.example.myapplication.player.SleepTimer.State.Off)
                                 choosingSleep = false
                             }.takeIf { timer != com.example.myapplication.player.SleepTimer.State.Off }
                         )
@@ -12380,12 +12504,12 @@ fun TrackActionsDialog(
                 ) {
                     SheetChoices(
                         caption = if (crossfadeSeconds > 0) {
-                            "Конец трека стихает, а следующий уже начинается — $crossfadeSeconds с одновременно"
+                            tr("Конец трека стихает, а следующий уже начинается — %s с одновременно", crossfadeSeconds)
                         } else {
-                            "Конец трека стихает, а следующий уже начинается. Для всех треков"
+                            tr("Конец трека стихает, а следующий уже начинается. Для всех треков")
                         },
                         choices = CROSSFADE_SECONDS.map { seconds ->
-                            SheetChoice(if (seconds == 0) "Выкл" else "$seconds с", selected = crossfadeSeconds == seconds) {
+                            SheetChoice(if (seconds == 0) tr("Выкл") else tr("%s с", seconds), selected = crossfadeSeconds == seconds) {
                                 haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                                 onCrossfade(seconds)
                             }
@@ -12419,8 +12543,8 @@ fun TrackActionsDialog(
                                     Icon(Icons.Default.Add, contentDescription = null, tint = PanelColors.onAccent)
                                 }
                             },
-                            title = "Новый плейлист",
-                            subtitle = "С этим треком в нём",
+                            title = tr("Новый плейлист"),
+                            subtitle = tr("С этим треком в нём"),
                             onClick = { showCreatePlaylistDialog = true }
                         )
                     }
@@ -12448,7 +12572,7 @@ fun TrackActionsDialog(
                                 }
                             },
                             title = playlist.name,
-                            subtitle = plural(playlist.tracks.size, "трек", "трека", "треков"),
+                            subtitle = plural(playlist.tracks.size, tr("трек"), tr("трека"), tr("треков")),
                             onClick = {
                                 onAddToPlaylist(playlist)
                                 dismissSheet()
@@ -12469,8 +12593,8 @@ fun TrackActionsDialog(
                     if (onRedownload != null) {
                         SheetRow(
                             leading = { SheetRowIcon(Icons.Default.Refresh) },
-                            title = "Перескачать",
-                            subtitle = "Скачать файл заново на устройство",
+                            title = tr("Перескачать"),
+                            subtitle = tr("Скачать файл заново на устройство"),
                             onClick = {
                                 onRedownload()
                                 dismissSheet()
@@ -12481,8 +12605,8 @@ fun TrackActionsDialog(
                     if (onDeleteDownload != null) {
                         SheetRow(
                             leading = { SheetRowIcon(Icons.Default.Delete, tint = colors.error) },
-                            title = "Удалить с устройства",
-                            subtitle = "Файл удалится с телефона, в любимых трек останется",
+                            title = tr("Удалить с устройства"),
+                            subtitle = tr("Файл удалится с телефона, в любимых трек останется"),
                             titleColor = colors.error,
                             onClick = {
                                 onDeleteDownload()
@@ -12497,12 +12621,12 @@ fun TrackActionsDialog(
         if (showCreatePlaylistDialog) {
             AlertDialog(
                 onDismissRequest = { showCreatePlaylistDialog = false },
-                title = { Text("Новый плейлист") },
+                title = { Text(tr("Новый плейлист")) },
                 text = {
                     OutlinedTextField(
                         value = playlistNameInput,
                         onValueChange = { playlistNameInput = it },
-                        placeholder = { Text("Название плейлиста") },
+                        placeholder = { Text(tr("Название плейлиста")) },
                         singleLine = true
                     )
                 },
@@ -12516,12 +12640,12 @@ fun TrackActionsDialog(
                             }
                         }
                     ) {
-                        Text("Создать")
+                        Text(tr("Создать"))
                     }
                 },
                 dismissButton = {
                     TextButton(onClick = { showCreatePlaylistDialog = false }) {
-                        Text("Отмена")
+                        Text(tr("Отмена"))
                     }
                 }
             )
@@ -12722,13 +12846,13 @@ fun AntiBotCaptchaDialog(
                     }
                     Spacer(modifier = Modifier.width(8.dp))
                     Text(
-                        text = "Проверка SoundCloud",
+                        text = tr("Проверка SoundCloud"),
                         style = MaterialTheme.typography.titleLarge
                     )
                 }
                 Text(
-                    text = "SoundCloud не принимает лайки с этого адреса, пока не пройдена проверка. " +
-                        "После неё лайк отправится сам.",
+                    text = tr("SoundCloud не принимает лайки с этого адреса, пока не пройдена проверка. " +
+                        "После неё лайк отправится сам."),
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(horizontal = 24.dp, vertical = 4.dp)
@@ -12833,7 +12957,7 @@ fun YtMusicLoginDialog(
                         Icon(imageVector = Icons.Default.Close, contentDescription = "Close")
                     }
                     Spacer(modifier = Modifier.width(8.dp))
-                    Text(text = "Вход в YouTube Music", style = MaterialTheme.typography.titleLarge)
+                    Text(text = tr("Вход в YouTube Music"), style = MaterialTheme.typography.titleLarge)
                 }
 
                 Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
@@ -12942,7 +13066,7 @@ fun YandexLoginDialog(
                     }
                     Spacer(modifier = Modifier.width(8.dp))
                     Text(
-                        text = "Вход в Яндекс Музыку",
+                        text = tr("Вход в Яндекс Музыку"),
                         style = MaterialTheme.typography.titleLarge
                     )
                 }

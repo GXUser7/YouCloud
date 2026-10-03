@@ -1,0 +1,8 @@
+<resources>
+    <string name="open_link_label">Open in YouCloud</string>
+    <string name="shortcut_wave">My Wave</string>
+    <string name="shortcut_my_music">My music</string>
+    <string name="shortcut_search">Search</string>
+    <string name="widget_now_playing">Now playing</string>
+    <string name="widget_now_playing_description">The cover, buttons and My Wave in your wallpaper\'s colours</string>
+</resources>

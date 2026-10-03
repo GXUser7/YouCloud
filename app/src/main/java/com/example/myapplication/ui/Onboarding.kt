@@ -1,5 +1,6 @@
 package com.example.myapplication.ui
 
+import com.example.myapplication.i18n.tr
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
@@ -148,7 +149,7 @@ internal fun OnboardingOverlay(onFinish: () -> Unit) {
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 StepDots(current = step, count = OnboardingStep.entries.size, modifier = Modifier.weight(1f))
-                if (step < last) TextButton(onClick = onFinish) { Text("Пропустить") }
+                if (step < last) TextButton(onClick = onFinish) { Text(tr("Пропустить")) }
             }
             AnimatedContent(
                 targetState = step,
@@ -191,12 +192,12 @@ private enum class Hint { SwipeLeft, SwipeRight, SwipeUp, SwipeDown, Tap, LongPr
 private fun IntroStep(onNext: () -> Unit) {
     val colors = MaterialTheme.colorScheme
     StepLayout(
-        kicker = "Добро пожаловать",
-        title = "Это YouCloud",
-        text = "SoundCloud, Яндекс Музыка и YouTube Music в одном плеере. Кое-что здесь спрятано " +
+        kicker = tr("Добро пожаловать"),
+        title = tr("Это YouCloud"),
+        text = tr("SoundCloud, Яндекс Музыка и YouTube Music в одном плеере. Кое-что здесь спрятано " +
             "в жестах — покажу за минуту. Над каждым жестом написано, где он в приложении, и всё " +
-            "можно сразу попробовать.",
-        button = "Показать",
+            "можно сразу попробовать."),
+        button = tr("Показать"),
         onNext = onNext,
         demo = {
             WaveShape(
@@ -220,10 +221,10 @@ private fun MiniPlayerStep(onNext: () -> Unit) {
     var playing by remember { mutableStateOf(true) }
     var opened by remember { mutableStateOf(0) }
     val tasks = listOf(
-        Hint.SwipeLeft to "Смахни влево — следующий трек",
-        Hint.SwipeRight to "Смахни вправо — предыдущий",
-        Hint.SwipeUp to "Смахни вверх или нажми — откроется плеер",
-        Hint.Tap to "Кнопка справа — пауза и снова играть"
+        Hint.SwipeLeft to tr("Смахни влево — следующий трек"),
+        Hint.SwipeRight to tr("Смахни вправо — предыдущий"),
+        Hint.SwipeUp to tr("Смахни вверх или нажми — откроется плеер"),
+        Hint.Tap to tr("Кнопка справа — пауза и снова играть")
     )
     val pending = tasks.firstOrNull { done[it.first] != true }?.first
     val progress = rememberInfiniteTransition(label = "demoProgress")
@@ -234,15 +235,15 @@ private fun MiniPlayerStep(onNext: () -> Unit) {
         label = "demoPosition"
     )
     StepLayout(
-        kicker = "Жест 1 из $GESTURE_STEPS",
-        title = "Мини-плеер",
-        text = "Полоска внизу экрана, пока играет музыка, — на главной и в любом окне. " +
-            "Переключать треки можно прямо на ней, не открывая плеер.",
-        button = if (pending == null) "Дальше" else "Пропустить шаг",
+        kicker = tr("Жест 1 из %s", GESTURE_STEPS),
+        title = tr("Мини-плеер"),
+        text = tr("Полоска внизу экрана, пока играет музыка, — на главной и в любом окне. " +
+            "Переключать треки можно прямо на ней, не открывая плеер."),
+        button = if (pending == null) tr("Дальше") else tr("Пропустить шаг"),
         onNext = onNext,
         tasks = tasks.map { (hint, label) -> label to (done[hint] == true) },
         demo = {
-            ScreenFrame(place = "Внизу любого экрана", aspect = 0.85f) {
+            ScreenFrame(place = tr("Внизу любого экрана"), aspect = 0.85f) {
                 HomeMock()
                 val demo = DemoTracks[track]
                 Box(
@@ -297,7 +298,7 @@ private fun MiniPlayerStep(onNext: () -> Unit) {
                         delay(1_600)
                         opened = 0
                     }
-                    Notice("Так открывается плеер — он дальше")
+                    Notice(tr("Так открывается плеер — он дальше"))
                 }
             }
         }
@@ -312,24 +313,27 @@ private fun PlayerCoverStep(onNext: () -> Unit) {
     var swiped by remember { mutableStateOf(false) }
     var track by remember { mutableIntStateOf(0) }
     val tasks = listOf(
-        "Смахни обложку вбок — соседний трек" to swiped,
-        "Зажми обложку — меню трека" to pressed
+        tr("Смахни обложку вбок — соседний трек") to swiped,
+        tr("Зажми обложку — меню трека") to pressed
     )
     StepLayout(
-        kicker = "Жест 2 из $GESTURE_STEPS",
-        title = "Плеер: обложка",
-        text = "Это уже сам плеер — он открывается из мини-плеера. Обложку можно смахнуть, чтобы " +
-            "переключить трек, или зажать: там всё, что можно сделать с треком — в плейлист, " +
-            "поделиться, радио по нему, перескачать.",
-        button = if (pressed && swiped) "Дальше" else "Пропустить шаг",
+        kicker = tr("Жест 2 из %s", GESTURE_STEPS),
+        title = tr("Плеер: обложка"),
+        text = tr("Это уже сам плеер — он открывается из мини-плеера. Обложку можно смахнуть, чтобы " +
+            "переключить трек, или зажать: там всё, что можно сделать с треком и музыкой — в плейлист, " +
+            "поделиться, радио по нему, слушать вместе с друзьями, таймер сна, кроссфейд, перескачать " +
+            "или удалить с телефона."),
+        button = if (pressed && swiped) tr("Дальше") else tr("Пропустить шаг"),
         onNext = onNext,
         tasks = tasks,
         demo = {
+            // The demo menu's crossfade: shown working, set nowhere.
+            var crossfade by remember { mutableIntStateOf(0) }
             val slide = remember { Animatable(0f) }
             val scope = rememberCoroutineScope()
             val demo = DemoTracks[track % DemoTracks.size]
             val hue = demoHue(track)
-            ScreenFrame(place = "Плеер") {
+            ScreenFrame(place = tr("Плеер")) {
                 PlayerMock(title = demo.first, artist = demo.second, hue = hue) {
                     Box(
                         modifier = Modifier
@@ -391,8 +395,13 @@ private fun PlayerCoverStep(onNext: () -> Unit) {
                     onCreatePlaylist = { menu = false },
                     onShare = { menu = false },
                     onRedownload = { menu = false },
+                    onDeleteDownload = { menu = false },
                     onRadio = { menu = false },
-                    radioDescription = "Трек, а за ним — похожие, без конца"
+                    radioDescription = tr("Трек, а за ним — похожие, без конца"),
+                    onTogether = { menu = false },
+                    crossfadeSeconds = crossfade,
+                    onCrossfade = { crossfade = it },
+                    demo = true
                 )
             }
         }
@@ -410,15 +419,15 @@ private fun PlayerPullStep(onNext: () -> Unit) {
     // Folded at least once, for the list: it may have been opened again since.
     var foldedOnce by remember { mutableStateOf(false) }
     val tasks = listOf(
-        "Смахни плеер вверх — выедет очередь" to queued,
-        "Потяни плеер вниз — свернётся в мини-плеер" to foldedOnce
+        tr("Смахни плеер вверх — выедет очередь") to queued,
+        tr("Потяни плеер вниз — свернётся в мини-плеер") to foldedOnce
     )
     StepLayout(
-        kicker = "Жест 3 из $GESTURE_STEPS",
-        title = "Плеер: вверх и вниз",
-        text = "Смахни плеер вверх — выедет очередь. Потяни вниз — плеер свернётся обратно в " +
-            "мини-плеер, а под ним будет экран, с которого ты его открыл.",
-        button = if (queued && foldedOnce) "Дальше" else "Пропустить шаг",
+        kicker = tr("Жест 3 из %s", GESTURE_STEPS),
+        title = tr("Плеер: вверх и вниз"),
+        text = tr("Смахни плеер вверх — выедет очередь. Потяни вниз — плеер свернётся обратно в " +
+            "мини-плеер, а под ним будет экран, с которого ты его открыл."),
+        button = if (queued && foldedOnce) tr("Дальше") else tr("Пропустить шаг"),
         onNext = onNext,
         tasks = tasks,
         demo = {
@@ -427,7 +436,7 @@ private fun PlayerPullStep(onNext: () -> Unit) {
             val pull = remember { Animatable(0f) }
             val queue = remember { Animatable(0f) }
             val flingPx = with(LocalDensity.current) { QueueFlingVelocity.toPx() }
-            ScreenFrame(place = "Плеер") {
+            ScreenFrame(place = tr("Плеер")) {
                 BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
                     val heightPx = constraints.maxHeight.toFloat().coerceAtLeast(1f)
                     val sheetPx = heightPx * DEMO_QUEUE_FRACTION
@@ -541,7 +550,7 @@ private fun PlayerPullStep(onNext: () -> Unit) {
                             .align(Alignment.Center)
                             .padding(horizontal = 12.dp)
                     ) {
-                        Notice("Свернулся. Нажми мини-плеер — откроется снова")
+                        Notice(tr("Свернулся. Нажми мини-плеер — откроется снова"))
                     }
                 }
             }
@@ -561,16 +570,16 @@ private fun WindowsStep(onNext: () -> Unit) {
     val picked = remember { mutableStateMapOf<Int, Boolean>() }
     var pickedOnce by remember { mutableStateOf(false) }
     val tasks = listOf(
-        "Потяни окно вниз — оно закроется" to closedOnce,
-        "Зажми трек — можно выбрать несколько" to pickedOnce
+        tr("Потяни окно вниз — оно закроется") to closedOnce,
+        tr("Зажми трек — можно выбрать несколько") to pickedOnce
     )
     StepLayout(
-        kicker = "Жест 4 из $GESTURE_STEPS",
-        title = "Окна закрываются свайпом",
-        text = "Альбомы, плейлисты, артисты, «Скачанное» и «История» закрываются как плеер: " +
+        kicker = tr("Жест 4 из %s", GESTURE_STEPS),
+        title = tr("Окна закрываются свайпом"),
+        text = tr("Альбомы, плейлисты, артисты, «Скачанное» и «История» закрываются как плеер: " +
             "потяни окно вниз. Кнопка «назад» осталась только в поиске и настройках. А в " +
-            "«Скачанном» трек можно зажать, чтобы выбрать сразу несколько и удалить.",
-        button = if (closedOnce && pickedOnce) "Дальше" else "Пропустить шаг",
+            "«Скачанном» трек можно зажать, чтобы выбрать сразу несколько и удалить."),
+        button = if (closedOnce && pickedOnce) tr("Дальше") else tr("Пропустить шаг"),
         onNext = onNext,
         tasks = tasks,
         demo = {
@@ -578,7 +587,7 @@ private fun WindowsStep(onNext: () -> Unit) {
             val scope = rememberCoroutineScope()
             val pull = remember { Animatable(0f) }
             val flingPx = with(LocalDensity.current) { QueueFlingVelocity.toPx() }
-            ScreenFrame(place = "Окно «Скачанное»") {
+            ScreenFrame(place = tr("Окно «Скачанное»")) {
                 BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
                     val heightPx = constraints.maxHeight.toFloat().coerceAtLeast(1f)
                     fun progress() = (pull.value / heightPx).coerceIn(0f, 1f)
@@ -656,7 +665,7 @@ private fun WindowsStep(onNext: () -> Unit) {
                             .align(Alignment.Center)
                             .padding(horizontal = 12.dp)
                     ) {
-                        Notice("Закрылось — под ним главная")
+                        Notice(tr("Закрылось — под ним главная"))
                     }
                 }
             }
@@ -673,26 +682,26 @@ private fun WaveStep(onNext: () -> Unit) {
     val picks = remember { mutableStateMapOf<String, String>() }
     val mood = WaveTuning.moods.firstOrNull { it.seed == picks[WaveTuning.MOOD] }
     val tasks = listOf(
-        "Зажми форму — откроются настройки волны" to pressed,
-        "Выбери настроение — форма изменится" to (mood != null)
+        tr("Зажми форму — откроются настройки волны") to pressed,
+        tr("Выбери настроение — форма изменится") to (mood != null)
     )
     StepLayout(
-        kicker = "Жест 5 из $GESTURE_STEPS",
-        title = "«Моя форма» на главной",
-        text = "Во вкладке Яндекс Музыки на главной. Нажатие включает волну, а если подержать — " +
-            "откроются настроение и режим.",
-        button = if (pressed && mood != null) "Дальше" else "Пропустить шаг",
+        kicker = tr("Жест 5 из %s", GESTURE_STEPS),
+        title = tr("«Моя форма» на главной"),
+        text = tr("Во вкладке Яндекс Музыки на главной. Нажатие включает волну, а если подержать — " +
+            "откроются настроение и режим."),
+        button = if (pressed && mood != null) tr("Дальше") else tr("Пропустить шаг"),
         onNext = onNext,
         tasks = tasks,
         demo = {
-            ScreenFrame(place = "Главная · Яндекс Музыка") {
+            ScreenFrame(place = tr("Главная · Яндекс Музыка")) {
                 Column(
                     modifier = Modifier
                         .fillMaxSize()
                         .padding(14.dp),
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
-                    Text("Моя форма", style = MaterialTheme.typography.titleLarge, maxLines = 1)
+                    Text(tr("Моя форма"), style = MaterialTheme.typography.titleLarge, maxLines = 1)
                     Box(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -762,10 +771,10 @@ private fun WaveStep(onNext: () -> Unit) {
 private fun DoneStep(onNext: () -> Unit) {
     val colors = MaterialTheme.colorScheme
     StepLayout(
-        kicker = "Готово",
-        title = "Можно слушать",
-        text = "Показать это ещё раз можно в любой момент: Настройки → Оформление → Обучение жестам.",
-        button = "Начать",
+        kicker = tr("Готово"),
+        title = tr("Можно слушать"),
+        text = tr("Показать это ещё раз можно в любой момент: Настройки → Оформление → Обучение жестам."),
+        button = tr("Начать"),
         onNext = onNext,
         demo = {
             Surface(
@@ -858,7 +867,7 @@ private fun HomeMock() {
             .padding(horizontal = 14.dp, vertical = 16.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        Text("Моя музыка", style = MaterialTheme.typography.titleLarge, maxLines = 1)
+        Text(tr("Моя музыка"), style = MaterialTheme.typography.titleLarge, maxLines = 1)
         Spacer(modifier = Modifier.height(16.dp))
         Box(
             modifier = Modifier
@@ -868,7 +877,7 @@ private fun HomeMock() {
                 .background(Brush.linearGradient(listOf(lerp(colors.tertiary, Color.White, 0.2f), lerp(colors.primary, Color.Black, 0.3f))))
         )
         Spacer(modifier = Modifier.height(10.dp))
-        Text("Скачанное", style = MaterialTheme.typography.titleSmall, maxLines = 1)
+        Text(tr("Скачанное"), style = MaterialTheme.typography.titleSmall, maxLines = 1)
     }
 }
 
@@ -994,7 +1003,7 @@ private fun QueueSheetMock(modifier: Modifier = Modifier) {
                 .clip(CircleShape)
                 .background(PanelColors.content.copy(alpha = 0.3f))
         )
-        Text("ОЧЕРЕДЬ", style = MaterialTheme.typography.labelMedium, color = PanelColors.accent)
+        Text(tr("ОЧЕРЕДЬ"), style = MaterialTheme.typography.labelMedium, color = PanelColors.accent)
         DemoTracks.drop(1).forEachIndexed { index, (title, artist) ->
             MockRow(title = title, artist = artist, hue = demoHue(index + 1), content = PanelColors.content)
         }
@@ -1044,8 +1053,8 @@ private fun WindowMock(
                 contentAlignment = Alignment.BottomStart
             ) {
                 Column {
-                    Text("ПАПКА", style = MaterialTheme.typography.labelSmall, color = colors.onSurfaceVariant)
-                    Text("Скачанное", style = MaterialTheme.typography.headlineSmall, maxLines = 1)
+                    Text(tr("ПАПКА"), style = MaterialTheme.typography.labelSmall, color = colors.onSurfaceVariant)
+                    Text(tr("Скачанное"), style = MaterialTheme.typography.headlineSmall, maxLines = 1)
                 }
             }
             Column(
@@ -1102,8 +1111,8 @@ private fun WindowMock(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
-                    Icon(Icons.Rounded.Close, contentDescription = "Отменить выбор", tint = PanelColors.content, modifier = Modifier.size(20.dp))
-                    Text("Выбрано: ${picked.size}", style = MaterialTheme.typography.labelLarge, color = PanelColors.content)
+                    Icon(Icons.Rounded.Close, contentDescription = tr("Отменить выбор"), tint = PanelColors.content, modifier = Modifier.size(20.dp))
+                    Text(tr("Выбрано: %s", picked.size), style = MaterialTheme.typography.labelLarge, color = PanelColors.content)
                 }
                 Spacer(modifier = Modifier.weight(1f))
                 Box(
@@ -1368,12 +1377,13 @@ private fun GestureHint(
     }
 }
 
-// What the demo plays: made up, nobody's music.
-private val DemoTracks = listOf(
-    "Ночной город" to "Демо-исполнитель",
-    "Тёплый ветер" to "Демо-исполнитель",
-    "Последний поезд" to "Демо-исполнитель"
-)
+// What the demo plays: made up, nobody's music. In the app's language as it is shown.
+private val DemoTracks: List<Pair<String, String>>
+    get() = listOf(
+        tr("Ночной город") to tr("Демо-исполнитель"),
+        tr("Тёплый ветер") to tr("Демо-исполнитель"),
+        tr("Последний поезд") to tr("Демо-исполнитель")
+    )
 private const val DEMO_TRACK_ID = -7_777_777L
 private const val HINT_LOOP_MILLIS = 2_000
 // How much of the small player the queue takes when pulled up.

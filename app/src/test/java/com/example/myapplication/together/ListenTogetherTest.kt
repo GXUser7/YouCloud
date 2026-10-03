@@ -29,6 +29,7 @@ import kotlin.math.max
 class ListenTogetherTest {
     private val trackA = SoundCloudTrack(id = 1, urn = "soundcloud:tracks:1", title = "A", duration = 300_000)
     private val trackB = SoundCloudTrack(id = 2, urn = "soundcloud:tracks:2", title = "B", duration = 300_000)
+    private val trackC = SoundCloudTrack(id = 3, urn = "soundcloud:tracks:3", title = "C", duration = 300_000)
 
     /** A player whose position moves with virtual time, at its speed, once it has loaded. */
     private class FakePlayer(
@@ -45,15 +46,35 @@ class ListenTogetherTest {
         private var pos = 0L
         private var at = 0L
         private var startsAt = 0L
+        private var wants = false
         var speed = 1f
             private set
         val played = mutableListOf<Pair<SoundCloudTrack, List<SoundCloudTrack>>>()
         var followedUrl: String? = null
+        // The host's queue after the track playing; a guest's, as the host said it.
+        var queue: List<SoundCloudTrack> = emptyList()
+        var followedNext: List<SoundCloudTrack> = emptyList()
+        var byItself = false
+        var crossfade: Int? = null
+        var cantPlay: Pair<Long, String>? = null
 
         override fun livePositionMs(): Long {
             val t = now()
             if (!isPlaying.value || t <= startsAt) return pos
             return pos + ((t - max(at, startsAt)) * speed).toLong()
+        }
+
+        override fun isReadyFor(trackId: Long) = currentTrackId.value == trackId && !isBuffering.value
+        override fun wantsToPlay() = wants
+        override fun changedByItself() = byItself
+        override fun upcoming(count: Int) = queue.take(count)
+        override fun crossfadeSeconds() = 4
+        override fun useCrossfade(seconds: Int?) {
+            crossfade = seconds
+        }
+        override fun failureOf(trackId: Long) = cantPlay?.takeIf { it.first == trackId }?.second
+        override fun followUpcoming(next: List<Pair<SoundCloudTrack, String?>>) {
+            followedNext = next.map { it.first }
         }
 
         private fun rebase() {
@@ -62,11 +83,13 @@ class ListenTogetherTest {
         }
 
         private fun start(track: SoundCloudTrack, fromMs: Long, playing: Boolean) {
+            byItself = false
             currentTrack.value = track
             currentTrackId.value = track.id
             pos = fromMs
             at = now()
             startsAt = now() + loadMs
+            wants = playing
             isPlaying.value = playing
             if (loadMs > 0) {
                 isBuffering.value = true
@@ -90,13 +113,19 @@ class ListenTogetherTest {
             start(track, 0, true)
         }
 
-        override fun follow(track: SoundCloudTrack, url: String?, startMs: Long, playing: Boolean) {
+        override fun follow(track: SoundCloudTrack, url: String?, startMs: Long, playing: Boolean, next: List<Pair<SoundCloudTrack, String?>>) {
             followedUrl = url
+            followedNext = next.map { it.first }
+            // No way to play it here: the track before stays.
+            if (cantPlay?.first == track.id) return
             start(track, startMs, playing)
         }
 
         override fun setPlaying(playing: Boolean) {
             rebase()
+            // Loading still, it plays once it has loaded: no sooner.
+            if (playing && startsAt > now()) at = startsAt
+            wants = playing
             isPlaying.value = playing
         }
 
@@ -106,6 +135,7 @@ class ListenTogetherTest {
         }
 
         override suspend fun directUrlFor(track: SoundCloudTrack): String? = "https://direct/${track.id}"
+        override fun shareable(track: SoundCloudTrack) = track
 
         private val trackB get() = SoundCloudTrack(id = 2, urn = "soundcloud:tracks:2", title = "B")
         private val trackA get() = SoundCloudTrack(id = 1, urn = "soundcloud:tracks:1", title = "A")
@@ -157,7 +187,8 @@ class ListenTogetherTest {
         val hostPlayer = FakePlayer(scope, hostNow)
         val guestPlayer = FakePlayer(scope, guestNow, loadMs = guestLoadMs, seekMs = 150)
         val host = ListenTogether(hostLink, hostPlayer, scope, hostNow)
-        val guest = ListenTogether(guestLink, guestPlayer, scope, guestNow)
+        // Signed in to nothing: the host sends it addresses to play by.
+        val guest = ListenTogether(guestLink, guestPlayer, scope, guestNow, signedIn = { emptySet() })
         hostPlayer.playQueue(trackA, listOf(trackA))
         hostPlayer.seekTo(30_000)
         guestLink.state.value = TogetherState.Joined(TogetherPeer("H", "Ведущий"))
@@ -227,5 +258,70 @@ class ListenTogetherTest {
         assertEquals(message, back)
         assertEquals(null, back.track?.user?.description)
         assertEquals(listOf("One", "Two"), back.track?.artists?.map { it.username })
+    }
+
+    @Test
+    fun aPickedTrackWaitsForTheGuestAndStartsOnBoth() = runTest {
+        val p = setUp(guestLoadMs = 2_000)
+        advanceTimeBy(5_000)
+        // A downloaded track on the host, which would play at once; the guest takes 2 s to load it.
+        p.hostPlayer.playQueue(trackB, listOf(trackB))
+        advanceTimeBy(1_000)
+        assertFalse("the host holds it while the guest loads", p.hostPlayer.isPlaying.value)
+        assertTrue(p.host.waiting.value)
+        assertTrue(p.guest.waiting.value)
+        assertTrue(p.hostPlayer.livePositionMs() < 50)
+        advanceTimeBy(2_500)
+        assertTrue(p.hostPlayer.isPlaying.value)
+        assertTrue(p.guestPlayer.isPlaying.value)
+        assertFalse(p.host.waiting.value)
+        // Started together, from the start: neither has had to catch up.
+        assertTrue("host at ${p.hostPlayer.livePositionMs()}", p.hostPlayer.livePositionMs() < 1_500)
+        assertTrue("gap ${gap(p)} ms", gap(p) <= 60)
+    }
+
+    @Test
+    fun aGuestThatCantPlayIsNotWaitedFor() = runTest {
+        val p = setUp(guestLoadMs = 0)
+        advanceTimeBy(5_000)
+        p.guestPlayer.cantPlay = trackB.id to TogetherServices.YANDEX
+        val notices = mutableListOf<TogetherNotice>()
+        backgroundScope.launch { p.host.notices.collect { notices += it } }
+        p.hostPlayer.playQueue(trackB, listOf(trackB))
+        advanceTimeBy(1_500)
+        assertTrue(p.hostPlayer.isPlaying.value)
+        assertEquals(TogetherServices.YANDEX, (notices.single() as TogetherNotice.GuestCantPlay).reason)
+    }
+
+    @Test
+    fun theGuestHasTheHostsNextTracksAndCrossfade() = runTest {
+        val p = setUp(guestLoadMs = 0)
+        p.hostPlayer.queue = listOf(trackB, trackC)
+        advanceTimeBy(4_000)
+        assertEquals(listOf(trackB.id, trackC.id), p.guestPlayer.followedNext.map { it.id })
+        assertEquals(4, p.guestPlayer.crossfade)
+        p.guestLink.state.value = TogetherState.Idle
+        advanceTimeBy(100)
+        assertEquals(null, p.guestPlayer.crossfade)
+    }
+
+    @Test
+    fun aTrackTheGuestPlayedOnToByItselfIsNotLoadedAgain() = runTest {
+        val p = setUp(guestLoadMs = 0)
+        advanceTimeBy(5_000)
+        val followed = p.guestPlayer.followedUrl
+        // Both players reach the next track on their own, a moment apart: the guest's first.
+        p.guestPlayer.followedUrl = "untouched"
+        p.guestPlayer.currentTrack.value = trackB
+        p.guestPlayer.currentTrackId.value = trackB.id
+        advanceTimeBy(100)
+        p.hostPlayer.byItself = true
+        p.hostPlayer.currentTrack.value = trackB
+        p.hostPlayer.currentTrackId.value = trackB.id
+        advanceTimeBy(2_000)
+        assertEquals("https://direct/1", followed)
+        assertEquals("untouched", p.guestPlayer.followedUrl)
+        // Nobody waited: the guest had it.
+        assertTrue(p.hostPlayer.isPlaying.value)
     }
 }

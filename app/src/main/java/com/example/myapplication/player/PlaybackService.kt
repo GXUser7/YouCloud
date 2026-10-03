@@ -1,5 +1,6 @@
 package com.example.myapplication.player
 
+import com.example.myapplication.i18n.tr
 import android.content.Context
 import android.content.SharedPreferences
 import android.media.audiofx.Equalizer
@@ -250,9 +251,11 @@ class PlaybackService : MediaLibraryService() {
             context = this,
             main = player,
             mediaSourceFactory = DefaultMediaSourceFactory(resolvingFactory),
-            crossfadeMs = { preferences.getInt(KEY_CROSSFADE_SECONDS, 0) * 1000L },
-            reverbOfCurrent = { reverbProcessor.amount }
+            // Listening together, a guest's crossfade is the host's, so the two hear the same.
+            crossfadeMs = { (SessionBridge.crossfadeOverride.value ?: preferences.getInt(KEY_CROSSFADE_SECONDS, 0)) * 1000L },
+            soundOf = ::trackSoundOf
         )
+        scope.launch { SessionBridge.crossfadeOverride.collect { fades?.ensureTicking() } }
 
         // A stream that breaks off over a slow connection (a VPN's, say) is tried again, a little
         // later each time, rather than the player stopping at an error until touched. Preparing
@@ -262,7 +265,7 @@ class PlaybackService : MediaLibraryService() {
             private val handler = android.os.Handler(android.os.Looper.getMainLooper())
 
             override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
-                if (error.errorCode !in NETWORK_ERRORS || retries >= RETRY_DELAYS_MS.size) {
+                if (error.errorCode !in RETRIED_ERRORS || retries >= RETRY_DELAYS_MS.size) {
                     retries = 0
                     return
                 }
@@ -312,13 +315,13 @@ class PlaybackService : MediaLibraryService() {
         val like = androidx.media3.session.CommandButton.Builder(
             if (liked) androidx.media3.session.CommandButton.ICON_HEART_FILLED else androidx.media3.session.CommandButton.ICON_HEART_UNFILLED
         )
-            .setDisplayName(if (liked) "Убрать из любимых" else "Нравится")
+            .setDisplayName(if (liked) tr("Убрать из любимых") else tr("Нравится"))
             .setSessionCommand(LIKE_COMMAND)
             .setSlots(androidx.media3.session.CommandButton.SLOT_OVERFLOW)
             .build()
         if (!SessionBridge.canDislike.value) return listOf(like)
         val dislike = androidx.media3.session.CommandButton.Builder(androidx.media3.session.CommandButton.ICON_THUMB_DOWN_UNFILLED)
-            .setDisplayName("Не нравится")
+            .setDisplayName(tr("Не нравится"))
             .setSessionCommand(DISLIKE_COMMAND)
             .setSlots(androidx.media3.session.CommandButton.SLOT_OVERFLOW)
             .build()
@@ -490,14 +493,21 @@ class PlaybackService : MediaLibraryService() {
 
     // Cached regex patterns (#34: avoid recompilation on each call)
     companion object {
-        // What a broken-off stream waits before each try again, and which errors are worth one.
+        // What a broken-off stream waits before each try again, and which errors are worth one:
+        // the network's, and the player tripping over itself (a decoder taken away, the audio
+        // output gone, a fault inside it), which leaves it stopped for good otherwise — and,
+        // listening together, everyone with it.
         private val RETRY_DELAYS_MS = longArrayOf(2_000, 5_000, 10_000)
-        private val NETWORK_ERRORS = setOf(
+        private val RETRIED_ERRORS = setOf(
             androidx.media3.common.PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED,
             androidx.media3.common.PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT,
             androidx.media3.common.PlaybackException.ERROR_CODE_IO_UNSPECIFIED,
             androidx.media3.common.PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS,
-            androidx.media3.common.PlaybackException.ERROR_CODE_TIMEOUT
+            androidx.media3.common.PlaybackException.ERROR_CODE_TIMEOUT,
+            androidx.media3.common.PlaybackException.ERROR_CODE_UNSPECIFIED,
+            androidx.media3.common.PlaybackException.ERROR_CODE_DECODING_FAILED,
+            androidx.media3.common.PlaybackException.ERROR_CODE_AUDIO_TRACK_INIT_FAILED,
+            androidx.media3.common.PlaybackException.ERROR_CODE_AUDIO_TRACK_WRITE_FAILED
         )
 
         // The crossfade's length in seconds, 0 for none; set in the app's settings.
@@ -724,16 +734,21 @@ class PlaybackService : MediaLibraryService() {
      * or without its pitch, and its reverb, worked out in the player ([ReverbAudioProcessor]).
      */
     private fun applyTrackFx(player: ExoPlayer) {
-        val trackId = player.currentMediaItem?.mediaId?.toLongOrNull()
-        val fx = trackId?.let {
+        val sound = player.currentMediaItem?.let(::trackSoundOf) ?: TrackSound(androidx.media3.common.PlaybackParameters.DEFAULT, 0)
+        player.playbackParameters = sound.parameters
+        reverbProcessor.amount = sound.reverb
+    }
+
+    /** How [item] is played by its own effects: also the crossfade's, for the track coming in. */
+    private fun trackSoundOf(item: androidx.media3.common.MediaItem): TrackSound {
+        val fx = item.mediaId.toLongOrNull()?.let {
             com.example.myapplication.data.TrackFx.decode(preferences.getString(com.example.myapplication.data.TrackFx.KEY_PREFIX + it, null))
         } ?: com.example.myapplication.data.TrackFx()
         // A broadcast goes at its own pace: sped up it ran into its live edge and stalled waiting
         // for more, slowed down it fell further and further behind.
-        val live = player.currentMediaItem?.localConfiguration?.uri?.scheme == "ytlive"
+        val live = item.localConfiguration?.uri?.scheme == "ytlive"
         val speed = if (live) 1f else fx.speed
-        player.playbackParameters = androidx.media3.common.PlaybackParameters(speed, if (fx.keepPitch) 1f else speed)
-        reverbProcessor.amount = fx.reverb
+        return TrackSound(androidx.media3.common.PlaybackParameters(speed, if (fx.keepPitch) 1f else speed), fx.reverb)
     }
 
     private fun initEqualizer(audioSessionId: Int) {

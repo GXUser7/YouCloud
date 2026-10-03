@@ -1,5 +1,6 @@
 package com.example.myapplication.widget
 
+import com.example.myapplication.i18n.tr
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
@@ -133,24 +134,24 @@ class NowPlayingWidget : GlanceAppWidget() {
             Spacer(modifier = GlanceModifier.height(GAP))
             Row(modifier = GlanceModifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 if (state.active) {
-                    Round(R.drawable.ic_glyph_skip_previous, "Предыдущий", command(COMMAND_PREVIOUS))
+                    Round(R.drawable.ic_glyph_skip_previous, tr("Предыдущий"), command(COMMAND_PREVIOUS))
                     Spread()
                     Play(state)
                     Spread()
-                    Round(R.drawable.ic_glyph_skip_next, "Следующий", command(COMMAND_NEXT))
+                    Round(R.drawable.ic_glyph_skip_next, tr("Следующий"), command(COMMAND_NEXT))
                     Spread()
-                    Round(R.drawable.ic_glyph_wave, "Моя волна", open(context, MainActivity.ACTION_WAVE))
+                    Round(R.drawable.ic_glyph_wave, tr("Моя волна"), open(context, MainActivity.ACTION_WAVE))
                 } else {
                     FilledButton(
-                        text = "Моя волна",
+                        text = tr("Моя волна"),
                         onClick = open(context, MainActivity.ACTION_WAVE),
                         icon = ImageProvider(R.drawable.ic_glyph_wave),
                         modifier = GlanceModifier.defaultWeight()
                     )
                     Spacer(modifier = GlanceModifier.width(8.dp))
-                    Round(R.drawable.ic_glyph_library, "Моя музыка", open(context, MainActivity.ACTION_MY_MUSIC))
+                    Round(R.drawable.ic_glyph_library, tr("Моя музыка"), open(context, MainActivity.ACTION_MY_MUSIC))
                     Spacer(modifier = GlanceModifier.width(8.dp))
-                    Round(R.drawable.ic_glyph_search, "Поиск", open(context, MainActivity.ACTION_SEARCH))
+                    Round(R.drawable.ic_glyph_search, tr("Поиск"), open(context, MainActivity.ACTION_SEARCH))
                 }
             }
         }
@@ -168,7 +169,7 @@ class NowPlayingWidget : GlanceAppWidget() {
             if (state.active) {
                 Play(state, size = 48.dp)
                 Spacer(modifier = GlanceModifier.width(6.dp))
-                Round(R.drawable.ic_glyph_skip_next, "Следующий", command(COMMAND_NEXT), size = 42.dp)
+                Round(R.drawable.ic_glyph_skip_next, tr("Следующий"), command(COMMAND_NEXT), size = 42.dp)
             } else {
                 Wave(context, size = 48.dp)
             }
@@ -223,7 +224,7 @@ class NowPlayingWidget : GlanceAppWidget() {
                 maxLines = if (big) 2 else 1
             )
             Text(
-                text = if (state.active) state.artist.orEmpty() else "Ничего не играет",
+                text = if (state.active) state.artist.orEmpty() else tr("Ничего не играет"),
                 style = TextStyle(color = GlanceTheme.colors.onSurfaceVariant, fontSize = if (big) 14.sp else 13.sp),
                 maxLines = 1
             )
@@ -264,7 +265,7 @@ class NowPlayingWidget : GlanceAppWidget() {
     private fun Play(state: NowPlayingState.Snapshot, size: Dp = 56.dp) {
         SquareIconButton(
             imageProvider = ImageProvider(if (state.playing) R.drawable.ic_glyph_pause else R.drawable.ic_glyph_play),
-            contentDescription = if (state.playing) "Пауза" else "Играть",
+            contentDescription = if (state.playing) tr("Пауза") else tr("Играть"),
             onClick = command(COMMAND_TOGGLE),
             backgroundColor = GlanceTheme.colors.primary,
             contentColor = GlanceTheme.colors.onPrimary,
@@ -289,7 +290,7 @@ class NowPlayingWidget : GlanceAppWidget() {
     private fun Wave(context: Context, size: Dp) {
         SquareIconButton(
             imageProvider = ImageProvider(R.drawable.ic_glyph_wave),
-            contentDescription = "Моя волна",
+            contentDescription = tr("Моя волна"),
             onClick = open(context, MainActivity.ACTION_WAVE),
             backgroundColor = GlanceTheme.colors.primary,
             contentColor = GlanceTheme.colors.onPrimary,

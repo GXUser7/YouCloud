@@ -1,5 +1,6 @@
 package com.example.myapplication.data
 
+import com.example.myapplication.i18n.tr
 import com.google.gson.JsonParser
 import java.io.File
 import java.net.HttpURLConnection
@@ -38,14 +39,14 @@ class UpdateService(private val userAgent: String) {
         }
         val release = JsonParser.parseString(body).asJsonObject
         val tag = release.get("tag_name")?.asString
-            ?: throw IllegalStateException("Не удалось прочитать сведения о релизе")
+            ?: throw IllegalStateException(tr("Не удалось прочитать сведения о релизе"))
         val version = tag.removePrefix("v")
         val notes = release.get("body")?.takeIf { !it.isJsonNull }?.asString.orEmpty()
         val assets = release.getAsJsonArray("assets")?.map { it.asJsonObject }.orEmpty()
             .filter { it.get("name")?.asString.orEmpty().endsWith(".apk", ignoreCase = true) }
         val asset = assets.firstOrNull { it.get("name").asString.contains(version) }
             ?: assets.firstOrNull()
-            ?: throw IllegalStateException("В релизе $tag нет APK")
+            ?: throw IllegalStateException(tr("В релизе %s нет APK", tag))
         return Release(
             version = version,
             notes = notes.trim(),
@@ -70,13 +71,13 @@ class UpdateService(private val userAgent: String) {
             connection.disconnect()
         }
         if (tag.isNullOrBlank() || tag.contains('/')) {
-            throw IllegalStateException("Не удалось прочитать сведения о релизе")
+            throw IllegalStateException(tr("Не удалось прочитать сведения о релизе"))
         }
         val version = tag.removePrefix("v")
         val page = get("$SITE/releases/expanded_assets/$tag") { }
         val links = AssetLink.findAll(page).map { it.groupValues[1] }.toList()
         val link = links.firstOrNull { it.contains(version) } ?: links.firstOrNull()
-            ?: throw IllegalStateException("В релизе $tag нет APK")
+            ?: throw IllegalStateException(tr("В релизе %s нет APK", tag))
         return Release(version = version, notes = "", apkUrl = "https://github.com$link", sizeBytes = 0L)
     }
 
@@ -107,11 +108,11 @@ class UpdateService(private val userAgent: String) {
                 if (code in 300..399) {
                     // GitHub hands the bytes off to another host: the ordinary path, not an edge case.
                     val location = connection.getHeaderField("Location")
-                        ?: throw IllegalStateException("Не удалось скачать (HTTP $code)")
+                        ?: throw IllegalStateException(tr("Не удалось скачать (HTTP %s)", code))
                     current = URL(URL(current), location).toString()
                     return@repeat
                 }
-                if (code !in 200..299) throw IllegalStateException("Не удалось скачать (HTTP $code)")
+                if (code !in 200..299) throw IllegalStateException(tr("Не удалось скачать (HTTP %s)", code))
 
                 val total = connection.contentLengthLong.takeIf { it > 0 } ?: release.sizeBytes
                 var written = 0L
@@ -127,18 +128,18 @@ class UpdateService(private val userAgent: String) {
                         }
                     }
                 }
-                if (written <= 0L) throw IllegalStateException("Скачался пустой файл")
+                if (written <= 0L) throw IllegalStateException(tr("Скачался пустой файл"))
                 if (total > 0 && written != total) {
-                    throw IllegalStateException("Загрузка оборвалась: $written байт из $total")
+                    throw IllegalStateException(tr("Загрузка оборвалась: %s байт из %s", written, total))
                 }
                 target.delete()
-                check(part.renameTo(target)) { "Не удалось сохранить ${part.name}" }
+                check(part.renameTo(target)) { tr("Не удалось сохранить %s", part.name) }
                 return target
             } finally {
                 connection.disconnect()
             }
         }
-        throw IllegalStateException("Слишком много перенаправлений")
+        throw IllegalStateException(tr("Слишком много перенаправлений"))
     }
 
     private fun get(url: String, configure: (HttpURLConnection) -> Unit): String {

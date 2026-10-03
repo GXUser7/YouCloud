@@ -8,11 +8,16 @@ import kotlin.math.abs
  * is, the guests answer pings and send what they press. One shape for all, its fields filled as
  * [t] needs them:
  *
- * - `hello` guest → host: [name].
+ * - `hello` guest → host: [name], or [svc] the services it is signed in to ([TogetherServices]).
  * - `ping` guest → host, [a] its clock; `pong` host → guest, [a] echoed and [h] the host's clock.
- * - `state` host → guests: [track] playing ([playing]) at [pos] ms as of [at] on the host's clock,
- *   [seq] counting up; [url] an address the guest may play it by when it can't find the track
- *   itself (a Yandex track for a guest without Yandex Music).
+ * - `state` host → guests: [track] playing ([playing]) at [pos] ms as of [at] on the host's clock
+ *   — a moment still to come for a start said ahead — [seq] counting up; [url] an address the
+ *   guest may play it by when it can't find the track itself (a Yandex track for a guest without
+ *   Yandex Music); [wait] while the host holds the track's start for its guests; [xf] the host's
+ *   crossfade, seconds; [queue] the host's next tracks, with [urls] as [url] for each — left out
+ *   when they haven't changed.
+ * - `ready` guest → host: [ids] the tracks it can start at once (loaded); `fail` guest → host: it
+ *   can't play [id], [why] ([TogetherPlayer.failureOf]).
  * - `cmd` guest → host: [c] "toggle", "next", "prev", "seek" (to [pos]) or "play" ([track] and
  *   [queue] after it).
  */
@@ -28,7 +33,14 @@ data class TogetherMessage(
     val playing: Boolean? = null,
     val pos: Long? = null,
     val at: Long? = null,
-    val c: String? = null
+    val c: String? = null,
+    val wait: Boolean? = null,
+    val xf: Int? = null,
+    val urls: List<String?>? = null,
+    val svc: List<String>? = null,
+    val ids: List<Long>? = null,
+    val id: Long? = null,
+    val why: String? = null
 )
 
 /**

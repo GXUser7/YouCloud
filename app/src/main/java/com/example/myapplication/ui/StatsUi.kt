@@ -1,5 +1,7 @@
 package com.example.myapplication.ui
 
+import com.example.myapplication.i18n.english
+import com.example.myapplication.i18n.tr
 import android.content.ContentValues
 import android.content.Intent
 import android.graphics.Bitmap
@@ -75,6 +77,8 @@ import java.io.File
 import java.util.Locale
 
 private fun countOf(count: Long, one: String, few: String, many: String): String {
+    // In English, the words translated already: one for one, the other for the rest.
+    if (english()) return "${grouped(count)} ${if (count == 1L) one else many}"
     val mod10 = count % 10
     val mod100 = count % 100
     val word = when {
@@ -85,14 +89,14 @@ private fun countOf(count: Long, one: String, few: String, many: String): String
     return "${grouped(count)} $word"
 }
 
-private fun grouped(count: Long): String = String.format(Locale.forLanguageTag("ru"), "%,d", count)
+private fun grouped(count: Long): String = String.format(if (english()) Locale.US else Locale.forLanguageTag("ru"), "%,d", count)
 
 /** The time of day [hour] is in, as said after "чаще всего". */
 private fun partOfDay(hour: Int): String = when (hour) {
-    in 0..5 -> "ночью"
-    in 6..11 -> "утром"
-    in 12..17 -> "днём"
-    else -> "вечером"
+    in 0..5 -> tr("ночью")
+    in 6..11 -> tr("утром")
+    in 12..17 -> tr("днём")
+    else -> tr("вечером")
 }
 
 /**
@@ -132,8 +136,8 @@ internal fun StatsSheet(onDismiss: () -> Unit) {
         ) {
             item {
                 Column {
-                    Kicker(text = "Итоги", color = PanelColors.accent)
-                    Text("Ваша музыка", style = MaterialTheme.typography.headlineSmall)
+                    Kicker(text = tr("Итоги"), color = PanelColors.accent)
+                    Text(tr("Ваша музыка"), style = MaterialTheme.typography.headlineSmall)
                 }
             }
             item {
@@ -154,13 +158,13 @@ internal fun StatsSheet(onDismiss: () -> Unit) {
                 stats == null -> item { Spacer(modifier = Modifier.height(240.dp)) }
                 stats.isEmpty -> item {
                     StatsPanel {
-                        Text("Пока пусто", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold, color = PanelColors.content)
+                        Text(tr("Пока пусто"), style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold, color = PanelColors.content)
                         Spacer(modifier = Modifier.height(6.dp))
                         Text(
                             if (period == StatsPeriod.ALL) {
-                                "Итоги копятся с этой версии: каждый трек, который вы слушаете дольше полуминуты. Скоро здесь будут минуты, любимые артисты и треки."
+                                tr("Итоги копятся с этой версии: каждый трек, который вы слушаете дольше полуминуты. Скоро здесь будут минуты, любимые артисты и треки.")
                             } else {
-                                "За это время ничего не прослушано. Посмотрите итоги за больший срок."
+                                tr("За это время ничего не прослушано. Посмотрите итоги за больший срок.")
                             },
                             style = MaterialTheme.typography.bodyMedium,
                             color = PanelColors.content.copy(alpha = 0.75f)
@@ -203,7 +207,7 @@ private fun Totals(stats: ListeningStats) {
             color = PanelColors.accent
         )
         Text(
-            countOf(stats.minutes, "минута", "минуты", "минут").substringAfter(' ') + " музыки",
+            countOf(stats.minutes, tr("минута"), tr("минуты"), tr("минут")).substringAfter(' ') + tr(" музыки"),
             style = MaterialTheme.typography.titleMedium,
             color = PanelColors.content
         )
@@ -212,9 +216,9 @@ private fun Totals(stats: ListeningStats) {
             horizontalArrangement = Arrangement.spacedBy(8.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            OnPanelChip(countOf(stats.trackCount.toLong(), "трек", "трека", "треков"))
-            OnPanelChip(countOf(stats.artistCount.toLong(), "артист", "артиста", "артистов"))
-            OnPanelChip(countOf(stats.playCount.toLong(), "прослушивание", "прослушивания", "прослушиваний"))
+            OnPanelChip(countOf(stats.trackCount.toLong(), tr("трек"), tr("трека"), tr("треков")))
+            OnPanelChip(countOf(stats.artistCount.toLong(), tr("артист"), tr("артиста"), tr("артистов")))
+            OnPanelChip(countOf(stats.playCount.toLong(), tr("прослушивание"), tr("прослушивания"), tr("прослушиваний")))
         }
     }
 }
@@ -224,7 +228,7 @@ private fun TopArtists(stats: ListeningStats) {
     val top = stats.topArtists.take(5)
     val most = top.firstOrNull()?.ms?.coerceAtLeast(1L) ?: 1L
     StatsPanel {
-        Kicker(text = "Любимые артисты", color = PanelColors.accent)
+        Kicker(text = tr("Любимые артисты"), color = PanelColors.accent)
         Spacer(modifier = Modifier.height(12.dp))
         top.forEachIndexed { i, artist ->
             Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(vertical = 6.dp)) {
@@ -246,7 +250,7 @@ private fun TopArtists(stats: ListeningStats) {
                             modifier = Modifier.weight(1f)
                         )
                         Text(
-                            "${grouped(artist.ms / 60_000)} мин",
+                            tr("%s мин", grouped(artist.ms / 60_000)),
                             style = MaterialTheme.typography.labelMedium,
                             color = PanelColors.content.copy(alpha = 0.7f)
                         )
@@ -269,7 +273,7 @@ private fun TopArtists(stats: ListeningStats) {
 @Composable
 private fun TopTracks(stats: ListeningStats) {
     StatsPanel {
-        Kicker(text = "На повторе", color = PanelColors.accent)
+        Kicker(text = tr("На повторе"), color = PanelColors.accent)
         Spacer(modifier = Modifier.height(10.dp))
         stats.topTracks.take(5).forEach { track ->
             Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(vertical = 6.dp)) {
@@ -289,7 +293,8 @@ private fun TopTracks(stats: ListeningStats) {
                 }
                 Spacer(modifier = Modifier.width(8.dp))
                 Text(
-                    countOf(track.plays.toLong(), "раз", "раза", "раз"),
+                    // "Раз" is one word for one time and for five, "time" and "times" in English.
+                    countOf(track.plays.toLong(), if (english()) "time" else tr("раз"), tr("раза"), tr("раз")),
                     style = MaterialTheme.typography.labelMedium,
                     color = PanelColors.accent
                 )
@@ -309,7 +314,7 @@ private fun Sources(stats: ListeningStats) {
         PanelColors.content.copy(alpha = 0.12f)
     )
     StatsPanel {
-        Kicker(text = "Откуда музыка", color = PanelColors.accent)
+        Kicker(text = tr("Откуда музыка"), color = PanelColors.accent)
         Spacer(modifier = Modifier.height(14.dp))
         Canvas(modifier = Modifier.fillMaxWidth().height(14.dp).clip(CircleShape)) {
             var x = 0f
@@ -338,9 +343,9 @@ private fun Hours(stats: ListeningStats) {
     val bar = PanelColors.accent
     val quiet = PanelColors.content.copy(alpha = 0.15f)
     StatsPanel {
-        Kicker(text = "Когда слушаете", color = PanelColors.accent)
+        Kicker(text = tr("Когда слушаете"), color = PanelColors.accent)
         Spacer(modifier = Modifier.height(4.dp))
-        Text("Чаще всего ${partOfDay(peak)}", style = MaterialTheme.typography.titleMedium, color = PanelColors.content)
+        Text(tr("Чаще всего %s", partOfDay(peak)), style = MaterialTheme.typography.titleMedium, color = PanelColors.content)
         Spacer(modifier = Modifier.height(14.dp))
         Canvas(modifier = Modifier.fillMaxWidth().height(72.dp)) {
             val slot = size.width / 24
@@ -378,7 +383,7 @@ private fun StoryCardSection(stats: ListeningStats, period: StatsPeriod) {
     val cardHeight = with(screen) { CARD_HEIGHT_PX.toDp() }
 
     Column(verticalArrangement = Arrangement.spacedBy(12.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-        Kicker(text = "Карточка для сторис", color = PanelColors.accent, modifier = Modifier.fillMaxWidth().padding(start = 4.dp))
+        Kicker(text = tr("Карточка для сторис"), color = PanelColors.accent, modifier = Modifier.fillMaxWidth().padding(start = 4.dp))
         BoxWithConstraints(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.TopCenter) {
             val previewWidth = minOf(maxWidth * 0.78f, 320.dp)
             val scale = previewWidth / cardWidth
@@ -415,7 +420,7 @@ private fun StoryCardSection(stats: ListeningStats, period: StatsPeriod) {
                 contentColor = PanelColors.onAccent,
                 modifier = Modifier.weight(1f).height(52.dp)
             ) {
-                Box(contentAlignment = Alignment.Center) { Text("Поделиться", style = MaterialTheme.typography.titleMedium) }
+                Box(contentAlignment = Alignment.Center) { Text(tr("Поделиться"), style = MaterialTheme.typography.titleMedium) }
             }
             Surface(
                 onClick = { scope.launch { saveCard(context, layer) } },
@@ -424,7 +429,7 @@ private fun StoryCardSection(stats: ListeningStats, period: StatsPeriod) {
                 contentColor = PanelColors.content,
                 modifier = Modifier.weight(1f).height(52.dp)
             ) {
-                Box(contentAlignment = Alignment.Center) { Text("Сохранить", style = MaterialTheme.typography.titleMedium) }
+                Box(contentAlignment = Alignment.Center) { Text(tr("Сохранить"), style = MaterialTheme.typography.titleMedium) }
             }
         }
     }
@@ -455,18 +460,18 @@ private fun StoryCard(stats: ListeningStats, period: StatsPeriod) {
             .padding(horizontal = 30.dp, vertical = 36.dp)
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Kicker(text = "YouCloud · итоги", color = accent, modifier = Modifier.weight(1f))
+            Kicker(text = tr("YouCloud · итоги"), color = accent, modifier = Modifier.weight(1f))
             Kicker(text = period.cardLabel, color = text.copy(alpha = 0.7f))
         }
         Spacer(modifier = Modifier.height(30.dp))
         Text(grouped(stats.minutes), fontSize = 66.sp, lineHeight = 70.sp, fontWeight = FontWeight.ExtraBold, color = text)
         Text(
-            countOf(stats.minutes, "минута", "минуты", "минут").substringAfter(' ') + " музыки",
+            countOf(stats.minutes, tr("минута"), tr("минуты"), tr("минут")).substringAfter(' ') + tr(" музыки"),
             fontSize = 22.sp,
             color = text.copy(alpha = 0.8f)
         )
         Spacer(modifier = Modifier.height(28.dp))
-        Kicker(text = "Любимые артисты", color = accent)
+        Kicker(text = tr("Любимые артисты"), color = accent)
         Spacer(modifier = Modifier.height(8.dp))
         stats.topArtists.take(5).forEachIndexed { i, artist ->
             Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(vertical = 3.dp)) {
@@ -482,7 +487,7 @@ private fun StoryCard(stats: ListeningStats, period: StatsPeriod) {
             }
         }
         Spacer(modifier = Modifier.height(24.dp))
-        Kicker(text = "На повторе", color = accent)
+        Kicker(text = tr("На повторе"), color = accent)
         Spacer(modifier = Modifier.height(8.dp))
         stats.topTracks.take(3).forEach { track ->
             Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(vertical = 5.dp)) {
@@ -510,7 +515,7 @@ private fun StoryCard(stats: ListeningStats, period: StatsPeriod) {
             color = text.copy(alpha = 0.75f)
         )
         Spacer(modifier = Modifier.height(6.dp))
-        Text("Слушаю в YouCloud", fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = accent)
+        Text(tr("Слушаю в YouCloud"), fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = accent)
     }
 }
 
@@ -531,7 +536,7 @@ private suspend fun shareCard(context: android.content.Context, layer: GraphicsL
         .setType("image/png")
         .putExtra(Intent.EXTRA_STREAM, uri)
         .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-    context.startActivity(Intent.createChooser(send, "Итоги YouCloud"))
+    context.startActivity(Intent.createChooser(send, tr("Итоги YouCloud")))
 }
 
 /** The card into the gallery, "Изображения/YouCloud": no permission needed for one's own pictures. */
@@ -540,7 +545,7 @@ private suspend fun saveCard(context: android.content.Context, layer: GraphicsLa
     val saved = withContext(Dispatchers.IO) {
         runCatching {
             val values = ContentValues().apply {
-                put(MediaStore.Images.Media.DISPLAY_NAME, "YouCloud итоги ${System.currentTimeMillis()}.png")
+                put(MediaStore.Images.Media.DISPLAY_NAME, tr("YouCloud итоги %s.png", System.currentTimeMillis()))
                 put(MediaStore.Images.Media.MIME_TYPE, "image/png")
                 put(MediaStore.Images.Media.RELATIVE_PATH, Environment.DIRECTORY_PICTURES + "/YouCloud")
             }
@@ -551,7 +556,7 @@ private suspend fun saveCard(context: android.content.Context, layer: GraphicsLa
     }
     Toast.makeText(
         context,
-        if (saved) "Карточка сохранена в «Изображения/YouCloud»" else "Не удалось сохранить карточку",
+        if (saved) tr("Карточка сохранена в «Изображения/YouCloud»") else tr("Не удалось сохранить карточку"),
         Toast.LENGTH_SHORT
     ).show()
 }
