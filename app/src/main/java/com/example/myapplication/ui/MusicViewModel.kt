@@ -101,7 +101,11 @@ enum class AppScreen {
     ARTIST_DETAIL,
     YANDEX_PLAYLIST_DETAIL,
     YTM_SET_DETAIL,
-    HISTORY
+    HISTORY,
+    // The account: one's own profile (or signing in), the friends, and someone's profile.
+    PROFILE,
+    FRIENDS,
+    PERSON
 }
 
 /** Where search looks. YouTube Music and Yandex only once they are connected. */
@@ -2249,12 +2253,59 @@ class MusicViewModel(
         listeningHistory.clear()
     }
 
+    // Settings are opened from the profile now, and close back to it; from a warning on home
+    // they close to home.
+    private var settingsFromProfile = false
+
     fun openSettings() {
+        settingsFromProfile = _screen.value == AppScreen.PROFILE
         _screen.value = AppScreen.SETTINGS
     }
 
     fun closeSettings() {
+        _screen.value = if (settingsFromProfile) AppScreen.PROFILE else AppScreen.HOME
+        settingsFromProfile = false
+    }
+
+    fun openProfile() {
+        _screen.value = AppScreen.PROFILE
+    }
+
+    fun closeProfile() {
         _screen.value = AppScreen.HOME
+    }
+
+    fun openFriends() {
+        _screen.value = AppScreen.FRIENDS
+    }
+
+    fun closeFriends() {
+        _screen.value = AppScreen.PROFILE
+    }
+
+    private val _personId = MutableStateFlow<String?>(null)
+    /** Whose profile [AppScreen.PERSON] shows. */
+    val personId = _personId.asStateFlow()
+    private var personFrom = AppScreen.FRIENDS
+
+    fun openPerson(id: String) {
+        if (_screen.value != AppScreen.PERSON) personFrom = _screen.value
+        _personId.value = id
+        _screen.value = AppScreen.PERSON
+    }
+
+    fun closePerson() {
+        _screen.value = personFrom
+    }
+
+    /**
+     * The page [screen] goes back to, when that is a page rather than home: what pulling it down
+     * uncovers (the friends were opened from the profile, someone's page from the friends).
+     */
+    fun pageUnder(screen: AppScreen?): AppScreen? = when (screen) {
+        AppScreen.FRIENDS -> AppScreen.PROFILE
+        AppScreen.PERSON -> personFrom.takeIf { it == AppScreen.FRIENDS || it == AppScreen.PROFILE }
+        else -> null
     }
 
     // An artist opened from search results goes back to them, not home.
@@ -3503,8 +3554,22 @@ class MusicViewModel(
                 ?: "Unknown Artist",
             artworkUrl = artworkUrl,
             leadArtist = artists?.firstNotNullOfOrNull { it.username?.takeIf(String::isNotBlank) } ?: user?.username,
-            source = sourceOf(urn)
+            source = sourceOf(urn),
+            link = pageLink()
         )
+    }
+
+    /** The track's page on its service, as a link shared to it would be: for a friend to play it too. */
+    private fun SoundCloudTrack.pageLink(): String? {
+        youTubeVideoId?.let { return "https://music.youtube.com/watch?v=$it" }
+        liveVideoId?.let { return "https://www.youtube.com/watch?v=$it" }
+        if (urn?.startsWith("yandex:track:") == true) {
+            val ids = urn.removePrefix("yandex:track:").split(':')
+            val album = ids.getOrNull(1)
+            return if (album != null) "https://music.yandex.ru/album/$album/track/${ids[0]}" else "https://music.yandex.ru/track/${ids[0]}"
+        }
+        if (urn?.startsWith("local:") == true) return null
+        return permalinkUrl?.takeIf { it.startsWith("https://soundcloud.com/") }
     }
 
     /** The service a track is from, as "Итоги" counts them; see PlayLog. */

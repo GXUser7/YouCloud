@@ -436,10 +436,11 @@ class MusicPlayer(context: Context) {
                     .setArtist(track.artist)
                     .apply {
                         track.artworkUrl?.let { setArtworkUri(Uri.parse(it)) }
-                        if (track.leadArtist != null || track.source != null) {
+                        if (track.leadArtist != null || track.source != null || track.link != null) {
                             setExtras(android.os.Bundle().apply {
                                 track.leadArtist?.let { putString(PlayLog.EXTRA_LEAD_ARTIST, it) }
                                 track.source?.let { putString(PlayLog.EXTRA_SOURCE, it) }
+                                track.link?.let { putString(com.example.myapplication.data.social.NowPlayingPublisher.EXTRA_LINK, it) }
                             })
                         }
                     }
@@ -506,7 +507,9 @@ class MusicPlayer(context: Context) {
         val artworkUrl: String?,
         // For "Итоги" (see PlayLog): the first artist alone, and the track's service.
         val leadArtist: String? = null,
-        val source: String? = null
+        val source: String? = null,
+        // The track's page, for friends to play it too (see NowPlayingPublisher).
+        val link: String? = null
     )
 
     data class QueueItem(

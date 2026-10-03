@@ -19,7 +19,7 @@ fun localProperty(name: String): String =
 
 // Follows the GitHub release tags (v3.1 → 3.1), which is what the in-app updater compares
 // against. The code is derived from it so it can never fall behind: 4.0 → 40000.
-val appVersionName = "6.0"
+val appVersionName = "6.1"
 val appVersionCode = appVersionName.split(".").map { it.toInt() }.let { parts ->
     parts.getOrElse(0) { 0 } * 10_000 + parts.getOrElse(1) { 0 } * 100 + parts.getOrElse(2) { 0 }
 }
@@ -58,6 +58,18 @@ android {
             "String",
             "DEFAULT_SOUNDCLOUD_OAUTH_TOKEN",
             "\"${localProperty("soundcloud.oauthToken")}\""
+        )
+        // Accounts and friends. The publishable key is meant to ship in the app: what it may
+        // reach is fenced off by the database's row level security, not by keeping it secret.
+        buildConfigField(
+            "String",
+            "SUPABASE_URL",
+            "\"${localProperty("supabase.url").ifBlank { "https://eolrdgyugwgjkmpzihar.supabase.co" }}\""
+        )
+        buildConfigField(
+            "String",
+            "SUPABASE_KEY",
+            "\"${localProperty("supabase.key").ifBlank { "sb_publishable_JmC1zt5tZS3TjVAcXARDOw_PgCmide6" }}\""
         )
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"

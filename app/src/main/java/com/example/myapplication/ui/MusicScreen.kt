@@ -444,6 +444,9 @@ fun MusicScreen(viewModel: MusicViewModel) {
         label = "pages"
     )
     var pagePulled by remember { mutableStateOf(false) }
+    // A page opened from another page (the friends from the profile): pulled down, it uncovers
+    // that page rather than home.
+    val pageUnder by remember { derivedStateOf { viewModel.pageUnder(pages.targetState) } }
     val mixShown = remember { MutableTransitionState(false) }
     // It stays under the player opened from it, as any screen does: hidden while the player was
     // up, it went away with its list and came back in from the top of it, and pulling the player
@@ -464,9 +467,9 @@ fun MusicScreen(viewModel: MusicViewModel) {
     // is what the pull uncovers.
     val homeShown = remember { Animatable(if (screen == AppScreen.HOME || screen == AppScreen.MIX_DETAIL) 1f else 0f) }
     LaunchedEffect(homeShown) {
-        snapshotFlow { (pages.targetState == null) to pagePulled }.collectLatest { (noPage, pulled) ->
+        snapshotFlow { Triple(pages.targetState == null, pagePulled, pageUnder != null) }.collectLatest { (noPage, pulled, underPage) ->
             when {
-                pulled -> homeShown.snapTo(1f)
+                pulled && !underPage -> homeShown.snapTo(1f)
                 noPage -> homeShown.animateTo(1f, tween(240))
                 else -> homeShown.animateTo(0f, tween(160))
             }
@@ -475,7 +478,7 @@ fun MusicScreen(viewModel: MusicViewModel) {
     // Gone from under a page, or under a mix that has come up over it, home isn't drawn at all.
     val homeHidden by remember {
         derivedStateOf {
-            !pagePulled && (homeShown.value == 0f || (mixShown.isIdle && mixShown.currentState))
+            (!pagePulled || pageUnder != null) && (homeShown.value == 0f || (mixShown.isIdle && mixShown.currentState))
         }
     }
     // What is covered, for what moves by itself there (see LocalCovered): read as it is needed,
@@ -527,6 +530,8 @@ fun MusicScreen(viewModel: MusicViewModel) {
     val crossfadeSeconds by viewModel.settingsRepo.crossfadeSeconds.collectAsState()
     var showTogether by remember { mutableStateOf(false) }
     var showStats by remember { mutableStateOf(false) }
+    // The friends opened from the profile's "заявки": on the requests.
+    var friendsOnRequests by remember { mutableStateOf(false) }
 
     val downloadedTracks = remember(favorites) { favorites.filter { it.downloadState == DownloadState.DOWNLOADED } }
     val history by viewModel.history.collectAsState()
@@ -559,6 +564,9 @@ fun MusicScreen(viewModel: MusicViewModel) {
             }
             AppScreen.DOWNLOADS -> viewModel.closeDownloads()
             AppScreen.HISTORY -> viewModel.closeHistory()
+            AppScreen.PROFILE -> viewModel.closeProfile()
+            AppScreen.FRIENDS -> viewModel.closeFriends()
+            AppScreen.PERSON -> viewModel.closePerson()
             AppScreen.PLAYLISTS -> viewModel.closePlaylists()
             AppScreen.SETTINGS -> viewModel.closeSettings()
             AppScreen.MIX_DETAIL -> viewModel.closeMix()
@@ -731,6 +739,10 @@ fun MusicScreen(viewModel: MusicViewModel) {
                                 haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                                 viewModel.openSettings()
                             },
+                            onOpenProfile = {
+                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                viewModel.openProfile()
+                            },
                             onOpenMix = { mix ->
                                 haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                                 viewModel.openMix(mix)
@@ -740,7 +752,55 @@ fun MusicScreen(viewModel: MusicViewModel) {
                         )
                 }
             }
+            // The account's pages: as pages, and under one of them being pulled off (see pageUnder).
+            val accountPage: @Composable (AppScreen) -> Unit = { page ->
+                when (page) {
+                    AppScreen.PROFILE -> ProfileScreen(
+                        onClose = viewModel::closeProfile,
+                        onOpenSettings = {
+                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                            viewModel.openSettings()
+                        },
+                        onOpenFriends = { requests ->
+                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                            friendsOnRequests = requests
+                            viewModel.openFriends()
+                        },
+                        onOpenPerson = { id ->
+                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                            viewModel.openPerson(id)
+                        }
+                    )
+                    AppScreen.FRIENDS -> FriendsScreen(
+                        onClose = viewModel::closeFriends,
+                        onOpenPerson = { id ->
+                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                            viewModel.openPerson(id)
+                        },
+                        startWithRequests = friendsOnRequests
+                    )
+                    AppScreen.PERSON -> {
+                        val personId by viewModel.personId.collectAsState()
+                        personId?.let { id ->
+                            PersonScreen(
+                                id = id,
+                                onClose = viewModel::closePerson,
+                                onPlayLink = viewModel::openSharedText
+                            )
+                        }
+                    }
+                    else -> Unit
+                }
+            }
             androidx.compose.runtime.CompositionLocalProvider(LocalCovered provides pagesCovered) {
+            // What a page pulled off another page uncovers: that page, there as the pull begins, so
+            // that it is what shows under the pull and what stays once the page has gone. It tells
+            // nobody it is pulled: it isn't.
+            pageUnder?.let { under ->
+                if (pagePulled) androidx.compose.runtime.CompositionLocalProvider(LocalPagePulled provides {}) {
+                    Box(modifier = Modifier.fillMaxSize()) { accountPage(under) }
+                }
+            }
             pages.AnimatedContent(
                 transitionSpec = {
                     // Screens share the top-bar geometry now, so a soft fade+scale makes the bar
@@ -748,8 +808,13 @@ fun MusicScreen(viewModel: MusicViewModel) {
                     // No size animation: every screen fills the window, and animating the size only
                     // ever showed when a screen drew nothing for a moment — it then grew out of the
                     // top-left corner.
-                    ((fadeIn(tween(240)) + scaleIn(initialScale = 0.97f, animationSpec = tween(240))) togetherWith
-                        (fadeOut(tween(160)) + scaleOut(targetScale = 1.02f, animationSpec = tween(160)))) using null
+                    if (pagePulled && targetState != null && viewModel.pageUnder(initialState) == targetState) {
+                        // Pulled off onto the page under it: that page is on screen already.
+                        (EnterTransition.None togetherWith androidx.compose.animation.ExitTransition.None) using null
+                    } else {
+                        ((fadeIn(tween(240)) + scaleIn(initialScale = 0.97f, animationSpec = tween(240))) togetherWith
+                            (fadeOut(tween(160)) + scaleOut(targetScale = 1.02f, animationSpec = tween(160)))) using null
+                    }
                 },
                 contentKey = { it }
             ) { screen ->
@@ -760,6 +825,7 @@ fun MusicScreen(viewModel: MusicViewModel) {
                 ) {
                 when (screen) {
                     AppScreen.HOME, AppScreen.MIX_DETAIL -> Unit
+                    AppScreen.PROFILE, AppScreen.FRIENDS, AppScreen.PERSON -> accountPage(screen)
                     AppScreen.HISTORY -> HistoryScreen(
                         tracks = history,
                         favorites = favorites,
@@ -1655,6 +1721,7 @@ private fun HomeScreen(
     onOpenDownloads: () -> Unit,
     onOpenHistory: () -> Unit,
     onOpenSettings: () -> Unit,
+    onOpenProfile: () -> Unit,
     onOpenMix: (SoundCloudMix) -> Unit,
     onReloadMixes: () -> Unit,
     updates: com.example.myapplication.data.UpdateRepository
@@ -2139,9 +2206,9 @@ private fun HomeScreen(
                 haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                 onOpenSearch()
             },
-            onSettings = {
+            onProfile = {
                 haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                onOpenSettings()
+                onOpenProfile()
             },
             modifier = if (isLandscape()) {
                 Modifier
@@ -2281,7 +2348,7 @@ private fun HomeToolbar(
     selected: HomeService,
     onSelect: (HomeService) -> Unit,
     onSearch: () -> Unit,
-    onSettings: () -> Unit,
+    onProfile: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     Row(
@@ -2346,8 +2413,9 @@ private fun HomeToolbar(
         }
         val searchFill = androidx.compose.ui.graphics.lerp(PanelColors.container, PanelColors.content, 0.08f)
         Spacer(modifier = Modifier.weight(1f))
+        // The profile, where settings now are too (and the friends).
         Surface(
-            onClick = onSettings,
+            onClick = onProfile,
             modifier = Modifier
                 .size(64.dp)
                 .glassOr(RoundedCornerShape(20.dp), searchFill),
@@ -2357,7 +2425,7 @@ private fun HomeToolbar(
             shadowElevation = if (glass) 0.dp else 6.dp
         ) {
             Box(contentAlignment = Alignment.Center) {
-                Icon(Icons.Default.Settings, contentDescription = tr("Настройки"), modifier = Modifier.size(26.dp))
+                ProfileGlyph()
             }
         }
         Spacer(modifier = Modifier.width(8.dp))
