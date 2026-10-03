@@ -1,5 +1,7 @@
 package com.example.myapplication.ui
 
+import com.example.myapplication.i18n.english
+import com.example.myapplication.i18n.tr
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
@@ -41,7 +43,7 @@ import java.util.Locale
 
 /** "12,4 МБ" — how big the download is, when the server said. */
 private fun megabytes(bytes: Long): String =
-    String.format(Locale.US, "%.1f", bytes / 1_048_576f).replace('.', ',') + " МБ"
+    String.format(Locale.US, "%.1f", bytes / 1_048_576f).let { if (english()) it else it.replace('.', ',') } + tr(" МБ")
 
 /**
  * The update row in settings: what is installed, what the last check found, and the one next
@@ -75,15 +77,15 @@ internal fun UpdateSettingsRow(updates: UpdateRepository) {
                 )
             }
             Column(modifier = Modifier.weight(1f)) {
-                Text(text = "Версия ${BuildConfig.VERSION_NAME}", style = MaterialTheme.typography.titleMedium)
+                Text(text = tr("Версия %s", BuildConfig.VERSION_NAME), style = MaterialTheme.typography.titleMedium)
                 Text(
                     text = when (val s = state) {
-                        UpdateState.Idle -> "Новые версии берутся из релизов на GitHub"
-                        UpdateState.Checking -> "Проверяю…"
-                        is UpdateState.UpToDate -> "Это самая свежая версия"
-                        is UpdateState.Available -> "Доступна версия ${s.release.version}"
-                        is UpdateState.Downloading -> "Скачиваю ${s.release.version}…"
-                        is UpdateState.Ready -> "Версия ${s.release.version} готова к установке"
+                        UpdateState.Idle -> tr("Новые версии берутся из релизов на GitHub")
+                        UpdateState.Checking -> tr("Проверяю…")
+                        is UpdateState.UpToDate -> tr("Это самая свежая версия")
+                        is UpdateState.Available -> tr("Доступна версия %s", s.release.version)
+                        is UpdateState.Downloading -> tr("Скачиваю %s…", s.release.version)
+                        is UpdateState.Ready -> tr("Версия %s готова к установке", s.release.version)
                         is UpdateState.Failed -> s.message
                     },
                     style = MaterialTheme.typography.bodySmall,
@@ -104,11 +106,11 @@ internal fun UpdateSettingsRow(updates: UpdateRepository) {
                 Text(
                     when (val s = state) {
                         is UpdateState.Available ->
-                            if (s.release.sizeBytes > 0) "Скачать · ${megabytes(s.release.sizeBytes)}" else "Скачать"
-                        is UpdateState.Ready -> "Установить"
-                        is UpdateState.Failed -> "Повторить"
+                            if (s.release.sizeBytes > 0) tr("Скачать · %s", megabytes(s.release.sizeBytes)) else tr("Скачать")
+                        is UpdateState.Ready -> tr("Установить")
+                        is UpdateState.Failed -> tr("Повторить")
                         UpdateState.Checking, is UpdateState.Downloading -> "…"
-                        else -> "Проверить"
+                        else -> tr("Проверить")
                     }
                 )
             }
@@ -158,25 +160,25 @@ internal fun UpdateBanner(updates: UpdateRepository, modifier: Modifier = Modifi
             Column(modifier = Modifier.padding(start = 18.dp, top = 10.dp, end = 8.dp, bottom = 12.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Column(modifier = Modifier.weight(1f)) {
-                        Kicker(text = "Обновление", color = PanelColors.content.copy(alpha = 0.72f))
+                        Kicker(text = tr("Обновление"), color = PanelColors.content.copy(alpha = 0.72f))
                         Text(
                             text = when (val s = state) {
-                                is UpdateState.Available -> "Вышла версия ${s.release.version}"
-                                is UpdateState.Downloading -> "Скачиваю ${s.release.version}…"
-                                is UpdateState.Ready -> "Версия ${s.release.version} готова"
+                                is UpdateState.Available -> tr("Вышла версия %s", s.release.version)
+                                is UpdateState.Downloading -> tr("Скачиваю %s…", s.release.version)
+                                is UpdateState.Ready -> tr("Версия %s готова", s.release.version)
                                 else -> ""
                             },
                             style = MaterialTheme.typography.titleMedium
                         )
                     }
                     when (state) {
-                        is UpdateState.Available -> PanelActionButton("Скачать", Icons.Default.Download) { updates.download() }
-                        is UpdateState.Ready -> PanelActionButton("Установить", Icons.Default.SystemUpdate) { updates.install(context) }
+                        is UpdateState.Available -> PanelActionButton(tr("Скачать"), Icons.Default.Download) { updates.download() }
+                        is UpdateState.Ready -> PanelActionButton(tr("Установить"), Icons.Default.SystemUpdate) { updates.install(context) }
                         else -> Unit
                     }
                     if (state !is UpdateState.Downloading) {
                         IconButton(onClick = updates::clear) {
-                            Icon(Icons.Default.Close, contentDescription = "Скрыть", tint = PanelColors.content.copy(alpha = 0.72f))
+                            Icon(Icons.Default.Close, contentDescription = tr("Скрыть"), tint = PanelColors.content.copy(alpha = 0.72f))
                         }
                     }
                 }

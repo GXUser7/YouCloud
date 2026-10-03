@@ -1,5 +1,6 @@
 package com.example.myapplication.data
 
+import com.example.myapplication.i18n.tr
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageInfo
@@ -87,7 +88,7 @@ class UpdateRepository(
                 }
                 .onFailure { error ->
                     _state.value = if (manual) {
-                        UpdateState.Failed(error.message ?: "Не удалось проверить обновления")
+                        UpdateState.Failed(error.message ?: tr("Не удалось проверить обновления"))
                     } else {
                         UpdateState.Idle
                     }
@@ -113,7 +114,7 @@ class UpdateRepository(
             result
                 .onSuccess { _state.value = UpdateState.Ready(release, it) }
                 .onFailure { error ->
-                    _state.value = UpdateState.Failed(error.message ?: "Не удалось скачать обновление")
+                    _state.value = UpdateState.Failed(error.message ?: tr("Не удалось скачать обновление"))
                 }
         }
     }
@@ -148,7 +149,7 @@ class UpdateRepository(
         // Without it a truncated file or a build signed elsewhere comes back from the system as
         // "App not installed", which names nothing.
         verify(ready.file)?.let { reason ->
-            _state.value = UpdateState.Failed("Обновление не подходит: $reason")
+            _state.value = UpdateState.Failed(tr("Обновление не подходит: %s", reason))
             return false
         }
 
@@ -168,10 +169,10 @@ class UpdateRepository(
         val flags = PackageManager.GET_SIGNING_CERTIFICATES
         val candidate = runCatching {
             context.packageManager.getPackageArchiveInfo(file.absolutePath, flags)
-        }.getOrNull() ?: return "скачанный файл — не устанавливаемый пакет"
+        }.getOrNull() ?: return tr("скачанный файл — не устанавливаемый пакет")
 
         if (candidate.packageName != context.packageName) {
-            return "внутри пакет ${candidate.packageName}, а не это приложение"
+            return tr("внутри пакет %s, а не это приложение", candidate.packageName)
         }
         val installed = runCatching {
             context.packageManager.getPackageInfo(context.packageName, flags)
@@ -182,7 +183,7 @@ class UpdateRepository(
         // Not knowing is not evidence of a mismatch; refusing on it would block every update on a
         // phone that answers differently.
         if (ours.isNullOrEmpty() || theirs.isNullOrEmpty()) return null
-        if (ours != theirs) return "подписано другим ключом, чем установленное приложение"
+        if (ours != theirs) return tr("подписано другим ключом, чем установленное приложение")
         return null
     }
 

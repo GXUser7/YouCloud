@@ -1,5 +1,6 @@
 package com.example.myapplication.together
 
+import com.example.myapplication.i18n.tr
 import android.content.Context
 import android.util.Log
 import com.google.android.gms.common.api.ApiException
@@ -93,7 +94,7 @@ class TogetherSession(context: Context) : TogetherLink {
         myName = name
         _state.value = TogetherState.Hosting(emptyList())
         client.startAdvertising(name, SERVICE_ID, lifecycle, AdvertisingOptions.Builder().setStrategy(STRATEGY).build())
-            .addOnFailureListener { fail("Не удалось стать видимым", it) }
+            .addOnFailureListener { fail(tr("Не удалось стать видимым"), it) }
     }
 
     /** Looking for a host nearby, to [join]. */
@@ -102,7 +103,7 @@ class TogetherSession(context: Context) : TogetherLink {
         myName = name
         _state.value = TogetherState.Searching(emptyList())
         client.startDiscovery(SERVICE_ID, discovery, DiscoveryOptions.Builder().setStrategy(STRATEGY).build())
-            .addOnFailureListener { fail("Не удалось искать рядом", it) }
+            .addOnFailureListener { fail(tr("Не удалось искать рядом"), it) }
     }
 
     fun join(host: TogetherPeer) {
@@ -111,7 +112,7 @@ class TogetherSession(context: Context) : TogetherLink {
         client.requestConnection(myName, host.id, lifecycle)
             .addOnFailureListener { e ->
                 (_state.value as? TogetherState.Searching)?.let { _state.value = it.copy(joining = null, code = null) }
-                fail("Не удалось подключиться", e, keep = true)
+                fail(tr("Не удалось подключиться"), e, keep = true)
             }
     }
 
@@ -152,16 +153,16 @@ class TogetherSession(context: Context) : TogetherLink {
         val code = (e as? ApiException)?.statusCode
         Log.w(TAG, "$what: ${code?.let(ConnectionsStatusCodes::getStatusCodeString)}", e)
         val why = when (code) {
-            ConnectionsStatusCodes.STATUS_BLUETOOTH_ERROR -> "Включите Bluetooth"
+            ConnectionsStatusCodes.STATUS_BLUETOOTH_ERROR -> tr("Включите Bluetooth")
             ConnectionsStatusCodes.MISSING_PERMISSION_ACCESS_WIFI_STATE,
             ConnectionsStatusCodes.MISSING_PERMISSION_BLUETOOTH,
             ConnectionsStatusCodes.MISSING_PERMISSION_BLUETOOTH_SCAN,
             ConnectionsStatusCodes.MISSING_PERMISSION_BLUETOOTH_ADVERTISE,
             ConnectionsStatusCodes.MISSING_PERMISSION_BLUETOOTH_CONNECT,
-            ConnectionsStatusCodes.MISSING_PERMISSION_NEARBY_WIFI_DEVICES -> "Разрешите доступ к устройствам поблизости"
+            ConnectionsStatusCodes.MISSING_PERMISSION_NEARBY_WIFI_DEVICES -> tr("Разрешите доступ к устройствам поблизости")
             ConnectionsStatusCodes.STATUS_ALREADY_ADVERTISING,
             ConnectionsStatusCodes.STATUS_ALREADY_DISCOVERING -> return
-            else -> "Проверьте, что Bluetooth и Wi-Fi включены"
+            else -> tr("Проверьте, что Bluetooth и Wi-Fi включены")
         }
         if (!keep) stopAll()
         _state.value = TogetherState.Failed("$what. $why")
@@ -199,7 +200,7 @@ class TogetherSession(context: Context) : TogetherLink {
 
         override fun onConnectionResult(endpointId: String, result: ConnectionResolution) {
             val ok = result.status.statusCode == ConnectionsStatusCodes.STATUS_OK
-            val peer = TogetherPeer(endpointId, names[endpointId] ?: "Телефон")
+            val peer = TogetherPeer(endpointId, names[endpointId] ?: tr("Телефон"))
             when (val now = _state.value) {
                 is TogetherState.Hosting -> if (ok) {
                     _state.value = now.copy(guests = now.guests.filterNot { it.id == endpointId } + peer)
@@ -211,7 +212,7 @@ class TogetherSession(context: Context) : TogetherLink {
                 } else {
                     _state.value = now.copy(joining = null, code = null)
                     if (result.status.statusCode == ConnectionsStatusCodes.STATUS_CONNECTION_REJECTED) {
-                        _state.value = TogetherState.Failed("«${peer.name}» не пустил подключиться")
+                        _state.value = TogetherState.Failed(tr("«%s» не пустил подключиться", peer.name))
                     }
                 }
                 else -> Unit
@@ -223,7 +224,7 @@ class TogetherSession(context: Context) : TogetherLink {
                 is TogetherState.Hosting -> _state.value = now.copy(guests = now.guests.filterNot { it.id == endpointId })
                 is TogetherState.Joined -> if (now.host.id == endpointId) {
                     stopAll()
-                    _state.value = TogetherState.Failed("Связь с «${now.host.name}» прервалась")
+                    _state.value = TogetherState.Failed(tr("Связь с «%s» прервалась", now.host.name))
                 }
                 else -> Unit
             }

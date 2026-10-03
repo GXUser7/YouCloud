@@ -1,5 +1,6 @@
 package com.example.myapplication.ui
 
+import com.example.myapplication.i18n.tr
 import android.content.Context
 import android.media.MediaMetadataRetriever
 import android.net.Uri
@@ -91,11 +92,11 @@ suspend fun importLocalAudio(context: Context, uris: List<Uri>, videos: OfflineV
 
             // Fallback for title/artist
             if (title.isBlank()) {
-                title = getFileName(context, uri)?.substringBeforeLast('.') ?: "Локальный трек $uniqueId"
+                title = getFileName(context, uri)?.substringBeforeLast('.') ?: tr("Локальный трек %s", uniqueId)
             }
             if (isVideo) videos.markLocal(uniqueId, vertical)
             if (artist.isBlank()) {
-                artist = "Устройство"
+                artist = tr("Устройство")
             }
 
             val favoriteTrack = FavoriteTrack(

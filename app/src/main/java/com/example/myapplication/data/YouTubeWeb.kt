@@ -1,5 +1,6 @@
 package com.example.myapplication.data
 
+import com.example.myapplication.i18n.tr
 import com.google.gson.JsonElement
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
@@ -139,7 +140,7 @@ object YouTubeWeb {
      * children, and won't let it write in a subscribers' chat.
      */
     suspend fun subscribe(channelId: String, subscribe: Boolean, session: YtAuth?, params: String?) = withContext(Dispatchers.IO) {
-        if (session?.sapisid == null) throw IOException("Не выполнен вход в YouTube")
+        if (session?.sapisid == null) throw IOException(tr("Не выполнен вход в YouTube"))
         post(if (subscribe) "subscription/subscribe" else "subscription/unsubscribe", JsonObject().apply {
             add("channelIds", com.google.gson.JsonArray().apply { add(channelId) })
             params?.let { addProperty("params", it.replace("%3D", "=")) }

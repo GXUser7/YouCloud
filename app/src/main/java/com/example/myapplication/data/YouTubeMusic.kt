@@ -1,5 +1,6 @@
 package com.example.myapplication.data
 
+import com.example.myapplication.i18n.tr
 import com.google.gson.JsonElement
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
@@ -435,7 +436,7 @@ class YouTubeMusicClient(private val authProvider: () -> YtAuth?) {
 
     /** Subscribes to the channel [channelId] or unsubscribes, sending [params] as the page's button does. */
     suspend fun subscribe(channelId: String, subscribe: Boolean, params: String?) {
-        if (authProvider()?.sapisid == null) throw YtMusicException(401, "Не выполнен вход в YouTube Music")
+        if (authProvider()?.sapisid == null) throw YtMusicException(401, tr("Не выполнен вход в YouTube Music"))
         post(if (subscribe) "subscription/subscribe" else "subscription/unsubscribe", json {
             add("channelIds", com.google.gson.JsonArray().apply { add(channelId) })
             params?.let { addProperty("params", it.replace("%3D", "=")) }

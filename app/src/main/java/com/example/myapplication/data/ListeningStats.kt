@@ -1,14 +1,19 @@
 package com.example.myapplication.data
 
+import com.example.myapplication.i18n.tr
 import com.example.myapplication.player.PlayLog
 import java.util.Calendar
 
 /** The stretches "Итоги" are counted over, back from now. */
-enum class StatsPeriod(val label: String, val cardLabel: String, val days: Int?) {
+enum class StatsPeriod(private val ru: String, private val ruCard: String, val days: Int?) {
     WEEK("Неделя", "за неделю", 7),
     MONTH("Месяц", "за месяц", 30),
     YEAR("Год", "за год", 365),
-    ALL("Всё время", "за всё время", null)
+    ALL("Всё время", "за всё время", null);
+
+    // In the app's language as it is shown, not as the enum was made: it may change meanwhile.
+    val label: String get() = tr(ru)
+    val cardLabel: String get() = tr(ruCard)
 }
 
 /** "Итоги" of [plays]: how much, whom and what most, from where, and at what time of day. */
@@ -57,11 +62,11 @@ class ListeningStats(plays: List<PlayLog.Play>) {
 
         /** A service's name as the app writes it. */
         fun sourceName(source: String): String = when (source) {
-            "yandex" -> "Яндекс"
+            "yandex" -> tr("Яндекс")
             "youtube" -> "YouTube"
             "soundcloud" -> "SoundCloud"
-            "phone" -> "С телефона"
-            else -> "Скачанное"
+            "phone" -> tr("С телефона")
+            else -> tr("Скачанное")
         }
     }
 }

@@ -1,5 +1,6 @@
 package com.example.myapplication.ui
 
+import com.example.myapplication.i18n.tr
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
@@ -88,11 +89,14 @@ internal object WaveTuning {
 /** One value to tune the wave by; a mood also has its own shape and colour. */
 internal class WaveChoice(
     val seed: String,
-    val title: String,
+    private val ru: String,
     val lobes: Int = DEFAULT_LOBES,
     val depth: Float = DEFAULT_DEPTH,
     val color: Color = Color.Unspecified
-)
+) {
+    // In the app's language as it is shown: the choices are made once, the language may change.
+    val title: String get() = tr(ru)
+}
 
 /**
  * Yandex Music's wave on home, as "Моя форма": one large shape in the theme's colours in the middle
@@ -157,7 +161,7 @@ internal fun MyWavePage(
                     } else {
                         Icon(
                             imageVector = if (playing) Icons.Rounded.Pause else Icons.Rounded.PlayArrow,
-                            contentDescription = if (playing) "Пауза" else "Слушать",
+                            contentDescription = if (playing) tr("Пауза") else tr("Слушать"),
                             modifier = Modifier.size(side * 0.19f)
                         )
                     }
@@ -225,13 +229,13 @@ internal fun WaveTuningPane(
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(
-                text = "Настроить волну",
+                text = tr("Настроить волну"),
                 style = MaterialTheme.typography.titleLarge,
                 modifier = Modifier.weight(1f)
             )
-            if (picks.isNotEmpty()) TextButton(onClick = onReset) { Text("Сбросить") }
+            if (picks.isNotEmpty()) TextButton(onClick = onReset) { Text(tr("Сбросить")) }
         }
-        PaneLabel("Настроение")
+        PaneLabel(tr("Настроение"))
         ChoiceGroup(
             choices = WaveTuning.moods,
             picked = picks[WaveTuning.MOOD],
@@ -239,7 +243,7 @@ internal fun WaveTuningPane(
             // Four in a row: a size smaller, for "Спокойное" to fit beside the others.
             textStyle = MaterialTheme.typography.labelMedium
         )
-        PaneLabel("Режим")
+        PaneLabel(tr("Режим"))
         ChoiceGroup(
             choices = WaveTuning.modes,
             picked = picks[WaveTuning.MODE],

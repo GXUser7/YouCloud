@@ -1,5 +1,6 @@
 package com.example.myapplication.player
 
+import com.example.myapplication.i18n.tr
 import android.content.Context
 import android.net.Uri
 import androidx.media3.common.MediaItem
@@ -41,9 +42,9 @@ object AutoLibrary {
      */
     fun children(context: Context, parentId: String): List<MediaItem> = when {
         parentId == ROOT_ID -> listOf(
-            browsable(NODE_DOWNLOADS, "Скачанное"),
-            browsable(NODE_FAVORITES, "Любимое"),
-            browsable(NODE_PLAYLISTS, "Плейлисты")
+            browsable(NODE_DOWNLOADS, tr("Скачанное")),
+            browsable(NODE_FAVORITES, tr("Любимое")),
+            browsable(NODE_PLAYLISTS, tr("Плейлисты"))
         )
 
         parentId == NODE_DOWNLOADS -> downloadedTracks(context).map(::playable)

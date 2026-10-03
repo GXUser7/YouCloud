@@ -1,5 +1,6 @@
 package com.example.myapplication.ui
 
+import com.example.myapplication.i18n.tr
 import android.content.Context
 import android.media.MediaMetadataRetriever
 import android.util.Log
@@ -74,6 +75,9 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.flow.StateFlow
+import com.example.myapplication.together.TogetherNotice
+import com.example.myapplication.together.TogetherServices
 import kotlinx.coroutines.launch
 import retrofit2.HttpException
 import kotlinx.coroutines.Dispatchers
@@ -288,7 +292,7 @@ class MusicViewModel(
                 _ytSearch.value = _ytSearch.value.copy(
                     page = null,
                     loading = false,
-                    error = "Ошибка поиска: ${readableMessage(e)}"
+                    error = tr("Ошибка поиска: %s", readableMessage(e))
                 )
             }
         }
@@ -448,8 +452,13 @@ class MusicViewModel(
     val errorMessage = _errorMessage.asStateFlow()
 
     val isPlaying = musicPlayer.isPlaying
-    val isPlaybackBuffering = musicPlayer.isBuffering
-    val currentTrackId = musicPlayer.currentTrackId
+    // Loading, or held for the others listening together to load it too: the same wait.
+    val isPlaybackBuffering: StateFlow<Boolean> by lazy {
+        combine(musicPlayer.isBuffering, together.waiting) { loading, waiting -> loading || waiting }
+            .stateIn(viewModelScope, SharingStarted.Eagerly, false)
+    }
+    // The track shown playing: the next one already while a crossfade brings it in.
+    val currentTrackId = musicPlayer.shownTrackId
     val currentTrackTitle = musicPlayer.currentTrack
     val playbackPositionMs = musicPlayer.positionMs
     val playbackDurationMs = musicPlayer.durationMs
@@ -755,8 +764,9 @@ class MusicViewModel(
         }
 
         viewModelScope.launch {
+            // The track shown: a crossfade's next one from the moment it is heard.
             combine(
-                musicPlayer.currentTrackId,
+                musicPlayer.shownTrackId,
                 musicPlayer.shuffleEnabled
             ) { trackId, _ -> trackId }
                 .collectLatest { trackId ->
@@ -924,7 +934,7 @@ class MusicViewModel(
 
                     val likedPlaylist = SoundCloudPlaylist(
                         id = -100L,
-                        title = "Мне нравится",
+                        title = tr("Мне нравится"),
                         trackCount = likedCount,
                         artworkUrl = null,
                         permalinkUrl = "yandex:playlist:liked"
@@ -1061,7 +1071,7 @@ class MusicViewModel(
             return
         }
         if (settingsRepository.clientId.value.isBlank()) {
-            _errorMessage.value = "Укажите SoundCloud client_id в настройках"
+            _errorMessage.value = tr("Укажите SoundCloud client_id в настройках")
             return
         }
 
@@ -1102,7 +1112,7 @@ class MusicViewModel(
         _screen.value = AppScreen.MIX_DETAIL
         _mixTracks.value = emptyList()
         if (clientId.value.isBlank()) {
-            _errorMessage.value = "Укажите SoundCloud client_id в настройках"
+            _errorMessage.value = tr("Укажите SoundCloud client_id в настройках")
             return
         }
         _isLoading.value = true
@@ -1142,7 +1152,7 @@ class MusicViewModel(
             try {
                 val clientId = settingsRepository.clientId.value
                 if (clientId.isBlank()) {
-                    _errorMessage.value = "Укажите SoundCloud client_id в настройках"
+                    _errorMessage.value = tr("Укажите SoundCloud client_id в настройках")
                     return@launch
                 }
                 val tracks = mixesRepository.loadMixTracks(mix, clientId)
@@ -1151,7 +1161,7 @@ class MusicViewModel(
                 if (_loadingMixId.value != mix.id) return@launch
 
                 if (tracks.isEmpty()) {
-                    _errorMessage.value = "В этом миксе нет доступных треков."
+                    _errorMessage.value = tr("В этом миксе нет доступных треков.")
                     return@launch
                 }
 
@@ -1213,7 +1223,7 @@ class MusicViewModel(
         searchJob = viewModelScope.launch {
             delay(350)
             if (settingsRepository.clientId.value.isBlank()) {
-                _errorMessage.value = "Укажите SoundCloud client_id в настройках"
+                _errorMessage.value = tr("Укажите SoundCloud client_id в настройках")
                 clearSoundCloudSearchResults()
                 return@launch
             }
@@ -1520,7 +1530,7 @@ class MusicViewModel(
                 val serviceUrl = serviceStreamUrl(track)
                 val clientId = settingsRepository.clientId.value
                 if (clientId.isBlank() && serviceUrl == null) {
-                    _errorMessage.value = "Укажите SoundCloud client_id в настройках"
+                    _errorMessage.value = tr("Укажите SoundCloud client_id в настройках")
                     return@launch
                 }
                 val streamUrl = if (serviceUrl != null) {
@@ -1531,7 +1541,7 @@ class MusicViewModel(
                 }
 
                 if (streamUrl == null) {
-                    _errorMessage.value = "Для этого трека не нашёлся доступный поток."
+                    _errorMessage.value = tr("Для этого трека не нашёлся доступный поток.")
                     return@launch
                 }
 
@@ -1653,7 +1663,7 @@ class MusicViewModel(
             } catch (e: Exception) {
                 Log.e("MusicViewModel", "YouTube Music home failed", e)
                 _ytHomeError.value = if (e is com.example.myapplication.data.YtMusicException && e.code == 401) {
-                    "YouTube Music не принял вход. Войдите заново в настройках."
+                    tr("YouTube Music не принял вход. Войдите заново в настройках.")
                 } else {
                     readableMessage(e)
                 }
@@ -1682,7 +1692,7 @@ class MusicViewModel(
                 if (_ytOpenedSet.value?.id == set.id) {
                     _ytOpenedSet.value = set.copy(tracks = tracks, trackCount = tracks.size)
                 }
-                if (tracks.isEmpty()) _ytSetError.value = "В этой подборке не нашлось треков."
+                if (tracks.isEmpty()) _ytSetError.value = tr("В этой подборке не нашлось треков.")
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -1700,31 +1710,138 @@ class MusicViewModel(
     private val togetherSession = com.example.myapplication.together.TogetherSession(context.applicationContext)
 
     /** Listening together with phones nearby; see [ListenTogether]. */
-    val together = com.example.myapplication.together.ListenTogether(
+    val together: com.example.myapplication.together.ListenTogether = com.example.myapplication.together.ListenTogether(
         session = togetherSession,
         player = object : com.example.myapplication.together.TogetherPlayer {
-            override val currentTrack = _currentPlayingTrack.asStateFlow()
+            // The track the player is on, not the one shown: a crossfade shows the next one
+            // seconds before the player gets there, and the phones keep to the player.
+            override val currentTrack = combine(_currentPlayingTrack, musicPlayer.currentTrackId, _activeQueue) { shown, id, queue ->
+                if (shown?.id == id) shown else queue.firstOrNull { it.id == id } ?: shown
+            }.stateIn(viewModelScope, SharingStarted.Eagerly, null)
             override val isPlaying = musicPlayer.isPlaying
             override val currentTrackId = musicPlayer.currentTrackId
-            override val isBuffering = musicPlayer.isBuffering
-            override fun livePositionMs() = musicPlayer.livePositionMs()
+            // A crossfade settling moves the main player about unheard: nothing to keep level then.
+            override val isBuffering = combine(musicPlayer.isBuffering, com.example.myapplication.player.SessionBridge.crossfadeSettling) { loading, settling -> loading || settling }
+                .stateIn(viewModelScope, SharingStarted.Eagerly, false)
+            override fun livePositionMs() = musicPlayer.playerPositionMs()
+            override fun isReadyFor(trackId: Long) = musicPlayer.isReadyFor(trackId)
+            override fun wantsToPlay() = musicPlayer.wantsToPlay()
             override fun togglePlayPause() = musicPlayer.togglePlayPause()
             override fun skip(next: Boolean) = if (next) musicPlayer.skipNext() else musicPlayer.skipPrevious()
-            override fun seekTo(positionMs: Long) = musicPlayer.seekTo(positionMs)
+            // A guest's button, on the host, means the track shown there; a guest keeping level
+            // with the host means its player's own.
+            override fun seekTo(positionMs: Long) =
+                if (together.isGuest) musicPlayer.seekPlayerTo(positionMs) else musicPlayer.seekTo(positionMs)
             override fun playQueue(track: SoundCloudTrack, queue: List<SoundCloudTrack>) =
                 playQueuedTrack(track, queue, fromGuest = true)
-            override fun follow(track: SoundCloudTrack, url: String?, startMs: Long, playing: Boolean) =
-                followHost(track, url, startMs, playing)
+            override fun changedByItself() = musicPlayer.changedByItself()
+            override fun upcoming(count: Int): List<SoundCloudTrack> {
+                val queue = _activeQueue.value
+                return musicPlayer.upcomingIds(count).mapNotNull { id -> queue.firstOrNull { it.id == id } }
+            }
+            override fun crossfadeSeconds() = settingsRepository.crossfadeSeconds.value
+            override fun follow(track: SoundCloudTrack, url: String?, startMs: Long, playing: Boolean, next: List<Pair<SoundCloudTrack, String?>>) =
+                followHost(track, url, startMs, playing, next)
+            override fun followUpcoming(next: List<Pair<SoundCloudTrack, String?>>) = followHostUpcoming(next)
             override fun setPlaying(playing: Boolean) = musicPlayer.setPlaying(playing)
             override fun setSpeed(speed: Float) = musicPlayer.setSpeed(speed)
+            override fun useCrossfade(seconds: Int?) {
+                com.example.myapplication.player.SessionBridge.crossfadeOverride.value = seconds
+            }
+            override fun failureOf(trackId: Long): String? = followFailures[trackId]
+                ?: _activeQueue.value.firstOrNull { it.id == trackId }
+                    ?.takeIf { musicPlayer.failedTrackId.value == trackId }
+                    ?.let(::whyNotPlaying)
             override suspend fun directUrlFor(track: SoundCloudTrack): String? {
                 val id = track.urn?.takeIf { it.startsWith("yandex:track:") }?.removePrefix("yandex:track:") ?: return null
                 val token = settingsRepository.yandexTokenValue().takeIf { it.isNotBlank() } ?: return null
                 return YandexMusicApi.resolveTrackStream(id, token)
             }
+            override fun shareable(track: SoundCloudTrack): SoundCloudTrack {
+                fun onPhone(url: String?) = url != null && (url.startsWith("file:") || url.startsWith("/") || url.startsWith("content:"))
+                if (!onPhone(track.artworkUrl)) return track
+                val web = favoritesRepository.get(track.id)?.artworkUrl
+                    ?: playlistsRepository.playlists.value.firstNotNullOfOrNull { list -> list.tracks.firstOrNull { it.id == track.id }?.artworkUrl }
+                return track.copy(artworkUrl = web?.takeUnless(::onPhone))
+            }
         },
-        scope = viewModelScope
+        scope = viewModelScope,
+        signedIn = ::signedInServices
     )
+
+    /** The services this phone is signed in to, as listening together names them. */
+    fun signedInServices(): Set<String> = buildSet {
+        if (settingsRepository.oauthTokenValue().isNotBlank()) add(TogetherServices.SOUNDCLOUD)
+        if (settingsRepository.yandexTokenValue().isNotBlank()) add(TogetherServices.YANDEX)
+        if (settingsRepository.ytMusicAccount.value != null) add(TogetherServices.YOUTUBE)
+    }
+
+    // On a guest: the host's tracks this phone couldn't start, and why (see TogetherPlayer.failureOf);
+    // and those it has said so of, once each.
+    private val followFailures = HashMap<Long, String>()
+    private val warnedFailures = HashSet<Long>()
+
+    init {
+        viewModelScope.launch {
+            together.notices.collect { notice ->
+                val text = when (notice) {
+                    is TogetherNotice.GuestCantPlay -> {
+                        val title = notice.track?.title?.let { "«$it»" } ?: tr("трек")
+                        when (notice.reason) {
+                            TogetherServices.LOCAL -> tr("У «%s» нет %s: он есть только на вашем телефоне", notice.guest, title)
+                            TogetherServices.ERROR -> tr("У «%s» не заиграл %s", notice.guest, title)
+                            else -> tr("У «%s» не заиграет %s: нет входа в %s", notice.guest, title, serviceInAccusative(notice.reason))
+                        }
+                    }
+                    is TogetherNotice.GuestsTooSlow ->
+                        notice.guests.joinToString { "«$it»" } + tr(" не успевает загрузить трек — играем без ожидания")
+                }
+                Toast.makeText(context, text, Toast.LENGTH_LONG).show()
+            }
+        }
+        viewModelScope.launch {
+            // On a guest: the host's track won't play here.
+            musicPlayer.failedTrackId.collect { id ->
+                if (id == null || !together.isGuest) return@collect
+                val track = _activeQueue.value.firstOrNull { it.id == id } ?: return@collect
+                warnCantFollow(track, whyNotPlaying(track))
+            }
+        }
+        viewModelScope.launch {
+            together.state.collect { state ->
+                if (state !is com.example.myapplication.together.TogetherState.Joined) {
+                    followFailures.clear()
+                    warnedFailures.clear()
+                }
+            }
+        }
+    }
+
+    /** Why [track] won't play here: its service not signed in to, or something else. */
+    private fun whyNotPlaying(track: SoundCloudTrack): String {
+        if (track.urn?.startsWith("local:") == true) return TogetherServices.LOCAL
+        val service = TogetherServices.of(track)
+        return if (service != null && service !in signedInServices()) service else TogetherServices.ERROR
+    }
+
+    /** "в Яндекс Музыку": a service as signing in to it is said. */
+    private fun serviceInAccusative(service: String): String = when (service) {
+        TogetherServices.YANDEX -> tr("Яндекс Музыку")
+        TogetherServices.YOUTUBE -> "YouTube Music"
+        else -> "SoundCloud"
+    }
+
+    /** On a guest: says, once a track, that the host's [track] won't play here, and what would help. */
+    private fun warnCantFollow(track: SoundCloudTrack, why: String) {
+        if (!warnedFailures.add(track.id)) return
+        val title = track.title?.let { "«$it»" } ?: tr("Трек")
+        val text = when (why) {
+            TogetherServices.LOCAL -> tr("%s есть только на телефоне ведущего", title)
+            TogetherServices.ERROR -> tr("%s не заиграл на этом телефоне", title)
+            else -> tr("%s не заиграет: войдите в %s (Настройки → Аккаунты)", title, serviceInAccusative(why))
+        }
+        Toast.makeText(context, text, Toast.LENGTH_LONG).show()
+    }
 
     /** What this phone is called to the phones nearby: its own name, as set in Android. */
     private fun deviceName(): String =
@@ -1750,7 +1867,7 @@ class MusicViewModel(
     private fun relayFromLibrary(track: SoundCloudTrack, library: List<FavoriteTrack>): Boolean {
         if (!together.isGuest) return false
         if (track.urn?.startsWith("local:") == true) {
-            Toast.makeText(context, "Этот трек есть только на вашем телефоне", Toast.LENGTH_SHORT).show()
+            Toast.makeText(context, tr("Этот трек есть только на вашем телефоне"), Toast.LENGTH_SHORT).show()
             return true
         }
         val queue = library.map { it.toSoundCloudTrack() }.filterNot { it.urn?.startsWith("local:") == true }
@@ -1758,34 +1875,74 @@ class MusicViewModel(
     }
 
     /**
-     * On a guest: the host's track, from where the host is in it. Played by this phone's own means
-     * — its copy, its own service — or, a Yandex track without Yandex Music here, by the address
-     * the host sent.
+     * On a guest: the host's track, from where the host is in it, with the host's [next] tracks
+     * queued after it to load ahead. Played by this phone's own means — its copy, its own service —
+     * or, a Yandex track without Yandex Music here, by the address the host sent.
      */
-    private fun followHost(track: SoundCloudTrack, url: String?, startMs: Long, playing: Boolean) {
+    private fun followHost(track: SoundCloudTrack, url: String?, startMs: Long, playing: Boolean, next: List<Pair<SoundCloudTrack, String?>>) {
         viewModelScope.launch {
-            val own = localStreamUrl(track.id)?.takeIf { it.isNotBlank() }
-            val isYandex = track.urn?.startsWith("yandex:") == true
-            if (own == null && track.urn?.startsWith("local:") == true) {
-                Toast.makeText(context, "«${track.title}» есть только на телефоне ведущего", Toast.LENGTH_SHORT).show()
+            val streamUrl = guestStreamUrl(track, url, resolve = true)
+            if (streamUrl == null) {
+                val why = if (track.urn?.startsWith("local:") == true) TogetherServices.LOCAL else TogetherServices.of(track) ?: TogetherServices.ERROR
+                followFailures[track.id] = why
+                warnCantFollow(track, why)
                 return@launch
             }
-            val streamUrl = when {
-                own != null -> own
-                isYandex && settingsRepository.yandexTokenValue().isBlank() && url != null -> url
-                else -> serviceStreamUrl(track)
-                    ?: runCatching { playbackResolver.resolve(track, settingsRepository.clientId.value) }.getOrNull()
-                    ?: placeholderStreamUrl(track)
-            }
+            followFailures.remove(track.id)
+            warnedFailures.remove(track.id)
+            val upcoming = guestUpcoming(track, next)
             resolvedUrls[track.id] = streamUrl
-            originalQueue = listOf(track)
-            _activeQueue.value = listOf(track)
-            musicPlayer.playQueue(listOf(track.toQueueTrack(streamUrl)), 0, startMs, playing)
+            upcoming.forEach { (t, u) -> resolvedUrls[t.id] = u }
+            val queue = listOf(track) + upcoming.map { it.first }
+            originalQueue = queue
+            _activeQueue.value = queue
+            musicPlayer.playQueue(
+                listOf(track.toQueueTrack(streamUrl)) + upcoming.map { (t, u) -> t.toQueueTrack(u) },
+                0,
+                startMs,
+                playing
+            )
             _playingMixId.value = null
             _playingFrom.value = null
             _currentPlayingTrack.value = track
             if (_selectedTrack.value != null) _selectedTrack.value = track
         }
+    }
+
+    /** On a guest: the host's next tracks after the one playing here, which plays on untouched. */
+    private fun followHostUpcoming(next: List<Pair<SoundCloudTrack, String?>>) {
+        viewModelScope.launch {
+            val currentId = musicPlayer.currentTrackId.value ?: return@launch
+            val current = _activeQueue.value.firstOrNull { it.id == currentId } ?: return@launch
+            val upcoming = guestUpcoming(current, next)
+            val queue = listOf(current) + upcoming.map { it.first }
+            if (queue.map { it.id } == _activeQueue.value.map { it.id }) return@launch
+            upcoming.forEach { (t, u) -> resolvedUrls[t.id] = u }
+            if (musicPlayer.replaceUpcoming(upcoming.map { (t, u) -> t.toQueueTrack(u) })) {
+                originalQueue = queue
+                _activeQueue.value = queue
+            }
+        }
+    }
+
+    /** The host's [next] tracks this phone can play, after [current], each with how. */
+    private suspend fun guestUpcoming(current: SoundCloudTrack, next: List<Pair<SoundCloudTrack, String?>>): List<Pair<SoundCloudTrack, String>> =
+        next.filter { it.first.id != current.id }
+            .mapNotNull { (t, hostUrl) -> guestStreamUrl(t, hostUrl, resolve = false)?.let { t to it } }
+
+    /**
+     * How this phone plays a track the host plays: its own copy, its own service, or [hostUrl] (a
+     * Yandex track without Yandex Music here); null when it has no way. [resolve]: a SoundCloud
+     * track's stream found now — for the one to start at once — rather than as the player gets to it.
+     */
+    private suspend fun guestStreamUrl(track: SoundCloudTrack, hostUrl: String?, resolve: Boolean): String? {
+        localStreamUrl(track.id)?.takeIf { it.isNotBlank() }?.let { return it }
+        if (track.urn?.startsWith("local:") == true) return null
+        if (track.urn?.startsWith("yandex:") == true && settingsRepository.yandexTokenValue().isBlank()) return hostUrl
+        serviceStreamUrl(track)?.let { return it }
+        if (!resolve) return placeholderStreamUrl(track)
+        return runCatching { playbackResolver.resolve(track, settingsRepository.clientId.value) }.getOrNull()
+            ?: placeholderStreamUrl(track)
     }
 
     // endregion
@@ -1804,7 +1961,7 @@ class MusicViewModel(
     fun openSharedText(text: String) {
         val url = SharedLinks.findUrl(text)
         if (url == null) {
-            Toast.makeText(context, "Здесь нет ссылки", Toast.LENGTH_SHORT).show()
+            Toast.makeText(context, tr("Здесь нет ссылки"), Toast.LENGTH_SHORT).show()
             return
         }
         linkJob?.cancel()
@@ -1812,7 +1969,7 @@ class MusicViewModel(
             var link = SharedLinks.parse(url)
             if (link is SharedLink.Short) link = SharedLinks.follow(link.url)
             if (link == null) {
-                Toast.makeText(context, "Такие ссылки YouCloud пока не открывает", Toast.LENGTH_SHORT).show()
+                Toast.makeText(context, tr("Такие ссылки YouCloud пока не открывает"), Toast.LENGTH_SHORT).show()
                 return@launch
             }
             Log.d("MusicViewModel", "Opening link $link")
@@ -1822,7 +1979,7 @@ class MusicViewModel(
                 throw e
             } catch (e: Exception) {
                 Log.e("MusicViewModel", "Link $url failed", e)
-                Toast.makeText(context, "Не удалось открыть ссылку: ${readableMessage(e)}", Toast.LENGTH_LONG).show()
+                Toast.makeText(context, tr("Не удалось открыть ссылку: %s", readableMessage(e)), Toast.LENGTH_LONG).show()
             }
         }
     }
@@ -1831,19 +1988,19 @@ class MusicViewModel(
         when (link) {
             is SharedLink.YandexTrack -> {
                 if (settingsRepository.yandexTokenValue().isBlank()) {
-                    Toast.makeText(context, "Чтобы слушать треки Яндекс Музыки, войдите в неё в настройках", Toast.LENGTH_LONG).show()
+                    Toast.makeText(context, tr("Чтобы слушать треки Яндекс Музыки, войдите в неё в настройках"), Toast.LENGTH_LONG).show()
                     return
                 }
                 val ids = if (link.albumId != null) "${link.trackId}:${link.albumId}" else link.trackId
                 val track = yandexService.getTracksDetails(ids).result.orEmpty().firstOrNull()
                     ?.toSoundCloudTrack(customAlbumId = link.albumId)
-                    ?: throw IllegalStateException("трек не найден")
+                    ?: throw IllegalStateException(tr("трек не найден"))
                 playFromLink(track)
                 // Then on with its radio: the queue grows behind the track as it plays.
                 playYandexRadio(track)
             }
             is SharedLink.YandexAlbum -> openSetFromLink(
-                yandexAlbum(link.albumId) ?: throw IllegalStateException("альбом не найден")
+                yandexAlbum(link.albumId) ?: throw IllegalStateException(tr("альбом не найден"))
             )
             is SharedLink.YandexArtist -> openArtistFromLink {
                 openArtistDetails(link.artistId.toLongOrNull() ?: 0L, "yandex:artist:${link.artistId}", null)
@@ -1859,13 +2016,13 @@ class MusicViewModel(
                 val id = com.example.myapplication.data.youTubeTrackId(link.videoId)
                 val track = queue.firstOrNull { it.id == id || it.youTubeVideoId == link.videoId || it.liveVideoId == link.videoId }
                     ?: queue.firstOrNull()
-                    ?: throw IllegalStateException("видео не найдено")
+                    ?: throw IllegalStateException(tr("видео не найдено"))
                 playFromLink(track, queue)
             }
             is SharedLink.YouTubeSet -> {
                 val set = ytMusic.setFromLink(link.browseId, link.playlistId)
-                if (set.knownTracks.isEmpty()) throw IllegalStateException("в этой подборке нет треков")
-                openSetFromLink(if (set.title.isNullOrBlank()) set.copy(title = "Микс YouTube Music") else set)
+                if (set.knownTracks.isEmpty()) throw IllegalStateException(tr("в этой подборке нет треков"))
+                openSetFromLink(if (set.title.isNullOrBlank()) set.copy(title = tr("Микс YouTube Music")) else set)
             }
             is SharedLink.YouTubeChannel -> openArtistFromLink {
                 openArtistDetails(0L, YT_ARTIST_REF + link.channelId, null)
@@ -1878,7 +2035,7 @@ class MusicViewModel(
     private suspend fun openSoundCloudLink(url: String) {
         val clientId = settingsRepository.clientId.value
         if (clientId.isBlank()) {
-            Toast.makeText(context, "Укажите SoundCloud client_id в настройках", Toast.LENGTH_LONG).show()
+            Toast.makeText(context, tr("Укажите SoundCloud client_id в настройках"), Toast.LENGTH_LONG).show()
             return
         }
         val found = try {
@@ -1898,7 +2055,7 @@ class MusicViewModel(
                 val user = gson.fromJson(found, SoundCloudUser::class.java)
                 openArtistFromLink { openArtistDetails(user.id ?: 0L, user.permalinkUrl ?: url, user.username, avatarUrl = user.avatarUrl) }
             }
-            else -> throw IllegalStateException("на этой странице SoundCloud нет трека")
+            else -> throw IllegalStateException(tr("на этой странице SoundCloud нет трека"))
         }
     }
 
@@ -1945,7 +2102,7 @@ class MusicViewModel(
 
     /** Someone's Yandex playlist as a set, with its tracks. */
     private fun yandexPlaylist(detail: com.example.myapplication.data.YandexPlaylistDetail?): SoundCloudPlaylist {
-        detail ?: throw IllegalStateException("плейлист не найден")
+        detail ?: throw IllegalStateException(tr("плейлист не найден"))
         val tracks = detail.tracks.orEmpty().mapNotNull { it.track?.toSoundCloudTrack() }
             .filter { isPlayableTrack(it) }
             .distinctBy { it.id }
@@ -1981,7 +2138,7 @@ class MusicViewModel(
                 null
             }
             if (album == null) {
-                Toast.makeText(context, "Не нашлось альбома этого трека", Toast.LENGTH_SHORT).show()
+                Toast.makeText(context, tr("Не нашлось альбома этого трека"), Toast.LENGTH_SHORT).show()
                 return@launch
             }
             _selectedTrack.value = null
@@ -2021,7 +2178,7 @@ class MusicViewModel(
                 throw e
             } catch (e: Exception) {
                 Log.e("MusicViewModel", "YouTube Music radio for $videoId failed", e)
-                android.widget.Toast.makeText(context, "Не удалось загрузить радио: ${readableMessage(e)}", android.widget.Toast.LENGTH_SHORT).show()
+                android.widget.Toast.makeText(context, tr("Не удалось загрузить радио: %s", readableMessage(e)), android.widget.Toast.LENGTH_SHORT).show()
             }
         }
     }
@@ -2142,7 +2299,7 @@ class MusicViewModel(
                 if (channel != null) {
                     openYouTubeArtist(channel.removePrefix(YT_ARTIST_REF), owner.username, owner.avatarUrl)
                 } else {
-                    android.widget.Toast.makeText(context, "Не удалось найти канал трансляции", android.widget.Toast.LENGTH_SHORT).show()
+                    android.widget.Toast.makeText(context, tr("Не удалось найти канал трансляции"), android.widget.Toast.LENGTH_SHORT).show()
                 }
             }
             return
@@ -2220,13 +2377,13 @@ class MusicViewModel(
                         _currentArtistPlaylists.value = response.result?.albums.orEmpty().map { it.toSoundCloudPlaylist() }
                         _currentArtist.value?.let(::checkArtistFollow)
                     } else {
-                        _currentArtist.value = SoundCloudUser(username = username ?: "Яндекс Артист")
-                        _artistError.value = "Информация об артисте недоступна"
+                        _currentArtist.value = SoundCloudUser(username = username ?: tr("Яндекс Артист"))
+                        _artistError.value = tr("Информация об артисте недоступна")
                     }
                 } catch (e: Exception) {
                     Log.e("MusicViewModel", "Failed to fetch Yandex artist info", e)
-                    _currentArtist.value = SoundCloudUser(username = username ?: "Яндекс Артист")
-                    _artistError.value = "Ошибка: ${readableMessage(e, isYandex = true)}"
+                    _currentArtist.value = SoundCloudUser(username = username ?: tr("Яндекс Артист"))
+                    _artistError.value = tr("Ошибка: %s", readableMessage(e, isYandex = true))
                 } finally {
                     _artistLoading.value = false
                 }
@@ -2235,7 +2392,7 @@ class MusicViewModel(
                 val clientIdVal = settingsRepository.clientId.value
                 if (clientIdVal.isBlank()) {
                     _currentArtist.value = SoundCloudUser(id = userId, username = username)
-                    _artistError.value = "Укажите SoundCloud client_id в настройках"
+                    _artistError.value = tr("Укажите SoundCloud client_id в настройках")
                     _artistLoading.value = false
                     return@launch
                 }
@@ -2289,12 +2446,12 @@ class MusicViewModel(
                         _currentArtistTracks.value = tracksList
                         _currentArtistPlaylists.value = playlistsList
                     } else {
-                        _artistError.value = "Не удалось определить ID артиста"
+                        _artistError.value = tr("Не удалось определить ID артиста")
                     }
                 } catch (e: Exception) {
                     Log.e("MusicViewModel", "Failed to fetch SoundCloud artist stream", e)
                     handleSoundCloudApiError(e)
-                    _artistError.value = "Не удалось загрузить данные: ${readableMessage(e)}"
+                    _artistError.value = tr("Не удалось загрузить данные: %s", readableMessage(e))
                 } finally {
                     _artistLoading.value = false
                 }
@@ -2385,7 +2542,7 @@ class MusicViewModel(
                 throw e
             } catch (e: Exception) {
                 Log.e("MusicViewModel", "YouTube Music artist $channelId failed", e)
-                _artistError.value = "Не удалось загрузить артиста: ${readableMessage(e)}"
+                _artistError.value = tr("Не удалось загрузить артиста: %s", readableMessage(e))
             } finally {
                 _artistLoading.value = false
             }
@@ -2485,14 +2642,14 @@ class MusicViewModel(
             }
             if (!sameArtist(_currentArtist.value, artist)) return@launch
             _artistFollow.value = ArtistFollow(if (sent) follow else !follow)
-            val name = artist.username?.takeIf { it.isNotBlank() } ?: "исполнителя"
+            val name = artist.username?.takeIf { it.isNotBlank() } ?: tr("исполнителя")
             Toast.makeText(
                 context,
                 when {
-                    sent && follow -> "Вы подписались на $name"
-                    sent -> "Вы отписались от $name"
-                    follow -> "Не удалось подписаться"
-                    else -> "Не удалось отписаться"
+                    sent && follow -> tr("Вы подписались на %s", name)
+                    sent -> tr("Вы отписались от %s", name)
+                    follow -> tr("Не удалось подписаться")
+                    else -> tr("Не удалось отписаться")
                 },
                 Toast.LENGTH_SHORT
             ).show()
@@ -2862,7 +3019,7 @@ class MusicViewModel(
                 } else if (askForCaptcha) {
                     Toast.makeText(
                         context,
-                        "SoundCloud блокирует лайки с этого адреса. Смените сервер VPN — лайк отправится позже.",
+                        tr("SoundCloud блокирует лайки с этого адреса. Смените сервер VPN — лайк отправится позже."),
                         Toast.LENGTH_LONG
                     ).show()
                 }
@@ -2908,9 +3065,9 @@ class MusicViewModel(
                         _likesPushStatus.value = _likesPushStatus.value.copy(
                             state = LikesPushState.PAUSED,
                             message = if (_antiBotCaptchaUrl.value != null) {
-                                "SoundCloud просит пройти проверку — после неё отправка продолжится"
+                                tr("SoundCloud просит пройти проверку — после неё отправка продолжится")
                             } else {
-                                "SoundCloud не принял лайк. Остальные отправятся позже или по кнопке"
+                                tr("SoundCloud не принял лайк. Остальные отправятся позже или по кнопке")
                             }
                         )
                     }
@@ -2944,7 +3101,7 @@ class MusicViewModel(
             if (clientId.isBlank() || userId.isBlank() || settingsRepository.oauthTokenValue().isBlank()) {
                 _likesPushStatus.value = LikesPushStatus(
                     state = LikesPushState.FAILED,
-                    message = "Войдите в SoundCloud"
+                    message = tr("Войдите в SoundCloud")
                 )
                 return@launch
             }
@@ -2974,7 +3131,7 @@ class MusicViewModel(
             if (total == 0) {
                 _likesPushStatus.value = LikesPushStatus(
                     state = LikesPushState.COMPLETED,
-                    message = "Все скачанные треки уже лайкнуты на SoundCloud"
+                    message = tr("Все скачанные треки уже лайкнуты на SoundCloud")
                 )
                 return@launch
             }
@@ -3009,10 +3166,10 @@ class MusicViewModel(
         _antiBotCaptchaUrl.value = null
         if (_likesPushStatus.value.state == LikesPushState.PAUSED) {
             _likesPushStatus.value = _likesPushStatus.value.copy(
-                message = "Проверка не пройдена. Остальные лайки отправятся позже или по кнопке"
+                message = tr("Проверка не пройдена. Остальные лайки отправятся позже или по кнопке")
             )
         }
-        Toast.makeText(context, "Лайк отправится на SoundCloud позже", Toast.LENGTH_SHORT).show()
+        Toast.makeText(context, tr("Лайк отправится на SoundCloud позже"), Toast.LENGTH_SHORT).show()
     }
 
     fun playFavorite(track: FavoriteTrack) {
@@ -3020,7 +3177,7 @@ class MusicViewModel(
         if (relayFromLibrary(playable, favoritesRepository.favorites.value.filter { it.downloadState == DownloadState.DOWNLOADED })) return
         val streamUrl = track.streamUrl
         if (streamUrl == null) {
-            _errorMessage.value = "У этого любимого трека пока нет сохранённого потока."
+            _errorMessage.value = tr("У этого любимого трека пока нет сохранённого потока.")
             return
         }
 
@@ -3242,7 +3399,7 @@ class MusicViewModel(
                 favoritesRepository.updateStreamUrl(track.id, "")
                 favoritesRepository.updateLocalArtwork(track.id, null)
             } catch (e: Exception) {
-                _errorMessage.value = "Не удалось удалить локальную копию трека."
+                _errorMessage.value = tr("Не удалось удалить локальную копию трека.")
             }
         }
     }
@@ -3270,7 +3427,7 @@ class MusicViewModel(
                 onAuthRecovered()
             } catch (e: Exception) {
                 Log.e("MusicViewModel", "Failed to login with captured credentials", e)
-                _loginError.value = "Ошибка при получении профиля SoundCloud. Попробуйте еще раз."
+                _loginError.value = tr("Ошибка при получении профиля SoundCloud. Попробуйте еще раз.")
                 _isLoggingIn.value = false
             }
         }
@@ -3316,15 +3473,15 @@ class MusicViewModel(
     private fun readableMessage(error: Exception, isYandex: Boolean = false): String {
         return when (error) {
             is HttpException -> when (error.code()) {
-                401 -> if (isYandex) "Яндекс отклонил запрос. Возможно, токен устарел." else "SoundCloud отклонил запрос. Возможно, client_id устарел."
-                403 -> if (isYandex) "Яндекс запретил доступ к этому ресурсу." else "SoundCloud запретил доступ к этому ресурсу."
-                404 -> if (isYandex) "Яндекс не нашёл нужного ресурса." else "SoundCloud не нашёл нужный поток."
-                429 -> if (isYandex) "Слишком много запросов к Яндексу. Попробуй чуть позже." else "Слишком много запросов к SoundCloud. Попробуй чуть позже."
-                else -> if (isYandex) "Ошибка Яндекс Музыки: HTTP ${error.code()}." else "Ошибка SoundCloud: HTTP ${error.code()}."
+                401 -> if (isYandex) tr("Яндекс отклонил запрос. Возможно, токен устарел.") else tr("SoundCloud отклонил запрос. Возможно, client_id устарел.")
+                403 -> if (isYandex) tr("Яндекс запретил доступ к этому ресурсу.") else tr("SoundCloud запретил доступ к этому ресурсу.")
+                404 -> if (isYandex) tr("Яндекс не нашёл нужного ресурса.") else tr("SoundCloud не нашёл нужный поток.")
+                429 -> if (isYandex) tr("Слишком много запросов к Яндексу. Попробуй чуть позже.") else tr("Слишком много запросов к SoundCloud. Попробуй чуть позже.")
+                else -> if (isYandex) tr("Ошибка Яндекс Музыки: HTTP %s.", error.code()) else tr("Ошибка SoundCloud: HTTP %s.", error.code())
             }
 
-            is IOException -> "Нет соединения с сетью."
-            else -> if (isYandex) "Не удалось выполнить запрос к Яндекс Музыке." else "Не удалось выполнить запрос к SoundCloud."
+            is IOException -> tr("Нет соединения с сетью.")
+            else -> if (isYandex) tr("Не удалось выполнить запрос к Яндекс Музыке.") else tr("Не удалось выполнить запрос к SoundCloud.")
         }
     }
 
@@ -3466,7 +3623,7 @@ class MusicViewModel(
         }
         playlistsRepository.createFromSource(
             sourceKey = album.sourceKey(),
-            name = album.title ?: "Альбом",
+            name = album.title ?: tr("Альбом"),
             artist = artistName?.takeIf { it.isNotBlank() } ?: album.user?.username,
             artworkUrl = ArtworkUrls.highRes(album.displayArtworkUrl),
             tracks = album.knownTracks.filterNot { it.title.isNullOrBlank() }.map { it.toFavoriteTrack() }
@@ -3793,7 +3950,7 @@ class MusicViewModel(
                 // 3. Nothing automatic is left — ask, don't spin.
                 _needsRelogin.value = true
                 _errorMessage.value =
-                    "Сессия SoundCloud истекла. Войдите в аккаунт заново."
+                    tr("Сессия SoundCloud истекла. Войдите в аккаунт заново.")
             } finally {
                 _isLoading.value = false
             }
@@ -3881,7 +4038,7 @@ class MusicViewModel(
                 }
             } catch (e: Exception) {
                 Log.e("MusicViewModel", "Error importing local tracks", e)
-                _errorMessage.value = "Не удалось импортировать треки"
+                _errorMessage.value = tr("Не удалось импортировать треки")
             } finally {
                 _isLoading.value = false
             }
@@ -3939,14 +4096,14 @@ class MusicViewModel(
             if (source == LikesSyncSource.SOUNDCLOUD && !hasSoundCloud) {
                 statusFlow.value = LikesSyncStatus(
                     state = SyncState.FAILED,
-                    errorMessage = "Не все данные авторизации SoundCloud указаны в настройках"
+                    errorMessage = tr("Не все данные авторизации SoundCloud указаны в настройках")
                 )
                 return@launch
             }
             if (source == LikesSyncSource.YANDEX && !hasYandex) {
                 statusFlow.value = LikesSyncStatus(
                     state = SyncState.FAILED,
-                    errorMessage = "Укажите рабочий токен Яндекс Музыки в настройках"
+                    errorMessage = tr("Укажите рабочий токен Яндекс Музыки в настройках")
                 )
                 return@launch
             }
@@ -4179,7 +4336,7 @@ class MusicViewModel(
                 throw e
             } catch (e: Exception) {
                 Log.e("MusicViewModel", "Failed to search Yandex tracks", e)
-                _yandexError.value = "Ошибка поиска: ${readableMessage(e)}"
+                _yandexError.value = tr("Ошибка поиска: %s", readableMessage(e))
             } finally {
                 _yandexLoading.value = false
             }
@@ -4204,7 +4361,7 @@ class MusicViewModel(
                 throw e
             } catch (e: Exception) {
                 Log.e("MusicViewModel", "Failed to load more Yandex tracks", e)
-                _yandexError.value = "Ошибка поиска: ${readableMessage(e)}"
+                _yandexError.value = tr("Ошибка поиска: %s", readableMessage(e))
             } finally {
                 _yandexLoadingMore.value = false
             }
@@ -4434,13 +4591,13 @@ class MusicViewModel(
             if (streamUrl == null) {
                 favoritesRepository.updateDownloadState(track.id, DownloadState.FAILED)
                 if (youTubeId != null) {
-                    _errorMessage.value = "YouTube не отдал звук этого трека."
+                    _errorMessage.value = tr("YouTube не отдал звук этого трека.")
                 } else if (isYandex) {
-                    _errorMessage.value = "Укажите рабочий токен Яндекс Музыки в настройках."
+                    _errorMessage.value = tr("Укажите рабочий токен Яндекс Музыки в настройках.")
                 } else if (clientId.isBlank()) {
-                    _errorMessage.value = "Укажите SoundCloud client_id в настройках для загрузки трека"
+                    _errorMessage.value = tr("Укажите SoundCloud client_id в настройках для загрузки трека")
                 } else {
-                    _errorMessage.value = "Поток для загрузки не нашёлся."
+                    _errorMessage.value = tr("Поток для загрузки не нашёлся.")
                 }
                 return false
             }
@@ -4495,7 +4652,7 @@ class MusicViewModel(
                             java.io.File(localPath).delete()
                         }
                         favoritesRepository.updateDownloadState(track.id, DownloadState.FAILED)
-                        _errorMessage.value = "Ошибка: Трек скачался не полностью."
+                        _errorMessage.value = tr("Ошибка: Трек скачался не полностью.")
                         return false
                     }
                 } else {
@@ -4775,7 +4932,7 @@ class MusicViewModel(
                 throw e
             } catch (e: Exception) {
                 Log.e("MusicViewModel", "More videos of ${artist.permalinkUrl} failed", e)
-                Toast.makeText(context, "Не удалось загрузить остальные видео", Toast.LENGTH_SHORT).show()
+                Toast.makeText(context, tr("Не удалось загрузить остальные видео"), Toast.LENGTH_SHORT).show()
             }
         }
     }
@@ -4797,7 +4954,7 @@ class MusicViewModel(
                     throw e
                 } catch (e: Exception) {
                     Log.e("MusicViewModel", "All songs of a YouTube Music artist failed", e)
-                    _artistError.value = "Ошибка: ${readableMessage(e)}"
+                    _artistError.value = tr("Ошибка: %s", readableMessage(e))
                 } finally {
                     _artistLoading.value = false
                 }
@@ -4826,7 +4983,7 @@ class MusicViewModel(
                 }
             } catch (e: java.lang.Exception) {
                 Log.e("MusicViewModel", "Failed to load all artist tracks", e)
-                _artistError.value = "Ошибка: ${readableMessage(e, isYandex = isYandex)}"
+                _artistError.value = tr("Ошибка: %s", readableMessage(e, isYandex = isYandex))
             } finally {
                 _artistLoading.value = false
             }
@@ -4930,10 +5087,10 @@ class MusicViewModel(
                 val session = yandexService.rotorSessionNew(
                     YandexRotorSessionRequest(seeds = listOf(seed), queue = listOf(trackId))
                 ).result
-                val sessionId = session?.radioSessionId ?: throw IllegalStateException("радио не запустилось")
+                val sessionId = session?.radioSessionId ?: throw IllegalStateException(tr("радио не запустилось"))
                 val radio = YandexRadio(sessionId, listOf(seed)).apply { give(trackId) }
                 val batch = acceptRadioBatch(radio, session.batchId, session.sequence).filterNot { it.id == track.id }
-                if (batch.isEmpty()) throw IllegalStateException("радио ничего не предложило")
+                if (batch.isEmpty()) throw IllegalStateException(tr("радио ничего не предложило"))
                 radio.tailId = batch.last().id
                 yandexRadio = radio
                 Log.d("MusicViewModel", "Yandex radio from $seed: session $sessionId, ${batch.size} tracks")
@@ -4943,7 +5100,7 @@ class MusicViewModel(
                 throw e
             } catch (e: Exception) {
                 Log.e("MusicViewModel", "Yandex radio from $seed failed", e)
-                android.widget.Toast.makeText(context, "Не удалось запустить радио: ${readableMessage(e)}", android.widget.Toast.LENGTH_SHORT).show()
+                android.widget.Toast.makeText(context, tr("Не удалось запустить радио: %s", readableMessage(e)), android.widget.Toast.LENGTH_SHORT).show()
             }
         }
     }
@@ -5014,7 +5171,7 @@ class MusicViewModel(
                 Log.w("MusicViewModel", "Yandex dislike failed", e)
             }
         }
-        android.widget.Toast.makeText(context, "Больше не будет в рекомендациях", android.widget.Toast.LENGTH_SHORT).show()
+        android.widget.Toast.makeText(context, tr("Больше не будет в рекомендациях"), android.widget.Toast.LENGTH_SHORT).show()
         musicPlayer.skipNext()
     }
 
@@ -5024,7 +5181,7 @@ class MusicViewModel(
      */
     fun startWaveFromOutside() {
         if (settingsRepository.yandexTokenValue().isBlank()) {
-            android.widget.Toast.makeText(context, "Чтобы слушать волну, войдите в Яндекс Музыку в настройках", android.widget.Toast.LENGTH_LONG).show()
+            android.widget.Toast.makeText(context, tr("Чтобы слушать волну, войдите в Яндекс Музыку в настройках"), android.widget.Toast.LENGTH_LONG).show()
             return
         }
         if (_yandexWaveOn.value && yandexRadio != null) {
@@ -5078,8 +5235,8 @@ class MusicViewModel(
                     }
                     sessionId = answer?.radioSessionId
                 }
-                val session = answer ?: throw IllegalStateException("волна не запустилась")
-                val id = sessionId ?: throw IllegalStateException("волна не запустилась")
+                val session = answer ?: throw IllegalStateException(tr("волна не запустилась"))
+                val id = sessionId ?: throw IllegalStateException(tr("волна не запустилась"))
                 settingsRepository.setYandexWaveSession(id)
                 val radio = YandexRadio(id, seeds, wave = true, heardBefore = heard)
                 var batchId = session.batchId
@@ -5092,7 +5249,7 @@ class MusicViewModel(
                     batchId = more.batchId
                     batch = acceptRadioBatch(radio, batchId, more.sequence)
                 }
-                if (batch.isEmpty()) throw IllegalStateException("волна ничего нового не предложила")
+                if (batch.isEmpty()) throw IllegalStateException(tr("волна ничего нового не предложила"))
                 radio.tailId = batch.last().id
                 yandexRadio = radio
                 Log.d(
@@ -5105,7 +5262,7 @@ class MusicViewModel(
                 throw e
             } catch (e: Exception) {
                 Log.e("MusicViewModel", "Yandex wave $seeds failed", e)
-                android.widget.Toast.makeText(context, "Не удалось запустить волну: ${readableMessage(e)}", android.widget.Toast.LENGTH_SHORT).show()
+                android.widget.Toast.makeText(context, tr("Не удалось запустить волну: %s", readableMessage(e)), android.widget.Toast.LENGTH_SHORT).show()
             } finally {
                 _yandexWaveStarting.value = false
             }
@@ -5217,9 +5374,7 @@ class MusicViewModel(
                     val id = track?.urn?.removePrefix("yandex:track:")
                     if (batch != null && id != null) {
                         val duration = track.duration
-                        // A crossfade leaves a track that many seconds early, heard to its end.
-                        val slack = RADIO_FINISHED_SLACK_MS + settingsRepository.crossfadeSeconds.value * 1000L
-                        val finished = duration > 0 && radioPlayedMs >= duration - slack
+                        val finished = duration > 0 && radioPlayedMs >= duration - RADIO_FINISHED_SLACK_MS
                         sendRadioFeedback(
                             radio,
                             YandexRotorEvent(

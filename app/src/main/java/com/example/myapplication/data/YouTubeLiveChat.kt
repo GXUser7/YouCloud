@@ -1,5 +1,6 @@
 package com.example.myapplication.data
 
+import com.example.myapplication.i18n.tr
 import com.google.gson.JsonArray
 import com.google.gson.JsonElement
 import com.google.gson.JsonObject
@@ -49,7 +50,7 @@ class YouTubeLiveChat(private val videoId: String, private val auth: () -> YtAut
 
     /** The chat, newest last, whenever something new is said, for as long as it is collected. */
     val messages: Flow<List<LiveChatMessage>> = flow {
-        var continuation = firstContinuation() ?: throw IOException("У этой трансляции нет чата")
+        var continuation = firstContinuation() ?: throw IOException(tr("У этой трансляции нет чата"))
         val kept = ArrayDeque<LiveChatMessage>()
         val seen = HashSet<String>()
         var first = true
@@ -109,9 +110,9 @@ class YouTubeLiveChat(private val videoId: String, private val auth: () -> YtAut
         _subscribersOnly.value = SUBSCRIBERS.containsMatchIn(said.orEmpty() + " " + detail.orEmpty())
         _wrongSubscription.value = FOR_KIDS.containsMatchIn(said.orEmpty() + " " + detail.orEmpty())
         _sendBlocked.value = when {
-            auth()?.sapisid == null -> "Войдите в YouTube Music в настройках, чтобы писать"
+            auth()?.sapisid == null -> tr("Войдите в YouTube Music в настройках, чтобы писать")
             said != null -> said
-            else -> "YouTube не даёт писать в этот чат"
+            else -> tr("YouTube не даёт писать в этот чат")
         }
     }
 

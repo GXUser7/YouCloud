@@ -215,6 +215,15 @@ class SettingsRepository(
         preferences.edit().putBoolean(KEY_ONBOARDING_DONE, done).apply()
     }
 
+    // The app's theme, over the phone's: "system", "light" or "dark" (see ui.Appearance, which
+    // has Android apply it). Kept here too, as Android doesn't say which an app has.
+    val themeMode = MutableStateFlow(preferences.getString(KEY_THEME_MODE, null) ?: "system")
+
+    fun setThemeMode(mode: String) {
+        themeMode.value = mode
+        preferences.edit().putString(KEY_THEME_MODE, mode).apply()
+    }
+
     // Search YouTube's tab through youtube.com itself instead of YouTube Music, to try it.
     val ytWebSearch = MutableStateFlow(preferences.getBoolean(KEY_YT_WEB_SEARCH, false))
 
@@ -483,6 +492,7 @@ class SettingsRepository(
         const val KEY_OPEN_PLAYER_ON_TAP = "open_player_on_tap"
         const val KEY_SMOOTH_MOTION = "smooth_motion"
         const val KEY_ONBOARDING_DONE = "onboarding_done"
+        const val KEY_THEME_MODE = "theme_mode"
         const val KEY_YT_WEB_SEARCH = "yt_web_search"
         const val KEY_YT_ARTIST_SHOW_ALL = "yt_artist_show_all"
         const val KEY_COVER_GLOW_STYLE = "cover_glow_style"

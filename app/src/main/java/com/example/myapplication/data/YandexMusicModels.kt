@@ -1,5 +1,6 @@
 package com.example.myapplication.data
 
+import com.example.myapplication.i18n.tr
 import com.google.gson.annotations.SerializedName
 
 data class YandexSearchResponse(
@@ -228,7 +229,7 @@ data class YandexPlaylist(
             ?: ogImage?.let { "https://" + it.replace("%%", "400x400") }
         return SoundCloudPlaylist(
             id = -(ownerUid * 100_000L + kind),
-            title = title ?: "Без названия",
+            title = title ?: tr("Без названия"),
             trackCount = trackCount,
             artworkUrl = artwork,
             permalinkUrl = "yandex:playlist:$ownerUid:$kind",
@@ -239,7 +240,7 @@ data class YandexPlaylist(
     fun toSoundCloudPlaylist(): SoundCloudPlaylist {
         return SoundCloudPlaylist(
             id = kind,
-            title = title ?: "Без названия",
+            title = title ?: tr("Без названия"),
             trackCount = trackCount,
             artworkUrl = cover?.getCoverUrl("200x200"),
             tracks = emptyList(),
@@ -310,7 +311,7 @@ data class YandexAlbum(
         val namespacedId = id + 10_000_000L
         return SoundCloudPlaylist(
             id = namespacedId,
-            title = title ?: "Без названия",
+            title = title ?: tr("Без названия"),
             trackCount = trackCount,
             artworkUrl = artwork,
             tracks = emptyList(),

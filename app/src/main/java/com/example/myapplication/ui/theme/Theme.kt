@@ -165,8 +165,11 @@ fun MyApplicationTheme(
         panelColorRoles(
             colorScheme,
             darkTheme,
-            // Read straight from the system palette so it is the very tone the launcher uses.
-            darkContainer = if (useDynamic) Color(context.getColor(android.R.color.system_accent2_800)) else null
+            // Read straight from the system palette so it is the very tone the launcher uses — the
+            // text on it too, from the same palette: some phones' newer system roles (the scheme's
+            // onPrimaryContainer among them) came out dark in a dark theme, dark on the dark panel.
+            darkContainer = if (useDynamic) Color(context.getColor(android.R.color.system_accent2_800)) else null,
+            darkContent = if (useDynamic) Color(context.getColor(android.R.color.system_accent1_100)) else null
         )
     }
 
@@ -195,17 +198,18 @@ fun MyApplicationTheme(
 
 /**
  * Panel roles for [colorScheme]. In a dark theme the container is tone 20 of the secondary
- * palette, which the scheme itself exposes as `onSecondary`; [darkContainer] overrides it with
- * the system's own value where there is one.
+ * palette, which the scheme itself exposes as `onSecondary`; [darkContainer] and [darkContent]
+ * override it and the text on it with the system's own values where there are some.
  */
 fun panelColorRoles(
     colorScheme: ColorScheme,
     darkTheme: Boolean,
-    darkContainer: Color? = null
+    darkContainer: Color? = null,
+    darkContent: Color? = null
 ): PanelColorRoles = if (darkTheme) {
     PanelColorRoles(
         container = darkContainer ?: colorScheme.onSecondary,
-        content = colorScheme.onPrimaryContainer,
+        content = darkContent ?: colorScheme.onPrimaryContainer,
         accent = colorScheme.primary,
         onAccent = colorScheme.onPrimary
     )

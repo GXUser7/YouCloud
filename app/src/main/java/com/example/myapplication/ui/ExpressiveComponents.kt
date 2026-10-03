@@ -2,6 +2,7 @@
 
 package com.example.myapplication.ui
 
+import com.example.myapplication.i18n.tr
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.Spring
@@ -284,7 +285,7 @@ internal fun LoadMoreRow(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
-                        Text("Показать ещё", style = MaterialTheme.typography.titleSmall)
+                        Text(tr("Показать ещё"), style = MaterialTheme.typography.titleSmall)
                         Icon(
                             imageVector = Icons.Default.KeyboardArrowDown,
                             contentDescription = null,

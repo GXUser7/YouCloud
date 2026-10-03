@@ -37,6 +37,10 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        com.example.myapplication.ui.Appearance.keepLanguageOfEarlierVersion(this)
+        // The language the app's screens are in, for the rest of it too (see i18n.tr): changed from
+        // Android's own settings while the app ran in the background, the process kept the old one.
+        android.os.LocaleList.setDefault(resources.configuration.locales)
         // Only the intent the app was opened with: brought back after the system let it go, the
         // activity is handed that same intent again, and the link was opened a second time.
         if (savedInstanceState == null) {
