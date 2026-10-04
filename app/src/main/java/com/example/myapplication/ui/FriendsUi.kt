@@ -6,7 +6,6 @@ import android.widget.Toast
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
@@ -22,6 +21,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListScope
+import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -99,7 +99,8 @@ internal fun FriendsScreen(
     val social = remember { Social.get(context) }
     val all by social.friends.collectAsState()
     val me by social.me.collectAsState()
-    var tab by rememberSaveable { mutableStateOf(if (startWithRequests) 1 else 0) }
+    // The friends and the requests side by side, a swipe apart, the tabs following the finger.
+    val pager = rememberPagerState(initialPage = if (startWithRequests) 1 else 0) { 2 }
     var adding by rememberSaveable { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     // What the list was last drawn against, for "now" and "5 мин назад" to move on.
@@ -129,22 +130,36 @@ internal fun FriendsScreen(
     val incoming = all.orEmpty().filter { it.relationKind == Relation.INCOMING }
     val outgoing = all.orEmpty().filter { it.relationKind == Relation.OUTGOING }
 
-    SocialPage(
+    val haptic = LocalHapticFeedback.current
+    SocialPagedPage(
         title = tr("Друзья"),
         onClose = onClose,
-        bottomPadding = 200.dp,
+        pager = pager,
+        // The last rows clear of the dock, and of the mini player standing on it.
+        bottomPadding = searchDockHeight(tabs = true) + 24.dp +
+            if (LocalNowPlaying.current.trackId != null) MiniPlayerHeight + 12.dp else 0.dp,
         overlay = {
-            FindByNickBar(onClick = { adding = true })
+            // As search has it, under the thumb: (the mini player,) finding someone, the tabs.
+            Column(
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .navigationBarsPadding()
+                    .padding(horizontal = 16.dp, vertical = 12.dp),
+                verticalArrangement = Arrangement.spacedBy(SearchDockGap)
+            ) {
+                FindByNickBar(onClick = { adding = true })
+                SearchSourceTabs(
+                    labels = listOf(tr("Друзья"), tr("Заявки")),
+                    pager = pager,
+                    onSelect = { index ->
+                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                        scope.launch { pager.animateScrollToPage(index) }
+                    },
+                    badges = listOf(0, incoming.size)
+                )
+            }
         }
-    ) {
-        item(key = "tabs") {
-            GlassTabs(
-                labels = listOf(tr("Друзья"), tr("Заявки")),
-                selected = tab,
-                onSelect = { tab = it },
-                badges = listOf(0, incoming.size)
-            )
-        }
+    ) { page ->
         if (error != null && all == null) {
             item(key = "error") { FormError(error, Modifier.padding(top = 20.dp)) }
         }
@@ -154,10 +169,10 @@ internal fun FriendsScreen(
                     AppLoadingIndicator()
                 }
             }
-        } else if (tab == 0) {
+        } else if (page == 0) {
             if (friends.isEmpty()) {
                 item(key = "empty") {
-                    EmptyFriends(text = tr("Пока никого. Найди друга по нику: он увидит заявку и сможет её принять")) { adding = true }
+                    EmptyFriends(text = tr("Пока никого. Найди друга по нику: он увидит заявку и сможет её принять"))
                 }
             }
             if (listening.isNotEmpty()) {
@@ -171,7 +186,7 @@ internal fun FriendsScreen(
         } else {
             if (incoming.isEmpty() && outgoing.isEmpty()) {
                 item(key = "no-requests") {
-                    EmptyFriends(text = tr("Заявок нет. Здесь появятся те, кто захочет с тобой дружить")) { adding = true }
+                    EmptyFriends(text = tr("Заявок нет. Здесь появятся те, кто захочет с тобой дружить"))
                 }
             }
             if (incoming.isNotEmpty()) {
@@ -245,21 +260,21 @@ private fun LazyListScope.people(
     }
 }
 
+// Words only: finding someone is the field at the foot of the page, right under them.
 @Composable
-private fun EmptyFriends(text: String, onFind: () -> Unit) {
-    Column(
-        modifier = Modifier.fillMaxWidth().padding(top = 36.dp, start = 12.dp, end = 12.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(16.dp)
-    ) {
-        Text(text, style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
-        PillButton(tr("Найти по нику"), onFind, icon = Icons.Rounded.Search, kind = PillKind.Tonal)
-    }
+private fun EmptyFriends(text: String) {
+    Text(
+        text,
+        style = MaterialTheme.typography.bodyLarge,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+        modifier = Modifier.fillMaxWidth().padding(top = 36.dp, start = 12.dp, end = 12.dp)
+    )
 }
 
-/** At the bottom of the friends, over the list: where finding someone by their nick starts. */
+/** At the bottom of the friends, as search's field is: where finding someone by their nick starts. */
 @Composable
-private fun BoxScope.FindByNickBar(onClick: () -> Unit) {
+private fun FindByNickBar(onClick: () -> Unit) {
     val haptic = LocalHapticFeedback.current
     val shape = RoundedCornerShape(30.dp)
     Surface(
@@ -268,16 +283,8 @@ private fun BoxScope.FindByNickBar(onClick: () -> Unit) {
             onClick()
         },
         modifier = Modifier
-            .align(Alignment.BottomCenter)
-            .navigationBarsPadding()
-            // Above the mini player, which floats over every page, when there is one.
-            .padding(
-                start = 16.dp,
-                end = 16.dp,
-                bottom = 16.dp + if (LocalNowPlaying.current.trackId != null) MiniPlayerHeight + 12.dp else 0.dp
-            )
             .fillMaxWidth()
-            .height(60.dp)
+            .height(SearchFieldHeight)
             .glassOr(shape, MaterialTheme.colorScheme.surfaceContainerHigh),
         shape = shape,
         color = glassFill(MaterialTheme.colorScheme.surfaceContainerHigh),
@@ -574,7 +581,7 @@ internal fun PersonScreen(
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     InfoChip("@${shown.nick}")
                     shown.friends?.let { InfoChip("$it ${countWord(it, tr("друг"), tr("друга"), tr("друзей"))}") }
-                    if (relation == Relation.FRIEND) InfoChip(tr("В друзьях"), Icons.Rounded.Check, accent = true)
+                    // Being friends is said once, by the button under it.
                 }
             }
         }
@@ -636,19 +643,13 @@ internal fun PersonScreen(
 }
 
 @Composable
-private fun InfoChip(text: String, icon: androidx.compose.ui.graphics.vector.ImageVector? = null, accent: Boolean = false) {
+private fun InfoChip(text: String) {
     Surface(
         shape = CircleShape,
-        color = if (accent) PanelColors.accent.copy(alpha = 0.18f) else PanelColors.content.copy(alpha = 0.1f),
-        contentColor = if (accent) PanelColors.accent else PanelColors.content
+        color = PanelColors.content.copy(alpha = 0.1f),
+        contentColor = PanelColors.content
     ) {
-        Row(modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-            if (icon != null) {
-                Icon(icon, contentDescription = null, modifier = Modifier.size(18.dp))
-                Spacer(modifier = Modifier.width(6.dp))
-            }
-            Text(text, style = MaterialTheme.typography.labelLarge)
-        }
+        Text(text, style = MaterialTheme.typography.labelLarge, modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp))
     }
 }
 

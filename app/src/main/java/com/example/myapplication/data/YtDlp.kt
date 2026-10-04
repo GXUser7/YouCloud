@@ -62,7 +62,7 @@ object YtDlp {
          * yt-dlp asks when signed in only hand out H.264 at that size; the full TV client has them
          * all. The pared-down one stays for when it won't answer, and the web clients are left
          * out: they need a player script of their own, seconds more, for no formats the TV ones
-         * lack.
+         * lack — but for accounts the TV clients turn away ([TV_REFUSED], [OTHER_VIDEO_CLIENTS]).
          */
         VIDEO(
             "bv[height<=720][vcodec^=vp][protocol=https]/bv[height<=720][vcodec^=avc1][protocol=https]/" +
@@ -80,6 +80,25 @@ object YtDlp {
         /** A live stream's picture, for the player to show: HLS no larger than it needs. */
         LIVE_VIDEO("best[height<=720][protocol^=m3u8]/94/93/best[protocol^=m3u8]", clients = "web_safari,tv,mweb", skip = "dash")
     }
+
+    /**
+     * What the TV clients answer some signed-in accounts since September 2026, a test of
+     * YouTube's: every video "UNPLAYABLE" (yt-dlp issue 17389). The sound is had all the same —
+     * yt-dlp's own clients are asked for it — but a video asked of the TV clients alone never came.
+     */
+    private const val TV_REFUSED = "The page needs to be reloaded"
+
+    /**
+     * A video's clients for such an account, as yt-dlp's maintainers advise for it: yt-dlp's own
+     * and the embedded player's, which needs no PO token. H.264 more often than VP9, but a clip.
+     */
+    private const val OTHER_VIDEO_CLIENTS = "default,web_embedded"
+
+    // The session (a hash of its cookies) the TV clients turned away: its videos are asked of the
+    // others straight away, not a refusal first each time. Until the app is restarted, as YouTube's
+    // tests end.
+    @Volatile
+    private var tvRefusedSession: Int? = null
 
     /**
      * A yt-dlp plugin that keeps the challenge solver's preprocessed player between runs. Solving
@@ -117,6 +136,8 @@ FORMAT_KEEP = ("format_id", "url", "vcodec", "acodec", "protocol", "abr", "heigh
 
 def main():
     opts = yt_dlp.parse_options(json.loads(sys.argv[2])).ydl_opts
+    # An extraction that fails raises, its reason in the answer, rather than giving None.
+    opts["ignoreerrors"] = False
     ydl = yt_dlp.YoutubeDL(opts)
     base_args = dict(ydl.params.get("extractor_args") or {})
     # The format selector is built once, with the instance; each request brings its own.
@@ -142,6 +163,8 @@ def main():
                 youtube_args["skip"] = [part for part in request["skip"].split(",") if part]
             ydl.params["extractor_args"] = {**base_args, YOUTUBE_ARGS: youtube_args}
             info = ydl.extract_info(request["url"], download=False)
+            if info is None:
+                raise Exception("yt-dlp found nothing")
             reply = {key: info.get(key) for key in KEEP}
             reply["formats"] = [{key: f.get(key) for key in FORMAT_KEEP} for f in info.get("formats") or []]
             print(json.dumps({"id": request.get("id"), "info": reply}), flush=True)
@@ -378,9 +401,24 @@ main()
         if (kind == Kind.VIDEO) VideoDecoders.videoFormat(context) else kind.format
 
     private fun runYtDlp(context: Context, videoId: String, auth: YtAuth?, kind: Kind): YouTubeStreams.Stream? {
-        when (val answer = askServer(context, videoId, auth, kind)) {
-            is ServerAnswer.Found -> return answer.stream
-            is ServerAnswer.Failed -> return null
+        if (kind != Kind.VIDEO) return runYtDlp(context, videoId, auth, kind, kind.clients).stream
+        val session = auth?.cookie.hashCode()
+        if (tvRefusedSession != session) {
+            val tv = runYtDlp(context, videoId, auth, kind, kind.clients)
+            if (tv.stream != null || tv.failure?.contains(TV_REFUSED) != true) return tv.stream
+            Log.i(TAG, "The TV clients turn this account away; its videos are asked of $OTHER_VIDEO_CLIENTS")
+            tvRefusedSession = session
+        }
+        return runYtDlp(context, videoId, auth, kind, OTHER_VIDEO_CLIENTS).stream
+    }
+
+    /** A run's stream, or why there is none, as yt-dlp put it. */
+    private class Attempt(val stream: YouTubeStreams.Stream?, val failure: String? = null)
+
+    private fun runYtDlp(context: Context, videoId: String, auth: YtAuth?, kind: Kind, clients: String?): Attempt {
+        when (val answer = askServer(context, videoId, auth, kind, clients)) {
+            is ServerAnswer.Found -> return Attempt(answer.stream)
+            is ServerAnswer.Failed -> return Attempt(null, answer.reason)
             ServerAnswer.Unavailable -> Unit
         }
         val dir = runDir(context).apply { mkdirs() }
@@ -394,7 +432,7 @@ main()
             .addOption("--cache-dir", cacheDir(context).absolutePath)
             .addOption("--plugin-dirs", pluginDir(context).absolutePath)
             // Only the plain audio files are of use; the HLS manifest is one more request.
-            .addOption("--extractor-args", "youtube:skip=${kind.skip}" + kind.clients?.let { ";player_client=$it" }.orEmpty())
+            .addOption("--extractor-args", "youtube:skip=${kind.skip}" + clients?.let { ";player_client=$it" }.orEmpty())
         // A file per run: yt-dlp writes the jar back when it exits, and two runs can overlap.
         val cookies = auth?.let { writeCookies(File(dir, "cookies-$kind-$videoId.txt"), it) }
         cookies?.let { request.addOption("--cookies", it.absolutePath) }
@@ -408,19 +446,19 @@ main()
             val line = response.out.lineSequence().firstOrNull { it.trimStart().startsWith("{") }
             if (line == null) {
                 Log.w(TAG, "$videoId: no JSON from yt-dlp. ${response.err.takeLast(600)}")
-                return null
+                return Attempt(null, response.err)
             }
-            streamFrom(JsonParser.parseString(line).asJsonObject, kind)?.also { stream ->
+            Attempt(streamFrom(JsonParser.parseString(line).asJsonObject, kind)?.also { stream ->
                 Log.i(TAG, "$videoId: ${kind.name.lowercase()} ${stream.mimeType} in ${response.elapsedTime} ms (one-off run), " +
                     "signed in: ${cookies != null}")
-            }
+            })
         } catch (e: YoutubeDL.CanceledException) {
             Log.w(TAG, "$videoId: yt-dlp gave no answer in ${RUN_TIMEOUT_MS / 1000} s")
-            null
+            Attempt(null)
         } catch (e: Exception) {
             // yt-dlp's stderr: the reason is in its last lines.
             Log.w(TAG, "$videoId: ${e.message?.trim()?.lines()?.takeLast(4)?.joinToString(" | ") ?: e}")
-            null
+            Attempt(null, e.message)
         } finally {
             timeout.cancel(false)
             cookies?.delete()
@@ -495,8 +533,8 @@ main()
     private sealed interface ServerAnswer {
         class Found(val stream: YouTubeStreams.Stream) : ServerAnswer
 
-        /** yt-dlp ran and found nothing: a one-off run would do no better. */
-        object Failed : ServerAnswer
+        /** yt-dlp ran and found nothing, for [reason]: a one-off run would do no better. */
+        class Failed(val reason: String) : ServerAnswer
 
         /** No server could be had, or it died: worth a one-off run instead. */
         object Unavailable : ServerAnswer
@@ -517,7 +555,7 @@ main()
         }, 1, 1, TimeUnit.MINUTES)
     }
 
-    private fun askServer(context: Context, videoId: String, auth: YtAuth?, kind: Kind): ServerAnswer {
+    private fun askServer(context: Context, videoId: String, auth: YtAuth?, kind: Kind, clients: String? = kind.clients): ServerAnswer {
         val server = borrow(context, auth) ?: return ServerAnswer.Unavailable
         val started = System.currentTimeMillis()
         val id = "${System.nanoTime()}"
@@ -525,7 +563,7 @@ main()
             addProperty("id", id)
             addProperty("url", "https://www.youtube.com/watch?v=$videoId")
             addProperty("format", formatOf(context, kind))
-            kind.clients?.let { addProperty("clients", it) }
+            clients?.let { addProperty("clients", it) }
             addProperty("skip", kind.skip)
         }
         // A request that hangs takes its server with it.
@@ -556,10 +594,10 @@ main()
             ?: return ServerAnswer.Unavailable
         reply.get("error")?.takeUnless { it.isJsonNull }?.let { error ->
             Log.w(TAG, "$videoId: ${error.asString.trim().lines().takeLast(3).joinToString(" | ")}")
-            return ServerAnswer.Failed
+            return ServerAnswer.Failed(error.asString)
         }
         val info = reply.getAsJsonObject("info")
-        val stream = info?.let { streamFrom(it, kind) } ?: return ServerAnswer.Failed
+        val stream = info?.let { streamFrom(it, kind) } ?: return ServerAnswer.Failed("no stream in the answer")
         Log.i(TAG, "$videoId: ${kind.name.lowercase()} ${stream.mimeType} in ${System.currentTimeMillis() - started} ms, " +
             "signed in: ${auth != null}")
         if (kind == Kind.VIDEO) Log.d(TAG, "$videoId: picked ${describe(info)}; had ${videoFormats(info)}")

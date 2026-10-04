@@ -753,6 +753,7 @@ internal object English {
         put("Войти снова можно по нику и паролю.", "You can sign back in with your nick and password.")
         put("Друзья", "Friends")
         put("Заявки", "Requests")
+        put("Профиль и друзья", "Profile and friends")
         put("Пока никого. Найди друга по нику: он увидит заявку и сможет её принять", "No one yet. Find a friend by their nick: they'll see the request and can accept it")
         put("Сейчас слушают · %s", "Listening now · %s")
         put("Все друзья · %s", "All friends · %s")

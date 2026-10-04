@@ -8,6 +8,8 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
     <uses-permission android:name="android.permission.VIBRATE" />
+    <!-- The player keeps the phone awake while it plays (WAKE_MODE_NETWORK). -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
     <!-- Hands a downloaded update to the system installer; the user still confirms it there. -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 

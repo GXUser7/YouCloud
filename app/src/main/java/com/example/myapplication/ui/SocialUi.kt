@@ -2,22 +2,15 @@
 
 package com.example.myapplication.ui
 
-import androidx.compose.animation.animateColorAsState
-import androidx.compose.animation.core.Spring
-import androidx.compose.animation.core.animateDpAsState
-import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -279,6 +272,49 @@ internal fun SocialPage(
     }
 }
 
+/**
+ * A [SocialPage] of pages side by side, swiped between anywhere on the screen: the title stays put,
+ * each page is its own list, edge to edge as it slides, and what picks them goes in [overlay], at
+ * the foot, as search's tabs.
+ */
+@Composable
+internal fun SocialPagedPage(
+    title: String,
+    onClose: () -> Unit,
+    pager: androidx.compose.foundation.pager.PagerState,
+    bottomPadding: Dp = 140.dp,
+    overlay: @Composable androidx.compose.foundation.layout.BoxScope.() -> Unit = {},
+    page: LazyListScope.(Int) -> Unit
+) {
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .pullToClose(onClose)
+            .pageGlass(MaterialTheme.colorScheme.background)
+    ) {
+        Column(modifier = Modifier.fillMaxSize().statusBarsPadding()) {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.displaySmall,
+                modifier = Modifier.padding(start = 20.dp, top = 28.dp, end = 16.dp, bottom = 8.dp)
+            )
+            androidx.compose.foundation.pager.HorizontalPager(
+                state = pager,
+                modifier = Modifier.fillMaxWidth().weight(1f),
+                verticalAlignment = Alignment.Top
+            ) { index ->
+                LazyColumn(
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = bottomPadding)
+                ) {
+                    page(index)
+                }
+            }
+        }
+        overlay()
+    }
+}
+
 /** A rule with what follows written on it: "Сейчас слушают · 3 ———". */
 @Composable
 internal fun SectionRule(text: String, modifier: Modifier = Modifier) {
@@ -507,88 +543,6 @@ internal fun GlassField(
 @Composable
 internal fun AtMark() {
     Text("@", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, color = PanelColors.accent)
-}
-
-/**
- * Two or more tabs as one glass pill, the picked one in the accent: the pill travels to it, as
- * the app's segmented controls do.
- */
-@Composable
-internal fun GlassTabs(
-    labels: List<String>,
-    selected: Int,
-    onSelect: (Int) -> Unit,
-    modifier: Modifier = Modifier,
-    badges: List<Int> = emptyList()
-) {
-    val haptic = LocalHapticFeedback.current
-    val shape = CircleShape
-    Surface(
-        modifier = modifier
-            .fillMaxWidth()
-            .height(58.dp)
-            .glassOr(shape, PanelColors.container),
-        shape = shape,
-        color = glassFill(PanelColors.container)
-    ) {
-        BoxWithConstraints(modifier = Modifier.fillMaxSize().padding(5.dp)) {
-            val cell = maxWidth / labels.size
-            val offset by animateDpAsState(
-                targetValue = cell * selected,
-                animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessLow),
-                label = "socialTabs"
-            )
-            Box(
-                modifier = Modifier
-                    .offset(x = offset)
-                    .width(cell)
-                    .fillMaxHeight()
-                    .background(PanelColors.accent, CircleShape)
-            )
-            Row(modifier = Modifier.fillMaxSize()) {
-                labels.forEachIndexed { index, label ->
-                    val picked = index == selected
-                    val color by animateColorAsState(
-                        if (picked) PanelColors.onAccent else PanelColors.content,
-                        tween(220),
-                        label = "socialTabText"
-                    )
-                    Row(
-                        modifier = Modifier
-                            .weight(1f)
-                            .fillMaxHeight()
-                            .clip(CircleShape)
-                            .clickable {
-                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                onSelect(index)
-                            },
-                        horizontalArrangement = Arrangement.Center,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text(label, style = MaterialTheme.typography.titleSmall, color = color, maxLines = 1)
-                        val badge = badges.getOrNull(index) ?: 0
-                        if (badge > 0) {
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Box(
-                                modifier = Modifier
-                                    .size(22.dp)
-                                    .clip(CircleShape)
-                                    .background(if (picked) PanelColors.onAccent else PanelColors.accent),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Text(
-                                    badge.toString(),
-                                    style = MaterialTheme.typography.labelSmall,
-                                    fontWeight = FontWeight.Bold,
-                                    color = if (picked) PanelColors.accent else PanelColors.onAccent
-                                )
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
 }
 
 /** A message under a form: what went wrong, in the error colour. */

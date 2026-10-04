@@ -127,6 +127,11 @@ val SoundCloudTrack.youTubeVideoId: String?
 val SoundCloudTrack.liveVideoId: String?
     get() = urn?.takeIf { it.startsWith(YT_LIVE_URN) }?.removePrefix(YT_LIVE_URN)
 
+/** The account's liked songs: YouTube Music's own playlist, "LM". */
+val SoundCloudPlaylist.isYtLikedMusic: Boolean
+    get() = YouTubeMusicClient.parseSetRef(permalinkUrl)
+        ?.let { (browseId, playlistId) -> browseId == "VLLM" || playlistId == "LM" } == true
+
 /** Kept on the device as a plain file (Yandex, YouTube), not in SoundCloud's HLS cache. */
 fun isProgressiveSource(urn: String?): Boolean =
     urn != null && (urn.startsWith("yandex:") || urn.startsWith("ytmusic:"))
@@ -164,7 +169,24 @@ class YouTubeMusicClient(private val authProvider: () -> YtAuth?) {
             shelves += more.arr("contents").mapNotNull(::parseShelf)
             continuation = more.str("continuations", 0, "nextContinuationData", "continuation")
         }
-        return shelves.filter { it.tracks.isNotEmpty() || it.sets.isNotEmpty() }
+        return withLikedFirst(shelves.filter { it.tracks.isNotEmpty() || it.sets.isNotEmpty() })
+    }
+
+    /**
+     * [shelves] with the account's liked songs leading the first row. Home puts that playlist in
+     * a different row each time, deep in it, or leaves it out; the library always has it.
+     */
+    private suspend fun withLikedFirst(shelves: List<YtShelf>): List<YtShelf> {
+        val liked = shelves.firstNotNullOfOrNull { shelf -> shelf.sets.firstOrNull { it.isYtLikedMusic } }
+            ?: optional { post("browse", json { addProperty("browseId", "FEmusic_liked_playlists") }) }
+                ?.findAll("musicTwoRowItemRenderer")
+                ?.firstNotNullOfOrNull { tile -> parseTileSet(tile)?.takeIf { it.isYtLikedMusic } }
+            ?: return shelves
+        val rest = shelves
+            .map { shelf -> shelf.copy(sets = shelf.sets.filterNot { it.isYtLikedMusic }) }
+            .filter { it.tracks.isNotEmpty() || it.sets.isNotEmpty() }
+        val first = rest.firstOrNull() ?: return listOf(YtShelf(liked.title.orEmpty(), emptyList(), listOf(liked)))
+        return listOf(first.copy(sets = listOf(liked) + first.sets)) + rest.drop(1)
     }
 
     /** YouTube Music's radio from [videoId]: what it plays when that track is started. */

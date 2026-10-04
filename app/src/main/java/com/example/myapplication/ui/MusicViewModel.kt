@@ -2275,12 +2275,18 @@ class MusicViewModel(
         _screen.value = AppScreen.HOME
     }
 
+    // Where the friends were opened from: the profile, or home's avatar menu.
+    private var friendsFrom = AppScreen.PROFILE
+
     fun openFriends() {
+        if (_screen.value != AppScreen.FRIENDS) {
+            friendsFrom = if (_screen.value == AppScreen.PROFILE) AppScreen.PROFILE else AppScreen.HOME
+        }
         _screen.value = AppScreen.FRIENDS
     }
 
     fun closeFriends() {
-        _screen.value = AppScreen.PROFILE
+        _screen.value = friendsFrom
     }
 
     private val _personId = MutableStateFlow<String?>(null)
@@ -2303,7 +2309,7 @@ class MusicViewModel(
      * uncovers (the friends were opened from the profile, someone's page from the friends).
      */
     fun pageUnder(screen: AppScreen?): AppScreen? = when (screen) {
-        AppScreen.FRIENDS -> AppScreen.PROFILE
+        AppScreen.FRIENDS -> friendsFrom.takeIf { it == AppScreen.PROFILE }
         AppScreen.PERSON -> personFrom.takeIf { it == AppScreen.FRIENDS || it == AppScreen.PROFILE }
         else -> null
     }
@@ -4175,6 +4181,8 @@ class MusicViewModel(
 
             val allTracks = mutableListOf<SoundCloudTrack>()
             var yandexTrackRefs: List<com.example.myapplication.data.YandexLikedTrackRef> = emptyList()
+            // The tracks this sync saves; see the end.
+            val savedNow = mutableSetOf<Long>()
 
             try {
                 if (source == LikesSyncSource.SOUNDCLOUD) {
@@ -4245,6 +4253,7 @@ class MusicViewModel(
                         try {
                             if (existing == null) {
                                 favoritesRepository.add(track, streamUrl = null)
+                                savedNow += track.id
                             }
                             favoritesRepository.updateDownloadState(track.id, DownloadState.DOWNLOADING)
 
@@ -4268,19 +4277,6 @@ class MusicViewModel(
                     }
                 }
 
-                if (source == LikesSyncSource.YANDEX && yandexTrackRefs.isNotEmpty()) {
-                    val currentFavs = favoritesRepository.favorites.value
-                    val nonYandex = currentFavs.filter { !it.urn.startsWith("yandex:track:") }
-                    val yandex = currentFavs.filter { it.urn.startsWith("yandex:track:") }
-                    
-                    val orderMap = yandexTrackRefs.withIndex().associate { it.value.id to it.index }
-                    val sortedYandex = yandex.sortedBy { track ->
-                        val yandexId = track.urn.substringAfter("yandex:track:")
-                        orderMap[yandexId] ?: Int.MAX_VALUE
-                    }
-                    favoritesRepository.reorderTracks(nonYandex + sortedYandex)
-                }
-
                 statusFlow.value = statusFlow.value.copy(
                     state = SyncState.COMPLETED
                 )
@@ -4294,6 +4290,10 @@ class MusicViewModel(
                     state = SyncState.FAILED,
                     errorMessage = readableMessage(e, isYandex = (source == LikesSyncSource.YANDEX))
                 )
+            } finally {
+                // Saved one by one, each went on top; together they go there as the service lists
+                // its likes, newest first — stopped halfway too.
+                favoritesRepository.moveToTop(allTracks.map { it.id }.filter { it in savedNow })
             }
         }
     }
