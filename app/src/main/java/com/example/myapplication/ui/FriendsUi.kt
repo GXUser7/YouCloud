@@ -72,6 +72,7 @@ import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
 import com.example.myapplication.data.social.Person
 import com.example.myapplication.data.social.Relation
+import com.example.myapplication.data.social.Showcase
 import com.example.myapplication.data.social.Social
 import com.example.myapplication.data.social.socialMessage
 import com.example.myapplication.i18n.tr
@@ -515,7 +516,13 @@ internal fun PersonScreen(
     val scope = rememberCoroutineScope()
     val social = remember { Social.get(context) }
     var person by remember(id) { mutableStateOf<Person?>(null) }
+    // Their favourite artist, track and album: asked once, they change seldom.
+    var showcase by remember(id) { mutableStateOf(Showcase()) }
     var error by remember(id) { mutableStateOf<String?>(null) }
+
+    LaunchedEffect(id) {
+        runCatching { social.showcaseOf(id) }.onSuccess { showcase = it }
+    }
     var busy by remember { mutableStateOf(false) }
     var confirmUnfriend by remember { mutableStateOf(false) }
     var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
@@ -622,6 +629,12 @@ internal fun PersonScreen(
                     relation == Relation.FRIEND || relation == Relation.SELF -> NowPlayingCard(shown, now, onPlayLink)
                     else -> LockedCard(shown.shownName)
                 }
+            }
+        }
+        // Part of the profile, as the name is: for anyone who opens it.
+        item(key = "showcase") {
+            Box(modifier = Modifier.padding(top = 6.dp)) {
+                ShowcaseSection(showcase = showcase, onOpen = { item -> item.link?.let(onPlayLink) })
             }
         }
     }

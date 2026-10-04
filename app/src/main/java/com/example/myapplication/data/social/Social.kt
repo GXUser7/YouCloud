@@ -31,8 +31,43 @@ data class Profile(
     val name: String? = null,
     val color: String? = null,
     @SerializedName("avatar_v") val avatarV: Int = 0,
-    @SerializedName("share_listening") val shareListening: Boolean = true
+    @SerializedName("share_listening") val shareListening: Boolean = true,
+    @SerializedName("fav_artist") val favArtist: ShowcaseItem? = null,
+    @SerializedName("fav_track") val favTrack: ShowcaseItem? = null,
+    @SerializedName("fav_album") val favAlbum: ShowcaseItem? = null
+) {
+    val showcase: Showcase get() = Showcase(favArtist, favTrack, favAlbum)
+}
+
+/**
+ * Something on a profile's showcase: a favourite artist, track or album, as a service's search
+ * found it — its [link] is its page there, which the app opens as a shared link (a track plays).
+ */
+data class ShowcaseItem(
+    val title: String,
+    val subtitle: String? = null,
+    val cover: String? = null,
+    val link: String? = null,
+    val service: String? = null
 )
+
+/** The showcase's three places, and the column of a profile each is kept in. */
+enum class ShowcaseSlot(val column: String) { ARTIST("fav_artist"), TRACK("fav_track"), ALBUM("fav_album") }
+
+/** A profile's showcase: its favourite artist, track and album, each maybe not picked. */
+data class Showcase(
+    @SerializedName("fav_artist") val artist: ShowcaseItem? = null,
+    @SerializedName("fav_track") val track: ShowcaseItem? = null,
+    @SerializedName("fav_album") val album: ShowcaseItem? = null
+) {
+    operator fun get(slot: ShowcaseSlot): ShowcaseItem? = when (slot) {
+        ShowcaseSlot.ARTIST -> artist
+        ShowcaseSlot.TRACK -> track
+        ShowcaseSlot.ALBUM -> album
+    }
+
+    val isEmpty: Boolean get() = artist == null && track == null && album == null
+}
 
 /** What someone is to the one looking. */
 enum class Relation { SELF, FRIEND, OUTGOING, INCOMING, NONE }
@@ -187,7 +222,7 @@ class Social private constructor(private val context: Context) {
 
     suspend fun refreshMe(): Profile? {
         val id = supabase.session.value?.userId ?: return null
-        val rows = supabase.select("profiles", "id=eq.$id&select=id,nick,name,color,avatar_v,share_listening")
+        val rows = supabase.select("profiles", "id=eq.$id&select=id,nick,name,color,avatar_v,share_listening,fav_artist,fav_track,fav_album")
         val profile = gson.fromJson<List<Profile>>(rows, object : TypeToken<List<Profile>>() {}.type).firstOrNull()
         keepMe(profile)
         return profile
@@ -211,6 +246,25 @@ class Social private constructor(private val context: Context) {
         val me = _me.value ?: return
         supabase.update("profiles", "id=eq.${me.id}", mapOf("color" to color))
         keepMe(me.copy(color = color))
+    }
+
+    /** Puts [item] in the showcase's [slot], or takes what is there away (null). */
+    suspend fun setShowcase(slot: ShowcaseSlot, item: ShowcaseItem?) {
+        val me = _me.value ?: return
+        supabase.update("profiles", "id=eq.${me.id}", mapOf(slot.column to item))
+        keepMe(
+            when (slot) {
+                ShowcaseSlot.ARTIST -> me.copy(favArtist = item)
+                ShowcaseSlot.TRACK -> me.copy(favTrack = item)
+                ShowcaseSlot.ALBUM -> me.copy(favAlbum = item)
+            }
+        )
+    }
+
+    /** Someone's showcase, as their profile page shows it. */
+    suspend fun showcaseOf(id: String): Showcase {
+        val rows = supabase.select("profiles", "id=eq.$id&select=fav_artist,fav_track,fav_album")
+        return gson.fromJson<List<Showcase>>(rows, object : TypeToken<List<Showcase>>() {}.type).firstOrNull() ?: Showcase()
     }
 
     /** The picture at [uri], cut square, made small and put up as the avatar. */

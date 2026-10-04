@@ -100,6 +100,12 @@ import com.example.myapplication.data.social.Relation
 import com.example.myapplication.data.social.RecoveryCode
 import com.example.myapplication.data.social.Social
 import com.example.myapplication.data.social.socialMessage
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
+import androidx.compose.ui.layout.layout
+import androidx.compose.foundation.layout.PaddingValues
+import com.example.myapplication.data.SoundCloudTrack
+import com.example.myapplication.data.social.ShowcaseSlot
 import com.example.myapplication.i18n.tr
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -117,7 +123,14 @@ internal fun ProfileScreen(
     onClose: () -> Unit,
     onOpenSettings: () -> Unit,
     onOpenFriends: (requests: Boolean) -> Unit,
-    onOpenPerson: (String) -> Unit
+    onOpenPerson: (String) -> Unit,
+    // What plays here, for the showcase; a tap there opens the player.
+    nowPlaying: SoundCloudTrack? = null,
+    isPlaying: Boolean = false,
+    onOpenNowPlaying: () -> Unit = {},
+    // A place of the showcase to pick in search; a picked one's page, opened as a shared link.
+    onPickShowcase: (ShowcaseSlot) -> Unit = {},
+    onPlayLink: (String) -> Unit = {}
 ) {
     val context = LocalContext.current
     val social = remember { Social.get(context) }
@@ -136,7 +149,18 @@ internal fun ProfileScreen(
         return
     }
     if (session != null) {
-        OwnProfile(social = social, onClose = onClose, onOpenSettings = onOpenSettings, onOpenFriends = onOpenFriends, onOpenPerson = onOpenPerson)
+        OwnProfile(
+            social = social,
+            onClose = onClose,
+            onOpenSettings = onOpenSettings,
+            onOpenFriends = onOpenFriends,
+            onOpenPerson = onOpenPerson,
+            nowPlaying = nowPlaying,
+            isPlaying = isPlaying,
+            onOpenNowPlaying = onOpenNowPlaying,
+            onPickShowcase = onPickShowcase,
+            onPlayLink = onPlayLink
+        )
         return
     }
     when (mode) {
@@ -838,21 +862,36 @@ private fun SignInPage(
 
 // region One's own profile
 
+/**
+ * One's own profile: the avatar, the name and the nick, and under them two pages a swipe apart —
+ * the showcase, what the others see (what plays here, the favourite artist, track and album), and
+ * the account. At the foot, as search has it, adding a friend and the tabs.
+ */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun OwnProfile(
     social: Social,
     onClose: () -> Unit,
     onOpenSettings: () -> Unit,
     onOpenFriends: (requests: Boolean) -> Unit,
-    onOpenPerson: (String) -> Unit
+    onOpenPerson: (String) -> Unit,
+    nowPlaying: SoundCloudTrack?,
+    isPlaying: Boolean,
+    onOpenNowPlaying: () -> Unit,
+    onPickShowcase: (ShowcaseSlot) -> Unit,
+    onPlayLink: (String) -> Unit
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
+    val haptic = LocalHapticFeedback.current
     val me by social.me.collectAsState()
     var adding by rememberSaveable { mutableStateOf(false) }
     val friends by social.friends.collectAsState()
     var avatarBusy by remember { mutableStateOf(false) }
     var dialog by remember { mutableStateOf<ProfileDialog?>(null) }
+    // A picked place of the showcase held: to be changed or taken away.
+    var holding by remember { mutableStateOf<ShowcaseSlot?>(null) }
+    val pager = rememberPagerState { 2 }
 
     LaunchedEffect(Unit) {
         runCatching { social.refreshMe() }
@@ -886,7 +925,39 @@ private fun OwnProfile(
     val friendCount = friends?.count { it.relationKind == Relation.FRIEND } ?: 0
     val requestCount = friends?.count { it.relationKind == Relation.INCOMING } ?: 0
 
-    SocialPage(title = "", onClose = onClose) {
+    SocialPage(
+        title = "",
+        onClose = onClose,
+        // The last rows clear of the dock, and of the mini player standing on it.
+        bottomPadding = searchDockHeight(tabs = true) + 24.dp +
+            if (LocalNowPlaying.current.trackId != null) MiniPlayerHeight + 12.dp else 0.dp,
+        overlay = {
+            Column(
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .navigationBarsPadding()
+                    .padding(horizontal = 16.dp, vertical = 12.dp),
+                verticalArrangement = Arrangement.spacedBy(SearchDockGap)
+            ) {
+                // Finding friends is what the profile is for: the one button in the accent.
+                PillButton(
+                    text = tr("Добавить друга"),
+                    onClick = { adding = true },
+                    modifier = Modifier.fillMaxWidth(),
+                    icon = Icons.Rounded.PersonAdd,
+                    height = SearchFieldHeight
+                )
+                SearchSourceTabs(
+                    labels = listOf(tr("Витрина"), tr("Аккаунт")),
+                    pager = pager,
+                    onSelect = { page ->
+                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                        scope.launch { pager.animateScrollToPage(page) }
+                    }
+                )
+            }
+        }
+    ) {
         item(key = "hero") {
             Column(modifier = Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
                 Spacer(modifier = Modifier.height(16.dp))
@@ -925,96 +996,143 @@ private fun OwnProfile(
                     modifier = Modifier.clickable { dialog = ProfileDialog.Name }
                 )
                 Spacer(modifier = Modifier.height(10.dp))
-                Surface(
-                    onClick = {
-                        profile?.let { copyText(context, "@${it.nick}") }
-                        Toast.makeText(context, tr("Ник скопирован"), Toast.LENGTH_SHORT).show()
-                    },
-                    shape = CircleShape,
-                    color = PanelColors.content.copy(alpha = 0.1f),
-                    contentColor = PanelColors.content
+                // The nick to copy, the friends and the requests to open, the profile to share.
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    Row(modifier = Modifier.padding(start = 16.dp, end = 14.dp, top = 9.dp, bottom = 9.dp), verticalAlignment = Alignment.CenterVertically) {
+                    ProfileChip(
+                        onClick = {
+                            profile?.let { copyText(context, "@${it.nick}") }
+                            Toast.makeText(context, tr("Ник скопирован"), Toast.LENGTH_SHORT).show()
+                        }
+                    ) {
                         Text("@${profile?.nick.orEmpty()}", style = MaterialTheme.typography.titleSmall)
-                        Spacer(modifier = Modifier.width(8.dp))
                         Icon(Icons.Rounded.ContentCopy, contentDescription = tr("Скопировать ник"), modifier = Modifier.size(18.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
-                }
-                Spacer(modifier = Modifier.height(22.dp))
-            }
-        }
-        item(key = "tiles") {
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                CountTile(
-                    friendCount.toString(),
-                    countWord(friendCount.toLong(), tr("друг"), tr("друга"), tr("друзей")),
-                    Icons.Rounded.Group,
-                    Modifier.weight(1f),
-                    badge = false
-                ) { onOpenFriends(false) }
-                CountTile(
-                    requestCount.toString(),
-                    countWord(requestCount.toLong(), tr("заявка"), tr("заявки"), tr("заявок")),
-                    Icons.Rounded.Inbox,
-                    Modifier.weight(1f),
-                    badge = requestCount > 0
-                ) { onOpenFriends(true) }
-            }
-        }
-        item(key = "share") {
-            Row(modifier = Modifier.padding(top = 10.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                // Finding friends is what the profile is for: the one button in the accent.
-                PillButton(
-                    text = tr("Добавить друга"),
-                    onClick = { adding = true },
-                    modifier = Modifier.weight(1f),
-                    icon = Icons.Rounded.PersonAdd,
-                    height = 64.dp
-                )
-                GlassIconButton(
-                    icon = Icons.Rounded.Share,
-                    contentDescription = tr("Поделиться профилем"),
-                    onClick = { profile?.let { shareText(context, inviteText(it.nick)) } },
-                    size = 64.dp
-                )
-                GlassIconButton(icon = Icons.Rounded.Settings, contentDescription = tr("Настройки"), onClick = onOpenSettings, size = 64.dp)
-            }
-        }
-        item(key = "settings") {
-            Column(modifier = Modifier.padding(top = 22.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                val rows = 4
-                SettingRow(
-                    icon = Icons.Rounded.Visibility,
-                    title = tr("Показывать, что я слушаю"),
-                    subtitle = tr("Друзья видят трек, который у тебя играет"),
-                    shape = groupedShape(0, rows),
-                    trailing = {
-                        Switch(
-                            checked = profile?.shareListening != false,
-                            onCheckedChange = { on -> act { social.setShareListening(on) } },
-                            thumbContent = if (profile?.shareListening != false) {
-                                { Icon(Icons.Rounded.Check, contentDescription = null, modifier = Modifier.size(SwitchDefaults.IconSize)) }
-                            } else null
+                    ProfileChip(onClick = { onOpenFriends(false) }) {
+                        Icon(Icons.Rounded.Group, contentDescription = null, modifier = Modifier.size(18.dp), tint = PanelColors.accent)
+                        Text(
+                            "$friendCount ${countWord(friendCount.toLong(), tr("друг"), tr("друга"), tr("друзей"))}",
+                            style = MaterialTheme.typography.titleSmall
                         )
                     }
-                )
-                SettingRow(Icons.Rounded.Badge, tr("Имя"), profile?.shownName(), groupedShape(1, rows)) { dialog = ProfileDialog.Name }
-                SettingRow(Icons.Rounded.Lock, tr("Сменить пароль"), null, groupedShape(2, rows)) { dialog = ProfileDialog.Password }
-                SettingRow(Icons.Rounded.Key, tr("Код восстановления"), tr("Сделать новый, если старый потерялся"), groupedShape(3, rows)) {
-                    dialog = ProfileDialog.NewCode
+                    if (requestCount > 0) {
+                        ProfileChip(onClick = { onOpenFriends(true) }, accent = true) {
+                            Icon(Icons.Rounded.Inbox, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Text(
+                                "$requestCount ${countWord(requestCount.toLong(), tr("заявка"), tr("заявки"), tr("заявок"))}",
+                                style = MaterialTheme.typography.titleSmall
+                            )
+                        }
+                    }
+                    ProfileChip(onClick = { profile?.let { shareText(context, inviteText(it.nick)) } }) {
+                        Icon(Icons.Rounded.Share, contentDescription = tr("Поделиться профилем"), modifier = Modifier.size(18.dp), tint = PanelColors.accent)
+                    }
+                }
+                Spacer(modifier = Modifier.height(14.dp))
+            }
+        }
+        item(key = "pages") {
+            HorizontalPager(
+                state = pager,
+                // Edge to edge, past the list's margins, for a page to slide in from the screen's
+                // edge rather than from a line short of it; the margins go inside.
+                modifier = Modifier.layout { measurable, constraints ->
+                    val margins = 32.dp.roundToPx()
+                    val width = constraints.maxWidth + margins
+                    val placeable = measurable.measure(constraints.copy(minWidth = width, maxWidth = width))
+                    layout(constraints.maxWidth, placeable.height) { placeable.place(-margins / 2, 0) }
+                },
+                contentPadding = PaddingValues(horizontal = 16.dp),
+                pageSpacing = 32.dp,
+                verticalAlignment = Alignment.Top
+            ) { page ->
+                if (page == 0) {
+                    // The showcase: what plays here, and the favourites.
+                    Column {
+                        if (nowPlaying != null) {
+                            Spacer(modifier = Modifier.height(8.dp))
+                            OwnNowPlayingRow(
+                                title = nowPlaying.title ?: tr("Без названия"),
+                                artist = nowPlaying.user?.username,
+                                cover = nowPlaying.artworkUrl,
+                                playing = isPlaying,
+                                onClick = onOpenNowPlaying
+                            )
+                        }
+                        ShowcaseSection(
+                            showcase = profile?.showcase ?: com.example.myapplication.data.social.Showcase(),
+                            onOpen = { item -> item.link?.let(onPlayLink) },
+                            onPick = onPickShowcase,
+                            onHold = { holding = it }
+                        )
+                        Text(
+                            tr("Любимое видно всем, кто откроет твой профиль. Подержи, чтобы заменить или убрать"),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            textAlign = TextAlign.Center,
+                            modifier = Modifier.fillMaxWidth().padding(top = 12.dp, start = 8.dp, end = 8.dp)
+                        )
+                    }
+                } else {
+                    // The account: who sees what, the name, the password, the way back in, leaving.
+                    Column(modifier = Modifier.padding(top = 8.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                        val rows = 4
+                        SettingRow(
+                            icon = Icons.Rounded.Visibility,
+                            title = tr("Показывать, что я слушаю"),
+                            subtitle = tr("Друзья видят трек, который у тебя играет"),
+                            shape = groupedShape(0, rows),
+                            trailing = {
+                                Switch(
+                                    checked = profile?.shareListening != false,
+                                    onCheckedChange = { on -> act { social.setShareListening(on) } },
+                                    thumbContent = if (profile?.shareListening != false) {
+                                        { Icon(Icons.Rounded.Check, contentDescription = null, modifier = Modifier.size(SwitchDefaults.IconSize)) }
+                                    } else null
+                                )
+                            }
+                        )
+                        SettingRow(Icons.Rounded.Badge, tr("Имя"), profile?.shownName(), groupedShape(1, rows)) { dialog = ProfileDialog.Name }
+                        SettingRow(Icons.Rounded.Lock, tr("Сменить пароль"), null, groupedShape(2, rows)) { dialog = ProfileDialog.Password }
+                        SettingRow(Icons.Rounded.Key, tr("Код восстановления"), tr("Сделать новый, если старый потерялся"), groupedShape(3, rows)) {
+                            dialog = ProfileDialog.NewCode
+                        }
+                        Spacer(modifier = Modifier.height(10.dp))
+                        SettingRow(Icons.Rounded.Settings, tr("Настройки приложения"), null, RoundedCornerShape(28.dp)) { onOpenSettings() }
+                        PillButton(
+                            text = tr("Выйти из аккаунта"),
+                            onClick = { dialog = ProfileDialog.SignOut },
+                            modifier = Modifier.fillMaxWidth().padding(top = 13.dp),
+                            icon = Icons.AutoMirrored.Rounded.Logout,
+                            kind = PillKind.Glass,
+                            contentColor = MaterialTheme.colorScheme.error
+                        )
+                    }
                 }
             }
         }
-        item(key = "logout") {
-            PillButton(
-                text = tr("Выйти из аккаунта"),
-                onClick = { dialog = ProfileDialog.SignOut },
-                modifier = Modifier.fillMaxWidth().padding(top = 16.dp),
-                icon = Icons.AutoMirrored.Rounded.Logout,
-                kind = PillKind.Glass,
-                contentColor = MaterialTheme.colorScheme.error
-            )
-        }
+    }
+
+    holding?.let { slot ->
+        AlertDialog(
+            onDismissRequest = { holding = null },
+            title = { Text(slot.pickTitle) },
+            text = { Text(profile?.showcase?.get(slot)?.title.orEmpty()) },
+            confirmButton = {
+                TextButton(onClick = {
+                    holding = null
+                    onPickShowcase(slot)
+                }) { Text(tr("Заменить")) }
+            },
+            dismissButton = {
+                TextButton(onClick = {
+                    holding = null
+                    act { social.setShowcase(slot, null) }
+                }) { Text(tr("Убрать"), color = MaterialTheme.colorScheme.error) }
+            }
+        )
     }
 
     if (adding) {
@@ -1089,33 +1207,21 @@ private sealed interface ProfileDialog {
 
 private fun Profile.shownName(): String = name?.takeIf { it.isNotBlank() } ?: nick
 
+/** A small pill of the profile's head: the nick, the friends, the requests (on the accent), sharing. */
 @Composable
-private fun CountTile(
-    count: String,
-    label: String,
-    icon: androidx.compose.ui.graphics.vector.ImageVector,
-    modifier: Modifier = Modifier,
-    badge: Boolean,
-    onClick: () -> Unit
-) {
-    val shape = RoundedCornerShape(28.dp)
+private fun ProfileChip(onClick: () -> Unit, accent: Boolean = false, content: @Composable androidx.compose.foundation.layout.RowScope.() -> Unit) {
     Surface(
         onClick = onClick,
-        modifier = modifier.glassOr(shape, PanelColors.container),
-        shape = shape,
-        color = glassFill(PanelColors.container),
-        contentColor = PanelColors.content
+        shape = CircleShape,
+        color = if (accent) PanelColors.accent else PanelColors.content.copy(alpha = 0.1f),
+        contentColor = if (accent) PanelColors.onAccent else PanelColors.content
     ) {
-        Row(modifier = Modifier.padding(horizontal = 18.dp, vertical = 16.dp), verticalAlignment = Alignment.CenterVertically) {
-            Column(modifier = Modifier.weight(1f)) {
-                Text(count, style = MaterialTheme.typography.displaySmall, color = PanelColors.accent)
-                Text(label, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            }
-            Box {
-                Icon(icon, contentDescription = null, tint = PanelColors.accent.copy(alpha = 0.7f))
-                if (badge) Box(Modifier.align(Alignment.TopEnd).offset(x = 4.dp, y = (-4).dp).size(10.dp).clip(CircleShape).background(PanelColors.accent))
-            }
-        }
+        Row(
+            modifier = Modifier.height(40.dp).padding(horizontal = 14.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            content = content
+        )
     }
 }
 
