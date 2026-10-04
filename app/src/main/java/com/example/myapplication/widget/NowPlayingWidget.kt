@@ -6,9 +6,6 @@ import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
-import androidx.compose.runtime.getValue
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -81,15 +78,11 @@ class NowPlayingWidget : GlanceAppWidget() {
     override val sizeMode = SizeMode.Exact
 
     override suspend fun provideGlance(context: Context, id: GlanceId) {
-        val states = NowPlayingState.flow(context)
         provideContent {
-            // Followed while the session runs, the cover with it: made once for every widget, and
-            // handed over as an address the launcher reads (see WidgetCover).
-            val state by states.collectAsState()
-            val cover by WidgetCover.flow.collectAsState()
-            LaunchedEffect(state.artwork, state.active) {
-                WidgetCover.follow(context, state.artwork?.takeIf { state.active })
-            }
+            // What plays as it is now, and its cover (an address the launcher reads, see
+            // WidgetCover): not followed here, but drawn again for each change (see WidgetRenderer).
+            val state = NowPlayingState.flow(context).value
+            val cover = WidgetCover.flow.value
             GlanceTheme {
                 Content(context, state, cover?.takeIf { state.active })
             }
@@ -420,4 +413,21 @@ class MediaCommand : ActionCallback {
 
 class NowPlayingWidgetReceiver : GlanceAppWidgetReceiver() {
     override val glanceAppWidget: GlanceAppWidget = NowPlayingWidget()
+
+    // What the system asks for is drawn as a change is, once (see WidgetRenderer), rather than by
+    // a session of Glance's left to follow what plays.
+    override fun onUpdate(context: Context, appWidgetManager: android.appwidget.AppWidgetManager, appWidgetIds: IntArray) {
+        val pending = goAsync()
+        WidgetRenderer.render(context, delayMs = 0) { pending.finish() }
+    }
+
+    override fun onAppWidgetOptionsChanged(
+        context: Context,
+        appWidgetManager: android.appwidget.AppWidgetManager,
+        appWidgetId: Int,
+        newOptions: android.os.Bundle
+    ) {
+        val pending = goAsync()
+        WidgetRenderer.render(context) { pending.finish() }
+    }
 }

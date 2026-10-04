@@ -61,9 +61,13 @@ internal object WidgetCover {
             cover.value = null
             return
         }
+        // The last cover stays until the next is ready (drawn then, see below).
         val app = context.applicationContext
         making = scope.launch {
-            runCatching { make(app, track) }.getOrNull()?.let { cover.value = it }
+            runCatching { make(app, track) }.getOrNull()?.let {
+                cover.value = it
+                WidgetRenderer.render(app)
+            }
         }
     }
 
