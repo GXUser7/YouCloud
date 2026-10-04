@@ -966,12 +966,14 @@ private fun OwnProfile(
         item(key = "hero") {
             Column(modifier = Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
                 Spacer(modifier = Modifier.height(16.dp))
-                Box(modifier = Modifier.size(196.dp)) {
+                // Sideways a smaller one: the screen is not that tall.
+                val hero = if (isLandscape()) 140.dp else 196.dp
+                Box(modifier = Modifier.size(hero)) {
                     PersonAvatar(
                         name = profile?.shownName() ?: "?",
                         color = profile?.color,
                         imageUrl = profile?.let { social.avatarUrl(it.id, it.avatarV) },
-                        size = 196.dp,
+                        size = hero,
                         shape = OwnAvatarShape
                     )
                     if (avatarBusy) {
@@ -982,7 +984,7 @@ private fun OwnProfile(
                     }
                     Surface(
                         onClick = { pickPhoto.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
-                        modifier = Modifier.align(Alignment.BottomEnd).offset(x = 2.dp, y = (-6).dp).size(62.dp),
+                        modifier = Modifier.align(Alignment.BottomEnd).offset(x = 2.dp, y = (-6).dp).size(hero * 0.32f),
                         shape = RoundedCornerShape(22.dp),
                         color = PanelColors.accent,
                         contentColor = PanelColors.onAccent,
