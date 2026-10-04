@@ -208,6 +208,11 @@ class PlaybackService : MediaLibraryService() {
                     .build(),
                 true
             )
+            // The phone kept awake, and its Wi-Fi, while it plays: with the screen off it slept
+            // between the sound's buffers, and what ran meanwhile stalled — the next track being
+            // found, telling friends what plays (they saw a friend come and go while the music went
+            // on). As Media3 asks of an app that streams.
+            .setWakeMode(C.WAKE_MODE_NETWORK)
             .build()
 
         // Only ever heard: a track that is a video (one imported from the phone) has its picture

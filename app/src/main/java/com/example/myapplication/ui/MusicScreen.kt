@@ -116,6 +116,7 @@ import androidx.compose.ui.input.pointer.PointerEventPass
 import com.example.myapplication.data.LyricLine
 import com.example.myapplication.data.YtAuth
 import com.example.myapplication.data.YtShelf
+import com.example.myapplication.data.isYtLikedMusic
 import com.example.myapplication.data.youTubeTrackId
 import com.example.myapplication.data.liveVideoId
 import com.example.myapplication.data.youTubeVideoId
@@ -530,8 +531,13 @@ fun MusicScreen(viewModel: MusicViewModel) {
     val crossfadeSeconds by viewModel.settingsRepo.crossfadeSeconds.collectAsState()
     var showTogether by remember { mutableStateOf(false) }
     var showStats by remember { mutableStateOf(false) }
-    // The friends opened from the profile's "заявки": on the requests.
+    // The friends opened on the requests: from the profile's "заявки", or the avatar's menu.
     var friendsOnRequests by remember { mutableStateOf(false) }
+    // The avatar's menu on home (see AccountMenu): shut once anything else comes over home.
+    val accountMenu = rememberAccountMenuState()
+    LaunchedEffect(screen, selectedMix != null, selectedTrack != null) {
+        if (screen != AppScreen.HOME || selectedMix != null || selectedTrack != null) accountMenu.close()
+    }
 
     val downloadedTracks = remember(favorites) { favorites.filter { it.downloadState == DownloadState.DOWNLOADED } }
     val history by viewModel.history.collectAsState()
@@ -743,6 +749,16 @@ fun MusicScreen(viewModel: MusicViewModel) {
                                 haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                                 viewModel.openProfile()
                             },
+                            onOpenFriends = { requests ->
+                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                friendsOnRequests = requests
+                                viewModel.openFriends()
+                            },
+                            onOpenPerson = { id ->
+                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                viewModel.openPerson(id)
+                            },
+                            accountMenu = accountMenu,
                             onOpenMix = { mix ->
                                 haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                                 viewModel.openMix(mix)
@@ -1316,6 +1332,7 @@ fun MusicScreen(viewModel: MusicViewModel) {
                     screen == AppScreen.HOME && selectedMix == null -> HomeToolbarClearance
                     screen == AppScreen.DOWNLOADS && downloadsPicking && selectedMix == null -> HomeToolbarClearance
                     searchTabsShown -> searchDockHeight(hasYandexToken || ytMusicAccount != null) - 4.dp
+                    screen == AppScreen.FRIENDS && selectedMix == null -> searchDockHeight(tabs = true) - 4.dp
                     else -> 0.dp
                 },
                 animationSpec = spring(dampingRatio = Spring.DampingRatioLowBouncy, stiffness = Spring.StiffnessMediumLow),
@@ -1326,7 +1343,8 @@ fun MusicScreen(viewModel: MusicViewModel) {
             // has gone.
             val sideways = isLandscape()
             AnimatedVisibility(
-                visible = currentTrackTitle != null && (selectedTrack == null || playerPulled),
+                // Not while the avatar's menu stands where it is.
+                visible = currentTrackTitle != null && (selectedTrack == null || playerPulled) && !accountMenu.open,
                 enter = if (selectedTrack != null) EnterTransition.None else slideInVertically(initialOffsetY = { it }) + fadeIn(),
                 exit = slideOutVertically(targetOffsetY = { it }) + fadeOut(),
                 modifier = Modifier
@@ -1626,6 +1644,20 @@ private fun ytShelfItems(
     onOpen: (SoundCloudPlaylist) -> Unit,
     onPlay: (SoundCloudTrack, List<SoundCloudTrack>) -> Unit
 ): List<HeroItem> = buildList {
+    fun addSet(set: SoundCloudPlaylist) = add(
+        HeroItem(
+            key = "yt-set-${set.id}",
+            title = set.title ?: tr("Без названия"),
+            subtitle = set.user?.username,
+            artworkUrl = set.artworkUrl,
+            source = "set-${set.id}",
+            onClick = { onOpen(set) }
+        )
+    )
+    // The liked songs lead the row they're in, ahead of its songs: the first row's, always
+    // (see YouTubeMusicClient.home).
+    val (liked, sets) = shelf.sets.partition { it.isYtLikedMusic }
+    liked.forEach(::addSet)
     shelf.tracks.forEach { track ->
         add(
             HeroItem(
@@ -1638,18 +1670,7 @@ private fun ytShelfItems(
             )
         )
     }
-    shelf.sets.forEach { set ->
-        add(
-            HeroItem(
-                key = "yt-set-${set.id}",
-                title = set.title ?: tr("Без названия"),
-                subtitle = set.user?.username,
-                artworkUrl = set.artworkUrl,
-                source = "set-${set.id}",
-                onClick = { onOpen(set) }
-            )
-        )
-    }
+    sets.forEach(::addSet)
 }.distinctBy { it.key }
 
 /**
@@ -1722,6 +1743,9 @@ private fun HomeScreen(
     onOpenHistory: () -> Unit,
     onOpenSettings: () -> Unit,
     onOpenProfile: () -> Unit,
+    onOpenFriends: (requests: Boolean) -> Unit,
+    onOpenPerson: (String) -> Unit,
+    accountMenu: AccountMenuState,
     onOpenMix: (SoundCloudMix) -> Unit,
     onReloadMixes: () -> Unit,
     updates: com.example.myapplication.data.UpdateRepository
@@ -1865,6 +1889,13 @@ private fun HomeScreen(
     }
 
     val hasWarning = clientId.isBlank() || needsRelogin || isClientIdExpired
+    val menuItems = accountMenuItems(
+        open = accountMenu.open,
+        onOpenProfile = onOpenProfile,
+        onOpenSettings = onOpenSettings,
+        onOpenFriends = onOpenFriends,
+        onOpenPerson = onOpenPerson
+    )
 
     Box(modifier = Modifier.fillMaxSize()) {
     // Home stands on the moving backdrop: its panels and buttons are glass.
@@ -2195,21 +2226,36 @@ private fun HomeScreen(
             }
         }
 
+        // Over home, under the toolbar: the avatar's button stays where it is, the menu's toggle.
+        AccountMenuOverlay(
+            state = accountMenu,
+            items = menuItems,
+            placement = Modifier
+                .align(Alignment.BottomEnd)
+                .navigationBarsPadding()
+                .then(
+                    if (isLandscape()) Modifier.windowInsetsPadding(WindowInsets.displayCutout.only(WindowInsetsSides.End)) else Modifier
+                )
+                // At the toolbar's margin, over the button and a gap.
+                .padding(end = 16.dp, bottom = 16.dp + 64.dp + 12.dp)
+        )
         HomeToolbar(
             services = services,
             selected = shownService,
             onSelect = { picked ->
                 haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                if (picked == service && picked == shownService) reselected++ else switchTo(picked)
+                when {
+                    accountMenu.open -> accountMenu.close()
+                    picked == service && picked == shownService -> reselected++
+                    else -> switchTo(picked)
+                }
             },
             onSearch = {
                 haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                onOpenSearch()
+                if (accountMenu.open) accountMenu.close() else onOpenSearch()
             },
-            onProfile = {
-                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                onOpenProfile()
-            },
+            menu = accountMenu,
+            menuItems = menuItems,
             modifier = if (isLandscape()) {
                 Modifier
                     .align(Alignment.BottomEnd)
@@ -2348,9 +2394,12 @@ private fun HomeToolbar(
     selected: HomeService,
     onSelect: (HomeService) -> Unit,
     onSearch: () -> Unit,
-    onProfile: () -> Unit,
+    menu: AccountMenuState,
+    menuItems: List<AccountMenuItem>,
     modifier: Modifier = Modifier
 ) {
+    // The rest of the bar steps back while the avatar's menu is open; touched, it shuts the menu.
+    val rest by animateFloatAsState(if (menu.open) 0.4f else 1f, tween(220), label = "toolbarRest")
     Row(
         modifier = modifier.fillMaxWidth(),
         verticalAlignment = Alignment.CenterVertically
@@ -2359,6 +2408,7 @@ private fun HomeToolbar(
         Surface(
             modifier = Modifier
                 .padding(end = 8.dp)
+                .graphicsLayer { alpha = rest }
                 .height(64.dp)
                 .glassOr(CircleShape, PanelColors.container),
             shape = CircleShape,
@@ -2413,25 +2463,10 @@ private fun HomeToolbar(
         }
         val searchFill = androidx.compose.ui.graphics.lerp(PanelColors.container, PanelColors.content, 0.08f)
         Spacer(modifier = Modifier.weight(1f))
-        // The profile, where settings now are too (and the friends).
-        Surface(
-            onClick = onProfile,
-            modifier = Modifier
-                .size(64.dp)
-                .glassOr(RoundedCornerShape(20.dp), searchFill),
-            shape = RoundedCornerShape(20.dp),
-            color = if (glass) Color.Transparent else searchFill,
-            contentColor = PanelColors.accent,
-            shadowElevation = if (glass) 0.dp else 6.dp
-        ) {
-            Box(contentAlignment = Alignment.Center) {
-                ProfileGlyph()
-            }
-        }
-        Spacer(modifier = Modifier.width(8.dp))
         Surface(
             onClick = onSearch,
             modifier = Modifier
+                .graphicsLayer { alpha = rest }
                 .size(64.dp)
                 .glassOr(RoundedCornerShape(20.dp), searchFill),
             shape = RoundedCornerShape(20.dp),
@@ -2443,6 +2478,10 @@ private fun HomeToolbar(
                 Icon(Icons.Default.Search, contentDescription = tr("Поиск"), modifier = Modifier.size(28.dp))
             }
         }
+        Spacer(modifier = Modifier.width(8.dp))
+        // The avatar, at the edge: the friends, the profile and the settings, in its menu, which
+        // stands at the edge over it (see AccountMenu).
+        AccountMenuButton(state = menu, items = menuItems, fill = searchFill)
     }
 }
 
@@ -5241,14 +5280,16 @@ private fun SearchResultsList(
 
 /**
  * The services a search can ask, on a strip of glass at the bottom — over the keyboard while
- * typing. The lit pill rides along with the pages as they are swiped.
+ * typing. The lit pill rides along with the pages as they are swiped. The friends' dock has them
+ * too, a tab with a count ([badges]) of what waits there.
  */
 @Composable
-private fun SearchSourceTabs(
+internal fun SearchSourceTabs(
     labels: List<String>,
     pager: androidx.compose.foundation.pager.PagerState,
     onSelect: (Int) -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    badges: List<Int> = emptyList()
 ) {
     val spans = remember { mutableStateMapOf<Int, Pair<Float, Float>>() }
     val density = LocalDensity.current
@@ -5289,14 +5330,15 @@ private fun SearchSourceTabs(
                         kotlin.math.abs(pager.currentPage + pager.currentPageOffsetFraction - index) < 0.5f
                     }
                 }
-                Box(
+                Row(
                     modifier = Modifier
                         .weight(1f)
                         .fillMaxHeight()
                         .onGloballyPositioned { spans[index] = it.positionInParent().x to it.size.width.toFloat() }
                         .clip(CircleShape)
                         .clickable { onSelect(index) },
-                    contentAlignment = Alignment.Center
+                    horizontalArrangement = Arrangement.Center,
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
                         text = label,
@@ -5305,18 +5347,37 @@ private fun SearchSourceTabs(
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
+                    val badge = badges.getOrNull(index) ?: 0
+                    if (badge > 0) {
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Box(
+                            modifier = Modifier
+                                .size(22.dp)
+                                .clip(CircleShape)
+                                .background(if (lit) PanelColors.onAccent else PanelColors.accent),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                text = badge.toString(),
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.Bold,
+                                color = if (lit) PanelColors.accent else PanelColors.onAccent
+                            )
+                        }
+                    }
                 }
             }
         }
     }
 }
 
-private val SearchTabsHeight = 56.dp
-private val SearchFieldHeight = 60.dp
-private val SearchDockGap = 8.dp
+internal val SearchTabsHeight = 56.dp
+internal val SearchFieldHeight = 60.dp
+internal val SearchDockGap = 8.dp
 
-// The field and the tabs under it, with the gap above the keyboard.
-private fun searchDockHeight(tabs: Boolean): Dp =
+// The field and the tabs under it, with the gap above the keyboard (or the screen's foot). The
+// friends' page has the same dock.
+internal fun searchDockHeight(tabs: Boolean): Dp =
     12.dp + SearchFieldHeight + (if (tabs) SearchDockGap + SearchTabsHeight else 0.dp)
 
 // The mini player's height, with its padding, for what must leave room for it.

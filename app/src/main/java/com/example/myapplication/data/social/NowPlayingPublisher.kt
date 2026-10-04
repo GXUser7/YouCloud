@@ -34,6 +34,8 @@ internal class NowPlayingPublisher(context: Context, private val player: Player)
     private val tell = Runnable { send() }
     private var told: Snapshot? = null
     private var toldAt = 0L
+    // Since when the player has stood still while still wanting to play; see [send].
+    private var stalledSince = 0L
 
     override fun onEvents(player: Player, events: Player.Events) {
         if (events.containsAny(
@@ -63,6 +65,19 @@ internal class NowPlayingPublisher(context: Context, private val player: Player)
     private fun send() {
         val now = System.currentTimeMillis()
         val snapshot = snapshot(now)
+        // Between tracks the player stands still for a few seconds while still wanting to play —
+        // the next track being found, or loading — and told as a stop, the friend went off and on
+        // again on their friends' screens. Such a stop is told only once it has lasted.
+        if ((snapshot == null || !snapshot.playing) && told?.playing == true && player.playWhenReady) {
+            if (stalledSince == 0L) stalledSince = now
+            val waited = now - stalledSince
+            if (waited < STALL_MS) {
+                schedule(STALL_MS - waited)
+                return
+            }
+        } else {
+            stalledSince = 0L
+        }
         if (snapshot == null) {
             // The queue emptied: what was told as playing has stopped.
             told?.takeIf { it.playing }?.let { social.publishNowPlaying(it.copy(playing = false)) }
@@ -123,6 +138,7 @@ internal class NowPlayingPublisher(context: Context, private val player: Player)
         const val EXTRA_LINK = "track_link"
 
         private const val SETTLE_MS = 2_500L
+        private const val STALL_MS = 20_000L
         private const val HEARTBEAT_MS = 5 * 60_000L
 
         /** A track told about longer ago than this, still "playing", is taken as gone quiet. */

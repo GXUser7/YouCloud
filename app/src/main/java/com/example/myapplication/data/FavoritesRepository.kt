@@ -52,13 +52,29 @@ class FavoritesRepository(private val context: Context) {
             artistId = track.user?.id,
             artists = credits
         )
-        _favorites.update { current -> current + newTrack }
+        // Newest first: "Скачанное" lists them, and plays them, in this order.
+        _favorites.update { current -> listOf(newTrack) + current }
         persist()
     }
 
     fun addFavoriteTrack(favoriteTrack: FavoriteTrack) {
         if (isFavorite(favoriteTrack.id)) return
-        _favorites.update { current -> current + favoriteTrack }
+        _favorites.update { current -> listOf(favoriteTrack) + current }
+        persist()
+    }
+
+    /**
+     * Puts [ids] on top, in that order: tracks saved together (a likes sync), as the service
+     * lists them, newest first. Saved one by one, each went on top, the last saved — the oldest
+     * like — highest.
+     */
+    fun moveToTop(ids: List<Long>) {
+        if (ids.isEmpty()) return
+        val order = ids.withIndex().associate { it.value to it.index }
+        _favorites.update { current ->
+            val (moved, rest) = current.partition { it.id in order }
+            moved.sortedBy { order.getValue(it.id) } + rest
+        }
         persist()
     }
 
@@ -86,11 +102,6 @@ class FavoritesRepository(private val context: Context) {
             }
         }
         if (changed) persist()
-    }
-
-    fun reorderTracks(newTracks: List<FavoriteTrack>) {
-        _favorites.update { newTracks }
-        persist()
     }
 
     fun remove(trackId: Long) {
@@ -152,9 +163,20 @@ class FavoritesRepository(private val context: Context) {
     }
 
     private fun load(): List<FavoriteTrack> {
-        val json = preferences.getString(KEY_TRACKS, null) ?: return emptyList()
-        val list = runCatching { gson.fromJson<List<FavoriteTrack>>(json, listType) }
-            .getOrDefault(emptyList())
+        val json = preferences.getString(KEY_TRACKS, null)
+        val saved = json?.let { runCatching { gson.fromJson<List<FavoriteTrack>>(it, listType) }.getOrNull() }.orEmpty()
+        // Saved oldest first until the newest went on top: turned over once. Marked even with
+        // nothing saved, or the first tracks saved newest first would be turned over next time.
+        val list = if (preferences.getBoolean(KEY_NEWEST_FIRST, false)) {
+            saved
+        } else {
+            saved.asReversed().also { turned ->
+                preferences.edit()
+                    .apply { if (json != null) putString(KEY_TRACKS, gson.toJson(turned)) }
+                    .putBoolean(KEY_NEWEST_FIRST, true)
+                    .apply()
+            }
+        }
         return list.map { track ->
             val resolvedUrl = resolveLocalPath(track.streamUrl)
             val resolvedArt = resolveArtworkPath(track.localArtworkPath)
@@ -172,6 +194,7 @@ class FavoritesRepository(private val context: Context) {
 
     private companion object {
         const val KEY_TRACKS = "tracks"
+        const val KEY_NEWEST_FIRST = "newest_first"
         const val KEY_DOWNLOADED_FOLDER_ARTWORK_URI = "downloaded_folder_artwork_uri"
     }
 }
