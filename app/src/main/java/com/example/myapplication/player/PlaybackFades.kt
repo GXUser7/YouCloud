@@ -135,11 +135,16 @@ internal class PlaybackFades(
                 maybeCrossfade()
             }
             Phase.Fading -> {
-                // The old track's end and the new one's start move together: a stall in the one
-                // (the stream catching up) holds the other where it is.
-                helper?.playWhenReady = main.playWhenReady && main.playbackState == Player.STATE_READY
+                // The new track goes on whatever the old one does but pause: held while the old
+                // one's stream caught up, it fell silent with it — and at the very end, where the
+                // main player loads the next track, both were silent at once.
+                helper?.playWhenReady = main.playWhenReady
             }
-            Phase.HandingBack -> handBack()
+            Phase.HandingBack -> {
+                // Heard alone until the main player has its place: it plays on while that loads.
+                helper?.playWhenReady = main.playWhenReady
+                handBack()
+            }
             Phase.Swapping -> if (SystemClock.elapsedRealtime() - swapSince >= SWAP_MS || !main.isPlaying) finish()
         }
 
@@ -338,11 +343,18 @@ internal class PlaybackFades(
         }
         val tooLong = now - handbackSince > HANDBACK_MAX_MS
         when {
-            abs(diff) <= ALIGNED_MS || tooLong -> {
+            abs(diff) <= ALIGNED_MS -> {
                 main.playbackParameters = mainSound
                 phase = Phase.Swapping
                 swapSince = now
                 Log.d(TAG, "Crossfade handed back $diff ms apart in ${now - handbackSince} ms")
+            }
+            // Never level: one straight after the other, a jump of what they are apart, rather
+            // than the two blended — two copies of the music apart, heard as a burst.
+            tooLong -> {
+                main.playbackParameters = mainSound
+                Log.d(TAG, "Crossfade handed back unlevel, $diff ms apart, at once")
+                finish()
             }
             // Far off (a jump gone wrong): one more jump.
             abs(diff) > RESEEK_MS && handbackSeeks < MAX_HANDBACK_SEEKS -> {
@@ -536,8 +548,9 @@ internal class PlaybackFades(
         const val MAX_HANDBACK_SEEKS = 3
         const val CATCH_UP_MS = 300f
         const val MAX_CATCH_UP = 0.25f
-        const val HANDBACK_MAX_MS = 4_000L
-        const val HANDBACK_GIVE_UP_MS = 8_000L
+        const val HANDBACK_MAX_MS = 6_000L
+        // The helper is heard meanwhile: the next track's address may take yt-dlp a while.
+        const val HANDBACK_GIVE_UP_MS = 25_000L
         const val INITIAL_HANDBACK_LEAD_MS = 120L
         const val MAX_HANDBACK_LEAD_MS = 600L
         const val SWAP_MS = 120L
