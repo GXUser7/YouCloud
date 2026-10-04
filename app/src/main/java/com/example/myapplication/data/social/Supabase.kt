@@ -64,6 +64,8 @@ class SupabaseException(val status: Int, val code: String?, message: String) : I
 internal class Supabase private constructor(context: Context) {
     private val preferences = context.getSharedPreferences("social", Context.MODE_PRIVATE)
     private val gson = Gson()
+    // For a row's changes: a column set to null is cleared, not left out as Gson leaves nulls.
+    private val changes = com.google.gson.GsonBuilder().serializeNulls().create()
     private val http = OkHttpClient.Builder()
         .connectTimeout(15, TimeUnit.SECONDS)
         .readTimeout(20, TimeUnit.SECONDS)
@@ -174,9 +176,12 @@ internal class Supabase private constructor(context: Context) {
         )
     }
 
-    /** Changes [row]'s columns in the rows of [table] that [filter] (PostgREST's, `id=eq.…`) picks. */
+    /**
+     * Changes [row]'s columns in the rows of [table] that [filter] (PostgREST's, `id=eq.…`) picks;
+     * a null clears its column.
+     */
     suspend fun update(table: String, filter: String, row: Map<String, Any?>) {
-        call(restRequest("$table?$filter").header("Prefer", "return=minimal").patch(gson.toJsonTree(row).toBody()))
+        call(restRequest("$table?$filter").header("Prefer", "return=minimal").patch(changes.toJson(row).toRequestBody(JSON)))
     }
 
     suspend fun delete(table: String, filter: String) {

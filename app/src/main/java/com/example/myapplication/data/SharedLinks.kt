@@ -63,6 +63,44 @@ object SharedLinks {
     fun findUrl(text: String): String? =
         URL.find(text)?.value?.trimEnd('.', ',', ';', ':', '!', '?', ')', ']')
 
+    /**
+     * The page of an album or playlist on its service, as a link to it shared would be — what
+     * [parse] opens again. Null for a set of the phone's own.
+     */
+    fun linkOf(set: SoundCloudPlaylist): String? {
+        val ref = set.permalinkUrl ?: return null
+        YouTubeMusicClient.parseSetRef(ref)?.let { (browseId, playlistId) ->
+            return when {
+                browseId.isNotBlank() -> "https://music.youtube.com/browse/$browseId"
+                playlistId.isNotBlank() -> "https://music.youtube.com/playlist?list=$playlistId"
+                else -> null
+            }
+        }
+        if (ref.startsWith("yandex:album:")) return "https://music.yandex.ru/album/${ref.removePrefix("yandex:album:")}"
+        if (ref.startsWith("yandex:playlist:")) {
+            val parts = ref.removePrefix("yandex:playlist:").split(':')
+            return if (parts.size == 2) "https://music.yandex.ru/users/${parts[0]}/playlists/${parts[1]}" else null
+        }
+        return ref.takeIf { it.startsWith("https://soundcloud.com/") }
+    }
+
+    /** An artist's page on their service, likewise. */
+    fun linkOf(artist: SoundCloudUser): String? {
+        val ref = artist.permalinkUrl ?: return null
+        if (ref.startsWith(YT_ARTIST_REF)) return "https://music.youtube.com/channel/${ref.removePrefix(YT_ARTIST_REF)}"
+        if (ref.startsWith("yandex:artist:")) return "https://music.yandex.ru/artist/${ref.removePrefix("yandex:artist:")}"
+        return ref.takeIf { it.startsWith("https://soundcloud.com/") }
+    }
+
+    /** Which service [link] is a page of, as the app names them ("youtube", "yandex", "soundcloud"). */
+    fun serviceOf(link: String?): String? = when {
+        link == null -> null
+        "youtube.com" in link || "youtu.be" in link -> "youtube"
+        "music.yandex." in link -> "yandex"
+        "soundcloud.com" in link -> "soundcloud"
+        else -> null
+    }
+
     /** What [url] points at, or null for a link of no service YouCloud knows. */
     fun parse(url: String): SharedLink? {
         val uri = runCatching { URI(url.trim()) }.getOrNull() ?: return null

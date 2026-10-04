@@ -116,6 +116,7 @@ import androidx.compose.ui.input.pointer.PointerEventPass
 import com.example.myapplication.data.LyricLine
 import com.example.myapplication.data.YtAuth
 import com.example.myapplication.data.YtShelf
+import com.example.myapplication.data.social.ShowcaseSlot
 import com.example.myapplication.data.isYtLikedMusic
 import com.example.myapplication.data.youTubeTrackId
 import com.example.myapplication.data.liveVideoId
@@ -535,6 +536,8 @@ fun MusicScreen(viewModel: MusicViewModel) {
     var friendsOnRequests by remember { mutableStateOf(false) }
     // The avatar's menu on home (see AccountMenu): shut once anything else comes over home.
     val accountMenu = rememberAccountMenuState()
+    // Signed in, the profile has a dock at its foot, as search has, for the mini player to stand on.
+    val socialSession by remember { com.example.myapplication.data.social.Social.get(coverContext) }.session.collectAsState()
     LaunchedEffect(screen, selectedMix != null, selectedTrack != null) {
         if (screen != AppScreen.HOME || selectedMix != null || selectedTrack != null) accountMenu.close()
     }
@@ -785,7 +788,18 @@ fun MusicScreen(viewModel: MusicViewModel) {
                         onOpenPerson = { id ->
                             haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                             viewModel.openPerson(id)
-                        }
+                        },
+                        nowPlaying = currentPlayingTrack,
+                        isPlaying = isPlaying,
+                        onOpenNowPlaying = {
+                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                            currentPlayingTrack?.let(viewModel::openTrack)
+                        },
+                        onPickShowcase = { slot ->
+                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                            viewModel.pickShowcase(slot)
+                        },
+                        onPlayLink = viewModel::openSharedText
                     )
                     AppScreen.FRIENDS -> FriendsScreen(
                         onClose = viewModel::closeFriends,
@@ -913,7 +927,10 @@ fun MusicScreen(viewModel: MusicViewModel) {
                         val searchLoadingMore by viewModel.searchLoadingMore.collectAsState()
                         val searchPlaylistLoading by viewModel.searchPlaylistLoading.collectAsState()
                         val searchPlaylistError by viewModel.searchPlaylistError.collectAsState()
+                        // Picking for the profile's showcase: a tap on what it wants puts it there.
+                        val showcasePick by viewModel.showcasePick.collectAsState()
                         SearchScreen(
+                            title = showcasePick?.pickTitle ?: tr("Поиск"),
                             query = searchQuery,
                             tracks = tracks,
                             favorites = favorites,
@@ -929,7 +946,7 @@ fun MusicScreen(viewModel: MusicViewModel) {
                             onQueryChange = viewModel::onSearchQueryChange,
                             onPlayTrack = { track ->
                                 haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                viewModel.playQueuedTrack(track)
+                                if (showcasePick == ShowcaseSlot.TRACK) viewModel.chooseShowcaseTrack(track) else viewModel.playQueuedTrack(track)
                             },
                             onFavoriteClick = { track ->
                                 haptic.performHapticFeedback(HapticFeedbackType.LongPress)
@@ -953,7 +970,7 @@ fun MusicScreen(viewModel: MusicViewModel) {
                             yandexArtists = yandexSearchArtists,
                             onOpenArtist = { artist ->
                                 haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                viewModel.openArtistFromSearch(artist)
+                                if (showcasePick == ShowcaseSlot.ARTIST) viewModel.chooseShowcaseArtist(artist) else viewModel.openArtistFromSearch(artist)
                             },
                             hasMore = when (searchSource) {
                                 SearchSource.SOUNDCLOUD -> searchHasMore
@@ -978,7 +995,7 @@ fun MusicScreen(viewModel: MusicViewModel) {
                             playlistError = searchPlaylistError,
                             onOpenPlaylist = { playlist ->
                                 haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                viewModel.openSearchPlaylist(playlist)
+                                if (showcasePick == ShowcaseSlot.ALBUM) viewModel.chooseShowcaseSet(playlist) else viewModel.openSearchPlaylist(playlist)
                             },
                             onClosePlaylist = {
                                 haptic.performHapticFeedback(HapticFeedbackType.LongPress)
@@ -1333,6 +1350,7 @@ fun MusicScreen(viewModel: MusicViewModel) {
                     screen == AppScreen.DOWNLOADS && downloadsPicking && selectedMix == null -> HomeToolbarClearance
                     searchTabsShown -> searchDockHeight(hasYandexToken || ytMusicAccount != null) - 4.dp
                     screen == AppScreen.FRIENDS && selectedMix == null -> searchDockHeight(tabs = true) - 4.dp
+                    screen == AppScreen.PROFILE && socialSession != null && selectedMix == null -> searchDockHeight(tabs = true) - 4.dp
                     else -> 0.dp
                 },
                 animationSpec = spring(dampingRatio = Spring.DampingRatioLowBouncy, stiffness = Spring.StiffnessMediumLow),
@@ -4839,6 +4857,8 @@ private fun SettingsSwitchRow(
 
 @Composable
 private fun SearchScreen(
+    // "Поиск"; or, picking for the profile's showcase, what is being picked.
+    title: String,
     query: String,
     tracks: List<SoundCloudTrack>,
     favorites: List<FavoriteTrack>,
@@ -4985,7 +5005,7 @@ private fun SearchScreen(
             // shifts the title and back button downward and the transition reads as a jump.
             if (!landscape) {
                 Box(modifier = Modifier.padding(horizontal = 16.dp)) {
-                    TopBar(title = tr("Поиск"), onBack = onBack)
+                    TopBar(title = title, onBack = onBack)
                 }
             }
             HorizontalPager(
@@ -5046,7 +5066,7 @@ private fun SearchScreen(
                     .windowInsetsPadding(WindowInsets.displayCutout.only(WindowInsetsSides.End))
                     .padding(horizontal = 16.dp)
             ) {
-                TopBar(title = tr("Поиск"), onBack = onBack)
+                TopBar(title = title, onBack = onBack)
             }
         }
         }

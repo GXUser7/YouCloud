@@ -49,6 +49,10 @@ import com.example.myapplication.data.SoundCloudMeResponse
 import com.example.myapplication.data.SoundCloudUser
 import com.example.myapplication.data.SharedLink
 import com.example.myapplication.data.SharedLinks
+import com.example.myapplication.data.social.ShowcaseItem
+import com.example.myapplication.data.social.ShowcaseSlot
+import com.example.myapplication.data.social.Social
+import com.example.myapplication.data.social.socialMessage
 import com.example.myapplication.data.Playlist
 import com.example.myapplication.data.PlaylistsRepository
 import com.example.myapplication.data.sourceKey
@@ -1838,7 +1842,7 @@ class MusicViewModel(
     /** On a guest: says, once a track, that the host's [track] won't play here, and what would help. */
     private fun warnCantFollow(track: SoundCloudTrack, why: String) {
         if (!warnedFailures.add(track.id)) return
-        val title = track.title?.let { "«$it»" } ?: tr("Трек")
+        val title = track.title?.let { "«$it»" } ?: tr("Этот трек")
         val text = when (why) {
             TogetherServices.LOCAL -> tr("%s есть только на телефоне ведущего", title)
             TogetherServices.ERROR -> tr("%s не заиграл на этом телефоне", title)
@@ -2213,7 +2217,61 @@ class MusicViewModel(
     }
 
     fun closeSearch() {
+        // Left while picking for the profile's showcase: back to the profile, nothing picked.
+        if (_showcasePick.value != null) {
+            _showcasePick.value = null
+            _screen.value = AppScreen.PROFILE
+            return
+        }
         _screen.value = AppScreen.HOME
+    }
+
+    // The place of the profile's showcase being picked in search: a tap there on what it wants —
+    // a track, an artist, an album — puts it there, rather than playing or opening it.
+    private val _showcasePick = MutableStateFlow<ShowcaseSlot?>(null)
+    val showcasePick = _showcasePick.asStateFlow()
+
+    fun pickShowcase(slot: ShowcaseSlot) {
+        _showcasePick.value = slot
+        _screen.value = AppScreen.SEARCH
+    }
+
+    fun chooseShowcaseTrack(track: SoundCloudTrack) = chooseShowcase(
+        ShowcaseItem(
+            title = track.title ?: tr("Без названия"),
+            subtitle = track.artists?.mapNotNull { it.username?.takeIf(String::isNotBlank) }
+                ?.takeIf { it.isNotEmpty() }?.joinToString(", ") ?: track.user?.username,
+            cover = track.artworkUrl,
+            link = track.pageLink(),
+            service = sourceOf(track.urn).takeIf { it.isNotEmpty() }
+        )
+    )
+
+    fun chooseShowcaseArtist(artist: SoundCloudUser) {
+        val link = SharedLinks.linkOf(artist)
+        chooseShowcase(ShowcaseItem(artist.username ?: tr("Без названия"), cover = artist.avatarUrl, link = link, service = SharedLinks.serviceOf(link)))
+    }
+
+    fun chooseShowcaseSet(set: SoundCloudPlaylist) {
+        val link = SharedLinks.linkOf(set)
+        chooseShowcase(
+            ShowcaseItem(set.title ?: tr("Без названия"), set.user?.username, set.displayArtworkUrl, link, SharedLinks.serviceOf(link))
+        )
+    }
+
+    private fun chooseShowcase(item: ShowcaseItem) {
+        val slot = _showcasePick.value ?: return
+        _showcasePick.value = null
+        _screen.value = AppScreen.PROFILE
+        viewModelScope.launch {
+            try {
+                Social.get(context).setShowcase(slot, item)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Toast.makeText(context, e.socialMessage(), Toast.LENGTH_LONG).show()
+            }
+        }
     }
 
     fun openPlaylists() {
