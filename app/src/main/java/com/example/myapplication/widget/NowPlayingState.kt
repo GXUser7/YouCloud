@@ -61,6 +61,8 @@ object NowPlayingState {
         last = snapshot
         current?.value = snapshot
         val app = context.applicationContext
+        // The cover made while the widgets are told, ready for them to show.
+        WidgetCover.follow(app, snapshot.artwork?.takeIf { snapshot.active })
         app.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
             .putString("title", snapshot.title)
             .putString("artist", snapshot.artist)

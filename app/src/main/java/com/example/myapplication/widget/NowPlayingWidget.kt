@@ -4,18 +4,14 @@ import com.example.myapplication.i18n.tr
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
-import android.graphics.Bitmap
+import android.net.Uri
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.core.graphics.drawable.toBitmap
 import androidx.glance.ColorFilter
 import androidx.glance.GlanceId
 import androidx.glance.GlanceModifier
@@ -28,15 +24,13 @@ import androidx.glance.action.ActionParameters
 import androidx.glance.action.actionParametersOf
 import androidx.glance.action.clickable
 import androidx.glance.appwidget.GlanceAppWidget
+import androidx.glance.appwidget.ImageProvider
 import androidx.glance.appwidget.GlanceAppWidgetReceiver
 import androidx.glance.appwidget.SizeMode
 import androidx.glance.appwidget.action.ActionCallback
 import androidx.glance.appwidget.action.actionRunCallback
 import androidx.glance.appwidget.action.actionStartActivity
 import androidx.glance.appwidget.appWidgetBackground
-import androidx.glance.appwidget.components.CircleIconButton
-import androidx.glance.appwidget.components.FilledButton
-import androidx.glance.appwidget.components.SquareIconButton
 import androidx.glance.appwidget.cornerRadius
 import androidx.glance.appwidget.provideContent
 import androidx.glance.background
@@ -45,8 +39,8 @@ import androidx.glance.layout.Box
 import androidx.glance.layout.Column
 import androidx.glance.layout.ContentScale
 import androidx.glance.layout.Row
-import androidx.glance.layout.RowScope
 import androidx.glance.layout.Spacer
+import androidx.glance.layout.fillMaxHeight
 import androidx.glance.layout.fillMaxSize
 import androidx.glance.layout.fillMaxWidth
 import androidx.glance.layout.height
@@ -58,9 +52,6 @@ import androidx.glance.text.Text
 import androidx.glance.text.TextStyle
 import androidx.media3.session.MediaController
 import androidx.media3.session.SessionToken
-import coil.imageLoader
-import coil.request.ImageRequest
-import coil.request.SuccessResult
 import com.example.myapplication.MainActivity
 import com.example.myapplication.R
 import com.example.myapplication.player.PlaybackService
@@ -74,11 +65,13 @@ import kotlin.coroutines.resumeWithException
 /**
  * What plays, on the home screen, in the wallpaper's colours as Android's own widgets are, laid
  * out for the size it is given:
- * - two cells by one: the cover and play;
- * - two by two: the cover over all of it, play in its corner;
- * - four by one: the cover, the track, play and next;
- * - four by two: the cover and the track over all the buttons and "Моя волна".
- * Nothing playing, it offers the wave and "Моя музыка". The cover is always square.
+ * - two cells by one: the cover and play, side by side and as big;
+ * - two by two: the cover, play on its corner as the profile's camera button is on the avatar;
+ * - four by one: the cover, the track and play, play as big as the cover;
+ * - four by two: the cover and the track under it beside the buttons, three rows of them — play
+ *   across, back and next side by side, "Моя волна" across.
+ * Nothing playing, it offers the wave and "Моя музыка". The cover is cut to the cookie the app's
+ * avatars are (Material 3 Expressive's shapes), play is a rounded square.
  *
  * The playback service tells it what plays ([NowPlayingState]); its buttons reach the service
  * through a [MediaController], as the notification's do.
@@ -90,20 +83,21 @@ class NowPlayingWidget : GlanceAppWidget() {
     override suspend fun provideGlance(context: Context, id: GlanceId) {
         val states = NowPlayingState.flow(context)
         provideContent {
-            // Followed while the session runs, the cover with it.
+            // Followed while the session runs, the cover with it: made once for every widget, and
+            // handed over as an address the launcher reads (see WidgetCover).
             val state by states.collectAsState()
-            var cover by remember { mutableStateOf<Bitmap?>(null) }
+            val cover by WidgetCover.flow.collectAsState()
             LaunchedEffect(state.artwork, state.active) {
-                cover = state.artwork?.takeIf { state.active }?.let { cover(context, it) }
+                WidgetCover.follow(context, state.artwork?.takeIf { state.active })
             }
             GlanceTheme {
-                Content(context, state, cover)
+                Content(context, state, cover?.takeIf { state.active })
             }
         }
     }
 
     @Composable
-    private fun Content(context: Context, state: NowPlayingState.Snapshot, cover: Bitmap?) {
+    private fun Content(context: Context, state: NowPlayingState.Snapshot, cover: Uri?) {
         val size = LocalSize.current
         val wide = size.width >= WIDE_MIN
         val tall = size.height >= TALL_MIN
@@ -120,38 +114,97 @@ class NowPlayingWidget : GlanceAppWidget() {
         }
     }
 
-    /** Four by two: the cover and the track above, the buttons spread out below. */
+    /**
+     * Four by two: on the left the cover, the track under it; on the right the buttons, as keys in
+     * three rows — play across, back and next a half each, "Моя волна" across. Nothing playing:
+     * the wave across, "Моя музыка" and search under it.
+     */
     @Composable
-    private fun Large(context: Context, state: NowPlayingState.Snapshot, cover: Bitmap?, frame: GlanceModifier) {
+    private fun Large(context: Context, state: NowPlayingState.Snapshot, cover: Uri?, frame: GlanceModifier) {
         val size = LocalSize.current
-        val side = minOf(size.height - PAD * 2 - BUTTONS - GAP, size.width * 0.45f)
-        Column(modifier = frame.padding(PAD)) {
-            Row(modifier = GlanceModifier.fillMaxWidth().defaultWeight(), verticalAlignment = Alignment.CenterVertically) {
-                Cover(context, cover, side)
-                Spacer(modifier = GlanceModifier.width(14.dp))
-                Titles(context, state, big = true, modifier = GlanceModifier.defaultWeight())
+        val inner = size.height - PAD * 2
+        val half = (size.width - PAD * 2 - COLUMN_GAP) / 2
+        Row(modifier = frame.padding(PAD), verticalAlignment = Alignment.CenterVertically) {
+            Column(modifier = GlanceModifier.width(half).fillMaxHeight(), verticalAlignment = Alignment.CenterVertically) {
+                Cover(context, cover, minOf(half, inner - TITLES))
+                Spacer(modifier = GlanceModifier.height(6.dp))
+                Titles(context, state, big = false)
             }
-            Spacer(modifier = GlanceModifier.height(GAP))
-            Row(modifier = GlanceModifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Spacer(modifier = GlanceModifier.width(COLUMN_GAP))
+            Column(modifier = GlanceModifier.defaultWeight().fillMaxHeight()) {
+                // The wave's word where it fits beside its mark.
+                val waveText = tr("Моя волна").takeIf { half >= 140.dp }
                 if (state.active) {
-                    Round(R.drawable.ic_glyph_skip_previous, tr("Предыдущий"), command(COMMAND_PREVIOUS))
-                    Spread()
-                    Play(state)
-                    Spread()
-                    Round(R.drawable.ic_glyph_skip_next, tr("Следующий"), command(COMMAND_NEXT))
-                    Spread()
-                    Round(R.drawable.ic_glyph_wave, tr("Моя волна"), open(context, MainActivity.ACTION_WAVE))
-                } else {
-                    FilledButton(
-                        text = tr("Моя волна"),
-                        onClick = open(context, MainActivity.ACTION_WAVE),
-                        icon = ImageProvider(R.drawable.ic_glyph_wave),
-                        modifier = GlanceModifier.defaultWeight()
+                    val row = (inner - KEY_GAP * 2) / 3
+                    Key(
+                        icon = if (state.playing) R.drawable.ic_glyph_pause else R.drawable.ic_glyph_play,
+                        label = if (state.playing) tr("Пауза") else tr("Играть"),
+                        onClick = command(COMMAND_TOGGLE),
+                        height = row,
+                        accent = true,
+                        modifier = GlanceModifier.fillMaxWidth()
                     )
+                    Spacer(modifier = GlanceModifier.height(KEY_GAP))
+                    Row(modifier = GlanceModifier.fillMaxWidth()) {
+                        Key(R.drawable.ic_glyph_skip_previous, tr("Предыдущий"), command(COMMAND_PREVIOUS), row, modifier = GlanceModifier.defaultWeight())
+                        Spacer(modifier = GlanceModifier.width(KEY_GAP))
+                        Key(R.drawable.ic_glyph_skip_next, tr("Следующий"), command(COMMAND_NEXT), row, modifier = GlanceModifier.defaultWeight())
+                    }
+                    Spacer(modifier = GlanceModifier.height(KEY_GAP))
+                    Key(
+                        R.drawable.ic_glyph_wave, tr("Моя волна"), open(context, MainActivity.ACTION_WAVE), row,
+                        text = waveText, modifier = GlanceModifier.fillMaxWidth()
+                    )
+                } else {
+                    val row = (inner - KEY_GAP) / 2
+                    Key(
+                        R.drawable.ic_glyph_wave, tr("Моя волна"), open(context, MainActivity.ACTION_WAVE), row,
+                        accent = true, text = waveText, modifier = GlanceModifier.fillMaxWidth()
+                    )
+                    Spacer(modifier = GlanceModifier.height(KEY_GAP))
+                    Row(modifier = GlanceModifier.fillMaxWidth()) {
+                        Key(R.drawable.ic_glyph_library, tr("Моя музыка"), open(context, MainActivity.ACTION_MY_MUSIC), row, modifier = GlanceModifier.defaultWeight())
+                        Spacer(modifier = GlanceModifier.width(KEY_GAP))
+                        Key(R.drawable.ic_glyph_search, tr("Поиск"), open(context, MainActivity.ACTION_SEARCH), row, modifier = GlanceModifier.defaultWeight())
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * A key of the large widget: a rounded rectangle [height] tall, as wide as [modifier] makes it,
+     * its mark (and [text]) in the middle; the accent's for play, the panel's tone for the rest.
+     */
+    @Composable
+    private fun Key(
+        icon: Int,
+        label: String,
+        onClick: Action,
+        height: Dp,
+        accent: Boolean = false,
+        text: String? = null,
+        modifier: GlanceModifier = GlanceModifier
+    ) {
+        val content = if (accent) GlanceTheme.colors.onPrimary else GlanceTheme.colors.onSecondaryContainer
+        Box(
+            modifier = modifier
+                .height(height)
+                .cornerRadius(height * ACCENT_CORNER)
+                .background(if (accent) GlanceTheme.colors.primary else GlanceTheme.colors.secondaryContainer)
+                .clickable(onClick),
+            contentAlignment = Alignment.Center
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Image(
+                    provider = ImageProvider(icon),
+                    contentDescription = label,
+                    colorFilter = ColorFilter.tint(content),
+                    modifier = GlanceModifier.size(minOf(height * 0.46f, 28.dp))
+                )
+                if (text != null) {
                     Spacer(modifier = GlanceModifier.width(8.dp))
-                    Round(R.drawable.ic_glyph_library, tr("Моя музыка"), open(context, MainActivity.ACTION_MY_MUSIC))
-                    Spacer(modifier = GlanceModifier.width(8.dp))
-                    Round(R.drawable.ic_glyph_search, tr("Поиск"), open(context, MainActivity.ACTION_SEARCH))
+                    Text(text, style = TextStyle(color = content, fontSize = 15.sp, fontWeight = FontWeight.Medium), maxLines = 1)
                 }
             }
         }
@@ -159,59 +212,52 @@ class NowPlayingWidget : GlanceAppWidget() {
 
     /** Four by one: everything in a row. */
     @Composable
-    private fun Strip(context: Context, state: NowPlayingState.Snapshot, cover: Bitmap?, frame: GlanceModifier) {
+    private fun Strip(context: Context, state: NowPlayingState.Snapshot, cover: Uri?, frame: GlanceModifier) {
         val side = LocalSize.current.height - STRIP_PAD * 2
         Row(modifier = frame.padding(STRIP_PAD), verticalAlignment = Alignment.CenterVertically) {
-            Cover(context, cover, side, corner = 16.dp)
+            Cover(context, cover, side)
             Spacer(modifier = GlanceModifier.width(12.dp))
             Titles(context, state, big = false, modifier = GlanceModifier.defaultWeight())
-            Spacer(modifier = GlanceModifier.width(8.dp))
-            if (state.active) {
-                Play(state, size = 48.dp)
-                Spacer(modifier = GlanceModifier.width(6.dp))
-                Round(R.drawable.ic_glyph_skip_next, tr("Следующий"), command(COMMAND_NEXT), size = 42.dp)
-            } else {
-                Wave(context, size = 48.dp)
-            }
+            Spacer(modifier = GlanceModifier.width(12.dp))
+            if (state.active) Play(state, size = side) else Wave(context, size = side)
         }
     }
 
-    /** Two by two: the cover over all of it, play in its corner. */
+    /**
+     * Two by two: the cover over most of it, play sitting on its corner as the profile's camera
+     * button sits on the avatar — set off from it by a rim of the widget's own colour.
+     */
     @Composable
-    private fun Square(context: Context, state: NowPlayingState.Snapshot, cover: Bitmap?, frame: GlanceModifier) {
+    private fun Square(context: Context, state: NowPlayingState.Snapshot, cover: Uri?, frame: GlanceModifier) {
+        val size = LocalSize.current
+        val side = minOf(size.width, size.height) - SQUARE_PAD * 2
         Box(modifier = frame, contentAlignment = Alignment.BottomEnd) {
-            if (cover != null) {
-                Image(
-                    provider = ImageProvider(cover),
-                    contentDescription = null,
-                    contentScale = ContentScale.Crop,
-                    modifier = GlanceModifier.fillMaxSize().cornerRadius(28.dp).clickable(openApp(context))
-                )
-            } else {
-                Column(
-                    modifier = GlanceModifier.fillMaxSize().padding(PAD).clickable(openApp(context)),
-                    verticalAlignment = Alignment.Top
-                ) {
-                    Glyph(40.dp)
-                    Spacer(modifier = GlanceModifier.height(10.dp))
-                    Titles(context, state, big = false)
-                }
+            Box(modifier = GlanceModifier.fillMaxSize().padding(SQUARE_PAD), contentAlignment = Alignment.Center) {
+                Cover(context, cover, side)
             }
-            Box(modifier = GlanceModifier.padding(10.dp)) {
-                if (state.active) Play(state, size = 52.dp) else Wave(context, size = 52.dp)
+            // A third of the cover, as the camera button is of the avatar.
+            val button = side * 0.36f
+            Box(
+                modifier = GlanceModifier
+                    .padding(4.dp)
+                    .cornerRadius(button * ACCENT_CORNER + 4.dp)
+                    .background(GlanceTheme.colors.widgetBackground)
+                    .padding(4.dp)
+            ) {
+                if (state.active) Play(state, size = button) else Wave(context, size = button)
             }
         }
     }
 
-    /** Two by one: the cover and play. */
+    /** Two by one: the cover and play, side by side, each a square as tall as the widget lets it. */
     @Composable
-    private fun Small(context: Context, state: NowPlayingState.Snapshot, cover: Bitmap?, frame: GlanceModifier) {
-        val side = LocalSize.current.height - STRIP_PAD * 2
+    private fun Small(context: Context, state: NowPlayingState.Snapshot, cover: Uri?, frame: GlanceModifier) {
+        val size = LocalSize.current
+        val side = minOf(size.height - STRIP_PAD * 2, (size.width - STRIP_PAD * 2 - 8.dp) / 2)
         Row(modifier = frame.padding(STRIP_PAD), verticalAlignment = Alignment.CenterVertically) {
-            Cover(context, cover, side, corner = 16.dp)
+            Cover(context, cover, side)
             Spacer(modifier = GlanceModifier.defaultWeight())
-            if (state.active) Play(state, size = 48.dp) else Wave(context, size = 48.dp)
-            Spacer(modifier = GlanceModifier.width(4.dp))
+            if (state.active) Play(state, size = side) else Wave(context, size = side)
         }
     }
 
@@ -231,76 +277,78 @@ class NowPlayingWidget : GlanceAppWidget() {
         }
     }
 
-    /** The cover, square; the app's notes on the panel's tone while nothing plays. */
+    /** The cover, cut to the cookie (see WidgetCover); the app's notes on a cookie of the panel's tone while there is none. */
     @Composable
-    private fun Cover(context: Context, cover: Bitmap?, side: Dp, corner: Dp = 20.dp) {
+    private fun Cover(context: Context, cover: Uri?, side: Dp) {
         if (cover != null) {
             Image(
                 provider = ImageProvider(cover),
                 contentDescription = null,
-                contentScale = ContentScale.Crop,
-                modifier = GlanceModifier.size(side).cornerRadius(corner).clickable(openApp(context))
+                contentScale = ContentScale.Fit,
+                modifier = GlanceModifier.size(side).clickable(openApp(context))
             )
         } else {
-            Box(modifier = GlanceModifier.clickable(openApp(context))) { Glyph(side, corner) }
+            Box(modifier = GlanceModifier.clickable(openApp(context))) { Glyph(context, side) }
         }
     }
 
     @Composable
-    private fun Glyph(side: Dp, corner: Dp = 16.dp) {
-        Box(
-            modifier = GlanceModifier.size(side).cornerRadius(corner).background(GlanceTheme.colors.secondaryContainer),
-            contentAlignment = Alignment.Center
-        ) {
+    private fun Glyph(context: Context, side: Dp) {
+        Box(modifier = GlanceModifier.size(side), contentAlignment = Alignment.Center) {
+            Image(
+                provider = ImageProvider(WidgetCover.mask(context)),
+                contentDescription = null,
+                colorFilter = ColorFilter.tint(GlanceTheme.colors.secondaryContainer),
+                contentScale = ContentScale.Fit,
+                modifier = GlanceModifier.fillMaxSize()
+            )
             Image(
                 provider = ImageProvider(R.drawable.ic_glyph_library),
                 contentDescription = null,
                 colorFilter = ColorFilter.tint(GlanceTheme.colors.onSecondaryContainer),
-                modifier = GlanceModifier.size(side * 0.45f)
+                modifier = GlanceModifier.size(side * 0.4f)
             )
         }
     }
 
     @Composable
     private fun Play(state: NowPlayingState.Snapshot, size: Dp = 56.dp) {
-        SquareIconButton(
-            imageProvider = ImageProvider(if (state.playing) R.drawable.ic_glyph_pause else R.drawable.ic_glyph_play),
-            contentDescription = if (state.playing) tr("Пауза") else tr("Играть"),
+        Accent(
+            icon = if (state.playing) R.drawable.ic_glyph_pause else R.drawable.ic_glyph_play,
+            label = if (state.playing) tr("Пауза") else tr("Играть"),
             onClick = command(COMMAND_TOGGLE),
-            backgroundColor = GlanceTheme.colors.primary,
-            contentColor = GlanceTheme.colors.onPrimary,
-            modifier = GlanceModifier.size(size)
+            size = size
         )
     }
 
+    /**
+     * A rounded square on the accent, as big as it is given — on the smaller widgets as big as the
+     * cover — its corners and its mark in proportion: Glance's own keeps its mark one size, a dot
+     * on a big button.
+     */
     @Composable
-    private fun Round(icon: Int, label: String, onClick: Action, size: Dp = 46.dp) {
-        CircleIconButton(
-            imageProvider = ImageProvider(icon),
-            contentDescription = label,
-            onClick = onClick,
-            backgroundColor = GlanceTheme.colors.secondaryContainer,
-            contentColor = GlanceTheme.colors.onSecondaryContainer,
-            modifier = GlanceModifier.size(size)
-        )
+    private fun Accent(icon: Int, label: String, onClick: Action, size: Dp) {
+        Box(
+            modifier = GlanceModifier
+                .size(size)
+                .cornerRadius(size * ACCENT_CORNER)
+                .background(GlanceTheme.colors.primary)
+                .clickable(onClick),
+            contentAlignment = Alignment.Center
+        ) {
+            Image(
+                provider = ImageProvider(icon),
+                contentDescription = label,
+                colorFilter = ColorFilter.tint(GlanceTheme.colors.onPrimary),
+                modifier = GlanceModifier.size(size * 0.42f)
+            )
+        }
     }
 
     /** "Моя волна", the accent one: what the widget offers while nothing plays. */
     @Composable
     private fun Wave(context: Context, size: Dp) {
-        SquareIconButton(
-            imageProvider = ImageProvider(R.drawable.ic_glyph_wave),
-            contentDescription = tr("Моя волна"),
-            onClick = open(context, MainActivity.ACTION_WAVE),
-            backgroundColor = GlanceTheme.colors.primary,
-            contentColor = GlanceTheme.colors.onPrimary,
-            modifier = GlanceModifier.size(size)
-        )
-    }
-
-    @Composable
-    private fun RowScope.Spread() {
-        Spacer(modifier = GlanceModifier.defaultWeight())
+        Accent(R.drawable.ic_glyph_wave, tr("Моя волна"), open(context, MainActivity.ACTION_WAVE), size)
     }
 
     private fun openApp(context: Context): Action = actionStartActivity(Intent(context, MainActivity::class.java))
@@ -310,25 +358,19 @@ class NowPlayingWidget : GlanceAppWidget() {
 
     private fun command(name: String) = actionRunCallback<MediaCommand>(actionParametersOf(CommandKey to name))
 
-    /** The cover, small: a widget's pictures go through a parcel with a size limit. */
-    private suspend fun cover(context: Context, uri: String): Bitmap? = runCatching {
-        val request = ImageRequest.Builder(context)
-            .data(uri)
-            .size(COVER_PX)
-            .allowHardware(false)
-            .build()
-        (context.imageLoader.execute(request) as? SuccessResult)?.drawable?.toBitmap(COVER_PX, COVER_PX)
-    }.getOrNull()
-
     companion object {
         // From this wide the track and its buttons fit beside the cover; from this tall, above them.
         private val WIDE_MIN = 220.dp
         private val TALL_MIN = 140.dp
         private val PAD = 14.dp
         private val STRIP_PAD = 10.dp
-        private val BUTTONS = 56.dp
-        private val GAP = 10.dp
-        private const val COVER_PX = 360
+        // The large widget's: between its two halves, between its keys, the track's two lines.
+        private val COLUMN_GAP = 12.dp
+        private val KEY_GAP = 6.dp
+        private val TITLES = 44.dp
+        private val SQUARE_PAD = 10.dp
+        // The accent buttons' corners, as a part of their side: the camera button's on the avatar.
+        private const val ACCENT_CORNER = 0.3f
 
         internal val CommandKey = ActionParameters.Key<String>("command")
         internal const val COMMAND_TOGGLE = "toggle"
