@@ -330,6 +330,37 @@ class Social private constructor(private val context: Context) {
         scope.launch { runCatching { loadFriends() }.onFailure { Log.w(TAG, "Friends not loaded", it) } }
     }
 
+    // What the server tells as it changes (see Realtime): a friend's track, a friendship, a profile.
+    private val realtime = Realtime(supabase) { serverChanged() }
+    private var settling: kotlinx.coroutines.Job? = null
+    private val _changes = MutableStateFlow(0L)
+
+    /**
+     * Counts what the server has told of since: a screen showing a friend's page asks for it
+     * again on each. The list of friends is reloaded here.
+     */
+    val changes: StateFlow<Long> = _changes.asStateFlow()
+
+    /**
+     * Keeps the server telling what changes until the handle is closed: a screen's, while it
+     * shows friends — what they play, the requests, a profile — as it changes, not only as it
+     * opens. Signed out, nothing to watch.
+     */
+    fun watchLive(): AutoCloseable =
+        if (configured && supabase.session.value != null) realtime.watch() else AutoCloseable { }
+
+    // A burst of changes (a friend's track ending: paused, the next one) is one reload.
+    private fun serverChanged() {
+        synchronized(this) {
+            settling?.cancel()
+            settling = scope.launch {
+                kotlinx.coroutines.delay(LIVE_SETTLE_MS)
+                runCatching { loadFriends() }.onFailure { Log.w(TAG, "Friends not loaded", it) }
+                _changes.value = _changes.value + 1
+            }
+        }
+    }
+
     suspend fun search(query: String): List<Person> =
         if (query.isBlank()) emptyList() else people(supabase.rpc("search_profiles", mapOf("q" to query)))
 
@@ -385,6 +416,7 @@ class Social private constructor(private val context: Context) {
 
     companion object {
         private const val TAG = "Social"
+        private const val LIVE_SETTLE_MS = 400L
         private const val KEY_ME = "me"
         private const val AVATARS = "avatars"
         private const val AVATAR_PX = 256

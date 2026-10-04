@@ -11,6 +11,15 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.foundation.layout.statusBars
+import androidx.compose.foundation.layout.only
+import androidx.compose.foundation.layout.navigationBars
+import androidx.compose.foundation.layout.displayCutout
+import androidx.compose.foundation.layout.asPaddingValues
+import androidx.compose.foundation.layout.WindowInsetsSides
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -234,7 +243,9 @@ internal fun ProfileGlyph() {
 
 /**
  * A page of the account: over the backdrop as glass, closed by pulling it down as every page is,
- * with no back button; its content a list under a big title.
+ * with no back button; its content a list under a big title. Sideways, as search and the
+ * collections have it: the list on the left, and the title and [overlay] (the page's controls,
+ * at its foot) in the pane on the right, the mini player standing there too ([SidePane]).
  */
 @Composable
 internal fun SocialPage(
@@ -252,6 +263,18 @@ internal fun SocialPage(
             .pullToClose(onClose)
             .pageGlass(MaterialTheme.colorScheme.background)
     ) {
+        if (isLandscape()) {
+            Row(modifier = Modifier.fillMaxSize()) {
+                LazyColumn(
+                    state = listState,
+                    modifier = Modifier.weight(1f).fillMaxHeight().sidewaysList(),
+                    contentPadding = sidewaysListPadding(),
+                    content = content
+                )
+                SidePane(title, overlay)
+            }
+            return@Box
+        }
         LazyColumn(
             state = listState,
             modifier = Modifier
@@ -273,9 +296,46 @@ internal fun SocialPage(
 }
 
 /**
+ * Sideways, the pane on the right of an account's page: its title at the top, and at the foot what
+ * [overlay] puts there (aligned to the bottom), under the thumb, with the mini player over it.
+ */
+@Composable
+private fun SidePane(title: String, overlay: @Composable androidx.compose.foundation.layout.BoxScope.() -> Unit) {
+    Box(
+        modifier = Modifier
+            .width(LandscapePaneWidth)
+            .fillMaxHeight()
+            .windowInsetsPadding(WindowInsets.displayCutout.only(WindowInsetsSides.End))
+    ) {
+        if (title.isNotEmpty()) {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.displaySmall,
+                modifier = Modifier.statusBarsPadding().padding(start = 20.dp, top = 28.dp, end = 16.dp)
+            )
+        }
+        overlay()
+    }
+}
+
+// Sideways, a list on the left of the pane: clear of a cutout on its side, the status bar over its
+// top and the gesture bar under its end; nothing of the pane's floats over it.
+@Composable
+private fun Modifier.sidewaysList(): Modifier =
+    windowInsetsPadding(WindowInsets.displayCutout.only(WindowInsetsSides.Start))
+
+@Composable
+private fun sidewaysListPadding(): PaddingValues = PaddingValues(
+    start = 16.dp,
+    top = WindowInsets.statusBars.asPaddingValues().calculateTopPadding() + 16.dp,
+    end = 16.dp,
+    bottom = 24.dp + WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
+)
+
+/**
  * A [SocialPage] of pages side by side, swiped between anywhere on the screen: the title stays put,
  * each page is its own list, edge to edge as it slides, and what picks them goes in [overlay], at
- * the foot, as search's tabs.
+ * the foot, as search's tabs. Sideways, the pages take the left, the title and [overlay] the pane.
  */
 @Composable
 internal fun SocialPagedPage(
@@ -292,6 +352,21 @@ internal fun SocialPagedPage(
             .pullToClose(onClose)
             .pageGlass(MaterialTheme.colorScheme.background)
     ) {
+        if (isLandscape()) {
+            Row(modifier = Modifier.fillMaxSize()) {
+                androidx.compose.foundation.pager.HorizontalPager(
+                    state = pager,
+                    modifier = Modifier.weight(1f).fillMaxHeight().sidewaysList(),
+                    verticalAlignment = Alignment.Top
+                ) { index ->
+                    LazyColumn(modifier = Modifier.fillMaxSize(), contentPadding = sidewaysListPadding()) {
+                        page(index)
+                    }
+                }
+                SidePane(title, overlay)
+            }
+            return@Box
+        }
         Column(modifier = Modifier.fillMaxSize().statusBarsPadding()) {
             Text(
                 text = title,

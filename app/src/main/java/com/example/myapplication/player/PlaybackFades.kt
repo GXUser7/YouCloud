@@ -36,14 +36,16 @@ internal class TrackSound(val parameters: PlaybackParameters, val reverb: Int)
  * track that ended, not one skipped seconds early. A few seconds before the end a second player
  * ([helper]) starts the next track, quietly at first, while the main one fades out. When the main
  * player gets to that track, it goes to where the helper is in it, unheard — one jump, then a
- * little faster or slower until the two play level, as a jump lands only roughly — and takes over
- * in a moment's blend: nothing heard breaks off, nothing is heard twice. Meanwhile the app goes on
- * showing it playing ([SessionBridge.crossfadeSettling]); and it shows the next track from the
- * moment it comes in, as heard ([SessionBridge.crossfadeIncoming]).
+ * little faster or slower for a moment until the two play level, as a jump lands only roughly —
+ * and takes over in a moment's blend: nothing heard breaks off, nothing is heard twice. Meanwhile
+ * the app goes on showing it playing ([SessionBridge.crossfadeSettling]); and it shows the next
+ * track from the moment it comes in, as heard ([SessionBridge.crossfadeIncoming]).
  *
- * The helper is heard and nothing more: no audio focus of its own, and the main player's audio
- * session, so the equalizer is on it too. It reads the next track from the stream cache, where the
- * prefetcher has put it.
+ * The helper is heard and nothing more: no audio focus of its own. Its audio session is its own
+ * too: the equalizer sets the volume of everything in its session as one, so with the main
+ * player's the two had one volume between them — the next track faded out with the old one, and
+ * came back over it at the hand-back as a burst. [onHelperSession] puts the equalizer on it as
+ * well. It reads the next track from the stream cache, where the prefetcher has put it.
  *
  * [crossfadeMs]: the crossfade's length, 0 for none. [soundOf]: a track's own effects, for the
  * helper to play the next track with them.
@@ -54,7 +56,8 @@ internal class PlaybackFades(
     private val main: ExoPlayer,
     private val mediaSourceFactory: MediaSource.Factory,
     private val crossfadeMs: () -> Long,
-    private val soundOf: (MediaItem) -> TrackSound
+    private val soundOf: (MediaItem) -> TrackSound,
+    private val onHelperSession: (audioSessionId: Int) -> Unit
 ) : Player.Listener {
     private val handler = Handler(Looper.getMainLooper())
     private val scope = MainScope()
@@ -86,15 +89,26 @@ internal class PlaybackFades(
     private var incomingId: String? = null
 
     // Taking over from the helper: how far ahead of the helper's place to seek, learned from each
-    // crossfade (what a seek takes to sound); when the last seek was, how many there have been,
-    // since when it is under way, and the main player's own speed, which a catching up changes.
+    // crossfade (what a seek takes to sound); how many seeks there have been, since when it is
+    // under way, and the main player's own speed, which a nudge departs from; since when the main
+    // player has played as it is (0 before the first jump), what the two were seen apart meanwhile,
+    // and whether it is being nudged.
     private var handbackLeadMs = INITIAL_HANDBACK_LEAD_MS
-    private var lastHandbackSeek = 0L
     private var handbackSeeks = 0
     private var handbackSince = 0L
     private var learned = false
     private var mainSound: PlaybackParameters = PlaybackParameters.DEFAULT
+    private var steadySince = 0L
+    private val apart = ArrayDeque<Long>()
+    private var nudging = false
     private var swapSince = 0L
+
+    private val endNudge = Runnable {
+        if (!nudging) return@Runnable
+        nudging = false
+        main.playbackParameters = mainSound
+        unsteady()
+    }
 
     // The main player's seeks that are this class's own, not the listener's.
     private var ownSeeks = 0
@@ -135,11 +149,16 @@ internal class PlaybackFades(
                 maybeCrossfade()
             }
             Phase.Fading -> {
-                // The old track's end and the new one's start move together: a stall in the one
-                // (the stream catching up) holds the other where it is.
-                helper?.playWhenReady = main.playWhenReady && main.playbackState == Player.STATE_READY
+                // The new track goes on whatever the old one does but pause: held while the old
+                // one's stream caught up, it fell silent with it — and at the very end, where the
+                // main player loads the next track, both were silent at once.
+                helper?.playWhenReady = main.playWhenReady
             }
-            Phase.HandingBack -> handBack()
+            Phase.HandingBack -> {
+                // Heard alone until the main player has its place: it plays on while that loads.
+                helper?.playWhenReady = main.playWhenReady
+                handBack()
+            }
             Phase.Swapping -> if (SystemClock.elapsedRealtime() - swapSince >= SWAP_MS || !main.isPlaying) finish()
         }
 
@@ -277,7 +296,8 @@ internal class PlaybackFades(
         SessionBridge.crossfadeSettling.value = true
         main.volume = 0f
         handbackSeeks = 0
-        lastHandbackSeek = 0L
+        steadySince = 0L
+        apart.clear()
         learned = false
         handbackSince = SystemClock.elapsedRealtime()
         // Not from here, in the middle of the player's own callback: its seek would be told late.
@@ -294,13 +314,43 @@ internal class PlaybackFades(
         ownSeeks++
         main.seekTo(player.currentPosition + handbackLeadMs)
         handbackSeeks++
-        lastHandbackSeek = SystemClock.elapsedRealtime()
+        unsteady()
+    }
+
+    /** The main player changed how it plays: what the two are apart is to be seen anew. */
+    private fun unsteady() {
+        steadySince = SystemClock.elapsedRealtime()
+        apart.clear()
+    }
+
+    /**
+     * Plays the main player a little faster or slower for as long as makes up [diff] (it is
+     * [diff] ahead of the helper, behind if less than 0), then as before.
+     */
+    private fun nudge(diff: Long) {
+        val speed = mainSound.speed.coerceAtLeast(0.1f)
+        val factor = if (diff < 0) 1f + NUDGE else 1f - NUDGE
+        main.playbackParameters = PlaybackParameters(speed * factor, mainSound.pitch)
+        nudging = true
+        unsteady()
+        Log.d(TAG, "Crossfade hand-back nudged over $diff ms")
+        handler.postDelayed(endNudge, (abs(diff) / (speed * NUDGE)).toLong().coerceAtLeast(1L))
+    }
+
+    private fun stopNudge() {
+        handler.removeCallbacks(endNudge)
+        nudging = false
     }
 
     /**
      * One look at the main player taking over. A jump lands within some tens of milliseconds of
      * where it was aimed; the rest is made up by playing a little faster or slower for a moment —
      * unheard, and with no stop to load, as another jump would have. Level, it is heard instead.
+     *
+     * What the two are apart is only taken once it stays put: after a jump the position eases
+     * over to the audio output's clock at a tenth of the speed, a few tens of milliseconds over a
+     * moment, and a nudge sounds only once what was played before it is out. Taken while it
+     * moved, catching up chased it, and the two were blended apart.
      */
     private fun handBack() {
         val player = helper
@@ -316,51 +366,63 @@ internal class PlaybackFades(
             return
         }
         val now = SystemClock.elapsedRealtime()
-        if (lastHandbackSeek == 0L) return
+        if (steadySince == 0L) return
         if (!main.isPlaying || main.playbackState != Player.STATE_READY) {
+            unsteady()
             // The new track won't load: the helper has it, but can't hold it for ever.
             if (now - handbackSince > HANDBACK_GIVE_UP_MS) {
                 Log.w(TAG, "Main player didn't catch up with the crossfade; taking over anyway")
+                stopNudge()
+                main.playbackParameters = mainSound
                 ownSeeks++
                 main.seekTo(player.currentPosition)
                 finish()
             }
             return
         }
-        // Just started from the jump, its position isn't to be trusted yet.
-        if (now - lastHandbackSeek < SETTLE_MS) return
-        val diff = main.currentPosition - player.currentPosition
+        if (nudging || now - steadySince < SETTLE_MS) return
+        apart.addLast(main.currentPosition - player.currentPosition)
+        if (apart.size > STEADY_LOOKS) apart.removeFirst()
+        val tooLong = now - handbackSince > HANDBACK_MAX_MS
+        val steady = apart.size == STEADY_LOOKS && apart.max() - apart.min() <= STEADY_SPREAD_MS
+        if (!steady) {
+            if (tooLong) takeOverUnlevel(apart.last())
+            return
+        }
+        val diff = Math.round(apart.average())
         if (!learned) {
             // What this jump missed by: the next crossfade's first jump aims that much better.
             learned = true
             handbackLeadMs = (handbackLeadMs - diff).coerceIn(0L, MAX_HANDBACK_LEAD_MS)
             Log.d(TAG, "Crossfade hand-back landed $diff ms off")
         }
-        val tooLong = now - handbackSince > HANDBACK_MAX_MS
         when {
-            abs(diff) <= ALIGNED_MS || tooLong -> {
-                main.playbackParameters = mainSound
+            abs(diff) <= ALIGNED_MS -> {
                 phase = Phase.Swapping
                 swapSince = now
                 Log.d(TAG, "Crossfade handed back $diff ms apart in ${now - handbackSince} ms")
             }
+            tooLong -> takeOverUnlevel(diff)
             // Far off (a jump gone wrong): one more jump.
             abs(diff) > RESEEK_MS && handbackSeeks < MAX_HANDBACK_SEEKS -> {
-                main.playbackParameters = mainSound
                 learned = false
                 seekToHelper()
             }
-            // Close: caught up over the next moment, a share of the gap at a time.
-            else -> {
-                val factor = (1f - diff.toFloat() / CATCH_UP_MS).coerceIn(1f - MAX_CATCH_UP, 1f + MAX_CATCH_UP)
-                main.playbackParameters = PlaybackParameters(mainSound.speed * factor, mainSound.pitch)
-            }
+            else -> nudge(diff)
         }
+    }
+
+    // Never level: one straight after the other, a jump of what they are apart, rather than the
+    // two blended — two copies of the music apart, heard as a burst.
+    private fun takeOverUnlevel(diff: Long) {
+        Log.d(TAG, "Crossfade handed back unlevel, $diff ms apart, at once")
+        finish()
     }
 
     /** The main player heard alone again, at full volume. */
     private fun finish() {
         val wasHandingBack = phase == Phase.HandingBack || phase == Phase.Swapping
+        stopNudge()
         phase = Phase.Idle
         armedKey = null
         incomingId = null
@@ -384,6 +446,7 @@ internal class PlaybackFades(
     private fun abort() {
         if (phase == Phase.Idle) return
         Log.d(TAG, "Crossfade broken off in $phase")
+        stopNudge()
         if (phase == Phase.HandingBack || phase == Phase.Swapping) main.playbackParameters = mainSound
         phase = Phase.Idle
         armedKey = null
@@ -499,7 +562,13 @@ internal class PlaybackFades(
         .build()
         .apply {
             trackSelectionParameters = trackSelectionParameters.buildUpon().setTrackTypeDisabled(C.TRACK_TYPE_VIDEO, true).build()
-            if (main.audioSessionId != C.AUDIO_SESSION_ID_UNSET) setAudioSessionId(main.audioSessionId)
+            // Its own session, with the equalizer put on it.
+            if (audioSessionId != C.AUDIO_SESSION_ID_UNSET) onHelperSession(audioSessionId)
+            addListener(object : Player.Listener {
+                override fun onAudioSessionIdChanged(audioSessionId: Int) {
+                    if (audioSessionId != C.AUDIO_SESSION_ID_UNSET) onHelperSession(audioSessionId)
+                }
+            })
         }
 
     fun release() {
@@ -525,22 +594,26 @@ internal class PlaybackFades(
         // Shorter than this, a crossfade is only a click: the tracks just follow each other.
         const val MIN_FADE_MS = 800L
 
-        // Taking over from the helper: close enough to be heard as one; how long a jump's start
-        // takes for its position to be true (the audio output's timestamps); off by more than
-        // this, another jump, and how many at most; the share of the gap made up a moment, by up
-        // to this much faster or slower; how long it may take before it takes over as it is, and
-        // how long to wait for the track to load at all; the blend from one player to the other.
-        const val ALIGNED_MS = 8L
-        const val SETTLE_MS = 450L
+        // Taking over from the helper: close enough to be heard as one; how long after a jump or
+        // a nudge to start looking (the audio output's clock comes in, what was played before is
+        // out); how many looks in a row, a tick apart, are to differ by no more than this for what
+        // the two are apart to be taken; off by more than this, another jump, and how many at
+        // most; how much faster or slower a nudge plays; how long it may take before it takes over
+        // as it is, and how long to wait for the track to load at all; the blend from one player
+        // to the other.
+        const val ALIGNED_MS = 5L
+        const val SETTLE_MS = 600L
+        const val STEADY_LOOKS = 5
+        const val STEADY_SPREAD_MS = 6L
         const val RESEEK_MS = 300L
         const val MAX_HANDBACK_SEEKS = 3
-        const val CATCH_UP_MS = 300f
-        const val MAX_CATCH_UP = 0.25f
-        const val HANDBACK_MAX_MS = 4_000L
-        const val HANDBACK_GIVE_UP_MS = 8_000L
+        const val NUDGE = 0.2f
+        const val HANDBACK_MAX_MS = 8_000L
+        // The helper is heard meanwhile: the next track's address may take yt-dlp a while.
+        const val HANDBACK_GIVE_UP_MS = 25_000L
         const val INITIAL_HANDBACK_LEAD_MS = 120L
         const val MAX_HANDBACK_LEAD_MS = 600L
-        const val SWAP_MS = 120L
+        const val SWAP_MS = 60L
 
         fun isLive(item: MediaItem) = item.localConfiguration?.uri?.scheme == "ytlive"
 

@@ -14,7 +14,9 @@ import java.io.FileNotFoundException
  * Android Auto draws browse lists itself, in the Auto host process, and loads artwork from the URI
  * we publish. That process cannot open files under our private data directory, so a `file://` path
  * would simply fail — hence a provider. Only the JPEGs written by [OfflineMusicStore.downloadArtwork]
- * are reachable, and only for reading.
+ * are reachable, and only for reading; and, for the home screen's widgets, the cover they show
+ * (see WidgetCover) — the launcher reads it itself, as a picture handed over inside the widget
+ * made it send the widget again and again.
  */
 class ArtworkProvider : ContentProvider() {
 
@@ -23,6 +25,15 @@ class ArtworkProvider : ContentProvider() {
     override fun openFile(uri: Uri, mode: String): ParcelFileDescriptor {
         if (mode != "r") throw FileNotFoundException("Artwork is read-only: $uri")
         val context = context ?: throw FileNotFoundException("No context for $uri")
+
+        // The widgets' cover: a name of the widget's own making, matched strictly too.
+        if (uri.pathSegments.firstOrNull() == WIDGET) {
+            val name = uri.lastPathSegment?.takeIf { WIDGET_NAME.matches(it) }
+                ?: throw FileNotFoundException("Bad widget picture in $uri")
+            val file = File(widgetDir(context), "$name.png")
+            if (!file.exists()) throw FileNotFoundException("No widget picture $name")
+            return ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY)
+        }
 
         // The id is the only thing taken from the caller, so it is matched strictly rather than
         // pasted into a path — anything else would let a caller walk out of the artwork directory.
@@ -34,7 +45,7 @@ class ArtworkProvider : ContentProvider() {
         return ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY)
     }
 
-    override fun getType(uri: Uri): String = "image/jpeg"
+    override fun getType(uri: Uri): String = if (uri.pathSegments.firstOrNull() == WIDGET) "image/png" else "image/jpeg"
 
     override fun query(
         uri: Uri,
@@ -63,6 +74,14 @@ class ArtworkProvider : ContentProvider() {
 
         fun uriFor(trackId: Long): Uri =
             Uri.parse("content://$AUTHORITY/art/$trackId")
+
+        private const val WIDGET = "widget"
+        private val WIDGET_NAME = Regex("[a-z0-9-]{1,40}")
+
+        /** Where the widgets' pictures are: `<name>.png`, served as [widgetUri]. */
+        fun widgetDir(context: android.content.Context): File = File(context.cacheDir, "widget")
+
+        fun widgetUri(name: String): Uri = Uri.parse("content://$AUTHORITY/$WIDGET/$name")
 
         /** True when there is something for [uriFor] to serve. */
         fun hasArtwork(file: File?): Boolean = file != null && file.exists() && file.length() > 0L

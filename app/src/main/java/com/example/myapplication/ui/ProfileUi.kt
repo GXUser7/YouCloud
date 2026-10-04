@@ -72,6 +72,7 @@ import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -897,6 +898,11 @@ private fun OwnProfile(
         runCatching { social.refreshMe() }
         runCatching { social.loadFriends() }
     }
+    // The friends and the requests counted as they change, while the profile is open.
+    DisposableEffect(Unit) {
+        val live = social.watchLive()
+        onDispose { live.close() }
+    }
 
     fun act(block: suspend () -> Unit) {
         scope.launch {
@@ -929,8 +935,7 @@ private fun OwnProfile(
         title = "",
         onClose = onClose,
         // The last rows clear of the dock, and of the mini player standing on it.
-        bottomPadding = searchDockHeight(tabs = true) + 24.dp +
-            if (LocalNowPlaying.current.trackId != null) MiniPlayerHeight + 12.dp else 0.dp,
+        bottomPadding = dockedPageRoom(),
         overlay = {
             Column(
                 modifier = Modifier
@@ -961,12 +966,14 @@ private fun OwnProfile(
         item(key = "hero") {
             Column(modifier = Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
                 Spacer(modifier = Modifier.height(16.dp))
-                Box(modifier = Modifier.size(196.dp)) {
+                // Sideways a smaller one: the screen is not that tall.
+                val hero = if (isLandscape()) 140.dp else 196.dp
+                Box(modifier = Modifier.size(hero)) {
                     PersonAvatar(
                         name = profile?.shownName() ?: "?",
                         color = profile?.color,
                         imageUrl = profile?.let { social.avatarUrl(it.id, it.avatarV) },
-                        size = 196.dp,
+                        size = hero,
                         shape = OwnAvatarShape
                     )
                     if (avatarBusy) {
@@ -977,7 +984,7 @@ private fun OwnProfile(
                     }
                     Surface(
                         onClick = { pickPhoto.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
-                        modifier = Modifier.align(Alignment.BottomEnd).offset(x = 2.dp, y = (-6).dp).size(62.dp),
+                        modifier = Modifier.align(Alignment.BottomEnd).offset(x = 2.dp, y = (-6).dp).size(hero * 0.32f),
                         shape = RoundedCornerShape(22.dp),
                         color = PanelColors.accent,
                         contentColor = PanelColors.onAccent,

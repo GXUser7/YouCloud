@@ -31,7 +31,10 @@ import java.io.IOException
 // app's own MediaController keeps connecting exactly as before.
 class PlaybackService : MediaLibraryService() {
     private var mediaSession: MediaLibraryService.MediaLibrarySession? = null
-    private var equalizer: Equalizer? = null
+
+    // The equalizer on the main player's audio session, and on the crossfade's helper's: by who
+    // plays there. It sets the volume of all a session plays as one, so the two are kept apart.
+    private val equalizers = mutableMapOf<String, Equalizer>()
     private lateinit var preferences: SharedPreferences
 
     // One at a time, so a prefetch never holds up the track that is actually starting.
@@ -64,23 +67,24 @@ class PlaybackService : MediaLibraryService() {
             fades?.ensureTicking()
             return@OnSharedPreferenceChangeListener
         }
-        val eq = equalizer ?: return@OnSharedPreferenceChangeListener
-        try {
-            if (key == "equalizer_enabled") {
-                val enabled = preferences.getBoolean(key, false)
-                eq.enabled = enabled
-            } else if (key.startsWith("eq_band_")) {
-                val band = key.removePrefix("eq_band_").toIntOrNull()
-                if (band != null) {
-                    val level = preferences.getInt(key, 0)
-                    val minLevel = eq.bandLevelRange[0]
-                    val maxLevel = eq.bandLevelRange[1]
-                    val coercedLevel = level.coerceIn(minLevel.toInt(), maxLevel.toInt())
-                    eq.setBandLevel(band.toShort(), coercedLevel.toShort())
+        for (eq in equalizers.values) {
+            try {
+                if (key == "equalizer_enabled") {
+                    val enabled = preferences.getBoolean(key, false)
+                    eq.enabled = enabled
+                } else if (key.startsWith("eq_band_")) {
+                    val band = key.removePrefix("eq_band_").toIntOrNull()
+                    if (band != null) {
+                        val level = preferences.getInt(key, 0)
+                        val minLevel = eq.bandLevelRange[0]
+                        val maxLevel = eq.bandLevelRange[1]
+                        val coercedLevel = level.coerceIn(minLevel.toInt(), maxLevel.toInt())
+                        eq.setBandLevel(band.toShort(), coercedLevel.toShort())
+                    }
                 }
+            } catch (e: Exception) {
+                Log.e("PlaybackService", "Error updating equalizer parameter", e)
             }
-        } catch (e: Exception) {
-            Log.e("PlaybackService", "Error updating equalizer parameter", e)
         }
     }
 
@@ -224,7 +228,7 @@ class PlaybackService : MediaLibraryService() {
         player.addListener(object : Player.Listener {
             override fun onAudioSessionIdChanged(audioSessionId: Int) {
                 if (audioSessionId != C.AUDIO_SESSION_ID_UNSET) {
-                    initEqualizer(audioSessionId)
+                    initEqualizer(EQ_MAIN, audioSessionId)
                 }
             }
 
@@ -261,7 +265,8 @@ class PlaybackService : MediaLibraryService() {
             mediaSourceFactory = DefaultMediaSourceFactory(resolvingFactory),
             // Listening together, a guest's crossfade is the host's, so the two hear the same.
             crossfadeMs = { (SessionBridge.crossfadeOverride.value ?: preferences.getInt(KEY_CROSSFADE_SECONDS, 0)) * 1000L },
-            soundOf = ::trackSoundOf
+            soundOf = ::trackSoundOf,
+            onHelperSession = { initEqualizer(EQ_HELPER, it) }
         )
         scope.launch { SessionBridge.crossfadeOverride.collect { fades?.ensureTicking() } }
 
@@ -501,6 +506,9 @@ class PlaybackService : MediaLibraryService() {
 
     // Cached regex patterns (#34: avoid recompilation on each call)
     companion object {
+        private const val EQ_MAIN = "main"
+        private const val EQ_HELPER = "helper"
+
         // What a broken-off stream waits before each try again, and which errors are worth one:
         // the network's, and the player tripping over itself (a decoder taken away, the audio
         // output gone, a fault inside it), which leaves it stopped for good otherwise — and,
@@ -759,9 +767,9 @@ class PlaybackService : MediaLibraryService() {
         return TrackSound(androidx.media3.common.PlaybackParameters(speed, if (fx.keepPitch) 1f else speed), fx.reverb)
     }
 
-    private fun initEqualizer(audioSessionId: Int) {
+    private fun initEqualizer(owner: String, audioSessionId: Int) {
         try {
-            equalizer?.release()
+            equalizers.remove(owner)?.release()
             val eq = Equalizer(0, audioSessionId)
             val enabled = preferences.getBoolean("equalizer_enabled", false)
             eq.enabled = enabled
@@ -774,7 +782,7 @@ class PlaybackService : MediaLibraryService() {
                 val coercedLevel = level.coerceIn(minLevel.toInt(), maxLevel.toInt())
                 eq.setBandLevel(i.toShort(), coercedLevel.toShort())
             }
-            equalizer = eq
+            equalizers[owner] = eq
         } catch (e: Exception) {
             Log.e("PlaybackService", "Failed to init Equalizer", e)
         }
@@ -804,8 +812,8 @@ class PlaybackService : MediaLibraryService() {
         prefetcher?.release()
         prefetcher = null
         preferences.unregisterOnSharedPreferenceChangeListener(prefListener)
-        equalizer?.release()
-        equalizer = null
+        equalizers.values.forEach { it.release() }
+        equalizers.clear()
         mediaSession?.run {
             player.release()
             release()

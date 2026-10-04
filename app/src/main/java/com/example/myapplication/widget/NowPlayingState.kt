@@ -1,13 +1,6 @@
 package com.example.myapplication.widget
 
 import android.content.Context
-import androidx.glance.appwidget.updateAll
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.launch
 
 /**
  * What the widget shows, as the playback service last told it: kept on disk, as the widget is
@@ -28,16 +21,14 @@ object NowPlayingState {
 
     private var last: Snapshot? = null
 
-    // What the widgets on screen follow while their session runs: told again, a session only
-    // recomposes, and what it read once at its start would stay.
+    // What the widgets are drawn with (see WidgetRenderer): the last told, in memory; read from
+    // disk at first, for a widget drawn before the service has told anything this run.
     @Volatile
     private var current: kotlinx.coroutines.flow.MutableStateFlow<Snapshot>? = null
 
     fun flow(context: Context): kotlinx.coroutines.flow.StateFlow<Snapshot> = (current ?: synchronized(this) {
         current ?: kotlinx.coroutines.flow.MutableStateFlow(read(context)).also { current = it }
     })
-    private var pending: Job? = null
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
 
     fun read(context: Context): Snapshot {
         val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
@@ -54,13 +45,15 @@ object NowPlayingState {
 
     /**
      * Shows [snapshot] on the widgets. Changes that come in a burst (a track ending: paused,
-     * buffering, the next one, playing) are shown once, as they settle.
+     * buffering, the next one, playing) are shown once, as they settle (see WidgetRenderer).
      */
     fun publish(context: Context, snapshot: Snapshot) {
         if (snapshot == last) return
         last = snapshot
         current?.value = snapshot
         val app = context.applicationContext
+        // The cover made while the widgets are drawn; they are drawn again once it is ready.
+        WidgetCover.follow(app, snapshot.artwork?.takeIf { snapshot.active })
         app.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
             .putString("title", snapshot.title)
             .putString("artist", snapshot.artist)
@@ -69,12 +62,6 @@ object NowPlayingState {
             .putBoolean("active", snapshot.active)
             .putInt("pid", android.os.Process.myPid())
             .apply()
-        pending?.cancel()
-        pending = scope.launch {
-            delay(SETTLE_MS)
-            runCatching { NowPlayingWidget().updateAll(app) }
-        }
+        WidgetRenderer.render(app)
     }
-
-    private const val SETTLE_MS = 300L
 }
