@@ -48,6 +48,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -77,6 +78,8 @@ import com.example.myapplication.data.social.Social
 import com.example.myapplication.data.social.socialMessage
 import com.example.myapplication.i18n.tr
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.launch
 
 /** How often the friends and a friend's page ask again what plays, while they are open. */
@@ -107,6 +110,12 @@ internal fun FriendsScreen(
     // What the list was last drawn against, for "now" and "5 мин назад" to move on.
     var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
 
+    // What they play and the requests as they change, told by the server while this is open (the
+    // list is reloaded then); asked again every half a minute besides, and "5 мин назад" moves on.
+    DisposableEffect(Unit) {
+        val live = social.watchLive()
+        onDispose { live.close() }
+    }
     LaunchedEffect(Unit) {
         while (true) {
             error = runCatching { social.loadFriends() }.exceptionOrNull()?.socialMessage()
@@ -137,8 +146,7 @@ internal fun FriendsScreen(
         onClose = onClose,
         pager = pager,
         // The last rows clear of the dock, and of the mini player standing on it.
-        bottomPadding = searchDockHeight(tabs = true) + 24.dp +
-            if (LocalNowPlaying.current.trackId != null) MiniPlayerHeight + 12.dp else 0.dp,
+        bottomPadding = dockedPageRoom(),
         overlay = {
             // As search has it, under the thumb: (the mini player,) finding someone, the tabs.
             Column(
@@ -516,27 +524,31 @@ internal fun PersonScreen(
     val scope = rememberCoroutineScope()
     val social = remember { Social.get(context) }
     var person by remember(id) { mutableStateOf<Person?>(null) }
-    // Their favourite artist, track and album: asked once, they change seldom.
+    // Their favourite artist, track and album.
     var showcase by remember(id) { mutableStateOf(Showcase()) }
     var error by remember(id) { mutableStateOf<String?>(null) }
-
-    LaunchedEffect(id) {
-        runCatching { social.showcaseOf(id) }.onSuccess { showcase = it }
-    }
     var busy by remember { mutableStateOf(false) }
     var confirmUnfriend by remember { mutableStateOf(false) }
     var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
 
+    // Asked again as soon as the server tells of a change (what they play, their profile, being
+    // friends), and every half a minute besides.
+    DisposableEffect(Unit) {
+        val live = social.watchLive()
+        onDispose { live.close() }
+    }
     LaunchedEffect(id) {
         while (true) {
+            val seen = social.changes.value
             try {
                 person = social.profile(id)
                 error = null
             } catch (e: Exception) {
                 error = e.socialMessage()
             }
+            runCatching { social.showcaseOf(id) }.onSuccess { showcase = it }
             now = System.currentTimeMillis()
-            delay(REFRESH_MS)
+            withTimeoutOrNull(REFRESH_MS) { social.changes.first { it != seen } }
         }
     }
     // The position moves on between askings: a second at a time while it plays.

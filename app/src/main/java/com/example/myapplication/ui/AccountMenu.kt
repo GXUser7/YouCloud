@@ -160,9 +160,13 @@ internal fun accountMenuItems(
     val session by social.session.collectAsState()
     val me by social.me.collectAsState()
     val all by social.friends.collectAsState()
-    // What friends play is asked for now and then only: again as the menu opens.
+    // What friends play: asked again as the menu opens, and told as it changes while it is open.
     LaunchedEffect(open, session?.userId) {
         if (open && session != null) social.reloadFriends()
+    }
+    DisposableEffect(open, session?.userId) {
+        val live = if (open) social.watchLive() else null
+        onDispose { live?.close() }
     }
     val now = remember(open, all) { System.currentTimeMillis() }
     val settings = AccountMenuItem("settings", tr("Настройки"), Icons.Rounded.Settings, onClick = onOpenSettings)

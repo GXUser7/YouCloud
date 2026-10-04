@@ -4987,7 +4987,7 @@ private fun SearchScreen(
     val bottomRoom = if (landscape) {
         24.dp + WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
     } else {
-        24.dp + searchDockHeight(tabsShown) + (if (playerShown) MiniPlayerHeight + 12.dp else 0.dp)
+        dockedPageRoom(tabs = tabsShown, player = playerShown)
     }
 
     // Search stands on the moving backdrop: its fields, rows and tabs are glass.
@@ -5399,6 +5399,16 @@ internal val SearchDockGap = 8.dp
 // friends' page has the same dock.
 internal fun searchDockHeight(tabs: Boolean): Dp =
     12.dp + SearchFieldHeight + (if (tabs) SearchDockGap + SearchTabsHeight else 0.dp)
+
+/**
+ * Room under the last row of a page with search's dock at its foot (the field, the tabs) and the
+ * mini player standing on it: the gesture bar under both counted in — left out, the row ended
+ * exactly where the mini player began — and a gap over them.
+ */
+@Composable
+internal fun dockedPageRoom(tabs: Boolean = true, player: Boolean = LocalNowPlaying.current.trackId != null): Dp =
+    WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding() +
+        24.dp + searchDockHeight(tabs) + (if (player) MiniPlayerHeight + 12.dp else 0.dp)
 
 // The mini player's height, with its padding, for what must leave room for it.
 internal val MiniPlayerHeight = 72.dp
