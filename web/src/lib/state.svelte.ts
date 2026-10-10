@@ -201,15 +201,33 @@ function recover(t: Track, e: unknown) {
   failed(t, e)
 }
 
+/** YouTube tracks passed over in a row because this browser can't get their sound. */
+let passedOver = 0
+
 function failed(t: Track, e: unknown) {
   player.loading = false
   player.playing = false
-  if (e instanceof DOMException && e.name === 'NotAllowedError') toast('Браузер ждёт нажатия: нажми ▶')
-  else toast(`«${t.title}» не играет: ${reason(e)}`)
+  if (e instanceof DOMException && e.name === 'NotAllowedError') {
+    toast('Браузер ждёт нажатия: нажми ▶')
+    return
+  }
+  // In a plain browser YouTube keeps some tracks' sound to itself (Masaki gets it with yt-dlp): the
+  // queue goes on with the ones that play instead of stopping at each one that won't — five in a
+  // row at most, so a queue where nothing plays doesn't run through to its end.
+  if (t.yt && wantPlay && passedOver < 5 && player.index < player.queue.length - 1) {
+    passedOver++
+    toast(`«${t.title}» не играет в этом браузере — дальше`)
+    next()
+    return
+  }
+  toast(`«${t.title}» не играет: ${reason(e)}`)
 }
 
 audio.addEventListener('play', () => (player.playing = true))
-audio.addEventListener('playing', () => (player.loading = false))
+audio.addEventListener('playing', () => {
+  player.loading = false
+  passedOver = 0
+})
 audio.addEventListener('waiting', () => (player.loading = true))
 audio.addEventListener('pause', () => {
   if (!audio.ended) player.playing = false

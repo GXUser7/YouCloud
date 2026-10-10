@@ -10,7 +10,7 @@
 import type { Innertube } from 'youtubei.js/web'
 import { artists as artistIndex, colorFor, putArtist, putSet, putTrack, sets, type SetKind, type Track, type TrackSet } from '../catalog'
 import { accounts } from '../accounts.svelte'
-import { extension, extensionCall } from '../extension'
+import { extension, extensionCall, hostStream, hostStreams } from '../extension'
 import { at, getText, HttpError, postJson, request } from '../net'
 
 const ORIGIN = 'https://music.youtube.com'
@@ -714,10 +714,11 @@ export function streamFailed(videoId: string): boolean {
   const skip = refused.get(videoId) ?? new Set<string>()
   skip.add(kept.client)
   refused.set(videoId, skip)
-  return ['VR', ...SIGNED_IN_CLIENTS].some((c) => !skip.has(c))
+  return ['YTDLP', 'VR', ...SIGNED_IN_CLIENTS].some((c) => !skip.has(c))
 }
 
-/** The track's sound: Android VR when YouTube lets it, else the TV client signed in. */
+/** The track's sound: in Masaki its yt-dlp's; elsewhere Android VR when YouTube lets it, else the
+ *  clients signed in — which, in a plain browser, YouTube refuses for some tracks altogether. */
 export async function stream(t: Track): Promise<string> {
   const videoId = t.yt!.videoId
   const kept = streams.get(videoId)
@@ -729,7 +730,16 @@ export async function stream(t: Track): Promise<string> {
   // the signed-in ones' refusals after it only add to it.
   let first = ''
   const skip = refused.get(videoId) ?? new Set<string>()
-  if (!skip.has('VR')) {
+  // Masaki asks yt-dlp, which gets past what the clients below run into; they stay for when it can't.
+  if (!skip.has('YTDLP') && (await extension()) && hostStreams()) {
+    try {
+      url = (await hostStream(videoId)).url
+      from = 'YTDLP'
+    } catch (e) {
+      refusal = first = `yt-dlp: ${(e as Error).message}`
+    }
+  }
+  if (!url && !skip.has('VR')) {
     try {
       const vr = await playability(videoId)
       if (vr.status === 'OK' && vr.audio[0]) url = vr.audio[0].url

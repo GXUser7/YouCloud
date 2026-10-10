@@ -154,6 +154,30 @@ export async function extensionCall<T = unknown>(name: 'sc-token' | 'sc-login' |
   })
 }
 
+/** Masaki from 0.7 finds YouTube's sound itself, with yt-dlp, as the Android app does. */
+const HOST_STREAM_VERSION = [0, 7, 0]
+
+/** Whether the browser around the site finds YouTube's sound itself (Masaki with yt-dlp). */
+export const hostStreams = () => host === 'masaki' && !!version && !older(version, HOST_STREAM_VERSION)
+
+/** [videoId]'s sound from Masaki's yt-dlp, from this browser's IP and YouTube sign-in. The first
+ *  time Masaki fetches yt-dlp itself, hence the long wait allowed. */
+export function hostStream(videoId: string, timeoutMs = 120_000): Promise<{ url: string; expire: number }> {
+  const id = ++seq
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      waiting.delete(id)
+      reject(new Error('Masaki не ответил'))
+    }, timeoutMs)
+    waiting.set(id, (answer) => {
+      clearTimeout(timer)
+      if (answer.error) reject(new Error(answer.error))
+      else resolve(answer.value as { url: string; expire: number })
+    })
+    post({ kind: 'yt-stream', id, videoId })
+  })
+}
+
 /** Called with the token a login caught (Yandex ID's, SoundCloud's), whenever one arrives. */
 export function onToken(service: 'ya' | 'sc', listener: TokenListener) {
   tokenListeners[service].push(listener)
