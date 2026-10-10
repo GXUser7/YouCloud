@@ -5,7 +5,6 @@
   import { applyTheme, DEFAULT_SEED } from './lib/theme'
   import Snackbar from './components/Snackbar.svelte'
   import Backdrop from './components/Backdrop.svelte'
-  import Rail from './components/Rail.svelte'
   import TopBar from './components/TopBar.svelte'
   import NowPlaying from './components/NowPlaying.svelte'
   import PlayerBar from './components/PlayerBar.svelte'
@@ -67,7 +66,6 @@
 {#if !inMasaki}<Backdrop />{/if}
 
 <div class="shell" class:with-panel={app.panelOpen}>
-  <Rail />
   <main class="main">
     <TopBar />
     <div class="scroller">
@@ -104,20 +102,19 @@
     height: 100vh;
     height: 100dvh;
     display: grid;
-    --rail: 96px;
-    grid-template-columns: var(--rail) minmax(0, 1fr);
+    grid-template-columns: minmax(0, 1fr);
     grid-template-rows: minmax(0, 1fr) auto;
     grid-template-areas:
-      'rail main'
-      'player player';
+      'main'
+      'player';
     gap: 12px;
     padding: 12px;
   }
   .shell.with-panel {
-    grid-template-columns: var(--rail) minmax(0, 1fr) 360px;
+    grid-template-columns: minmax(0, 1fr) 360px;
     grid-template-areas:
-      'rail main side'
-      'player player player';
+      'main side'
+      'player player';
   }
   /* The bar stays put above the page; the page scrolls under it and fades out at its edge, so
      nothing shows through around the search field. */
@@ -138,8 +135,8 @@
     padding: 6px 36px 56px;
     mask-image: linear-gradient(to bottom, transparent 0, #000 18px);
   }
-  /* Pages size themselves to their column (@container page), not to the window: the rail and
-     the side panel take a different share of it. */
+  /* Pages size themselves to their column (@container page), not to the window: the side panel
+     takes a share of it. */
   .page {
     max-width: 1480px;
     margin: 0 auto;
@@ -152,31 +149,31 @@
     padding: 10px;
   }
   :global(:root[data-host='masaki']) .shell.with-panel {
-    grid-template-columns: var(--rail) minmax(0, 1fr);
+    grid-template-columns: minmax(0, 1fr);
     grid-template-areas:
-      'rail main'
-      'player player';
+      'main'
+      'player';
   }
   :global(:root[data-host='masaki']) .shell.with-panel :global(.panel) {
     position: fixed;
     top: 10px;
     right: 10px;
-    bottom: 124px;
+    bottom: 84px;
     width: 340px;
     box-shadow: var(--shadow);
   }
   @media (max-width: 1200px) {
     .shell.with-panel {
-      grid-template-columns: var(--rail) minmax(0, 1fr);
+      grid-template-columns: minmax(0, 1fr);
       grid-template-areas:
-        'rail main'
-        'player player';
+        'main'
+        'player';
     }
     .shell.with-panel :global(.panel) {
       position: fixed;
       top: 12px;
       right: 12px;
-      bottom: 128px;
+      bottom: 88px;
       width: 340px;
       box-shadow: var(--shadow);
     }

@@ -12,7 +12,7 @@
   .stack {
     position: fixed;
     left: 50%;
-    bottom: 128px;
+    bottom: 92px;
     translate: -50% 0;
     z-index: 40;
     display: flex;
