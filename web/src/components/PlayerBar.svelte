@@ -94,8 +94,12 @@
 </footer>
 
 <style>
+  /* As wide as the page's column and on the same edges as the bar on top — not the window's
+     width, which on a wide screen stretched the progress across the whole monitor. */
   .bar {
     grid-area: player;
+    justify-self: center;
+    width: min(1480px, 100% - 72px);
     z-index: 3;
     min-width: 0;
     height: 64px;
@@ -298,6 +302,12 @@
   @media (max-width: 1240px) {
     .time {
       display: none;
+    }
+  }
+  /* The bar on top keeps a slimmer margin here too. */
+  @media (max-width: 1100px) {
+    .bar {
+      width: calc(100% - 40px);
     }
   }
   @media (max-width: 980px) {
