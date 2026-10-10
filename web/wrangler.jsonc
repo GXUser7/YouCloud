@@ -1,0 +1,13 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "youcloud",
+  "main": "worker/index.ts",
+  "compatibility_date": "2026-09-01",
+  "assets": {
+    "binding": "ASSETS",
+    // The site is a single page: unknown paths get index.html; /x/ goes to the proxy first.
+    "not_found_handling": "single-page-application",
+    "run_worker_first": ["/x/*"],
+  },
+  "observability": { "enabled": false },
+}

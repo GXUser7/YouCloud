@@ -1,0 +1,64 @@
+{
+  "manifest_version": 3,
+  "name": "YouCloud — домашний IP",
+  "short_name": "YouCloud",
+  "version": "0.5.0",
+  "description": "Даёт сайту YouCloud ходить в Яндекс Музыку и YouTube с твоего IP и входить в SoundCloud и Яндекс без копирования токенов.",
+  "icons": {
+    "16": "icons/16.png",
+    "32": "icons/32.png",
+    "48": "icons/48.png",
+    "128": "icons/128.png"
+  },
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAsXfi3yuB8SN8gSReLIW11vCq10NJU31/HIm0R1F/plE9Htx3xU3VpMqqegz8AZSD4Caf+mgbtmBt3rZVINbG/Ed+nzjQt2uerpwx+0fOT5J8dipq2ja3+tPT6T3UUleGxWQVC+bEcr3Va79muol4k3Dhi7mhVuGNKKNvbo2vDE3P+ki3fSUL/ys0cfYAOBtDg1Ryp55wLOGZxt7Fr+trOi7zi39DMUWryHQyrWDk9A5Zc9mhaRcy5YY3jYKBag6JJFz/yiJz1iJcuf4bSnJjkE2ANR7y7CGFehUC8MAxRUKlbdSiy+0WuNw8C/CsEW3K7o+KwFhOwsGp1d2E2w3OfwIDAQAB",
+  "permissions": [
+    "declarativeNetRequestWithHostAccess",
+    "storage",
+    "cookies",
+    "webRequest",
+    "scripting"
+  ],
+  "host_permissions": [
+    "https://*.yandex.net/*",
+    "https://*.youtube.com/*",
+    "https://youtubei.googleapis.com/*",
+    "https://soundcloud.com/*",
+    "https://api-v2.soundcloud.com/*",
+    "https://youcloud.inkerror67.workers.dev/*",
+    "http://localhost:5190/*"
+  ],
+  "background": {
+    "service_worker": "background.js",
+    "scripts": [
+      "background.js"
+    ]
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://youcloud.inkerror67.workers.dev/*",
+        "http://localhost:5190/*"
+      ],
+      "js": [
+        "bridge.js"
+      ],
+      "run_at": "document_start"
+    },
+    {
+      "matches": [
+        "https://music.yandex.ru/*",
+        "https://music.yandex.com/*"
+      ],
+      "js": [
+        "yandex-token.js"
+      ],
+      "run_at": "document_start"
+    }
+  ],
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "youcloud-bridge@gxuser7",
+      "strict_min_version": "128.0"
+    }
+  }
+}
