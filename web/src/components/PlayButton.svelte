@@ -1,6 +1,6 @@
 <script lang="ts">
   // The play button: round while paused, squaring while it plays, as in the app; pressing it
-  // squeezes it the other way, and the icon turns as it swaps.
+  // squeezes it a little. The icon cross-fades as it swaps, without spinning.
   import Icon from './Icon.svelte'
 
   let { playing, onclick, size = 56, label = '' }: { playing: boolean; onclick: () => void; size?: number; label?: string } = $props()
@@ -31,8 +31,8 @@
     position: relative;
     box-shadow: 0 10px 30px -12px color-mix(in oklab, var(--primary) 70%, transparent);
     transition:
-      border-radius var(--d-spatial) var(--spring-fast),
-      transform var(--d-fast) var(--spring-fast),
+      border-radius 320ms var(--ease-emph),
+      transform 160ms var(--ease-emph),
       background-color 400ms var(--ease-emph);
   }
   .play::after {
@@ -51,20 +51,16 @@
     border-radius: 30%;
   }
   .play:active {
-    border-radius: 22%;
-    transform: scale(0.94);
-  }
-  .play.playing:active {
-    border-radius: 50%;
+    transform: scale(0.95);
   }
   .glyph {
     grid-area: 1 / 1;
     display: grid;
-    animation: swap var(--d-spatial) var(--spring-fast);
+    animation: swap 220ms var(--ease-in-place);
   }
   @keyframes swap {
     from {
-      transform: rotate(-90deg) scale(0.4);
+      transform: scale(0.7);
       opacity: 0;
     }
   }

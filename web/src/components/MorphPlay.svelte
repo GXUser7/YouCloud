@@ -58,11 +58,12 @@
     position: relative;
     z-index: 1;
     display: grid;
-    animation: swap var(--d-spatial) var(--spring-fast);
+    animation: swap 220ms var(--ease-in-place);
   }
+  /* Play and pause cross-fade, without spinning: the shape around them already turns. */
   @keyframes swap {
     from {
-      transform: rotate(-90deg) scale(0.4);
+      transform: scale(0.7);
       opacity: 0;
     }
   }

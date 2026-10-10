@@ -168,13 +168,13 @@
     display: flex;
     flex-direction: column;
     overflow: hidden;
-    animation: up var(--d-slow) var(--spring);
+    animation: up 420ms var(--ease-in-place);
   }
+  /* The player rises in and stops: no scaling, no corners rounding off on the way. */
   @keyframes up {
     from {
-      transform: translateY(40px) scale(0.97);
+      transform: translateY(28px);
       opacity: 0;
-      border-radius: 48px;
     }
   }
   .glow {
@@ -239,13 +239,13 @@
     box-shadow:
       0 40px 120px -30px color-mix(in oklab, var(--primary) 55%, transparent),
       0 30px 60px -30px #000a;
-    animation: art-in var(--d-slow) var(--spring);
+    animation: art-in 480ms var(--ease-in-place);
   }
+  /* A new cover settles in place: a touch of scale and a fade, no turning out of a disc. */
   @keyframes art-in {
     from {
-      transform: scale(0.82) rotate(-4deg);
-      border-radius: 50%;
-      opacity: 0.4;
+      transform: scale(0.94);
+      opacity: 0;
     }
   }
   .info {
@@ -271,7 +271,13 @@
     line-clamp: 2;
     -webkit-box-orient: vertical;
     overflow: hidden;
-    animation: rise var(--d-slow) var(--spring);
+    animation: title-in 360ms var(--ease-in-place);
+  }
+  @keyframes title-in {
+    from {
+      opacity: 0;
+      transform: translateY(8px);
+    }
   }
   .seek {
     margin-top: 26px;
