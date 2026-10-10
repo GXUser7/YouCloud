@@ -41,10 +41,33 @@ export interface Library {
 
 export const signedIn = (svc: Service) => (svc === 'sc' ? !!accounts.sc : svc === 'ya' ? !!accounts.ya : accounts.yt)
 
+const unique = <T>(list: T[]): T[] => [...new Set(list)]
+
+/**
+ * The pages draw these lists keyed by id and by title, and a repeat throws inside Svelte and leaves
+ * the page on its "asking…" forever. Services do repeat: SoundCloud's "Recently Played" names a set
+ * once per listen (13 repeats of 20 on one account), and two of its rows can carry the same title
+ * here ("Станции", "Чарты"). One row per title, each set and track once.
+ */
+function tidy(sections: Section[]): Section[] {
+  const byTitle = new Map<string, Section>()
+  for (const s of sections) {
+    const kept = byTitle.get(s.title)
+    if (!kept) byTitle.set(s.title, { ...s, sets: [...s.sets], tracks: s.tracks && [...s.tracks] })
+    else {
+      kept.sets.push(...s.sets)
+      if (s.tracks) kept.tracks = [...(kept.tracks ?? []), ...s.tracks]
+    }
+  }
+  return [...byTitle.values()]
+    .map((s) => ({ ...s, sets: unique(s.sets), tracks: s.tracks && unique(s.tracks) }))
+    .filter((s) => s.sets.length || s.tracks?.length)
+}
+
 export async function home(svc: Service): Promise<Section[]> {
-  if (svc === 'sc') return soundcloud.home()
-  if (svc === 'ya') return yandex.home()
-  return youtube.home()
+  if (svc === 'sc') return tidy(await soundcloud.home())
+  if (svc === 'ya') return tidy(await yandex.home())
+  return tidy(await youtube.home())
 }
 
 export async function loadSet(id: string): Promise<TrackSet> {
@@ -72,7 +95,19 @@ export async function loadArtist(id: string): Promise<ArtistPage> {
   }
 }
 
+const tidyResult = (r: SearchResult): SearchResult => ({
+  ...r,
+  tracks: unique(r.tracks),
+  artists: unique(r.artists),
+  albums: unique(r.albums),
+  playlists: unique(r.playlists),
+})
+
 export async function search(svc: Service, q: string): Promise<SearchResult> {
+  return tidyResult(await searchIn(svc, q))
+}
+
+async function searchIn(svc: Service, q: string): Promise<SearchResult> {
   if (svc === 'sc') {
     const r = await soundcloud.search(q)
     // SoundCloud has no "best": an artist named like the query, otherwise the first track.
@@ -89,9 +124,8 @@ function sameName(q: string, name: string): boolean {
 }
 
 export async function library(svc: Service): Promise<Library> {
-  if (svc === 'sc') return soundcloud.library()
-  if (svc === 'ya') return yandex.library()
-  return youtube.library()
+  const l = svc === 'sc' ? await soundcloud.library() : svc === 'ya' ? await yandex.library() : await youtube.library()
+  return { ...l, likedIds: unique(l.likedIds), playlists: unique(l.playlists), artists: unique(l.artists) }
 }
 
 export async function setLiked(t: Track, liked: boolean): Promise<void> {

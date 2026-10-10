@@ -11,7 +11,7 @@ import type { Innertube } from 'youtubei.js/web'
 import { artists as artistIndex, colorFor, putArtist, putSet, putTrack, sets, type SetKind, type Track, type TrackSet } from '../catalog'
 import { accounts } from '../accounts.svelte'
 import { extension, extensionCall } from '../extension'
-import { at, getText, postJson, request } from '../net'
+import { at, getText, HttpError, postJson, request } from '../net'
 
 const ORIGIN = 'https://music.youtube.com'
 const API = `${ORIGIN}/youtubei/v1/`
@@ -57,7 +57,11 @@ async function ytFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Re
   }
   // Signed in, the account's own cookies say who is visiting; a made-up visitor id would argue.
   if (accounts.yt) delete headers['x-goog-visitor-id']
-  return request(target, { method, headers, body: body as string | undefined, ua, session: sessionMode })
+  const response = await request(target, { method, headers, body: body as string | undefined, ua, session: sessionMode })
+  // youtubei.js would report a refusal as "Request to  failed with status code 400": a Response
+  // made from the extension's answer has no address, and the body saying why is dropped.
+  if (!response.ok) throw new HttpError(response.status, await response.text().catch(() => ''), target)
+  return response
 }
 
 /** Runs the player script's unscrambling in a Worker with nothing of the page in it. */
@@ -667,7 +671,15 @@ if (import.meta.env.DEV) {
   }
 }
 
-const SIGNED_IN_CLIENTS = ['TV', 'WEB_EMBEDDED', 'TV_SIMPLY', 'MWEB'] as const
+/**
+ * Clients that take the listener's session. Measured 2026-10-10 from a home IP YouTube asks to
+ * "confirm you're not a bot": TV_SIMPLY refuses a session outright (400 INVALID_ARGUMENT), and
+ * MWEB's links play the first megabyte and then answer 403 — the fetch wants a PO token — so
+ * both are left out. TV answers "the page needs to be reloaded" to some accounts (YouTube's test
+ * since September 2026, yt-dlp issue 17389) and WEB_EMBEDDED only plays where embedding is
+ * allowed; they stay, for the accounts and videos they still serve.
+ */
+const SIGNED_IN_CLIENTS = ['TV', 'WEB_EMBEDDED'] as const
 
 const reachable = (f: any) => !!(f.url || f.signature_cipher || f.cipher)
 
@@ -713,14 +725,17 @@ export async function stream(t: Track): Promise<string> {
   let url: string | null = null
   let from = 'VR'
   let refusal = ''
+  // What the first client said is what the listener can act on ("confirm you're not a bot");
+  // the signed-in ones' refusals after it only add to it.
+  let first = ''
   const skip = refused.get(videoId) ?? new Set<string>()
   if (!skip.has('VR')) {
     try {
       const vr = await playability(videoId)
       if (vr.status === 'OK' && vr.audio[0]) url = vr.audio[0].url
-      else refusal = vr.reason || vr.status
+      else refusal = first = vr.reason || vr.status
     } catch (e) {
-      refusal = (e as Error).message
+      refusal = first = (e as Error).message
     }
   }
   if (!url) {
@@ -752,7 +767,10 @@ export async function stream(t: Track): Promise<string> {
       from = name
       break
     }
-    if (!url) throw new Error((await signedIn()) ? `YouTube: ${refusal}` : `YouTube просит войти — войди на youtube.com в этом браузере (${refusal})`)
+    if (!url) {
+      if (!(await signedIn())) throw new Error(`YouTube просит войти — войди на youtube.com в этом браузере (${first || refusal})`)
+      throw new Error(first && first !== refusal ? `YouTube не отдал звук: ${first}; с входом — ${refusal}` : `YouTube: ${refusal}`)
+    }
   }
   const expire = Number(new URL(url!).searchParams.get('expire')) * 1000
   streams.set(videoId, { url: url!, until: (expire || Date.now() + 3_600_000) - 10 * 60_000, client: from })
