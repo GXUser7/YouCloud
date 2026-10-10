@@ -16,6 +16,7 @@
 [![Kotlin](https://img.shields.io/badge/Kotlin-2.1-DDAE7A?style=flat-square&labelColor=2B2118)](#как-устроено)
 [![Jetpack Compose](https://img.shields.io/badge/Jetpack%20Compose-Material%203%20Expressive-DDAE7A?style=flat-square&labelColor=2B2118)](#как-устроено)
 [![Media3](https://img.shields.io/badge/Media3-ExoPlayer-DDAE7A?style=flat-square&labelColor=2B2118)](#как-устроено)
+[![Лицензия GPL-3.0](https://img.shields.io/github/license/GXUser7/YouCloud?style=flat-square&label=license&labelColor=2B2118&color=DDAE7A)](LICENSE)
 
 <br>
 
@@ -277,4 +278,4 @@ youcloud.keyPassword=...
 
 ---
 
-<sub>Шрифты Unbounded и Onest распространяются по SIL Open Font License, тексты лицензий лежат в <code>licenses/</code>. YouCloud — неофициальный клиент и не связан с SoundCloud, Яндексом, YouTube или Google; названия сервисов и товарные знаки принадлежат их владельцам.</sub>
+<sub>Код YouCloud распространяется по лицензии <a href="LICENSE">GNU GPL v3.0</a>. Шрифты Unbounded и Onest распространяются по SIL Open Font License, тексты лицензий лежат в <code>licenses/</code>. YouCloud — неофициальный клиент и не связан с SoundCloud, Яндексом, YouTube или Google; названия сервисов и товарные знаки принадлежат их владельцам.</sub>
