@@ -1,6 +1,7 @@
 <script lang="ts">
   // Signing in to YouCloud, or making an account: a nick and a password, no email — the same
   // account as in the app. A new account gets a recovery code, shown once.
+  import { tr } from '../lib/i18n.svelte'
   import { nickAvailable, signIn, signUp, socialMessage } from '../lib/social.svelte'
   import ButtonGroup from './ButtonGroup.svelte'
   import Icon from './Icon.svelte'
@@ -45,17 +46,17 @@
 {#if code}
   <div class="code">
     <Icon name="key" size={28} />
-    <h3 class="headline">Код восстановления</h3>
-    <p class="muted">Почты у аккаунта нет — без этого кода забытый пароль не вернуть. Сохрани его, он показывается один раз.</p>
+    <h3 class="headline">{tr('Код восстановления')}</h3>
+    <p class="muted">{tr('Почты у аккаунта нет — без этого кода забытый пароль не вернуть. Сохрани его, он показывается один раз.')}</p>
     <div class="code-box">{code}</div>
-    <button class="btn tonal" onclick={() => navigator.clipboard?.writeText(code!)}><Icon name="content_copy" size={20} />Скопировать</button>
+    <button class="btn tonal" onclick={() => navigator.clipboard?.writeText(code!)}><Icon name="content_copy" size={20} />{tr('Скопировать')}</button>
   </div>
 {:else}
   <form class="form" onsubmit={submit}>
     <ButtonGroup
       options={[
-        { value: 'in', label: 'Вход' },
-        { value: 'up', label: 'Новый аккаунт' },
+        { value: 'in', label: tr('Вход') },
+        { value: 'up', label: tr('Новый аккаунт') },
       ]}
       value={mode}
       stretch
@@ -67,35 +68,35 @@
     />
     <label class="field">
       <Icon name="alternate_email" size={20} />
-      <input bind:value={nick} oninput={nickTyped} placeholder="Ник" autocomplete="username" spellcheck="false" />
+      <input bind:value={nick} oninput={nickTyped} placeholder={tr('Ник')} autocomplete="username" spellcheck="false" />
       {#if mode === 'up' && nick}
         <span class="hint" class:bad={!nickValid || free === false}>
-          {!nickValid ? '3–20: a-z, 0-9, _ .' : free === false ? 'занят' : free ? 'свободен' : ''}
+          {!nickValid ? '3–20: a-z, 0-9, _ .' : free === false ? tr('занят') : free ? tr('свободен') : ''}
         </span>
       {/if}
     </label>
     {#if mode === 'up'}
       <label class="field">
         <Icon name="person" size={20} />
-        <input bind:value={name} placeholder="Имя (видят друзья)" maxlength="40" />
+        <input bind:value={name} placeholder={tr('Имя (видят друзья)')} maxlength="40" />
       </label>
     {/if}
     <label class="field">
       <Icon name="lock" size={20} />
-      <input bind:value={password} type="password" placeholder="Пароль" autocomplete={mode === 'in' ? 'current-password' : 'new-password'} />
+      <input bind:value={password} type="password" placeholder={tr('Пароль')} autocomplete={mode === 'in' ? 'current-password' : 'new-password'} />
     </label>
     {#if mode === 'up'}
-      <div class="colors" role="radiogroup" aria-label="Цвет аватара">
+      <div class="colors" role="radiogroup" aria-label={tr('Цвет аватара')}>
         {#each COLORS as c}
-          <button type="button" class="swatch" class:on={c === color} style:--c={c} onclick={() => (color = c)} aria-label="Цвет {c}"></button>
+          <button type="button" class="swatch" class:on={c === color} style:--c={c} onclick={() => (color = c)} aria-label={tr('Цвет %s', c)}></button>
         {/each}
       </div>
     {/if}
     {#if error}<p class="error">{error}</p>{/if}
     <button class="btn filled large" type="submit" disabled={busy || !nickValid || password.length < 6 || (mode === 'up' && free === false)}>
-      <Icon name="login" />{busy ? 'Секунду…' : mode === 'in' ? 'Войти' : 'Создать аккаунт'}
+      <Icon name="login" />{busy ? tr('Секунду…') : mode === 'in' ? tr('Войти') : tr('Создать аккаунт')}
     </button>
-    <p class="muted small">Тот же аккаунт, что в приложении YouCloud. Забыл пароль — восстанови его кодом в приложении.</p>
+    <p class="muted small">{tr('Тот же аккаунт, что в приложении YouCloud. Забыл пароль — восстанови его кодом в приложении.')}</p>
   </form>
 {/if}
 

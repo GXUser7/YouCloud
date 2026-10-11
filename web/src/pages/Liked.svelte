@@ -2,6 +2,7 @@
   // «Любимое» of the YouCloud account: every track liked in the app — and so downloaded on the
   // phone — or here, from all three services, the latest first; the same list the app shows,
   // without the files that only the phone has.
+  import { tr } from '../lib/i18n.svelte'
   import { SERVICES, track, type Service } from '../lib/catalog'
   import { favorites, retry } from '../lib/favorites.svelte'
   import { totalMinutes, tracksCount } from '../lib/format'
@@ -9,7 +10,7 @@
   import { player, playQueue, toggle } from '../lib/state.svelte'
   import AccountForm from '../components/AccountForm.svelte'
   import BlurredCover from '../components/BlurredCover.svelte'
-  import Cover from '../components/Cover.svelte'
+  import LikedArt from '../components/LikedArt.svelte'
   import Icon from '../components/Icon.svelte'
   import Loading from '../components/Loading.svelte'
   import PlayButton from '../components/PlayButton.svelte'
@@ -34,24 +35,26 @@
       const j = Math.floor(Math.random() * (i + 1))
       ;[ids[i], ids[j]] = [ids[j], ids[i]]
     }
-    playQueue(ids, 0, 'Любимое', contextId)
+    playQueue(ids, 0, tr('Любимое'), contextId)
   }
 </script>
 
-<div class="bleed" aria-hidden="true"><BlurredCover seed={ID} color={COLOR} kind="liked" blur={70} saturate={1.3} /></div>
+<div class="bleed" aria-hidden="true">
+  <BlurredCover seed={ID} color={COLOR} src={favorites.ids.map((id) => track(id).cover).find(Boolean) ?? null} kind="liked" blur={70} saturate={1.3} />
+</div>
 
 <section class="head">
   <div class="art">
-    <Cover seed={ID} color={COLOR} kind="liked" grain />
+    <LikedArt ids={favorites.ids} seed={ID} color={COLOR} />
   </div>
   <div class="info">
-    <span class="overline">YouCloud · приложение и сайт</span>
-    <h1 class="display">Любимое</h1>
+    <span class="overline">{tr('YouCloud · приложение и сайт')}</span>
+    <h1 class="display">{tr('Любимое')}</h1>
     <p class="muted sub">
       {#if social.me}
-        Лайкнутое в приложении — и скачанное там — и здесь: со всех устройств, где вход в @{social.me.nick}.
+        {tr('Лайкнутое в приложении — и скачанное там — и здесь: со всех устройств, где вход в @%s.', social.me.nick)}
       {:else}
-        То же «Любимое», что в приложении: войди в аккаунт YouCloud.
+        {tr('То же «Любимое», что в приложении: войди в аккаунт YouCloud.')}
       {/if}
     </p>
     {#if favorites.loaded}
@@ -65,28 +68,27 @@
 {:else if !social.me}
   <section class="signin glass rise">
     <div class="pitch">
-      <h2 class="headline">Одно «Любимое» везде</h2>
+      <h2 class="headline">{tr('Одно «Любимое» везде')}</h2>
       <p class="muted">
-        Войди в тот же аккаунт YouCloud, что в приложении. Всё, что лайкнуто на телефоне, появится здесь, а сердечко здесь —
-        в приложении, и оно скачает трек.
+        {tr('Войди в тот же аккаунт YouCloud, что в приложении. Всё, что лайкнуто на телефоне, появится здесь, а сердечко здесь — в приложении, и оно скачает трек.')}
       </p>
     </div>
     <AccountForm />
   </section>
 {:else if favorites.error && !favorites.loaded}
-  <Problem message={`«Любимое» не загрузилось: ${favorites.error}`} onretry={() => retry().catch(() => {})} />
+  <Problem message={tr('«Любимое» не загрузилось: %s', favorites.error ?? '')} onretry={() => retry().catch(() => {})} />
 {:else if !favorites.loaded}
-  <Loading text="Загружаю «Любимое»…" />
+  <Loading text={tr('Загружаю «Любимое»…')} />
 {:else}
   <div class="bar">
     <PlayButton
       playing={player.contextId === contextId && player.playing}
-      onclick={() => (player.contextId === contextId ? toggle() : playQueue(shown, 0, 'Любимое', contextId))}
+      onclick={() => (player.contextId === contextId ? toggle() : playQueue(shown, 0, tr('Любимое'), contextId))}
       size={72}
     />
-    <button class="icon-btn tonal l" onclick={shuffle} disabled={!shown.length} aria-label="Перемешать" title="Перемешать"><Icon name="shuffle" /></button>
-    <div class="filters" role="radiogroup" aria-label="Сервис">
-      <button class="chip" class:on={!only} role="radio" aria-checked={!only} onclick={() => (only = null)}>Все</button>
+    <button class="icon-btn tonal l" onclick={shuffle} disabled={!shown.length} aria-label={tr('Перемешать')} title={tr('Перемешать')}><Icon name="shuffle" /></button>
+    <div class="filters" role="radiogroup" aria-label={tr('Сервис')}>
+      <button class="chip" class:on={!only} role="radio" aria-checked={!only} onclick={() => (only = null)}>{tr('Все')}</button>
       {#each SERVICES as s (s.id)}
         {@const n = count(s.id)}
         {#if n}
@@ -100,9 +102,9 @@
 
   <section class="list rise">
     {#each shown as id, i (id)}
-      <TrackRow {id} list={shown} context="Любимое" {contextId} number={i + 1} />
+      <TrackRow {id} list={shown} context={tr('Любимое')} {contextId} number={i + 1} />
     {:else}
-      <p class="muted empty">Пока пусто. Сердечко у трека — здесь или в приложении — добавит его сюда.</p>
+      <p class="muted empty">{tr('Пока пусто. Сердечко у трека — здесь или в приложении — добавит его сюда.')}</p>
     {/each}
   </section>
 {/if}

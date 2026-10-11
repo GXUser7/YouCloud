@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tr } from '../lib/i18n.svelte'
   import { untrack } from 'svelte'
   import { artist, artistNames, serviceName, set, track } from '../lib/catalog'
   import * as live from '../lib/live'
@@ -61,7 +62,7 @@
     untrack(typed)
   })
 
-  const kindName = { artist: 'Артист', track: 'Трек', album: 'Альбом', playlist: 'Плейлист' }
+  const kindName = { artist: tr('Артист'), track: tr('Трек'), album: tr('Альбом'), playlist: tr('Плейлист') }
 </script>
 
 
@@ -69,13 +70,13 @@
   {#if recent.length}
     <section class="section rise">
       <div class="section-head">
-        <h2>Недавние запросы</h2>
+        <h2>{tr('Недавние запросы')}</h2>
         <button
           class="btn text small"
           onclick={() => {
             recent = []
             remember('recent', [])
-          }}>Очистить</button
+          }}>{tr('Очистить')}</button
         >
       </div>
       <div class="chips">
@@ -91,20 +92,20 @@
       </div>
     </section>
   {:else}
-    <p class="hint muted rise">Ищи в {serviceName(app.service)}: трек, артиста или альбом. Сервис — на панели слева.</p>
+    <p class="hint muted rise">{tr('Ищи в %s: трек, артиста или альбом. Сервис выбирается в строке поиска.', serviceName(app.service))}</p>
   {/if}
 {:else}
   {#await results}
-    <Loading text="Ищу в {serviceName(app.service)}…" />
+    <Loading text={tr('Ищу в %s…', serviceName(app.service))} />
   {:then r}
     {#if !r.tracks.length && !r.artists.length && !r.albums.length && !r.playlists.length}
-      <Problem title="Ничего не нашлось" message="«{app.query}» в {serviceName(app.service)} не находится. Попробуй написать иначе или поискать в другом сервисе." />
+      <Problem title={tr('Ничего не нашлось')} message={tr('«%s» в %s не находится. Попробуй написать иначе или поискать в другом сервисе.', app.query, serviceName(app.service))} />
     {:else}
       <section class="results rise">
         {#if r.best}
           {@const b = r.best}
           <div class="top-result">
-            <div class="section-head"><h2>Лучший результат</h2></div>
+            <div class="section-head"><h2>{tr('Лучший результат')}</h2></div>
             {#if b.type === 'artist'}
               {@const a = artist(b.id)}
               <button class="top-card glass" onclick={() => go('artist/' + a.id)}>
@@ -115,7 +116,7 @@
               </button>
             {:else if b.type === 'track'}
               {@const t = track(b.id)}
-              <button class="top-card glass" onclick={() => playTrack(t.id, r.tracks.includes(t.id) ? r.tracks : [t.id], 'Поиск')}>
+              <button class="top-card glass" onclick={() => playTrack(t.id, r.tracks.includes(t.id) ? r.tracks : [t.id], tr('Поиск'))}>
                 <span class="top-pic"><Cover seed={t.id} color={t.color} src={t.cover} /></span>
                 <span class="top-name display">{t.title}</span>
                 <span class="chip">{kindName.track}</span>
@@ -144,28 +145,28 @@
           </div>
         {/if}
         <div class="top-tracks">
-          <div class="section-head"><h2>Треки</h2></div>
+          <div class="section-head"><h2>{tr('Треки')}</h2></div>
           {#each r.tracks.slice(0, 8) as id (id)}
-            <TrackRow {id} list={r.tracks} context="Поиск: {app.query}" contextId={'search:' + app.query} compact />
+            <TrackRow {id} list={r.tracks} context={tr('Поиск: %s', app.query)} contextId={'search:' + app.query} compact />
           {/each}
         </div>
       </section>
 
       {#if r.artists.length}
-        <Shelf title="Артисты">
+        <Shelf title={tr('Артисты')}>
           {#each r.artists as id (id)}<ArtistCard {id} size={156} />{/each}
         </Shelf>
       {/if}
       {#if r.albums.length}
-        <Shelf title="Альбомы">
+        <Shelf title={tr('Альбомы')}>
           {#each r.albums as id (id)}
             {@const s = set(id)}
-            <SetCard {id} size={170} subtitle="{s.kind === 'single' ? 'Сингл' : 'Альбом'}{s.year ? ` · ${s.year}` : ''} · {s.subtitle}" />
+            <SetCard {id} size={170} subtitle="{s.kind === 'single' ? tr('Сингл') : tr('Альбом')}{s.year ? ` · ${s.year}` : ''} · {s.subtitle}" />
           {/each}
         </Shelf>
       {/if}
       {#if r.playlists.length}
-        <Shelf title="Плейлисты">
+        <Shelf title={tr('Плейлисты')}>
           {#each r.playlists as id (id)}<SetCard {id} size={170} />{/each}
         </Shelf>
       {/if}

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tr } from '../lib/i18n.svelte'
   import { artist } from '../lib/catalog'
   import { go } from '../lib/state.svelte'
   import Cover from './Cover.svelte'
@@ -10,7 +11,7 @@
 <button class="artist" style:--w="{size}px" onclick={() => go('artist/' + id)}>
   <span class="pic"><Cover seed={'artist-' + a.id} color={a.color} src={a.image} kind="artist" /></span>
   <span class="name ellipsis">{a.name}</span>
-  <span class="sub">Артист</span>
+  <span class="sub">{tr('Артист')}</span>
 </button>
 
 <style>

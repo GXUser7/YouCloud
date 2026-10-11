@@ -2,6 +2,7 @@
   // Volume as Material 3 Expressive's inset-icon slider: one thick pill, the filled part carrying
   // the speaker icon, as Android's own volume does. Anywhere on it sets the level — a click, a
   // drag, the wheel, the arrow keys; a tap on the icon mutes and brings the sound back.
+  import { tr } from '../lib/i18n.svelte'
   import { player } from '../lib/state.svelte'
   import Icon from './Icon.svelte'
 
@@ -84,11 +85,11 @@
   onkeydown={key}
   role="slider"
   tabindex="0"
-  aria-label="Громкость"
+  aria-label={tr('Громкость')}
   aria-valuemin={0}
   aria-valuemax={100}
   aria-valuenow={Math.round(level * 100)}
-  title="Громкость: колёсико или перетаскивание, клик по значку — без звука"
+  title={tr('Громкость: колёсико или перетаскивание, клик по значку — без звука')}
 >
   <span class="fill">
     <span class="icon"><Icon name={icon} fill size={20} /></span>

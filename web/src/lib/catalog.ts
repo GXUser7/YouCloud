@@ -4,11 +4,13 @@
 //
 // Ids say where a thing is from: `sc:t:123` is a SoundCloud track, `ya:al:42` a Yandex album.
 
+import { i18n, pluralWord, tr } from './i18n.svelte'
+
 export type Service = 'sc' | 'ya' | 'yt'
 
 export const SERVICES: { id: Service; name: string; short: string }[] = [
   { id: 'sc', name: 'SoundCloud', short: 'SoundCloud' },
-  { id: 'ya', name: 'Яндекс Музыка', short: 'Яндекс' },
+  { id: 'ya', name: tr('Яндекс Музыка'), short: tr('Яндекс') },
   { id: 'yt', name: 'YouTube Music', short: 'YouTube' },
 ]
 
@@ -35,6 +37,8 @@ export interface Track {
   link?: string
   /** False for a track the service won't play (withdrawn, not licensed here). */
   playable?: boolean
+  /** A broadcast (YouTube): it plays as long as it is on, and has no length. */
+  live?: boolean
   /** What SoundCloud needs to play it. */
   sc?: { transcodings: ScTranscoding[]; auth?: string }
   /** What Yandex needs to play it. */
@@ -121,15 +125,16 @@ export function colorFor(id: string): string {
   return PALETTE[h % PALETTE.length]
 }
 
-export function countWords(n: number, one: string, few: string, many: string): string {
-  const m10 = n % 10
-  const m100 = n % 100
-  return m10 === 1 && m100 !== 11 ? one : m10 >= 2 && m10 <= 4 && (m100 < 12 || m100 > 14) ? few : many
-}
+export const countWords = pluralWord
 
-/** "5,4 млн", "48 тыс.", "812". */
+/** "5,4 млн", "48 тыс.", "812" — "5.4M", "48K" in English. */
 export function compact(n: number): string {
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(n >= 10_000_000 ? 0 : 1).replace('.', ',').replace(',0', '')} млн`
-  if (n >= 1_000) return `${(n / 1_000).toFixed(n >= 10_000 ? 0 : 1).replace('.', ',').replace(',0', '')} тыс.`
+  const en = i18n.lang === 'en'
+  const shown = (v: number, digits: number) => {
+    const s = v.toFixed(digits).replace(/\.0$/, '')
+    return en ? s : s.replace('.', ',')
+  }
+  if (n >= 1_000_000) return `${shown(n / 1_000_000, n >= 10_000_000 ? 0 : 1)}${en ? 'M' : ' млн'}`
+  if (n >= 1_000) return `${shown(n / 1_000, n >= 10_000 ? 0 : 1)}${en ? 'K' : ' тыс.'}`
   return String(n)
 }

@@ -1,6 +1,7 @@
 <script lang="ts">
   // A track's menu, as long-pressing a cover opens one in the app: radio from the track, its album,
   // its artist, its page on the service. Placed on the page itself so no scrolling list clips it.
+  import { tr } from '../lib/i18n.svelte'
   import { serviceName, track as trackOf } from '../lib/catalog'
   import { go, startRadio } from '../lib/state.svelte'
   import { toast } from '../lib/toast.svelte'
@@ -62,29 +63,29 @@
       done = document.execCommand('copy')
       field.remove()
     }
-    toast(done ? 'Ссылка скопирована' : 'Не получилось скопировать ссылку')
+    toast(done ? tr('Ссылка скопирована') : tr('Не получилось скопировать ссылку'))
   }
 </script>
 
 <svelte:window onclick={() => (open = false)} onkeydown={(e) => e.key === 'Escape' && (open = false)} onresize={() => (open = false)} />
 
-<button class="icon-btn more" class:s={small && !large} class:l={large} class:glassy={large} bind:this={button} onclick={toggle} aria-label="Ещё" aria-expanded={open}>
+<button class="icon-btn more" class:s={small && !large} class:l={large} class:glassy={large} bind:this={button} onclick={toggle} aria-label={tr('Ещё')} aria-expanded={open}>
   <Icon name="more_horiz" size={large ? 26 : 22} />
 </button>
 
 {#if open}
   <div class="menu glass-strong" class:up={at.up} style:top="{at.top}px" style:right="{at.right}px" role="menu">
-    <button role="menuitem" onclick={() => act(() => startRadio(id))}><Icon name="radio" size={20} />Радио по треку</button>
+    <button role="menuitem" onclick={() => act(() => startRadio(id))}><Icon name="radio" size={20} />{tr('Радио по треку')}</button>
     {#if t.album}
-      <button role="menuitem" onclick={() => act(() => leave('set/' + t.album!.id))}><Icon name="album" size={20} /><span class="ellipsis">{t.album.title || 'Альбом'}</span></button>
+      <button role="menuitem" onclick={() => act(() => leave('set/' + t.album!.id))}><Icon name="album" size={20} /><span class="ellipsis">{t.album.title || tr('Альбом')}</span></button>
     {/if}
     {#each t.artists.slice(0, 3) as a (a.id)}
       <button role="menuitem" onclick={() => act(() => leave('artist/' + a.id))}><Icon name="person" size={20} /><span class="ellipsis">{a.name}</span></button>
     {/each}
     {#if t.link}
-      <button role="menuitem" onclick={() => act(copyLink)}><Icon name="link" size={20} />Скопировать ссылку</button>
+      <button role="menuitem" onclick={() => act(copyLink)}><Icon name="link" size={20} />{tr('Скопировать ссылку')}</button>
       <a role="menuitem" href={t.link} target="_blank" rel="noreferrer" onclick={() => (open = false)}>
-        <Icon name="open_in_new" size={20} />Открыть в {serviceName(t.service)}
+        <Icon name="open_in_new" size={20} />{tr('Открыть в %s', serviceName(t.service))}
       </a>
     {/if}
   </div>

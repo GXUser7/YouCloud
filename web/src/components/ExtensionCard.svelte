@@ -2,6 +2,7 @@
   // The extension, handed out by the site itself: a zip to download and drop on the browser's
   // extensions page, which installs it as it is — nothing to unpack. The page waits for the
   // extension's hello and says when it is in; Chrome hands it to this tab without a reload.
+  import { tr } from '../lib/i18n.svelte'
   import { onMount } from 'svelte'
   import { EXTENSION_ZIP_URL, extension, extensionHost, LATEST_EXTENSION, onExtension, outdated } from '../lib/extension'
   import { shapePath } from '../lib/shapes'
@@ -10,7 +11,7 @@
   import LoadingIndicator from './LoadingIndicator.svelte'
 
   let {
-    why = 'Яндекс Музыка и звук YouTube работают только с твоего IP — расширение ходит к ним из этого браузера.',
+    why = tr('Яндекс Музыка и звук YouTube работают только с твоего IP — расширение ходит к ним из этого браузера.'),
     always = false,
   }: {
     /** What the extension gives on the page that asks for it. */
@@ -27,7 +28,7 @@
     return onExtension((v) => {
       const arrived = version !== undefined && version !== v
       version = v
-      if (arrived) toast(`Расширение YouCloud ${v} подключено`)
+      if (arrived) toast(tr('Расширение YouCloud %s подключено', v))
     })
   })
 
@@ -45,9 +46,9 @@
   async function copyPage() {
     try {
       await navigator.clipboard.writeText(page)
-      toast(`Адрес скопирован — вставь его в новую вкладку`)
+      toast(tr('Адрес скопирован — вставь его в новую вкладку'))
     } catch {
-      toast(`Открой ${page} в новой вкладке`)
+      toast(tr('Открой %s в новой вкладке', page))
     }
   }
 </script>
@@ -59,52 +60,52 @@
       <span class="mark-icon"><Icon name="extension" fill size={34} /></span>
       <div class="text">
         {#if builtIn}
-          <h2 class="headline">Встроено в Masaki</h2>
-          <p class="muted">Masaki сам ходит в Яндекс и YouTube с твоего IP и входит в сервисы своими вкладками — расширение не нужно.</p>
+          <h2 class="headline">{tr('Встроено в Masaki')}</h2>
+          <p class="muted">{tr('Masaki сам ходит в Яндекс и YouTube с твоего IP и входит в сервисы своими вкладками — расширение не нужно.')}</p>
         {:else if version && !update}
-          <h2 class="headline">Расширение {version} подключено</h2>
-          <p class="muted">Яндекс и YouTube идут с твоего IP. Последняя версия — {LATEST_EXTENSION}.</p>
+          <h2 class="headline">{tr('Расширение %s подключено', version ?? '')}</h2>
+          <p class="muted">{tr('Яндекс и YouTube идут с твоего IP. Последняя версия — %s.', LATEST_EXTENSION)}</p>
         {:else if update}
-          <h2 class="headline">Обнови расширение</h2>
-          <p class="muted">Стоит {version}, на сайте — {LATEST_EXTENSION}. Скачай и перетащи так же, как в первый раз.</p>
+          <h2 class="headline">{tr('Обнови расширение')}</h2>
+          <p class="muted">{tr('Стоит %s, на сайте — %s. Скачай и перетащи так же, как в первый раз.', version ?? '', LATEST_EXTENSION)}</p>
         {:else}
-          <h2 class="headline">Поставь расширение YouCloud</h2>
+          <h2 class="headline">{tr('Поставь расширение YouCloud')}</h2>
           <p class="muted">{why}</p>
         {/if}
       </div>
       {#if !builtIn}<a class="btn {version && !update ? 'tonal' : 'filled large'}" href={EXTENSION_ZIP_URL} download="youcloud-extension.zip" onclick={() => (downloaded = true)}>
-        <Icon name="download" size={22} />{version && !update ? 'Скачать снова' : 'Скачать'}
+        <Icon name="download" size={22} />{version && !update ? tr('Скачать снова') : tr('Скачать')}
       </a>{/if}
     </div>
 
     {#if !version || update}
       {#if firefox}
         <ol class="steps">
-          <li class:on={downloaded}><span class="n">1</span><span>Скачай архив — кнопка справа.</span></li>
-          <li><span class="n">2</span><span>Открой <b>about:debugging#/runtime/this-firefox</b> и нажми «Загрузить временное дополнение…» — выбери скачанный zip.</span></li>
-          <li><span class="n">3</span><span>Firefox держит такое дополнение до перезапуска: потом — снова шаг 2.</span></li>
+          <li class:on={downloaded}><span class="n">1</span><span>{tr('Скачай архив — кнопка справа.')}</span></li>
+          <li><span class="n">2</span><span>{tr('Открой')} <b>about:debugging#/runtime/this-firefox</b> {tr('и нажми «Загрузить временное дополнение…» — выбери скачанный zip.')}</span></li>
+          <li><span class="n">3</span><span>{tr('Firefox держит такое дополнение до перезапуска: потом — снова шаг 2.')}</span></li>
         </ol>
       {:else}
         <ol class="steps">
           <li class:on={downloaded}>
             <span class="n">{#if downloaded}<Icon name="check" size={18} weight={700} />{:else}1{/if}</span>
-            <span>Скачай <b>youcloud-extension.zip</b> — кнопка справа.</span>
+            <span>{tr('Скачай')} <b>youcloud-extension.zip</b> {tr('— кнопка справа.')}</span>
           </li>
           <li>
             <span class="n">2</span>
-            <span>Открой <b>{page}</b> в новой вкладке и включи <b>«Режим разработчика»</b> справа вверху.</span>
-            <button class="btn text small" onclick={copyPage}><Icon name="content_copy" size={18} />Адрес</button>
+            <span>{tr('Открой')} <b>{page}</b> {tr('в новой вкладке и включи')} <b>{tr('«Режим разработчика»')}</b> {tr('справа вверху.')}</span>
+            <button class="btn text small" onclick={copyPage}><Icon name="content_copy" size={18} />{tr('Адрес')}</button>
           </li>
           <li>
             <span class="n">3</span>
-            <span>Перетащи скачанный zip на ту страницу — прямо из значка загрузок <Icon name="download" size={16} /> в углу браузера. Распаковывать не нужно.</span>
+            <span>{tr('Перетащи скачанный zip на ту страницу — прямо из значка загрузок')} <Icon name="download" size={16} /> {tr('в углу браузера. Распаковывать не нужно.')}</span>
           </li>
         </ol>
         {#if keyless}
-          <p class="note"><Icon name="warning" size={18} />Старое «YouCloud — домашний IP» там же удали: новое встанет рядом, а не поверх.</p>
+          <p class="note"><Icon name="warning" size={18} />{tr('Старое «YouCloud — домашний IP» там же удали: новое встанет рядом, а не поверх.')}</p>
         {/if}
         <p class="wait">
-          {#if downloaded}<LoadingIndicator size={28} contained={false} />Жду расширение — вернись сюда, оно подключится само{:else}Не перетаскивается? Распакуй архив и нажми «Загрузить распакованное расширение» — выбери папку.{/if}
+          {#if downloaded}<LoadingIndicator size={28} contained={false} />{tr('Жду расширение — вернись сюда, оно подключится само')}{:else}{tr('Не перетаскивается? Распакуй архив и нажми «Загрузить распакованное расширение» — выбери папку.')}{/if}
         </p>
       {/if}
     {/if}

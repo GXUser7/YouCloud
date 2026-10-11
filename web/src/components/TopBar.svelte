@@ -2,6 +2,7 @@
   // The bar over the page, everything of the site in one row: YouCloud and the way back on the
   // left; in the middle the search, with the services inside it — which one is chosen is both what
   // the page shows and where the search looks; the listener's friends and menu on the right.
+  import { tr } from '../lib/i18n.svelte'
   import { SERVICES, type Service } from '../lib/catalog'
   import { signedIn } from '../lib/live'
   import { avatarUrl, shownName, social } from '../lib/social.svelte'
@@ -59,19 +60,19 @@
 
 <header class="topbar">
   <div class="start">
-    <button class="brand" onclick={() => go('home')} aria-label="YouCloud — главная" title="YouCloud">
+    <button class="brand" onclick={() => go('home')} aria-label={tr('YouCloud — главная')} title="YouCloud">
       <AppIcon size={44} />
       <span class="wordmark">YouCloud</span>
     </button>
     {#if !home}
-      <button class="icon-btn glassy" onclick={back} aria-label="Назад" title="Назад">
+      <button class="icon-btn glassy" onclick={back} aria-label={tr('Назад')} title={tr('Назад')}>
         <Icon name="arrow_back" size={22} />
       </button>
     {/if}
   </div>
 
   <div class="search glass-strong" class:on={app.route.name === 'search'}>
-    <div class="services" role="radiogroup" aria-label="Сервис: где искать и что показать">
+    <div class="services" role="radiogroup" aria-label={tr('Сервис: где искать и что показать')}>
       {#each SERVICES as s (s.id)}
         {@const on = app.service === s.id}
         <button class="service" class:on role="radio" aria-checked={on} aria-label={s.name} title={s.name} onclick={() => pick(s.id)}>
@@ -89,14 +90,14 @@
         bind:value={app.query}
         oninput={typed}
         onfocus={() => app.query && typed()}
-        placeholder="Найти трек, артиста или подборку"
-        aria-label="Поиск"
+        placeholder={tr('Найти трек, артиста или подборку')}
+        aria-label={tr('Поиск')}
         spellcheck="false"
         autocomplete="off"
         enterkeyhint="search"
       />
       {#if app.query}
-        <button class="icon-btn s" onclick={() => ((app.query = ''), input?.focus())} aria-label="Очистить"><Icon name="close" size={20} /></button>
+        <button class="icon-btn s" onclick={() => ((app.query = ''), input?.focus())} aria-label={tr('Очистить')}><Icon name="close" size={20} /></button>
       {:else}
         <span class="lens"><Icon name="search" size={22} /></span>
       {/if}
@@ -104,14 +105,14 @@
   </div>
 
   <div class="end">
-    <button class="icon-btn glassy" class:active={app.route.name === 'liked'} onclick={() => go('liked')} aria-label="Любимое" title="Любимое">
+    <button class="icon-btn glassy" class:active={app.route.name === 'liked'} onclick={() => go('liked')} aria-label={tr('Любимое')} title={tr('Любимое')}>
       <Icon name="favorite" fill={app.route.name === 'liked'} size={22} />
     </button>
-    <button class="icon-btn glassy" class:active={app.route.name === 'friends'} onclick={() => go('friends')} aria-label="Друзья" title="Друзья">
+    <button class="icon-btn glassy" class:active={app.route.name === 'friends'} onclick={() => go('friends')} aria-label={tr('Друзья')} title={tr('Друзья')}>
       <Icon name="group" size={22} />
     </button>
     <div class="me-wrap">
-      <button class="me" class:open={menu} onclick={() => (menu = !menu)} aria-haspopup="menu" aria-expanded={menu} title="Профиль и настройки">
+      <button class="me" class:open={menu} onclick={() => (menu = !menu)} aria-haspopup="menu" aria-expanded={menu} title={tr('Профиль и настройки')}>
         {#if social.me}
           <Avatar name={shownName(social.me)} color={social.me.color} src={avatarUrl(social.me)} size={44} />
         {:else}
@@ -119,20 +120,20 @@
         {/if}
       </button>
       {#if menu}
-        <button class="scrim" aria-label="Закрыть меню" onclick={() => (menu = false)}></button>
+        <button class="scrim" aria-label={tr('Закрыть меню')} onclick={() => (menu = false)}></button>
         <div class="menu glass-strong" role="menu">
           <div class="who">
             {#if social.me}
               <Avatar name={shownName(social.me)} color={social.me.color} src={avatarUrl(social.me)} size={44} />
-              <span class="who-text"><b class="ellipsis">{shownName(social.me)}</b><small class="muted">Аккаунт YouCloud</small></span>
+              <span class="who-text"><b class="ellipsis">{shownName(social.me)}</b><small class="muted">{tr('Аккаунт YouCloud')}</small></span>
             {:else}
               <span class="no-me big"><Icon name="person" size={24} /></span>
-              <span class="who-text"><b>Гость</b><small class="muted">Войди, чтобы видеть друзей</small></span>
+              <span class="who-text"><b>{tr('Гость')}</b><small class="muted">{tr('Войди, чтобы видеть друзей')}</small></span>
             {/if}
           </div>
-          <button class="item" role="menuitem" onclick={() => place('liked')}><Icon name="favorite" size={22} />Любимое</button>
-          <button class="item" role="menuitem" onclick={() => place('friends')}><Icon name="group" size={22} />Друзья</button>
-          <button class="item" role="menuitem" onclick={() => place('settings')}><Icon name="settings" size={22} />Настройки</button>
+          <button class="item" role="menuitem" onclick={() => place('liked')}><Icon name="favorite" size={22} />{tr('Любимое')}</button>
+          <button class="item" role="menuitem" onclick={() => place('friends')}><Icon name="group" size={22} />{tr('Друзья')}</button>
+          <button class="item" role="menuitem" onclick={() => place('settings')}><Icon name="settings" size={22} />{tr('Настройки')}</button>
         </div>
       {/if}
     </div>

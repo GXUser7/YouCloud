@@ -1,6 +1,7 @@
 // One way for the pages to ask any service: home, search, a set, an artist, the library. The
 // design's stand-in items (ids without a service prefix) still answer from lib/mock.ts.
 
+import { tr } from './i18n.svelte'
 import { accounts } from './accounts.svelte'
 import { artist, serviceOf, set as setOf, track, type Service, type Track, type TrackSet } from './catalog'
 import * as mock from './mock'
@@ -83,7 +84,7 @@ export async function loadArtist(id: string): Promise<ArtistPage> {
   if (svc === 'sc') return soundcloud.loadArtist(id)
   if (svc === 'ya') return yandex.loadArtist(id)
   if (svc === 'yt') {
-    if (!id.startsWith('yt:a:')) throw new Error('У этого исполнителя нет страницы на YouTube Music')
+    if (!id.startsWith('yt:a:')) throw new Error(tr('У этого исполнителя нет страницы на YouTube Music'))
     return youtube.loadArtist(id)
   }
   return {

@@ -1,6 +1,7 @@
 <script lang="ts">
   // Material 3 Expressive's loading indicator: one shape turning while it morphs through the
   // others, on a round container.
+  import { tr } from '../lib/i18n.svelte'
   import { shapePath, type ShapeName } from '../lib/shapes'
 
   let { size = 48, contained = true }: { size?: number; contained?: boolean } = $props()
@@ -14,7 +15,7 @@
   })
 </script>
 
-<span class="loader" class:contained style:--s="{size}px" role="progressbar" aria-label="Загрузка">
+<span class="loader" class:contained style:--s="{size}px" role="progressbar" aria-label={tr('Загрузка')}>
   <svg viewBox="0 0 100 100">
     <path d={shapePath(cycle[step], contained ? 0.62 : 0.9)} />
   </svg>

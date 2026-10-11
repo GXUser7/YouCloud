@@ -1,6 +1,7 @@
 // Stand-in catalogue for the design: what the three services and the friends list will hand the
 // pages once the real APIs are wired. Names are made up; covers are drawn from each item's colour.
 
+import { tr } from './i18n.svelte'
 import {
   artist,
   artistNames,
@@ -272,16 +273,16 @@ export const lyrics: [number, string][] = [
 ]
 
 export const WAVE_MOODS = [
-  { seed: 'active', title: 'Бодрое', lobes: 12, depth: 0.085, color: '#ff7a4d' },
-  { seed: 'fun', title: 'Весёлое', lobes: 6, depth: 0.15, color: '#ffc53d' },
-  { seed: 'calm', title: 'Спокойное', lobes: 9, depth: 0.06, color: '#3dd3b0' },
-  { seed: 'sad', title: 'Грустное', lobes: 5, depth: 0.04, color: '#9d8cff' },
+  { seed: 'active', title: tr('Бодрое'), lobes: 12, depth: 0.085, color: '#ff7a4d' },
+  { seed: 'fun', title: tr('Весёлое'), lobes: 6, depth: 0.15, color: '#ffc53d' },
+  { seed: 'calm', title: tr('Спокойное'), lobes: 9, depth: 0.06, color: '#3dd3b0' },
+  { seed: 'sad', title: tr('Грустное'), lobes: 5, depth: 0.04, color: '#9d8cff' },
 ]
 
 export const WAVE_MODES = [
-  { seed: 'favorite', title: 'Любимое' },
-  { seed: 'discover', title: 'Незнакомое' },
-  { seed: 'popular', title: 'Популярное' },
+  { seed: 'favorite', title: tr('Любимое') },
+  { seed: 'discover', title: tr('Незнакомое') },
+  { seed: 'popular', title: tr('Популярное') },
 ]
 
 export const artistByName = (name: string) => artistList.find((a) => a.name === name)

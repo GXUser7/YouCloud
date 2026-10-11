@@ -1,10 +1,12 @@
 <script lang="ts">
   // An album, playlist, mix or station as a card: the cover, and a play button that springs out of
   // its corner on hover. Opening the card opens the set; the button plays it in place.
+  import { tr } from '../lib/i18n.svelte'
   import { set as setOf } from '../lib/catalog'
   import { go, player, playSet, toggle } from '../lib/state.svelte'
   import Cover from './Cover.svelte'
   import Icon from './Icon.svelte'
+  import LikedArt from './LikedArt.svelte'
 
   let { id, size = 196, subtitle }: { id: string; size?: number; subtitle?: string } = $props()
 
@@ -20,9 +22,13 @@
 
 <div class="card" style:--w="{size}px">
   <button class="art" class:round={s.kind === 'station'} onclick={() => go('set/' + id)} aria-label={s.title}>
-    <Cover seed={s.id} color={s.color} src={s.cover} kind={s.kind} label={s.label} title={s.kind === 'genre' || s.kind === 'personal' ? s.title : ''} />
+    {#if s.kind === 'liked' && !s.cover}
+      <LikedArt ids={s.tracks} seed={s.id} color={s.color} />
+    {:else}
+      <Cover seed={s.id} color={s.color} src={s.cover} kind={s.kind} label={s.label} title={s.kind === 'genre' || s.kind === 'personal' ? s.title : ''} />
+    {/if}
   </button>
-  <button class="play" class:active={playingThis} onclick={play} aria-label="Играть {s.title}">
+  <button class="play" class:active={playingThis} onclick={play} aria-label={tr('Играть %s', s.title)}>
     <Icon name={playingThis && player.playing ? 'pause' : 'play_arrow'} fill size={28} />
   </button>
   <button class="meta" onclick={() => go('set/' + id)}>

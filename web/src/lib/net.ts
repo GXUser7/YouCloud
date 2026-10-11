@@ -5,6 +5,7 @@
 // Yandex Music and YouTube's player refuse Cloudflare's addresses, so when the listener has the
 // YouCloud extension, their requests go through it instead, from the listener's own IP.
 
+import { tr } from './i18n.svelte'
 import { extension, extensionFetch } from './extension'
 
 /** Hosts that answer only a listener's own IP; the extension takes them when it is there. */
@@ -37,7 +38,7 @@ export class HttpError extends Error {
     readonly body: string,
     readonly url: string,
   ) {
-    super(`HTTP ${status} от ${new URL(url).host}${detail(body)}`)
+    super(tr('HTTP %s от %s', status, new URL(url).host) + detail(body))
   }
 }
 

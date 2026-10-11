@@ -3,6 +3,7 @@
 // takes the token the site's own requests carry once the listener is in — as the app's login
 // WebView does. Yandex: the extension opens Yandex ID and catches the token it hands back.
 
+import { tr } from './i18n.svelte'
 import { accounts, setSoundCloud, setYandex } from './accounts.svelte'
 import type { Service } from './catalog'
 import { extension, extensionCall, onHostEvent, onToken } from './extension'
@@ -35,10 +36,10 @@ function caught(service: 'sc' | 'ya', use: (token: string) => Promise<string>, k
     try {
       const name = await use(token)
       if (waiter) waiter.resolve()
-      else toast(`${service === 'sc' ? 'SoundCloud' : 'Яндекс'} подключён: ${name}`)
+      else toast(tr('%s подключён: %s', service === 'sc' ? 'SoundCloud' : tr('Яндекс'), name))
     } catch (e) {
       if (waiter) waiter.reject(e)
-      else toast(`Вход не удался: ${reason(e)}`)
+      else toast(tr('Вход не удался: %s', reason(e)))
     }
   })
 }
@@ -52,7 +53,7 @@ async function loginInTab(service: 'sc' | 'ya'): Promise<void> {
     setTimeout(() => {
       if (waiting[service]?.resolve === resolve) {
         waiting[service] = null
-        reject(new Error('вход не завершился за 10 минут'))
+        reject(new Error(tr('вход не завершился за 10 минут')))
       }
     }, 10 * 60_000)
   })
@@ -65,7 +66,7 @@ export async function connectSoundCloud(pasted?: string): Promise<void> {
     await useSoundCloud(pasted.trim())
     return
   }
-  if (!(await extension())) throw new Error('Нужно расширение YouCloud — или вставь токен вручную')
+  if (!(await extension())) throw new Error(tr('Нужно расширение YouCloud — или вставь токен вручную'))
   const session = await extensionCall<string | null>('sc-token')
   if (session) {
     try {
@@ -79,7 +80,7 @@ export async function connectSoundCloud(pasted?: string): Promise<void> {
 }
 
 export async function connectYandex(): Promise<void> {
-  if (!(await extension())) throw new Error('Для Яндекса нужно расширение YouCloud')
+  if (!(await extension())) throw new Error(tr('Для Яндекса нужно расширение YouCloud'))
   return loginInTab('ya')
 }
 
@@ -95,7 +96,7 @@ onHostEvent((e) => e.event === 'session' && e.service === 'yt' && refreshYouTube
 
 /** Opens Google's sign-in for YouTube; the session counts as soon as the listener is back here. */
 export async function connectYouTube(): Promise<void> {
-  if (!(await extension())) throw new Error('Для YouTube нужно расширение YouCloud')
+  if (!(await extension())) throw new Error(tr('Для YouTube нужно расширение YouCloud'))
   await extensionCall('yt-login')
 }
 

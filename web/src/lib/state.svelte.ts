@@ -6,6 +6,7 @@
 // The queue survives a reload. The design's stand-in tracks (YouTube for now) have no sound, so
 // for them the player only counts time.
 
+import { tr } from './i18n.svelte'
 import Hls from 'hls.js'
 import { putTrack, serviceName, track as trackOf, type Service, type Track } from './catalog'
 import { favorites, setFavorite } from './favorites.svelte'
@@ -209,7 +210,7 @@ function failed(t: Track, e: unknown) {
   player.loading = false
   player.playing = false
   if (e instanceof DOMException && e.name === 'NotAllowedError') {
-    toast('Браузер ждёт нажатия: нажми ▶')
+    toast(tr('Браузер ждёт нажатия: нажми ▶'))
     return
   }
   // In a plain browser YouTube keeps some tracks' sound to itself (Masaki gets it with yt-dlp): the
@@ -217,11 +218,11 @@ function failed(t: Track, e: unknown) {
   // row at most, so a queue where nothing plays doesn't run through to its end.
   if (t.yt && wantPlay && passedOver < 5 && player.index < player.queue.length - 1) {
     passedOver++
-    toast(`«${t.title}» не играет в этом браузере — дальше`)
+    toast(tr('«%s» не играет в этом браузере — дальше', t.title))
     next()
     return
   }
-  toast(`«${t.title}» не играет: ${reason(e)}`)
+  toast(tr('«%s» не играет: %s', t.title, reason(e)))
 }
 
 audio.addEventListener('play', () => (player.playing = true))
@@ -243,7 +244,7 @@ audio.addEventListener('durationchange', () => {
 audio.addEventListener('ended', () => next(true))
 audio.addEventListener('error', () => {
   const t = currentTrack()
-  if (t && loaded === t.id && !hls) recover(t, new Error(audio.error?.code === 4 ? 'сервис не отдал звук по ссылке' : 'поток оборвался'))
+  if (t && loaded === t.id && !hls) recover(t, new Error(audio.error?.code === 4 ? tr('сервис не отдал звук по ссылке') : tr('поток оборвался')))
 })
 
 $effect.root(() => {
@@ -420,13 +421,13 @@ export async function like(id: string) {
     try {
       await setFavorite(t, want)
     } catch (e) {
-      toast(`Не вышло ${want ? 'добавить в «Любимое»' : 'убрать из «Любимого»'}: ${reason(e)}`)
+      toast(want ? tr('Не вышло добавить в «Любимое»: %s', reason(e)) : tr('Не вышло убрать из «Любимого»: %s', reason(e)))
       return
     }
     if (!live.signedIn(t.service)) return
     player.liked[id] = want
     live.setLiked(t, want).catch((e) => {
-      toast(`${want ? 'Добавлено в «Любимое»' : 'Убрано из «Любимого»'}, но ${serviceName(t.service)} ${want ? 'лайк не принял' : 'лайк не снял'}: ${reason(e)}`)
+      toast(want ? tr('Добавлено в «Любимое», но %s лайк не принял: %s', serviceName(t.service), reason(e)) : tr('Убрано из «Любимого», но %s лайк не снял: %s', serviceName(t.service), reason(e)))
     })
     return
   }
@@ -435,7 +436,7 @@ export async function like(id: string) {
     await live.setLiked(t, want)
   } catch (e) {
     player.liked[id] = !want
-    toast(`Не вышло ${want ? 'лайкнуть' : 'убрать лайк'}: ${reason(e)}`)
+    toast(want ? tr('Не вышло лайкнуть: %s', reason(e)) : tr('Не вышло убрать лайк: %s', reason(e)))
   }
 }
 
@@ -468,7 +469,7 @@ async function refill() {
       saveQueue()
     }
   } catch (e) {
-    toast(`Радио не продолжилось: ${reason(e)}`)
+    toast(tr('Радио не продолжилось: %s', reason(e)))
   } finally {
     refilling = false
   }
@@ -501,12 +502,12 @@ export async function startWave() {
       if (waveSeeds().length === 1) throw e
       batch = await yandex.radioStart(['user:onyourwave'])
     }
-    if (!batch.tracks.length) throw new Error('волна ничего не предложила')
+    if (!batch.tracks.length) throw new Error(tr('волна ничего не предложила'))
     const batchOf = Object.fromEntries(batch.tracks.map((id) => [id, batch.batchId]))
     yandex.radioFeedback(batch.sessionId, batch.batchId, 'radioStarted')
-    playQueue(batch.tracks, 0, 'Моя волна', 'ya-wave', { kind: 'ya', sessionId: batch.sessionId, batchOf }, true)
+    playQueue(batch.tracks, 0, tr('Моя волна'), 'ya-wave', { kind: 'ya', sessionId: batch.sessionId, batchOf }, true)
   } catch (e) {
-    toast(`Волна не запустилась: ${reason(e)}`)
+    toast(tr('Волна не запустилась: %s', reason(e)))
   }
 }
 
@@ -527,19 +528,19 @@ export async function startRadio(id: string) {
     if (t.ya) {
       const batch = await yandex.radioStart([`track:${t.ya.trackId}`], [yandex.yaKey(t)])
       const rest = batch.tracks.filter((x) => x !== id)
-      if (!rest.length) throw new Error('радио ничего не предложило')
+      if (!rest.length) throw new Error(tr('радио ничего не предложило'))
       const batchOf = Object.fromEntries(rest.map((x) => [x, batch.batchId]))
       yandex.radioFeedback(batch.sessionId, batch.batchId, 'radioStarted')
-      playQueue([id, ...rest], 0, `Радио: ${t.title}`, null, { kind: 'ya', sessionId: batch.sessionId, batchOf })
+      playQueue([id, ...rest], 0, tr('Радио: %s', t.title), null, { kind: 'ya', sessionId: batch.sessionId, batchOf })
     } else if (t.sc || t.yt) {
       const rest = (await live.relatedTo(t)).filter((x) => x !== id)
-      if (!rest.length) throw new Error('похожих не нашлось')
-      playQueue([id, ...rest], 0, `Радио: ${t.title}`, null, { kind: 'related' })
+      if (!rest.length) throw new Error(tr('похожих не нашлось'))
+      playQueue([id, ...rest], 0, tr('Радио: %s', t.title), null, { kind: 'related' })
     } else {
-      toast('У этого трека нет радио')
+      toast(tr('У этого трека нет радио'))
     }
   } catch (e) {
-    toast(`Радио не запустилось: ${reason(e)}`)
+    toast(tr('Радио не запустилось: %s', reason(e)))
   }
 }
 
@@ -547,11 +548,11 @@ export async function startRadio(id: string) {
 export async function playSet(id: string, shuffled = false) {
   try {
     const s = await live.loadSet(id)
-    if (!s.tracks.length) throw new Error('он пустой')
+    if (!s.tracks.length) throw new Error(tr('он пустой'))
     const ids = shuffled ? [...s.tracks].sort(() => Math.random() - 0.5) : s.tracks
     playQueue(ids, 0, s.title, s.id, s.kind === 'mix' || s.kind === 'station' ? radioForSet(ids) : null)
   } catch (e) {
-    toast(`Не получилось включить: ${reason(e)}`)
+    toast(tr('Не получилось включить: %s', reason(e)))
   }
 }
 

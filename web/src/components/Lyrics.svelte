@@ -1,6 +1,7 @@
 <script lang="ts">
   // Synced lyrics: the line being sung stands out and stays in the middle; a line clicked jumps
   // the track to it. Yandex's own for its tracks, LRCLIB's for the rest.
+  import { tr } from '../lib/i18n.svelte'
   import { lyricsFor, type Line } from '../lib/lyrics'
   import { lyrics as designLyrics } from '../lib/mock'
   import { currentTrack, player, seek } from '../lib/state.svelte'
@@ -24,7 +25,7 @@
       lines = designLyrics.map(([at, text]) => ({ at, text }))
       synced = true
       phase = 'ready'
-      onsource?.('пример')
+      onsource?.(tr('пример'))
       return
     }
     phase = 'loading'
@@ -58,7 +59,7 @@
   <div class="state"><LoadingIndicator size={48} /></div>
 {:else if phase === 'none'}
   <div class="state muted">
-    <p class="none">У этого трека нет текста</p>
+    <p class="none">{tr('У этого трека нет текста')}</p>
   </div>
 {:else}
   <div class="lyrics {size}" class:plain={!synced} bind:this={box}>

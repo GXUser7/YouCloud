@@ -2,6 +2,7 @@
 // scraped from soundcloud.com's own scripts, and the listener's OAuth token when signed in.
 // Answers become catalog items (lib/catalog.ts); pages only ever see those.
 
+import { tr } from '../i18n.svelte'
 import { scToken } from '../accounts.svelte'
 import {
   colorFor,
@@ -68,7 +69,7 @@ async function scrapeClientId(): Promise<string> {
       }
     }
   }
-  throw new Error('SoundCloud не отдал client_id')
+  throw new Error(tr('SoundCloud не отдал client_id'))
 }
 
 async function isUsable(id: string): Promise<boolean> {
@@ -207,7 +208,7 @@ export function putScTrack(t: ScTrack): string {
   return putTrack({
     id,
     service: 'sc',
-    title: t.title ?? 'Без названия',
+    title: t.title ?? tr('Без названия'),
     artists: [{ id: `sc:u:${t.user?.id}`, name: artistName }],
     duration: Math.round((t.full_duration ?? t.duration ?? 0) / 1000),
     cover: art(t.artwork_url ?? t.user?.avatar_url),
@@ -298,15 +299,15 @@ export interface Section {
 }
 
 const SECTION_TITLES: Record<string, string> = {
-  'your-moods': 'Твои миксы',
-  'daily-drops': 'Свежее каждый день',
-  stations: 'Станции',
-  'discover-with-station': 'Станции',
-  'trending-by-genre-playlists': 'В тренде по жанрам',
-  'personalised-curated-global': 'Подборки SoundCloud',
-  buzzing: 'Артисты, за которыми стоит следить',
-  'charts-top': 'Чарты',
-  'charts-trending': 'Чарты',
+  'your-moods': tr('Твои миксы'),
+  'daily-drops': tr('Свежее каждый день'),
+  stations: tr('Станции'),
+  'discover-with-station': tr('Станции'),
+  'trending-by-genre-playlists': tr('В тренде по жанрам'),
+  'personalised-curated-global': tr('Подборки SoundCloud'),
+  buzzing: tr('Артисты, за которыми стоит следить'),
+  'charts-top': tr('Чарты'),
+  'charts-trending': tr('Чарты'),
 }
 
 /** Home: the mixes made for the listener when signed in, stations, curated sets, the charts. */
@@ -331,7 +332,7 @@ export async function home(): Promise<Section[]> {
     sections.push({ title: SECTION_TITLES[feature] ?? selection.title ?? 'SoundCloud', sets: ids })
   }
   // The listener's own mixes first, as the app shows them.
-  return sections.sort((a, b) => Number(b.title === 'Твои миксы') - Number(a.title === 'Твои миксы'))
+  return sections.sort((a, b) => Number(b.title === tr('Твои миксы')) - Number(a.title === tr('Твои миксы')))
 }
 
 export async function loadSet(id: string): Promise<TrackSet> {
@@ -346,7 +347,7 @@ export async function loadSet(id: string): Promise<TrackSet> {
     const me = await myId()
     const page = await scGet<{ collection: { track?: ScTrack }[] }>(`users/${me}/track_likes`, { limit: 200 })
     const tracks = page.collection.flatMap((x) => (x.track ? [putScTrack(x.track)] : []))
-    putSet({ id, kind: 'liked', service: 'sc', title: 'Нравится', subtitle: 'SoundCloud', color: '#ff7043', tracks: [], cover: null })
+    putSet({ id, kind: 'liked', service: 'sc', title: tr('Нравится'), subtitle: 'SoundCloud', color: '#ff7043', tracks: [], cover: null })
     return finish(id, tracks)
   }
   const plId = id.slice('sc:pl:'.length)
@@ -485,7 +486,7 @@ export async function stream(track: Track): Promise<Stream> {
   const rank = (t: ScTranscoding) =>
     t.preset.startsWith('aac_160') && t.format.protocol === 'hls' ? 0 : t.format.protocol === 'progressive' ? 1 : t.format.protocol === 'hls' && !t.preset.startsWith('opus') ? 2 : 3
   const pick = [...choices].sort((a, b) => rank(a) - rank(b))[0]
-  if (!pick) throw new Error('SoundCloud не даёт этот трек')
+  if (!pick) throw new Error(tr('SoundCloud не даёт этот трек'))
   const resolved = await scGet<{ url: string }>(pick.url.replace(API, ''), { track_authorization: track.sc?.auth })
   return { url: resolved.url, hls: pick.format.protocol === 'hls' }
 }

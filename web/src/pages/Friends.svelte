@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tr } from '../lib/i18n.svelte'
   import type { Service } from '../lib/catalog'
   import { time } from '../lib/format'
   import { openLink } from '../lib/links'
@@ -67,19 +68,19 @@
 
   const SERVICES: Record<string, Service> = { soundcloud: 'sc', yandex: 'ya', youtube: 'yt' }
   const serviceOf = (p: Person): Service | null => SERVICES[p.service ?? ''] ?? null
-  const SERVICE_NAMES: Record<string, string> = { soundcloud: 'SoundCloud', yandex: 'Яндекс Музыка', youtube: 'YouTube Music', device: 'С устройства' }
+  const SERVICE_NAMES: Record<string, string> = { soundcloud: 'SoundCloud', yandex: tr('Яндекс Музыка'), youtube: 'YouTube Music', device: tr('С устройства') }
 </script>
 
 <PageHeader
-  title="Друзья"
-  subtitle={social.me ? (live.length ? `${live.length} ${live.length === 1 ? 'слушает' : 'слушают'} прямо сейчас` : 'Сейчас никто не слушает') : 'Аккаунт YouCloud'}
+  title={tr('Друзья')}
+  subtitle={social.me ? (live.length ? (live.length === 1 ? tr('%s слушает прямо сейчас', live.length) : tr('%s слушают прямо сейчас', live.length)) : tr('Сейчас никто не слушает')) : tr('Аккаунт YouCloud')}
 >
   {#snippet actions()}
     {#if social.me}
       <label class="add glass-strong">
         <Icon name="person_search" size={22} />
-        <input bind:value={query} oninput={typed} placeholder="Найти по нику или имени" spellcheck="false" />
-        {#if query}<button class="icon-btn s" onclick={() => ((query = ''), (found = null))} aria-label="Очистить"><Icon name="close" size={20} /></button>{/if}
+        <input bind:value={query} oninput={typed} placeholder={tr('Найти по нику или имени')} spellcheck="false" />
+        {#if query}<button class="icon-btn s" onclick={() => ((query = ''), (found = null))} aria-label={tr('Очистить')}><Icon name="close" size={20} /></button>{/if}
       </label>
     {/if}
   {/snippet}
@@ -90,15 +91,15 @@
 {:else if !social.me}
   <section class="signin glass rise">
     <div class="pitch">
-      <h2 class="headline">Музыка вместе с друзьями</h2>
-      <p class="muted">Войди в аккаунт YouCloud — тот же, что в приложении. Друзья увидят, что ты слушаешь, а ты — их, и одним нажатием включишь то же у себя.</p>
+      <h2 class="headline">{tr('Музыка вместе с друзьями')}</h2>
+      <p class="muted">{tr('Войди в аккаунт YouCloud — тот же, что в приложении. Друзья увидят, что ты слушаешь, а ты — их, и одним нажатием включишь то же у себя.')}</p>
     </div>
     <AccountForm />
   </section>
 {:else}
   {#if found}
     <section class="section rise">
-      <div class="section-head"><h2>Поиск</h2></div>
+      <div class="section-head"><h2>{tr('Поиск')}</h2></div>
       <div class="rows">
         {#each found as p (p.id)}
           <div class="row glass">
@@ -108,17 +109,17 @@
               <span class="nick">@{p.nick}</span>
             </div>
             {#if p.relation === 'friend'}
-              <span class="chip">Друг</span>
+              <span class="chip">{tr('Друг')}</span>
             {:else if p.relation === 'outgoing'}
-              <button class="btn outlined small" onclick={() => act(() => removeFriend(p.id))}>Отменить заявку</button>
+              <button class="btn outlined small" onclick={() => act(() => removeFriend(p.id))}>{tr('Отменить заявку')}</button>
             {:else if p.relation === 'incoming'}
-              <button class="btn filled small" onclick={() => act(() => acceptFriend(p.id))}>Принять</button>
+              <button class="btn filled small" onclick={() => act(() => acceptFriend(p.id))}>{tr('Принять')}</button>
             {:else}
-              <button class="btn filled small" onclick={() => act(() => requestFriend(p.id))}><Icon name="person_add" size={18} />Добавить</button>
+              <button class="btn filled small" onclick={() => act(() => requestFriend(p.id))}><Icon name="person_add" size={18} />{tr('Добавить')}</button>
             {/if}
           </div>
         {:else}
-          <p class="muted">Никого с таким ником.</p>
+          <p class="muted">{tr('Никого с таким ником.')}</p>
         {/each}
       </div>
     </section>
@@ -126,20 +127,20 @@
 
   {#if requests.length}
     <section class="section">
-      <div class="section-head"><h2>Заявки</h2></div>
+      <div class="section-head"><h2>{tr('Заявки')}</h2></div>
       <div class="rows">
         {#each requests as p (p.id)}
           <div class="row glass">
             <Avatar name={shownName(p)} color={p.color} src={avatarUrl(p)} size={44} />
             <div class="who">
               <span class="name">{shownName(p)}</span>
-              <span class="nick">@{p.nick} · {p.relation === 'incoming' ? 'хочет дружить' : 'ждёт ответа'}</span>
+              <span class="nick">@{p.nick} · {p.relation === 'incoming' ? tr('хочет дружить') : tr('ждёт ответа')}</span>
             </div>
             {#if p.relation === 'incoming'}
-              <button class="btn filled small" onclick={() => act(() => acceptFriend(p.id))}>Принять</button>
-              <button class="btn text small" onclick={() => act(() => removeFriend(p.id))}>Отклонить</button>
+              <button class="btn filled small" onclick={() => act(() => acceptFriend(p.id))}>{tr('Принять')}</button>
+              <button class="btn text small" onclick={() => act(() => removeFriend(p.id))}>{tr('Отклонить')}</button>
             {:else}
-              <button class="btn outlined small" onclick={() => act(() => removeFriend(p.id))}>Отменить</button>
+              <button class="btn outlined small" onclick={() => act(() => removeFriend(p.id))}>{tr('Отменить')}</button>
             {/if}
           </div>
         {/each}
@@ -149,7 +150,7 @@
 
   {#if live.length || recent.length}
     <section class="section">
-      <div class="section-head"><h2>{live.length ? 'Сейчас слушают' : 'Слушали недавно'}</h2></div>
+      <div class="section-head"><h2>{live.length ? tr('Сейчас слушают') : tr('Слушали недавно')}</h2></div>
       <div class="cards">
         {#each [...live, ...recent] as p, i (p.id)}
           {@const playing = listeningNow(p, now)}
@@ -162,7 +163,7 @@
                 <span class="name">{shownName(p)}</span>
                 <span class="nick">@{p.nick}</span>
               </div>
-              <span class="state" class:live={playing}>{playing ? 'слушает' : ago(p.updated_at, now)}</span>
+              <span class="state" class:live={playing}>{playing ? tr('слушает') : ago(p.updated_at, now)}</span>
             </header>
             <div class="np">
               <span class="np-cover"><Cover seed={p.id + (p.title ?? '')} color={p.color ?? '#9CC2A2'} src={p.cover_url} /></span>
@@ -181,8 +182,8 @@
               </div>
             {/if}
             <div class="actions">
-              <button class="btn tonal small" disabled={!p.track_url} onclick={() => openLink(p.track_url!, `${shownName(p)} слушает`)}>
-                <Icon name="play_arrow" fill size={20} />Включить у себя
+              <button class="btn tonal small" disabled={!p.track_url} onclick={() => openLink(p.track_url!, tr('%s слушает', shownName(p)))}>
+                <Icon name="play_arrow" fill size={20} />{tr('Включить у себя')}
               </button>
             </div>
           </article>
@@ -192,7 +193,7 @@
   {/if}
 
   <section class="section">
-    <div class="section-head"><h2>Все друзья</h2><span class="muted">{friends.length}</span></div>
+    <div class="section-head"><h2>{tr('Все друзья')}</h2><span class="muted">{friends.length}</span></div>
     {#if !social.friendsLoaded}
       <Loading tall={false} />
     {:else}
@@ -204,11 +205,11 @@
               <span class="name">{shownName(p)}</span>
               <span class="nick">@{p.nick}</span>
             </div>
-            <span class="muted seen">{listeningNow(p, now) ? 'слушает' : p.updated_at ? ago(p.updated_at, now) : ''}</span>
-            <button class="btn text small" onclick={() => act(() => removeFriend(p.id))}>Удалить</button>
+            <span class="muted seen">{listeningNow(p, now) ? tr('слушает') : p.updated_at ? ago(p.updated_at, now) : ''}</span>
+            <button class="btn text small" onclick={() => act(() => removeFriend(p.id))}>{tr('Удалить')}</button>
           </div>
         {:else}
-          <p class="muted">Друзей пока нет — найди их по нику вверху.</p>
+          <p class="muted">{tr('Друзей пока нет — найди их по нику вверху.')}</p>
         {/each}
       </div>
     {/if}

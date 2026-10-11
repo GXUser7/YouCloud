@@ -2,6 +2,7 @@
 // signed in, no Origin. Yandex serves only listeners' own IPs, so these go through the extension
 // (lib/net.ts routes them). Answers become catalog items (lib/catalog.ts).
 
+import { tr } from '../i18n.svelte'
 import { yaToken } from '../accounts.svelte'
 import {
   colorFor,
@@ -163,7 +164,7 @@ function putYaArtist(a: YaArtist): string {
     service: 'ya',
     image: cover(a.cover?.uri ?? a.ogImage, '400x400'),
     color: colorFor(id),
-    followers: likes != null ? `${compact(likes)} ${countWords(likes, 'слушатель', 'слушателя', 'слушателей')} в избранном` : undefined,
+    followers: likes != null ? tr('%s в избранном', `${compact(likes)} ${countWords(likes, 'слушатель', 'слушателя', 'слушателей')}`) : undefined,
     albums: a.counts?.directAlbums,
     link: `https://music.yandex.ru/artist/${a.id}`,
   })
@@ -202,23 +203,23 @@ export async function home(): Promise<Section[]> {
   const sections: Section[] = []
   if (feed.status === 'fulfilled' && feed.value) {
     const made = (feed.value.generatedPlaylists ?? []).flatMap((g) => (g.ready !== false && g.data ? [putYaPlaylist(g.data, 'personal')] : []))
-    if (made.length) sections.push({ title: 'Собрано для тебя', sets: made })
+    if (made.length) sections.push({ title: tr('Собрано для тебя'), sets: made })
   }
   if (releases.status === 'fulfilled' && releases.value?.newReleases.length) {
     const albums = await yaPostForm<YaAlbum[]>('albums', { 'album-ids': releases.value.newReleases.slice(0, 40).join(',') }).catch(() => [])
-    if (albums.length) sections.push({ title: 'Новые релизы', sets: albums.map(putYaAlbum) })
+    if (albums.length) sections.push({ title: tr('Новые релизы'), sets: albums.map(putYaAlbum) })
   }
   if (playlists.status === 'fulfilled' && playlists.value?.newPlaylists.length) {
     const ids = playlists.value.newPlaylists.slice(0, 40).map((p) => `${p.uid}:${p.kind}`)
     const list = await yaPostForm<YaPlaylist[]>('playlists/list', { 'playlist-ids': ids.join(',') }).catch(() => [])
-    if (list.length) sections.push({ title: 'Новые плейлисты', sets: list.map((p) => putYaPlaylist(p)) })
+    if (list.length) sections.push({ title: tr('Новые плейлисты'), sets: list.map((p) => putYaPlaylist(p)) })
   }
   if (chart.status === 'fulfilled' && chart.value.chart) {
     // The chart comes whole, tracks and all: the set is ready to play from home.
     const p = chart.value.chart
-    const id = putYaPlaylist({ ...p, description: 'Самое популярное в Яндекс Музыке' })
+    const id = putYaPlaylist({ ...p, description: tr('Самое популярное в Яндекс Музыке') })
     finish(id, (p.tracks ?? []).filter((x) => x.track).map((x) => putYaTrack(x.track!)))
-    sections.push({ title: 'Чарт', sets: [id] })
+    sections.push({ title: tr('Чарт'), sets: [id] })
   }
   if (!sections.length) {
     const failure = [feed, releases, playlists, chart].find((r) => r.status === 'rejected')
@@ -237,7 +238,7 @@ export async function loadSet(id: string): Promise<TrackSet> {
     const uid = await myUid()
     const answer = await yaGet<{ library: { tracks: { id: string; albumId?: string }[] } }>(`users/${uid}/likes/tracks`)
     const ids = answer.library.tracks.slice(0, 500).map((t) => (t.albumId ? `${t.id}:${t.albumId}` : t.id))
-    putSet({ id, kind: 'liked', service: 'ya', title: 'Мне нравится', subtitle: 'Яндекс Музыка', color: '#ef5350', tracks: [], cover: null })
+    putSet({ id, kind: 'liked', service: 'ya', title: tr('Мне нравится'), subtitle: tr('Яндекс Музыка'), color: '#ef5350', tracks: [], cover: null })
     return finish(id, await tracksById(ids))
   }
   const [, uid, kind] = id.slice('ya:'.length).split(':')
@@ -322,8 +323,8 @@ export async function account(token = yaToken()): Promise<AccountStatus> {
     { headers: auth(token) },
   )
   const a = r.result.account
-  if (!a.uid) throw new Error('Яндекс не узнал этот токен')
-  return { uid: a.uid, name: a.displayName || a.fullName || a.login || 'Яндекс', plus: !!r.result.plus?.hasPlus }
+  if (!a.uid) throw new Error(tr('Яндекс не узнал этот токен'))
+  return { uid: a.uid, name: a.displayName || a.fullName || a.login || tr('Яндекс'), plus: !!r.result.plus?.hasPlus }
 }
 
 let uidCache: number | null = null
@@ -388,7 +389,7 @@ const batchOf = (r: RotorAnswer): RadioBatch => ({
 
 export async function radioStart(seeds: string[], heard: string[] = []): Promise<RadioBatch> {
   const r = await yaPostJson<RotorAnswer>('rotor/session/new', { seeds, queue: heard, includeTracksInResponse: true })
-  if (!r.radioSessionId) throw new Error('радио не запустилось')
+  if (!r.radioSessionId) throw new Error(tr('радио не запустилось'))
   return batchOf(r)
 }
 
@@ -417,18 +418,18 @@ export async function stream(track: Track): Promise<string> {
     if (e instanceof HttpError && e.status === 403 && e.body.includes('no-rights')) {
       throw new Error(
         track.ya!.ugc
-          ? 'это файл, который владелец сам загрузил в Яндекс Музыку, — Яндекс даёт слушать его только ему'
-          : 'Яндекс не даёт слушать этот трек с твоего аккаунта — похоже, это чужая загрузка или трек закрыт',
+          ? tr('это файл, который владелец сам загрузил в Яндекс Музыку, — Яндекс даёт слушать его только ему')
+          : tr('Яндекс не даёт слушать этот трек с твоего аккаунта — похоже, это чужая загрузка или трек закрыт'),
       )
     }
     throw e
   }
   const best = infos.filter((i) => i.codec === 'mp3').sort((a, b) => b.bitrateInKbps - a.bitrateInKbps)[0] ?? infos[0]
-  if (!best) throw new Error('Яндекс не даёт этот трек')
+  if (!best) throw new Error(tr('Яндекс не даёт этот трек'))
   const xml = await getText(best.downloadInfoUrl, { headers: auth() })
   const tag = (name: string) => xml.match(new RegExp(`<${name}>(.*?)</${name}>`))?.[1] ?? ''
   const [host, path, ts, s] = ['host', 'path', 'ts', 's'].map(tag)
-  if (!host || !path) throw new Error('Яндекс не дал ссылку на трек')
+  if (!host || !path) throw new Error(tr('Яндекс не дал ссылку на трек'))
   return `https://${host}/get-mp3/${md5(SALT + path.slice(1) + s)}/${ts}${path}`
 }
 

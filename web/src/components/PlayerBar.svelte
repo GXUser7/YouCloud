@@ -2,33 +2,46 @@
   // The player along the bottom: one bar, everything on a single line — what plays (the cover
   // opens the full player), the controls, the progress, the panels and the volume. One row keeps
   // it as low as a cover, and the page gets the height back.
+  import { tr } from '../lib/i18n.svelte'
   import { serviceName } from '../lib/catalog'
-  import { app, currentTrack, cycleRepeat, go, isLiked, like, next, openPanel, player, prev, seek, toggle, toggleShuffle, type Panel } from '../lib/state.svelte'
+  import { app, currentTrack, go, openPanel, player, remember, seek, type Panel } from '../lib/state.svelte'
   import { time } from '../lib/format'
+  import BarControls from './BarControls.svelte'
   import Cover from './Cover.svelte'
   import Icon from './Icon.svelte'
-  import LoadingIndicator from './LoadingIndicator.svelte'
-  import MorphPlay from './MorphPlay.svelte'
   import ServiceGlyph from './ServiceGlyph.svelte'
   import VolumeControl from './VolumeControl.svelte'
   import WavyProgress from './WavyProgress.svelte'
 
   const t = $derived(currentTrack())
-  const liked = $derived(!!t && isLiked(t.id))
   const duration = $derived(player.duration || t?.duration || 0)
-  const source = $derived(t ? (player.wave ? 'Моя волна' : player.context || serviceName(t.service)) : '')
+  const source = $derived(t ? (player.wave ? tr('Моя волна') : player.context || serviceName(t.service)) : '')
+
+  // The time on the right: the length, or what is left — a tap switches, and it is remembered.
+  let left = $state(readLeft())
+  function readLeft() {
+    try {
+      return localStorage.getItem('yc.timeLeft') === 'true'
+    } catch {
+      return false
+    }
+  }
+  function flipTime() {
+    left = !left
+    remember('timeLeft', left)
+  }
 
   const panels: { id: Panel; icon: string; label: string }[] = [
-    { id: 'lyrics', icon: 'lyrics', label: 'Текст' },
-    { id: 'queue', icon: 'queue_music', label: 'Очередь' },
-    { id: 'friends', icon: 'group', label: 'Друзья' },
+    { id: 'lyrics', icon: 'lyrics', label: tr('Текст') },
+    { id: 'queue', icon: 'queue_music', label: tr('Очередь') },
+    { id: 'friends', icon: 'group', label: tr('Друзья') },
   ]
 </script>
 
 <footer class="bar glass-strong">
   <section class="now">
     {#if t}
-      <button class="cover" class:spinning={player.playing} onclick={() => (app.nowPlaying = true)} aria-label="Открыть плеер" title="Открыть плеер">
+      <button class="cover" class:spinning={player.playing} onclick={() => (app.nowPlaying = true)} aria-label={tr('Открыть плеер')} title={tr('Открыть плеер')}>
         {#key t.id}
           <span class="cover-art"><Cover seed={t.id} color={t.color} src={t.cover} /></span>
         {/key}
@@ -47,41 +60,27 @@
           </span>
         {/key}
       </div>
-      <button class="icon-btn s heart" class:active={liked} onclick={() => like(t.id)} aria-label="Нравится" aria-pressed={liked}>
-        <Icon name="favorite" fill={liked} size={18} />
-      </button>
     {:else}
       <span class="cover empty"><Icon name="music_note" size={22} /></span>
       <div class="text">
-        <span class="title">Ничего не играет</span>
-        <span class="sub">Найди трек или включи подборку</span>
+        <span class="title">{tr('Ничего не играет')}</span>
+        <span class="sub">{tr('Найди трек или включи подборку')}</span>
       </div>
     {/if}
   </section>
 
-  <div class="transport">
-    <button class="icon-btn s opt" class:active={player.shuffle} onclick={toggleShuffle} aria-label="Перемешать" aria-pressed={player.shuffle}>
-      <Icon name="shuffle" size={18} />
-    </button>
-    <button class="icon-btn" onclick={prev} aria-label="Предыдущий"><Icon name="skip_previous" fill size={24} /></button>
-    <span class="play-wrap">
-      <MorphPlay playing={player.playing} onclick={toggle} size={48} />
-      {#if player.loading && t}<span class="busy"><LoadingIndicator size={48} contained={false} /></span>{/if}
-    </span>
-    <button class="icon-btn" onclick={() => next()} aria-label="Следующий"><Icon name="skip_next" fill size={24} /></button>
-    <button class="icon-btn s opt" class:active={player.repeat !== 'off'} onclick={cycleRepeat} aria-label="Повтор" aria-pressed={player.repeat !== 'off'}>
-      <Icon name={player.repeat === 'one' ? 'repeat_one' : 'repeat'} size={18} />
-    </button>
-  </div>
+  <BarControls />
 
-  <div class="progress">
-    <span class="time">{time(player.position)}</span>
-    <WavyProgress value={duration ? player.position / duration : 0} playing={player.playing && !player.loading} onseek={(f) => seek(f * duration)} />
-    <span class="time">{time(duration)}</span>
+  <div class="progress" class:idle={!t}>
+    <span class="time now-time">{time(player.position)}</span>
+    <WavyProgress value={duration ? player.position / duration : 0} playing={player.playing && !player.loading} {duration} onseek={t ? (f) => seek(f * duration) : undefined} />
+    <button class="time end-time" onclick={flipTime} title={left ? tr('Показать длину') : tr('Показать, сколько осталось')}>
+      {left && duration ? `−${time(Math.max(0, duration - player.position))}` : time(duration)}
+    </button>
   </div>
 
   <div class="side">
-    <div class="group" role="group" aria-label="Панель">
+    <div class="group" role="group" aria-label={tr('Панель')}>
       {#each panels as p (p.id)}
         {@const on = app.panelOpen && app.panel === p.id}
         <button class="seg" class:on onclick={() => openPanel(p.id)} aria-label={p.label} title={p.label} aria-pressed={on}>
@@ -212,42 +211,46 @@
     vertical-align: -1px;
   }
 
-  /* ---- Controls and progress ---- */
-  .transport {
-    flex: none;
-    display: flex;
-    align-items: center;
-    gap: 2px;
-  }
-  .transport .opt {
-    margin: 0 4px;
-  }
-  .play-wrap {
-    position: relative;
-    display: grid;
-    margin: 0 4px;
-  }
-  .busy {
-    position: absolute;
-    inset: 0;
-    pointer-events: none;
-    opacity: 0.45;
-    mix-blend-mode: screen;
-  }
+  /* ---- Progress ---- */
   .progress {
     flex: 1 1 auto;
     min-width: 140px;
     display: flex;
     align-items: center;
-    gap: 10px;
+    gap: 12px;
+    transition: opacity 300ms var(--ease-emph);
+  }
+  .progress.idle {
+    opacity: 0.45;
   }
   .time {
     flex: none;
-    width: 38px;
-    font-size: 12px;
+    min-width: 42px;
+    font-size: 12.5px;
     font-variant-numeric: tabular-nums;
     text-align: center;
     color: var(--on-surface-variant);
+  }
+  .now-time {
+    font-weight: 700;
+    color: var(--on-surface);
+  }
+  .end-time {
+    height: 26px;
+    padding: 0 6px;
+    border-radius: var(--r-full);
+    transition:
+      background-color 200ms var(--ease-emph),
+      color 200ms var(--ease-emph),
+      border-radius var(--d-fast) var(--spring-fast);
+  }
+  .end-time:hover {
+    background: var(--state-hover);
+    color: var(--on-surface);
+  }
+  .end-time:active {
+    border-radius: var(--r-xs);
+    background: var(--state-press);
   }
 
   /* ---- Panels and volume ---- */
@@ -311,9 +314,6 @@
     }
   }
   @media (max-width: 980px) {
-    .transport .opt {
-      display: none;
-    }
     .now {
       flex-basis: 240px;
     }

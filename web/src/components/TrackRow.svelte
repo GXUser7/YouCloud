@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tr } from '../lib/i18n.svelte'
   import { track as trackOf } from '../lib/catalog'
   import { go, isLiked, like, player, playTrack } from '../lib/state.svelte'
   import { time } from '../lib/format'
@@ -49,7 +50,7 @@
   {#if number !== undefined}
     <span class="num">{number}</span>
   {/if}
-  <button class="art" onclick={play} aria-label="Играть {t.title}">
+  <button class="art" onclick={play} aria-label={tr('Играть %s', t.title)}>
     <Cover seed={t.id} color={t.color} src={t.cover} />
     <span class="over">
       {#if current && player.playing}
@@ -63,7 +64,7 @@
   <div class="text">
     <div class="title ellipsis">
       {t.title}
-      {#if t.explicit}<span class="e" title="Есть ненормативная лексика">E</span>{/if}
+      {#if t.explicit}<span class="e" title={tr('Есть ненормативная лексика')}>E</span>{/if}
     </div>
     <div class="artists ellipsis">
       {#each t.artists as a, i (a.id + i)}
@@ -74,8 +75,13 @@
   {#if showAlbum && t.album}
     <button class="album link ellipsis" onclick={() => go('set/' + t.album!.id)}>{t.album.title}</button>
   {/if}
-  <span class="dur">{time(t.duration)}</span>
-  <button class="icon-btn s heart" class:on={liked} class:keep={liked} onclick={() => like(id)} aria-label="Нравится">
+  {#if t.live}
+    <span class="dur"><span class="badge-live">{tr('Эфир')}</span></span>
+  {:else}
+    <!-- No length known (home's songs on YouTube, before it is asked for): nothing, not 0:00. -->
+    <span class="dur">{t.duration ? time(t.duration) : ''}</span>
+  {/if}
+  <button class="icon-btn s heart" class:on={liked} class:keep={liked} onclick={() => like(id)} aria-label={tr('Нравится')}>
     <Icon name="favorite" fill={liked} size={22} />
   </button>
   {#if !compact}

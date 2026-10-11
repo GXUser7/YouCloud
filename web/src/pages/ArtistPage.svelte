@@ -1,5 +1,7 @@
 <script lang="ts">
+  import { tr } from '../lib/i18n.svelte'
   import { artist, artists, serviceName, set } from '../lib/catalog'
+  import { plural } from '../lib/format'
   import * as live from '../lib/live'
   import { player, playQueue, startRadio, toggle } from '../lib/state.svelte'
   import { reason } from '../lib/toast.svelte'
@@ -23,7 +25,7 @@
 
 {#await data}
   {#if known}{@render hero(known.id)}{/if}
-  <Loading text="Загружаю артиста…" tall={!known} />
+  <Loading text={tr('Загружаю артиста…')} tall={!known} />
 {:then page}
   {@const a = artist(page.artist)}
   {@const playingThis = player.contextId === ctx && player.playing}
@@ -37,13 +39,13 @@
       onclick={() => (player.contextId === ctx ? toggle() : playQueue(page.top, 0, a.name, ctx))}
     >
       <Icon name={playingThis ? 'pause' : 'play_arrow'} fill />
-      {playingThis ? 'Пауза' : 'Слушать'}
+      {playingThis ? tr('Пауза') : tr('Слушать')}
     </button>
-    <button class="icon-btn tonal l" disabled={!page.top.length} onclick={() => playQueue([...page.top].sort(() => Math.random() - 0.5), 0, a.name, ctx)} aria-label="Перемешать">
+    <button class="icon-btn tonal l" disabled={!page.top.length} onclick={() => playQueue([...page.top].sort(() => Math.random() - 0.5), 0, a.name, ctx)} aria-label={tr('Перемешать')}>
       <Icon name="shuffle" />
     </button>
     {#if page.top[0]}
-      <button class="icon-btn glassy l" onclick={() => startRadio(page.top[0])} aria-label="Радио" title="Радио по артисту"><Icon name="radio" /></button>
+      <button class="icon-btn glassy l" onclick={() => startRadio(page.top[0])} aria-label={tr('Радио')} title={tr('Радио по артисту')}><Icon name="radio" /></button>
     {/if}
     <span class="spacer"></span>
     {#if a.link}
@@ -53,7 +55,7 @@
 
   {#if page.top.length}
     <section class="section">
-      <div class="section-head"><h2>Популярные треки</h2></div>
+      <div class="section-head"><h2>{tr('Популярные треки')}</h2></div>
       {#each page.top.slice(0, 10) as t, i (t)}
         <TrackRow id={t} list={page.top} context={a.name} contextId={ctx} number={i + 1} />
       {/each}
@@ -61,22 +63,22 @@
   {/if}
 
   {#if page.releases.length}
-    <Shelf title="Альбомы и синглы">
+    <Shelf title={tr('Альбомы и синглы')}>
       {#each page.releases as r (r)}
         {@const s = set(r)}
-        <SetCard id={r} size={176} subtitle="{s.kind === 'single' ? 'Сингл' : 'Альбом'}{s.year ? ` · ${s.year}` : ''}" />
+        <SetCard id={r} size={176} subtitle="{s.kind === 'single' ? tr('Сингл') : tr('Альбом')}{s.year ? ` · ${s.year}` : ''}" />
       {/each}
     </Shelf>
   {/if}
 
   {#if page.playlists.length}
-    <Shelf title="Плейлисты">
+    <Shelf title={tr('Плейлисты')}>
       {#each page.playlists as p (p)}<SetCard id={p} size={176} />{/each}
     </Shelf>
   {/if}
 
   {#if page.similar.length}
-    <Shelf title="Похожие артисты">
+    <Shelf title={tr('Похожие артисты')}>
       {#each page.similar as s (s)}<ArtistCard id={s} size={150} />{/each}
     </Shelf>
   {/if}
@@ -89,12 +91,12 @@
   <section class="hero">
     <div class="banner"><Cover seed={'artist-' + a.id} color={a.color} src={a.image} kind="artist" grain /></div>
     <div class="shade"></div>
-    <button class="back icon-btn glassy l" onclick={() => history.back()} aria-label="Назад"><Icon name="arrow_back" /></button>
+    <button class="back icon-btn glassy l" onclick={() => history.back()} aria-label={tr('Назад')}><Icon name="arrow_back" /></button>
     <div class="who rise">
-      <span class="overline kind"><ServiceGlyph service={a.service} size={16} />Артист · {serviceName(a.service)}</span>
+      <span class="overline kind"><ServiceGlyph service={a.service} size={16} />{tr('Артист · %s', serviceName(a.service))}</span>
       <h1 class="display">{a.name}</h1>
       {#if a.followers || a.albums}
-        <p class="stats">{[a.followers, a.albums ? `${a.albums} альбомов` : ''].filter(Boolean).join(' · ')}</p>
+        <p class="stats">{[a.followers, a.albums ? plural(a.albums, 'альбом', 'альбома', 'альбомов') : ''].filter(Boolean).join(' · ')}</p>
       {/if}
     </div>
   </section>

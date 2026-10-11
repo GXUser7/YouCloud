@@ -1,6 +1,7 @@
 <script lang="ts">
   // The panel on the right: what friends play right now, the queue, or the lyrics — whichever the
   // player's buttons last asked for.
+  import { tr } from '../lib/i18n.svelte'
   import { artistNames, type Service } from '../lib/catalog'
   import { openLink } from '../lib/links'
   import { ago, avatarUrl, listeningNow, shownName, social } from '../lib/social.svelte'
@@ -15,9 +16,9 @@
   import TrackRow from './TrackRow.svelte'
 
   const tabs: { value: Panel; label: string }[] = [
-    { value: 'friends', label: 'Друзья' },
-    { value: 'queue', label: 'Очередь' },
-    { value: 'lyrics', label: 'Текст' },
+    { value: 'friends', label: tr('Друзья') },
+    { value: 'queue', label: tr('Очередь') },
+    { value: 'lyrics', label: tr('Текст') },
   ]
 
   let now = $state(Date.now())
@@ -52,7 +53,7 @@
         }
       }}
     />
-    <button class="icon-btn s" onclick={() => openPanel(app.panel)} aria-label="Скрыть панель">
+    <button class="icon-btn s" onclick={() => openPanel(app.panel)} aria-label={tr('Скрыть панель')}>
       <Icon name="close" size={20} />
     </button>
   </header>
@@ -61,11 +62,11 @@
     <div class="scroll">
       {#if !social.me}
         <div class="signed-out">
-          <p class="muted">Войди в аккаунт YouCloud — здесь будет видно, что слушают друзья.</p>
-          <button class="btn tonal small" onclick={() => go('friends')}><Icon name="login" size={18} />Войти</button>
+          <p class="muted">{tr('Войди в аккаунт YouCloud — здесь будет видно, что слушают друзья.')}</p>
+          <button class="btn tonal small" onclick={() => go('friends')}><Icon name="login" size={18} />{tr('Войти')}</button>
         </div>
       {:else}
-        <p class="overline head">{heard.some((p) => listeningNow(p, now)) ? 'Сейчас слушают' : 'Слушали недавно'}</p>
+        <p class="overline head">{heard.some((p) => listeningNow(p, now)) ? tr('Сейчас слушают') : tr('Слушали недавно')}</p>
         {#each heard as f (f.id)}
           {@const playing = listeningNow(f, now)}
           {@const svc = SERVICES[f.service ?? '']}
@@ -76,7 +77,7 @@
                 <span class="name">{shownName(f)}</span>
                 {#if playing}<span class="live"><EqBars size={12} /></span>{:else}<span class="ago">{ago(f.updated_at, now)}</span>{/if}
               </div>
-              <button class="np" disabled={!f.track_url} onclick={() => openLink(f.track_url!, `${shownName(f)} слушает`)}>
+              <button class="np" disabled={!f.track_url} onclick={() => openLink(f.track_url!, tr('%s слушает', shownName(f)))}>
                 <span class="mini-cover"><Cover seed={f.id + f.title} color={f.color ?? '#9CC2A2'} src={f.cover_url} /></span>
                 <span class="np-text">
                   <span class="ellipsis np-title">{f.title}</span>
@@ -87,31 +88,31 @@
             </div>
           </div>
         {:else}
-          <p class="muted empty">{social.friendsLoaded ? 'Друзья пока ничего не слушали.' : 'Загружаю друзей…'}</p>
+          <p class="muted empty">{social.friendsLoaded ? tr('Друзья пока ничего не слушали.') : tr('Загружаю друзей…')}</p>
         {/each}
         <button class="btn text all" onclick={() => go('friends')}>
-          Все друзья <Icon name="arrow_forward" size={18} />
+          {tr('Все друзья')} <Icon name="arrow_forward" size={18} />
         </button>
       {/if}
     </div>
   {:else if app.panel === 'queue'}
     <div class="scroll">
       {#if t}
-        <p class="overline head">Сейчас играет</p>
+        <p class="overline head">{tr('Сейчас играет')}</p>
         <TrackRow id={t.id} list={player.queue} compact context={player.context} contextId={player.contextId} />
         <div class="queue-head">
-          <p class="overline">Далее</p>
-          <span class="from ellipsis">{player.wave ? 'Моя волна' : player.context}</span>
+          <p class="overline">{tr('Далее')}</p>
+          <span class="from ellipsis">{player.wave ? tr('Моя волна') : player.context}</span>
         </div>
         {#each upNext as id, i (id + i)}
           <TrackRow {id} list={player.queue} compact context={player.context} contextId={player.contextId} onplay={() => jump(player.index + 1 + i)} />
         {:else}
           <p class="muted empty">
-            {player.radio ? 'Радио подбирает следующие треки…' : 'Очередь закончилась. Включи радио по треку — и музыка не кончится.'}
+            {player.radio ? tr('Радио подбирает следующие треки…') : tr('Очередь закончилась. Включи радио по треку — и музыка не кончится.')}
           </p>
         {/each}
       {:else}
-        <p class="muted empty">Очередь пуста. Включи трек или подборку.</p>
+        <p class="muted empty">{tr('Очередь пуста. Включи трек или подборку.')}</p>
       {/if}
     </div>
   {:else}
@@ -126,7 +127,7 @@
         </div>
       {/if}
       <Lyrics onsource={(s) => (source = s)} />
-      {#if source}<p class="credit muted">Текст: {source}</p>{/if}
+      {#if source}<p class="credit muted">{tr('Текст: %s', source)}</p>{/if}
     </div>
   {/if}
 </aside>

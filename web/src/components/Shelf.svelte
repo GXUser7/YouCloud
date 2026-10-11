@@ -1,5 +1,6 @@
 <script lang="ts">
   // A titled row that scrolls sideways, with arrows that appear only where there is more to see.
+  import { tr } from '../lib/i18n.svelte'
   import type { Snippet } from 'svelte'
   import Icon from './Icon.svelte'
 
@@ -35,10 +36,10 @@
     </div>
     <div class="tools">
       {@render action?.()}
-      <button class="icon-btn s glassy" disabled={!canBack} onclick={() => page(-1)} aria-label="Назад">
+      <button class="icon-btn s glassy" disabled={!canBack} onclick={() => page(-1)} aria-label={tr('Назад')}>
         <Icon name="chevron_left" />
       </button>
-      <button class="icon-btn s glassy" disabled={!canForward} onclick={() => page(1)} aria-label="Дальше">
+      <button class="icon-btn s glassy" disabled={!canForward} onclick={() => page(1)} aria-label={tr('Дальше')}>
         <Icon name="chevron_right" />
       </button>
     </div>

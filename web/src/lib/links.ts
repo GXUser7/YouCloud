@@ -1,6 +1,7 @@
 // A track's page on its service, as friends' "now playing" and profile showcases carry it, turned
 // back into something to play or open — as the app's SharedLinks opens shared links.
 
+import { tr } from './i18n.svelte'
 import * as soundcloud from './services/soundcloud'
 import * as yandex from './services/yandex'
 import * as youtube from './services/youtube'
@@ -21,7 +22,7 @@ export async function openLink(link: string, context = ''): Promise<void> {
     const host = url.hostname.replace(/^(www|m)\./, '')
     if (host === 'soundcloud.com' || host === 'on.soundcloud.com') {
       const found = await soundcloud.resolve(link)
-      if (!found) throw new Error('SoundCloud не узнал ссылку')
+      if (!found) throw new Error(tr('SoundCloud не узнал ссылку'))
       if (found.kind === 'track') playQueue([found.id], 0, context, null, { kind: 'related' })
       else go(`${found.kind === 'set' ? 'set' : 'artist'}/${found.id}`)
       return
@@ -31,21 +32,21 @@ export async function openLink(link: string, context = ''): Promise<void> {
       const album = url.pathname.match(/\/album\/(\d+)/)?.[1]
       if (track) {
         const id = await yandex.trackByKey(album ? `${track}:${album}` : track)
-        if (!id) throw new Error('Яндекс не нашёл трек')
+        if (!id) throw new Error(tr('Яндекс не нашёл трек'))
         playQueue([id], 0, context)
       } else if (album) go(`set/ya:al:${album}`)
-      else throw new Error('ссылка Яндекса без трека')
+      else throw new Error(tr('ссылка Яндекса без трека'))
       return
     }
     const videoId = videoIdOf(url)
     if (videoId) {
       const id = await youtube.trackOf(videoId)
-      if (!id) throw new Error('YouTube не отдал трек')
+      if (!id) throw new Error(tr('YouTube не отдал трек'))
       playQueue([id], 0, context, null, { kind: 'related' })
       return
     }
-    throw new Error('ссылка на неизвестный сервис')
+    throw new Error(tr('ссылка на неизвестный сервис'))
   } catch (e) {
-    toast(`Не получилось включить: ${reason(e)}`)
+    toast(tr('Не получилось включить: %s', reason(e)))
   }
 }

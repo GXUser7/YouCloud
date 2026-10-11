@@ -1,6 +1,7 @@
 // Synced lyrics, as the app finds them: Yandex's own for its tracks, otherwise LRCLIB, an open
 // library matched by artist, title and length.
 
+import { tr } from './i18n.svelte'
 import type { Track } from './catalog'
 import * as yandex from './services/yandex'
 import * as youtube from './services/youtube'
@@ -67,7 +68,7 @@ export function lyricsFor(t: Track): Promise<Lyrics | null> {
       const own = t.service === 'ya' ? await yandex.lyrics(t) : null
       if (own) {
         const lines = parseLrc(own)
-        if (lines.length) return { lines, source: 'Яндекс Музыка', synced: true }
+        if (lines.length) return { lines, source: tr('Яндекс Музыка'), synced: true }
       }
       const open = await lrclib(t).catch(() => null)
       const lines = open ? parseLrc(open) : []

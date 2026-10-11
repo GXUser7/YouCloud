@@ -1,5 +1,6 @@
 <script lang="ts">
   // An invitation to sign in to a service, signing in right here when the extension can.
+  import { tr } from '../lib/i18n.svelte'
   import type { Service } from '../lib/catalog'
   import { serviceName } from '../lib/catalog'
   import { connect } from '../lib/login'
@@ -28,11 +29,11 @@
 <section class="signin glass rise">
   <span class="mark"><ServiceGlyph {service} size={44} /></span>
   <div class="text">
-    <h2 class="headline">Войди в {serviceName(service)}</h2>
+    <h2 class="headline">{tr('Войди в %s', serviceName(service))}</h2>
     <p class="muted">{error || text}</p>
   </div>
   <button class="btn filled large" disabled={busy} onclick={signIn}>
-    <Icon name="login" />{busy ? 'Жду вход…' : 'Войти'}
+    <Icon name="login" />{busy ? tr('Жду вход…') : tr('Войти')}
   </button>
 </section>
 

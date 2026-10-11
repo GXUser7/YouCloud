@@ -1,9 +1,10 @@
 <script lang="ts">
   // What went wrong, said plainly, with a way to try again.
+  import { tr } from '../lib/i18n.svelte'
   import Icon from './Icon.svelte'
   import { shapePath } from '../lib/shapes'
 
-  let { title = 'Не загрузилось', message, onretry }: { title?: string; message: string; onretry?: () => void } = $props()
+  let { title = tr('Не загрузилось'), message, onretry }: { title?: string; message: string; onretry?: () => void } = $props()
 </script>
 
 <section class="problem glass rise">
@@ -13,7 +14,7 @@
     <p class="muted">{message}</p>
   </div>
   {#if onretry}
-    <button class="btn tonal" onclick={onretry}><Icon name="refresh" size={20} />Повторить</button>
+    <button class="btn tonal" onclick={onretry}><Icon name="refresh" size={20} />{tr('Повторить')}</button>
   {/if}
 </section>
 

@@ -7,6 +7,7 @@
 // in, writes each change at once, and hears of the others over Realtime as they are made — and,
 // coming back to the tab or after the connection drops, asks what changed since it last looked.
 
+import { tr } from './i18n.svelte'
 import type { RealtimeChannel } from '@supabase/supabase-js'
 import { colorFor, putTrack, tracks, type Service, type Track } from './catalog'
 import { supabase } from './supabase'
@@ -85,7 +86,7 @@ function put(r: Row): string {
   return putTrack({
     id,
     service: svc,
-    title: r.title || 'Без названия',
+    title: r.title || tr('Без названия'),
     artists,
     duration: Math.round((r.duration_ms ?? 0) / 1000),
     cover: coverOf(svc, r.cover),
@@ -218,7 +219,7 @@ addEventListener('visibilitychange', () => {
 /** Puts [t] in «Любимое» or takes it out, here at once and then for every device. */
 export async function setFavorite(t: Track, liked: boolean): Promise<void> {
   const row = rowOf(t, liked)
-  if (!row) throw new Error('этот трек не сохранить в «Любимое»')
+  if (!row) throw new Error(tr('этот трек не сохранить в «Любимое»'))
   const before = { changed: changed.get(t.id), likedAt: likedAt.get(t.id) }
   apply(row)
   reorder()

@@ -1,6 +1,7 @@
 <script lang="ts">
   // The play button: round while paused, squaring while it plays, as in the app; pressing it
   // squeezes it a little. The icon cross-fades as it swaps, without spinning.
+  import { tr } from '../lib/i18n.svelte'
   import Icon from './Icon.svelte'
 
   let { playing, onclick, size = 56, label = '' }: { playing: boolean; onclick: () => void; size?: number; label?: string } = $props()
@@ -11,7 +12,7 @@
   class:playing
   style:--s="{size}px"
   {onclick}
-  aria-label={label || (playing ? 'Пауза' : 'Играть')}
+  aria-label={label || (playing ? tr('Пауза') : tr('Играть'))}
 >
   {#key playing}
     <span class="glyph"><Icon name={playing ? 'pause' : 'play_arrow'} fill size={size * 0.46} /></span>

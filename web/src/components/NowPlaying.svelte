@@ -1,6 +1,7 @@
 <script lang="ts">
   // The full player, over everything: the cover large with its colour glowing behind it (the
   // app's Ambilight), the Expressive slider and big controls, and the lyrics alongside.
+  import { tr } from '../lib/i18n.svelte'
   import { serviceName, track } from '../lib/catalog'
   import { app, currentTrack, cycleRepeat, go, isLiked, jump, like, next, player, prev, seek, startRadio, toggle, toggleShuffle } from '../lib/state.svelte'
   import { time } from '../lib/format'
@@ -38,17 +39,17 @@
 
 <svelte:window onkeydown={(e) => e.key === 'Escape' && close()} />
 
-<div class="np" role="dialog" aria-label="Сейчас играет">
+<div class="np" role="dialog" aria-label={tr('Сейчас играет')}>
   {#key t.id}
     <div class="glow" aria-hidden="true"><BlurredCover seed={t.id} color={t.color} src={t.cover} blur={110} saturate={1.4} /></div>
   {/key}
   <div class="veil"></div>
 
   <header>
-    <button class="icon-btn l glassy" onclick={close} aria-label="Свернуть"><Icon name="keyboard_arrow_down" size={30} /></button>
+    <button class="icon-btn l glassy" onclick={close} aria-label={tr('Свернуть')}><Icon name="keyboard_arrow_down" size={30} /></button>
     <div class="from">
-      <span class="overline">{player.wave ? 'Моя волна' : 'Играет из'}</span>
-      <span class="ctx ellipsis">{player.wave ? 'Яндекс Музыка' : player.context || serviceName(t.service)}</span>
+      <span class="overline">{player.wave ? tr('Моя волна') : tr('Играет из')}</span>
+      <span class="ctx ellipsis">{player.wave ? tr('Яндекс Музыка') : player.context || serviceName(t.service)}</span>
     </div>
     <TrackMenu id={t.id} large onleave={close} />
   </header>
@@ -69,7 +70,7 @@
             onclick={() => {
               close()
               go('set/' + t.album!.id)
-            }}><Icon name="album" size={18} /><span class="ellipsis album-name">{t.album.title || 'Альбом'}</span></button
+            }}><Icon name="album" size={18} /><span class="ellipsis album-name">{t.album.title || tr('Альбом')}</span></button
           >
         {/if}
       </div>
@@ -92,7 +93,7 @@
         <Slider
           value={(scrub ?? player.position) / duration}
           thickness={18}
-          label="Перемотка"
+          label={tr('Перемотка')}
           onchange={(f) => (scrub = f * duration)}
           onrelease={(f) => {
             seek(f * duration)
@@ -106,13 +107,13 @@
       </div>
 
       <div class="controls">
-        <button class="icon-btn square heart" class:liked onclick={() => like(t.id)} aria-label="Нравится">
+        <button class="icon-btn square heart" class:liked onclick={() => like(t.id)} aria-label={tr('Нравится')}>
           <Icon name="favorite" fill={liked} size={28} />
         </button>
-        <button class="icon-btn glassy big" onclick={prev} aria-label="Предыдущий"><Icon name="skip_previous" fill size={32} /></button>
+        <button class="icon-btn glassy big" onclick={prev} aria-label={tr('Предыдущий')}><Icon name="skip_previous" fill size={32} /></button>
         <PlayButton playing={player.playing} onclick={toggle} size={104} />
-        <button class="icon-btn glassy big" onclick={() => next()} aria-label="Следующий"><Icon name="skip_next" fill size={32} /></button>
-        <button class="icon-btn glassy mid" class:active={player.shuffle} onclick={toggleShuffle} aria-label="Перемешать" aria-pressed={player.shuffle}>
+        <button class="icon-btn glassy big" onclick={() => next()} aria-label={tr('Следующий')}><Icon name="skip_next" fill size={32} /></button>
+        <button class="icon-btn glassy mid" class:active={player.shuffle} onclick={toggleShuffle} aria-label={tr('Перемешать')} aria-pressed={player.shuffle}>
           <Icon name="shuffle" />
         </button>
       </div>
@@ -122,21 +123,21 @@
           {#if upNext}
             <span class="next-cover"><Cover seed={upNext.id} color={upNext.color} src={upNext.cover} /></span>
             <span class="next-text">
-              <span class="overline">Далее</span>
+              <span class="overline">{tr('Далее')}</span>
               <span class="ellipsis next-title">{upNext.title}</span>
             </span>
           {:else}
-            <span class="next-text"><span class="overline">Далее</span><span class="next-title">Радио по треку</span></span>
+            <span class="next-text"><span class="overline">{tr('Далее')}</span><span class="next-title">{tr('Радио по треку')}</span></span>
           {/if}
           <span class="icon-btn s glassy"><Icon name="queue_music" size={20} /></span>
         </button>
-        <button class="icon-btn glassy l" class:active={side === 'lyrics'} onclick={() => show('lyrics')} aria-label="Текст" title="Текст песни" aria-pressed={side === 'lyrics'}>
+        <button class="icon-btn glassy l" class:active={side === 'lyrics'} onclick={() => show('lyrics')} aria-label={tr('Текст')} title={tr('Текст песни')} aria-pressed={side === 'lyrics'}>
           <Icon name="lyrics" fill={side === 'lyrics'} />
         </button>
-        <button class="icon-btn glassy l" onclick={() => startRadio(t.id)} aria-label="Радио по треку" title="Радио по треку">
+        <button class="icon-btn glassy l" onclick={() => startRadio(t.id)} aria-label={tr('Радио по треку')} title={tr('Радио по треку')}>
           <Icon name="radio" />
         </button>
-        <button class="icon-btn glassy l" class:active={player.repeat !== 'off'} onclick={cycleRepeat} aria-label="Повтор" aria-pressed={player.repeat !== 'off'}>
+        <button class="icon-btn glassy l" class:active={player.repeat !== 'off'} onclick={cycleRepeat} aria-label={tr('Повтор')} aria-pressed={player.repeat !== 'off'}>
           <Icon name={player.repeat === 'one' ? 'repeat_one' : 'repeat'} />
         </button>
       </div>
@@ -147,11 +148,11 @@
         <Lyrics size="l" />
       {:else}
         <div class="queue">
-          <p class="overline queue-head">Далее · {player.wave ? 'Моя волна' : player.context}</p>
+          <p class="overline queue-head">{tr('Далее · %s', player.wave ? tr('Моя волна') : player.context)}</p>
           {#each upcoming as id, i (id + i)}
             <TrackRow {id} list={player.queue} compact context={player.context} contextId={player.contextId} onplay={() => jump(player.index + 1 + i)} />
           {:else}
-            <p class="muted">{player.radio ? 'Радио подбирает следующие треки…' : 'Дальше ничего нет — включи радио по треку.'}</p>
+            <p class="muted">{player.radio ? tr('Радио подбирает следующие треки…') : tr('Дальше ничего нет — включи радио по треку.')}</p>
           {/each}
         </div>
       {/if}

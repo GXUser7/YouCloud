@@ -5,6 +5,7 @@
 // Masaki (the listener's own browser) answers the same messages itself, with nothing to install:
 // its hello says host 'masaki', and the page then fits itself to the browser around it.
 
+import { tr } from './i18n.svelte'
 import { version as latest } from '../../extension/manifest.json'
 
 type Answer = { status?: number; statusText?: string; headers?: [string, string][]; body?: string; value?: unknown; error?: string }
@@ -98,7 +99,7 @@ export function extensionFetch(url: string, init: ExtensionInit = {}): Promise<R
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
       waiting.delete(id)
-      reject(new Error('расширение не ответило'))
+      reject(new Error(tr('расширение не ответило')))
     }, timeoutMs)
     waiting.set(id, (answer) => {
       clearTimeout(timer)
@@ -124,26 +125,26 @@ const older = (v: string, than: number[]) => {
   return false
 }
 
-const RELOAD_PAGE = 'Расширение обновилось — обнови эту страницу (F5)'
+const RELOAD_PAGE = tr('Расширение обновилось — обнови эту страницу (F5)')
 
 /** What a failed ask means for the listener, in words they can act on. */
 function explain(error: string): string {
   if (/context invalidated|receiving end does not exist|could not establish connection/i.test(error)) return RELOAD_PAGE
-  return `расширение: ${error}`
+  return tr('расширение: %s', error)
 }
 
 /** One of the extension's own asks: 'sc-token' (SoundCloud's session cookie), 'sc-login', 'ya-login'. */
 export async function extensionCall<T = unknown>(name: 'sc-token' | 'sc-login' | 'ya-login' | 'yt-account' | 'yt-login' | 'yt-cookies', timeoutMs = 10_000): Promise<T> {
   const v = await extension()
-  if (!v) throw new Error('Нужно расширение YouCloud')
+  if (!v) throw new Error(tr('Нужно расширение YouCloud'))
   if (older(v, SIGN_IN_VERSION)) {
-    throw new Error(`Расширение ${v} устарело: новое — в Настройках, раздел «Расширение»`)
+    throw new Error(tr('Расширение %s устарело: новое — в Настройках, раздел «Расширение»', v))
   }
   const id = ++seq
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
       waiting.delete(id)
-      reject(new Error(`Расширение не ответило. ${RELOAD_PAGE}`))
+      reject(new Error(tr('Расширение не ответило. %s', RELOAD_PAGE)))
     }, timeoutMs)
     waiting.set(id, (answer) => {
       clearTimeout(timer)
@@ -167,7 +168,7 @@ export function hostStream(videoId: string, timeoutMs = 120_000): Promise<{ url:
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
       waiting.delete(id)
-      reject(new Error('Masaki не ответил'))
+      reject(new Error(tr('Masaki не ответил')))
     }, timeoutMs)
     waiting.set(id, (answer) => {
       clearTimeout(timer)

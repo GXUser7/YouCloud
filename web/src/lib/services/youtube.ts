@@ -7,8 +7,9 @@
 // signed in, whose URLs are unscrambled by YouTube's own player script. That script runs in a
 // Worker of its own, with nothing of the page in reach.
 
+import { i18n, tr } from '../i18n.svelte'
 import type { Innertube } from 'youtubei.js/web'
-import { artists as artistIndex, colorFor, putArtist, putSet, putTrack, sets, type SetKind, type Track, type TrackSet } from '../catalog'
+import { artists as artistIndex, colorFor, putArtist, putSet, putTrack, sets, tracks as catalogTracks, type SetKind, type Track, type TrackSet } from '../catalog'
 import { accounts } from '../accounts.svelte'
 import { extension, extensionCall, hostStream, hostStreams } from '../extension'
 import { at, getText, HttpError, postJson, request } from '../net'
@@ -102,7 +103,7 @@ async function create(withPlayer: boolean): Promise<Innertube> {
     cache: new UniversalCache(true),
     generate_session_locally: true,
     retrieve_player: withPlayer,
-    lang: 'ru',
+    lang: i18n.lang,
     location: 'RU',
   })
 }
@@ -141,7 +142,7 @@ function putYtTrack(item: any, fallback?: { cover?: string | null; artist?: { id
   return putTrack({
     id,
     service: 'yt',
-    title: text(item.title) || 'Без названия',
+    title: text(item.title) || tr('Без названия'),
     artists,
     duration: item.duration?.seconds ?? 0,
     cover: picture(thumbsOf(item), 400) ?? fallback?.cover ?? `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,
@@ -164,7 +165,7 @@ function putYtSet(item: any, kind?: SetKind): string | null {
     id,
     kind: type,
     service: 'yt',
-    title: text(item.title) || 'Подборка',
+    title: text(item.title) || tr('Подборка'),
     subtitle,
     cover: picture(thumbsOf(item)),
     color: colorFor(id),
@@ -181,11 +182,11 @@ function putYtArtist(item: any): string | null {
   const id = `yt:a:${channelId}`
   return putArtist({
     id,
-    name: text(item.title) || item.name || 'Артист',
+    name: text(item.title) || item.name || tr('Артист'),
     service: 'yt',
     image: picture(thumbsOf(item)),
     color: colorFor(id),
-    followers: item.subscribers ? `${item.subscribers}`.replace(/subscribers?/i, 'подписчиков') : undefined,
+    followers: item.subscribers ? `${item.subscribers}`.replace(/subscribers?/i, tr('подписчиков')) : undefined,
     link: `https://music.youtube.com/channel/${channelId}`,
   })
 }
@@ -226,7 +227,7 @@ async function browseContinuation(client: Innertube, token: string): Promise<any
   if (visitor && !accounts.yt) headers['x-goog-visitor-id'] = visitor
   return postJson(
     `${API}browse?ctoken=${encodeURIComponent(token)}&continuation=${encodeURIComponent(token)}&type=next&prettyPrint=false`,
-    { context: { client: { clientName: 'WEB_REMIX', clientVersion: clientVersion(), hl: 'ru', gl: 'RU', visitorData: accounts.yt ? undefined : visitor }, user: {} } },
+    { context: { client: { clientName: 'WEB_REMIX', clientVersion: clientVersion(), hl: i18n.lang, gl: 'RU', visitorData: accounts.yt ? undefined : visitor }, user: {} } },
     { headers, session: sessionMode },
   )
 }
@@ -290,14 +291,58 @@ export async function home(): Promise<Section[]> {
     else if (into.sets.length) sections.push({ title, sets: into.sets })
   }
   if (await signedIn()) {
-    putSet({ id: 'yt:pl:LM', kind: 'liked', service: 'yt', title: 'Понравившаяся музыка', subtitle: 'Автоплейлист', color: '#e53935', tracks: [], cover: null })
+    putSet({ id: 'yt:pl:LM', kind: 'liked', service: 'yt', title: tr('Понравившаяся музыка'), subtitle: tr('Автоплейлист'), color: '#e53935', tracks: [], cover: null })
     // Home puts the liked playlist in a different row each time, or leaves it out; it goes first.
     for (const section of sections) section.sets = section.sets.filter((id) => id !== 'yt:pl:LM')
     const firstSets = sections.find((section) => section.sets.length)
     if (firstSets) firstSets.sets.unshift('yt:pl:LM')
-    else sections.unshift({ title: 'Твоя медиатека', sets: ['yt:pl:LM'] })
+    else sections.unshift({ title: tr('Твоя медиатека'), sets: ['yt:pl:LM'] })
   }
-  return sections.filter((section) => section.sets.length || section.tracks?.length)
+  const kept = sections.filter((section) => section.sets.length || section.tracks?.length)
+  // Home's songs come without their length; asked for, but home doesn't wait long for them.
+  const songs = kept.flatMap((section) => section.tracks ?? [])
+  await Promise.race([fillLengths(songs).catch(() => {}), new Promise((done) => setTimeout(done, 3000))])
+  return kept
+}
+
+/** "3:36", "1:02:03", "33 778:11:52" in seconds; null for what isn't a length. */
+function lengthOf(text: string | undefined): number | null {
+  if (!text) return null
+  const parts = text.replace(/\s/g, '').split(':').map(Number)
+  if (parts.length < 2 || parts.some((n) => !Number.isFinite(n))) return null
+  return parts.reduce((sum, n) => sum * 60 + n, 0)
+}
+
+/** Longer than any song: a broadcast's running time (one 24/7 stream's ran past 33 000 hours). */
+const LIVE_AFTER_S = 24 * 3600
+
+/**
+ * The lengths of [ids] that have none — home's songs, which YouTube Music shows without one — as
+ * its player asks for a queue, fifty at a time. A broadcast is told by its running time and
+ * marked live instead.
+ */
+async function fillLengths(ids: string[]): Promise<void> {
+  const missing = [...new Set(ids)].filter((id) => {
+    const t = catalogTracks.get(id)
+    return t?.yt && !t.duration && !t.live
+  })
+  if (!missing.length) return
+  const actions: any = ((await yt()) as any).actions
+  const chunks: string[][] = []
+  for (let i = 0; i < missing.length; i += 50) chunks.push(missing.slice(i, i + 50))
+  await Promise.all(
+    chunks.map(async (chunk) => {
+      const answer = await actions.execute('/music/get_queue', { client: 'YTMUSIC', videoIds: chunk.map((id) => catalogTracks.get(id)!.yt!.videoId), parse: false })
+      for (const q of answer?.data?.queueDatas ?? []) {
+        const v = q.content?.playlistPanelVideoRenderer ?? q.content?.playlistPanelVideoWrapperRenderer?.primaryRenderer?.playlistPanelVideoRenderer
+        const t = v?.videoId && catalogTracks.get(`yt:t:${v.videoId}`)
+        const seconds = lengthOf(v?.lengthText?.runs?.[0]?.text ?? v?.lengthText?.simpleText)
+        if (!t || seconds == null) continue
+        if (seconds > LIVE_AFTER_S) t.live = true
+        else t.duration = seconds
+      }
+    }),
+  )
 }
 
 function finish(id: string, tracks: string[], extra: Partial<TrackSet> = {}): TrackSet {
@@ -352,12 +397,12 @@ export async function loadArtist(id: string): Promise<ArtistPage> {
   const header = page.header
   putArtist({
     id,
-    name: text(header?.title) || 'Артист',
+    name: text(header?.title) || tr('Артист'),
     service: 'yt',
     image: picture(thumbsOf(header?.thumbnail)),
     color: colorFor(id),
     followers: header?.subscription_button?.subscriber_count?.toString?.()
-      ? `${header.subscription_button.subscriber_count} подписчиков`
+      ? tr('%s подписчиков', header.subscription_button.subscriber_count)
       : undefined,
     link: `https://music.youtube.com/channel/${channelId}`,
   })
@@ -475,7 +520,7 @@ export interface Library {
 }
 
 export async function library(): Promise<Library> {
-  putSet({ id: 'yt:pl:LM', kind: 'liked', service: 'yt', title: 'Понравившаяся музыка', subtitle: 'YouTube Music', color: '#e53935', tracks: [], cover: null })
+  putSet({ id: 'yt:pl:LM', kind: 'liked', service: 'yt', title: tr('Понравившаяся музыка'), subtitle: 'YouTube Music', color: '#e53935', tracks: [], cover: null })
   const liked = await loadSet('yt:pl:LM')
   const playlists: string[] = []
   try {
@@ -504,7 +549,7 @@ export async function signedIn(): Promise<boolean> {
 async function accountNameWith(mode: string): Promise<string | null> {
   const answer = await postJson(
     `${API}account/account_menu?prettyPrint=false`,
-    { context: { client: { clientName: 'WEB_REMIX', clientVersion: clientVersion(), hl: 'ru' }, user: {} } },
+    { context: { client: { clientName: 'WEB_REMIX', clientVersion: clientVersion(), hl: i18n.lang }, user: {} } },
     { headers: { 'x-origin': ORIGIN }, session: mode },
   )
   const header = at(answer, 'actions', 0, 'openPopupAction', 'popup', 'multiPageMenuRenderer', 'header', 'activeAccountHeaderRenderer')
@@ -536,24 +581,24 @@ export async function accountName(): Promise<string | null> {
 /** What YouTube makes of this browser's session, each way of sending it — for a session it won't take. */
 export async function diagnose(): Promise<string[]> {
   const lines: string[] = []
-  const names = await extensionCall<string[]>('yt-cookies').catch((e) => [`ошибка: ${(e as Error).message}`])
+  const names = await extensionCall<string[]>('yt-cookies').catch((e) => [tr('ошибка: %s', (e as Error).message)])
   const key = ['SID', 'HSID', 'SSID', 'APISID', 'SAPISID', '__Secure-1PSID', '__Secure-3PSID', '__Secure-1PSIDTS', '__Secure-3PSIDTS', 'LOGIN_INFO']
-  lines.push(`Cookie YouTube в браузере: ${names.length}. Ключевые: ${key.map((k) => `${k} ${names.includes(k) ? '✓' : '✗'}`).join(', ')}`)
+  lines.push(tr('Cookie YouTube в браузере: %s. Ключевые: %s', names.length, key.map((k) => `${k} ${names.includes(k) ? '✓' : '✗'}`).join(', ')))
   for (const mode of SESSION_MODES) {
     const page = await getText(ORIGIN + '/', { session: mode })
       .then((html) =>
         /"LOGGED_IN":true/.test(html)
-          ? 'страница: вошёл'
+          ? tr('страница: вошёл')
           : /"LOGGED_IN":false/.test(html)
-            ? 'страница: гость'
+            ? tr('страница: гость')
             : /consent\.(youtube|google)\.com/.test(html)
-              ? 'страница: просит согласие с cookie'
-              : 'страница: ?',
+              ? tr('страница: просит согласие с cookie')
+              : tr('страница: ?'),
       )
-      .catch((e) => `страница: ошибка ${(e as Error).message.slice(0, 60)}`)
+      .catch((e) => tr('страница: ошибка %s', (e as Error).message.slice(0, 60)))
     const api = await accountNameWith(mode)
-      .then((n) => (n ? `API: ${n}` : 'API: гость'))
-      .catch((e) => `API: ошибка ${(e as Error).message.slice(0, 80)}`)
+      .then((n) => (n ? `API: ${n}` : tr('API: гость')))
+      .catch((e) => tr('API: ошибка %s', (e as Error).message.slice(0, 80)))
     lines.push(`${mode}: ${page}, ${api}`)
   }
   return lines
@@ -576,7 +621,7 @@ const VR_CLIENT = {
   androidSdkVersion: 32,
   osName: 'Android',
   osVersion: '12L',
-  hl: 'ru',
+  hl: i18n.lang,
 }
 const VR_UA = 'com.google.android.apps.youtube.vr.oculus/1.62.27 (Linux; U; Android 12L; eureka-user Build/SQ3A.220605.009.A1) gzip'
 
@@ -749,7 +794,7 @@ export async function stream(t: Track): Promise<string> {
     }
   }
   if (!url) {
-    if (!(await extension())) throw new Error(`YouTube не отдал звук (${refusal}). Нужно расширение YouCloud`)
+    if (!(await extension())) throw new Error(tr('YouTube не отдал звук (%s). Нужно расширение YouCloud', refusal))
     const client = await ytPlayer()
     // Clients that take the listener's session, likeliest first. A client YouTube has moved to
     // its own streaming protocol (SABR) answers with formats that have no URL at all; the next
@@ -770,7 +815,7 @@ export async function stream(t: Track): Promise<string> {
       }
       const format = pickAudio(info.streaming_data)
       if (!format) {
-        refusal = 'YouTube отдал только поток SABR, без ссылок'
+        refusal = tr('YouTube отдал только поток SABR, без ссылок')
         continue
       }
       url = await format.decipher(client.session.player)
@@ -778,8 +823,8 @@ export async function stream(t: Track): Promise<string> {
       break
     }
     if (!url) {
-      if (!(await signedIn())) throw new Error(`YouTube просит войти — войди на youtube.com в этом браузере (${first || refusal})`)
-      throw new Error(first && first !== refusal ? `YouTube не отдал звук: ${first}; с входом — ${refusal}` : `YouTube: ${refusal}`)
+      if (!(await signedIn())) throw new Error(tr('YouTube просит войти — войди на youtube.com в этом браузере (%s)', first || refusal))
+      throw new Error(first && first !== refusal ? tr('YouTube не отдал звук: %s; с входом — %s', first, refusal) : `YouTube: ${refusal}`)
     }
   }
   const expire = Number(new URL(url!).searchParams.get('expire')) * 1000
@@ -823,7 +868,7 @@ export async function searchSongs(query: string): Promise<YtSong[]> {
   if (id) headers['x-goog-visitor-id'] = id
   const answer = await postJson(
     `${API}search?prettyPrint=false`,
-    { query, params: FILTER_SONGS, context: { client: { clientName: 'WEB_REMIX', clientVersion: clientVersion(), hl: 'ru' }, user: {} } },
+    { query, params: FILTER_SONGS, context: { client: { clientName: 'WEB_REMIX', clientVersion: clientVersion(), hl: i18n.lang }, user: {} } },
     { headers },
   )
   const tabs = at(answer, 'contents', 'tabbedSearchResultsRenderer', 'tabs', 0, 'tabRenderer', 'content', 'sectionListRenderer', 'contents') ?? []

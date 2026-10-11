@@ -1,5 +1,6 @@
 <script lang="ts">
-  import { serviceName, sets, track } from '../lib/catalog'
+  import { tr } from '../lib/i18n.svelte'
+  import { serviceName, sets, track, tracks } from '../lib/catalog'
   import { totalMinutes, tracksCount } from '../lib/format'
   import * as live from '../lib/live'
   import { go, player, playQueue, playSet, toggle } from '../lib/state.svelte'
@@ -7,6 +8,7 @@
   import BlurredCover from '../components/BlurredCover.svelte'
   import Cover from '../components/Cover.svelte'
   import Icon from '../components/Icon.svelte'
+  import LikedArt from '../components/LikedArt.svelte'
   import Loading from '../components/Loading.svelte'
   import PlayButton from '../components/PlayButton.svelte'
   import Problem from '../components/Problem.svelte'
@@ -16,14 +18,14 @@
   let { id }: { id: string } = $props()
 
   const kindName: Record<string, string> = {
-    album: 'Альбом',
-    single: 'Сингл',
-    playlist: 'Плейлист',
-    mix: 'Микс',
-    station: 'Станция',
-    genre: 'Чарт',
-    liked: 'Плейлист',
-    personal: 'Собрано для тебя',
+    album: tr('Альбом'),
+    single: tr('Сингл'),
+    playlist: tr('Плейлист'),
+    mix: tr('Микс'),
+    station: tr('Станция'),
+    genre: tr('Чарт'),
+    liked: tr('Плейлист'),
+    personal: tr('Собрано для тебя'),
   }
 
   let data = $derived(live.loadSet(id))
@@ -35,20 +37,20 @@
   {#if known}
     {@render head(known, null)}
   {/if}
-  <Loading text="Загружаю треки…" tall={!known} />
+  <Loading text={tr('Загружаю треки…')} tall={!known} />
 {:then s}
   {@render head(s, s.tracks)}
   <section class="list rise">
     <div class="list-head">
       <span>#</span>
-      <span class="grow">Название</span>
-      {#if s.kind !== 'album' && s.kind !== 'single'}<span class="album-col">Альбом</span>{/if}
+      <span class="grow">{tr('Название')}</span>
+      {#if s.kind !== 'album' && s.kind !== 'single'}<span class="album-col">{tr('Альбом')}</span>{/if}
       <Icon name="schedule" size={18} />
     </div>
     {#each s.tracks as t, i (t + i)}
       <TrackRow id={t} list={s.tracks} context={s.title} contextId={s.id} number={i + 1} showAlbum={s.kind !== 'album' && s.kind !== 'single'} />
     {:else}
-      <p class="muted empty">Здесь пока пусто.</p>
+      <p class="muted empty">{tr('Здесь пока пусто.')}</p>
     {/each}
   </section>
 {:catch e}
@@ -57,12 +59,17 @@
 
 {#snippet head(s: import('../lib/catalog').TrackSet, ids: string[] | null)}
   {@const duration = ids ? ids.reduce((sum, t) => sum + track(t).duration, 0) : 0}
-  <div class="bleed" aria-hidden="true"><BlurredCover seed={s.id} color={s.color} src={s.cover} kind={s.kind} label={s.label} blur={70} saturate={1.3} /></div>
+  {@const firstCover = s.kind === 'liked' && !s.cover ? (ids ?? s.tracks).map((t) => tracks.get(t)?.cover).find(Boolean) : null}
+  <div class="bleed" aria-hidden="true"><BlurredCover seed={s.id} color={s.color} src={s.cover ?? firstCover} kind={s.kind} label={s.label} blur={70} saturate={1.3} /></div>
 
   <section class="head">
-    <button class="back icon-btn glassy l" onclick={() => history.back()} aria-label="Назад"><Icon name="arrow_back" /></button>
+    <button class="back icon-btn glassy l" onclick={() => history.back()} aria-label={tr('Назад')}><Icon name="arrow_back" /></button>
     <div class="art" class:round={s.kind === 'station'}>
-      <Cover seed={s.id} color={s.color} src={s.cover} kind={s.kind} label={s.label} title={s.kind === 'genre' || s.kind === 'personal' ? s.title : ''} grain />
+      {#if s.kind === 'liked' && !s.cover}
+        <LikedArt ids={ids ?? s.tracks} seed={s.id} color={s.color} />
+      {:else}
+        <Cover seed={s.id} color={s.color} src={s.cover} kind={s.kind} label={s.label} title={s.kind === 'genre' || s.kind === 'personal' ? s.title : ''} grain />
+      {/if}
     </div>
     <div class="info">
       <span class="overline kind"><ServiceGlyph service={s.service} size={16} />{kindName[s.kind]}{s.year ? ` · ${s.year}` : ''} · {serviceName(s.service)}</span>
@@ -86,9 +93,9 @@
       onclick={() => (player.contextId === s.id ? toggle() : ids ? playQueue(ids, 0, s.title, s.id) : playSet(s.id))}
       size={72}
     />
-    <button class="icon-btn tonal l" onclick={() => playSet(s.id, true)} aria-label="Перемешать"><Icon name="shuffle" /></button>
+    <button class="icon-btn tonal l" onclick={() => playSet(s.id, true)} aria-label={tr('Перемешать')}><Icon name="shuffle" /></button>
     {#if s.link}
-      <a class="icon-btn glassy l" href={s.link} target="_blank" rel="noreferrer" aria-label="Открыть в {serviceName(s.service)}">
+      <a class="icon-btn glassy l" href={s.link} target="_blank" rel="noreferrer" aria-label={tr('Открыть в %s', serviceName(s.service))}>
         <Icon name="open_in_new" />
       </a>
     {/if}

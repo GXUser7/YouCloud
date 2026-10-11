@@ -1,6 +1,7 @@
 <script lang="ts">
   // Asks each service for something real through the Worker and shows what came back: the first
   // check anyone makes when a service stops answering.
+  import { tr } from '../lib/i18n.svelte'
   import type { Service } from '../lib/mock'
   import { SERVICES } from '../lib/mock'
   import * as soundcloud from '../lib/services/soundcloud'
@@ -18,20 +19,20 @@
   const probes: Record<Service, () => Promise<string>> = {
     sc: async () => {
       const [first] = await soundcloud.searchTracks(QUERY, 1)
-      return first ? `${first.user?.username} — ${first.title}` : 'ответ пустой'
+      return first ? `${first.user?.username} — ${first.title}` : tr('ответ пустой')
     },
     ya: async () => {
       const [first] = await yandex.searchTracks(QUERY)
-      return first ? `${first.artists.map((a) => a.name).join(', ')} — ${first.title}` : 'ответ пустой'
+      return first ? `${first.artists.map((a) => a.name).join(', ')} — ${first.title}` : tr('ответ пустой')
     },
     yt: async () => {
       const [first] = await youtube.searchSongs(QUERY)
-      if (!first) return 'ответ пустой'
+      if (!first) return tr('ответ пустой')
       // Search answers anyone; the sound is what YouTube withholds from addresses it distrusts.
       const sound = await youtube.playability(first.videoId)
       const found = `${first.artists} — ${first.title}`
-      if (sound.status !== 'OK' || !sound.audio.length) throw new SoundRefused(`${found} · аудио нет: ${sound.reason || sound.status}`)
-      return `${found} · аудио есть`
+      if (sound.status !== 'OK' || !sound.audio.length) throw new SoundRefused(tr('%s · аудио нет: %s', found, sound.reason || sound.status))
+      return tr('%s · аудио есть', found)
     },
   }
 
@@ -72,18 +73,18 @@
     <div class="row" data-state={r.state}>
       <span class="glyph"><ServiceGlyph service={s.id} size={22} /></span>
       <div class="text">
-        <span class="name">{s.name}{#if r.route}<span class="route">{r.route === 'extension' ? 'через расширение' : 'через Worker'}</span>{/if}</span>
+        <span class="name">{s.name}{#if r.route}<span class="route">{r.route === 'extension' ? tr('через расширение') : tr('через Worker')}</span>{/if}</span>
         <span class="detail ellipsis">
-          {#if r.state === 'idle'}не проверялся{:else if r.state === 'busy'}спрашиваю «{QUERY}»…{:else}{r.detail}{/if}
+          {#if r.state === 'idle'}{tr('не проверялся')}{:else if r.state === 'busy'}{tr('спрашиваю «%s»…', QUERY)}{:else}{r.detail}{/if}
         </span>
       </div>
       <span class="status">
         {#if r.state === 'busy'}
           <LoadingIndicator size={32} contained={false} />
         {:else if r.state === 'ok'}
-          <span class="ms">{r.ms} мс</span><Icon name="check_circle" fill size={24} />
+          <span class="ms">{tr('%s мс', r.ms)}</span><Icon name="check_circle" fill size={24} />
         {:else if r.state === 'warn'}
-          <span class="ms">{r.ms} мс</span><Icon name="warning" fill size={24} />
+          <span class="ms">{tr('%s мс', r.ms)}</span><Icon name="warning" fill size={24} />
         {:else if r.state === 'fail'}
           <Icon name="error" fill size={24} />
         {/if}
@@ -92,9 +93,9 @@
   {/each}
   <p class="ext muted">
     <Icon name="extension" size={18} />
-    {ext ? `Расширение YouCloud ${ext} подключено: Яндекс и YouTube идут с твоего IP` : 'Расширения нет: Яндекс и аудио YouTube с Cloudflare не работают'}
+    {ext ? tr('Расширение YouCloud %s подключено: Яндекс и YouTube идут с твоего IP', ext) : tr('Расширения нет: Яндекс и аудио YouTube с Cloudflare не работают')}
   </p>
-  <button class="btn tonal" disabled={busy} onclick={run}><Icon name="network_check" size={20} />Проверить связь</button>
+  <button class="btn tonal" disabled={busy} onclick={run}><Icon name="network_check" size={20} />{tr('Проверить связь')}</button>
 </div>
 
 <style>

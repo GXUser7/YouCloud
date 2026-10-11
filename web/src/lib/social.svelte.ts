@@ -3,6 +3,7 @@
 // change comes over Realtime while the site is open. The site tells friends what it plays, as the
 // app's NowPlayingPublisher does.
 
+import { tr } from './i18n.svelte'
 import type { RealtimeChannel, Session } from '@supabase/supabase-js'
 import { artistNames, type Track } from './catalog'
 import { currentTrack, player } from './state.svelte'
@@ -84,12 +85,12 @@ export function positionOf(p: Person, now = Date.now()): number | null {
 export function ago(iso: string | null | undefined, now = Date.now()): string {
   if (!iso) return ''
   const min = Math.round((now - Date.parse(iso)) / 60_000)
-  if (min < 1) return 'только что'
-  if (min < 60) return `${min} мин назад`
+  if (min < 1) return tr('только что')
+  if (min < 60) return tr('%s мин назад', min)
   const h = Math.round(min / 60)
-  if (h < 24) return `${h} ч назад`
+  if (h < 24) return tr('%s ч назад', h)
   const d = Math.round(h / 24)
-  return d === 1 ? 'вчера' : `${d} дн назад`
+  return d === 1 ? tr('вчера') : tr('%s дн назад', d)
 }
 
 /** What went wrong, in words for the screen, as the app says it. */
@@ -98,20 +99,20 @@ export function socialMessage(e: unknown): string {
   switch (err?.code) {
     case 'user_already_exists':
     case 'email_exists':
-      return 'Этот ник уже занят'
+      return tr('Этот ник уже занят')
     case 'invalid_credentials':
     case 'invalid_grant':
-      return 'Неверный ник или пароль'
+      return tr('Неверный ник или пароль')
     case 'weak_password':
-      return 'Пароль слишком простой'
+      return tr('Пароль слишком простой')
     case 'over_request_rate_limit':
-      return 'Слишком много попыток. Попробуй чуть позже'
+      return tr('Слишком много попыток. Попробуй чуть позже')
     case 'email_address_invalid':
-      return 'Сервер не принял ник'
+      return tr('Сервер не принял ник')
   }
-  if (err?.status === 429) return 'Слишком много попыток. Попробуй чуть позже'
-  if (err?.message?.includes('Failed to fetch')) return 'Нет связи с сервером'
-  return err?.message || 'Что-то пошло не так'
+  if (err?.status === 429) return tr('Слишком много попыток. Попробуй чуть позже')
+  if (err?.message?.includes('Failed to fetch')) return tr('Нет связи с сервером')
+  return err?.message || tr('Что-то пошло не так')
 }
 
 // ------------------------------------------------------------------------------------ account
@@ -157,7 +158,7 @@ export async function signUp(nick: string, password: string, name: string, color
   })
   if (error) throw error
   const userId = data.user?.id
-  if (!userId) throw new Error('Аккаунт не создался')
+  if (!userId) throw new Error(tr('Аккаунт не создался'))
   const random = crypto.getRandomValues(new Uint8Array(16))
   const code = [...random].map((b) => CODE_ALPHABET[b % CODE_ALPHABET.length]).join('')
   await supabase.rpc('set_recovery_code', { hash: await sha256(`${userId}:${code}`) })
