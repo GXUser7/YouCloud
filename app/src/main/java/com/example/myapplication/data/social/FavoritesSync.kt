@@ -56,7 +56,7 @@ internal class FavoritesSync private constructor(context: Context) : FavoritesRe
         synchronized(lock) {
             if (!on) pending.clear()
             preferences.edit().putBoolean(KEY_ENABLED, on).apply {
-                if (!on) remove(KEY_OWNER).remove(KEY_UNTIL).remove(KEY_PENDING)
+                if (!on) remove(KEY_OWNER).remove(KEY_UNTIL).remove(KEY_PENDING).remove(KEY_VERSION)
             }.apply()
         }
         _enabled.value = on
@@ -111,7 +111,12 @@ internal class FavoritesSync private constructor(context: Context) : FavoritesRe
         if (!_enabled.value) return null
         val userId = supabase.session.value?.userId ?: return null
         return try {
-            if (preferences.getString(KEY_OWNER, null) != userId) firstLook(userId, local) else nextLook(local)
+            if (preferences.getString(KEY_OWNER, null) != userId) {
+                firstLook(userId, local)
+            } else {
+                if (preferences.getInt(KEY_VERSION, 1) < VERSION) restoreOrder(local)
+                nextLook(local)
+            }
         } catch (e: CancellationException) {
             throw e
         } catch (e: SupabaseException) {
@@ -141,12 +146,32 @@ internal class FavoritesSync private constructor(context: Context) : FavoritesRe
             if (!_enabled.value) return null
             before.forEach { (key, change) -> if (pending[key] == change) pending.remove(key) }
             savePending()
-            preferences.edit().putString(KEY_OWNER, userId).putString(KEY_UNTIL, look.until).apply()
+            preferences.edit().putString(KEY_OWNER, userId).putString(KEY_UNTIL, look.until).putInt(KEY_VERSION, VERSION).apply()
         }
         val hereKeys = here.map { it.first.key }.toSet()
         val added = remote.filter { it.key !in hereKeys }.mapNotNull(FavoriteRows::trackOf)
         Log.d(TAG, "First look: ${up.size} up, ${added.size} down")
         return Changes(added, emptyList())
+    }
+
+    /**
+     * Once, for a first look made before the server took a clock running ahead into account: it
+     * held every time past its own now to now, and a phone a second or two ahead sent its whole
+     * list liked at one moment, which the site showed in no order. The tracks of this list go
+     * again, a millisecond apart from that moment on, the top one the latest — over the same
+     * tracks there, never over a later change.
+     */
+    private suspend fun restoreOrder(local: List<FavoriteTrack>) {
+        val remote = look(null).items.orEmpty().associateBy { it.key }
+        val mine = local.mapNotNull { track -> FavoriteRows.keyOf(track)?.takeIf { it.key in remote }?.let { it to track } }
+        val since = mine.maxOfOrNull { (key, _) -> remote.getValue(key.key).changedAt?.let(::parseTime) ?: 0L }
+        if (since != null) {
+            send(mine.mapIndexed { index, (key, track) -> FavoriteRows.rowOf(key, track, liked = true, at = since + (mine.size - 1 - index)) })
+            Log.d(TAG, "Order of ${mine.size} put right")
+        }
+        synchronized(lock) {
+            if (_enabled.value) preferences.edit().putInt(KEY_VERSION, VERSION).apply()
+        }
     }
 
     private suspend fun nextLook(local: List<FavoriteTrack>): Changes? {
@@ -218,6 +243,9 @@ internal class FavoritesSync private constructor(context: Context) : FavoritesRe
         private const val KEY_UNTIL = "until"
         private const val KEY_PENDING = "pending"
         private const val KEY_ENABLED = "enabled"
+        private const val KEY_VERSION = "version"
+        /** 2: the first look's order put right (see [restoreOrder]). */
+        private const val VERSION = 2
         /** What the database takes at once. */
         private const val BATCH = 500
         /** Asked again from a little before the last look: a change written as it was made may carry an earlier time. */
