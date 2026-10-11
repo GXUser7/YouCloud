@@ -104,6 +104,9 @@
   </div>
 
   <div class="end">
+    <button class="icon-btn glassy" class:active={app.route.name === 'liked'} onclick={() => go('liked')} aria-label="Любимое" title="Любимое">
+      <Icon name="favorite" fill={app.route.name === 'liked'} size={22} />
+    </button>
     <button class="icon-btn glassy" class:active={app.route.name === 'friends'} onclick={() => go('friends')} aria-label="Друзья" title="Друзья">
       <Icon name="group" size={22} />
     </button>
@@ -127,6 +130,7 @@
               <span class="who-text"><b>Гость</b><small class="muted">Войди, чтобы видеть друзей</small></span>
             {/if}
           </div>
+          <button class="item" role="menuitem" onclick={() => place('liked')}><Icon name="favorite" size={22} />Любимое</button>
           <button class="item" role="menuitem" onclick={() => place('friends')}><Icon name="group" size={22} />Друзья</button>
           <button class="item" role="menuitem" onclick={() => place('settings')}><Icon name="settings" size={22} />Настройки</button>
         </div>

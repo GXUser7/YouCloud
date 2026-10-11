@@ -15,6 +15,19 @@ class FavoritesRepository(private val context: Context) {
     private val _favorites = MutableStateFlow(load())
     val favorites = _favorites.asStateFlow()
 
+    /**
+     * Hears of the tracks the listener puts in and takes out here, for the account's «Любимое» on
+     * other devices (see [com.example.myapplication.data.social.FavoritesSync]); not of what comes
+     * from there ([addSynced], [removeSynced]).
+     */
+    interface Listener {
+        /** Put in, or moved up: [tracks] as they stand now, top first. */
+        fun liked(tracks: List<FavoriteTrack>)
+        fun unliked(track: FavoriteTrack)
+    }
+
+    var listener: Listener? = null
+
     private val _downloadedFolderArtworkUri = MutableStateFlow(
         preferences.getString(KEY_DOWNLOADED_FOLDER_ARTWORK_URI, null)
     )
@@ -55,11 +68,27 @@ class FavoritesRepository(private val context: Context) {
         // Newest first: "Скачанное" lists them, and plays them, in this order.
         _favorites.update { current -> listOf(newTrack) + current }
         persist()
+        listener?.liked(listOf(newTrack))
     }
 
     fun addFavoriteTrack(favoriteTrack: FavoriteTrack) {
         if (isFavorite(favoriteTrack.id)) return
         _favorites.update { current -> listOf(favoriteTrack) + current }
+        persist()
+        listener?.liked(listOf(favoriteTrack))
+    }
+
+    /** Liked on another device: on top, in the order given, the latest liked first. */
+    fun addSynced(tracks: List<FavoriteTrack>) {
+        val fresh = tracks.filterNot { isFavorite(it.id) }.distinctBy { it.id }
+        if (fresh.isEmpty()) return
+        _favorites.update { current -> fresh + current }
+        persist()
+    }
+
+    /** Taken out on another device. */
+    fun removeSynced(trackId: Long) {
+        _favorites.update { current -> current.filterNot { it.id == trackId } }
         persist()
     }
 
@@ -71,11 +100,14 @@ class FavoritesRepository(private val context: Context) {
     fun moveToTop(ids: List<Long>) {
         if (ids.isEmpty()) return
         val order = ids.withIndex().associate { it.value to it.index }
+        var moved: List<FavoriteTrack> = emptyList()
         _favorites.update { current ->
-            val (moved, rest) = current.partition { it.id in order }
-            moved.sortedBy { order.getValue(it.id) } + rest
+            val (picked, rest) = current.partition { it.id in order }
+            moved = picked.sortedBy { order.getValue(it.id) }
+            moved + rest
         }
         persist()
+        listener?.liked(moved)
     }
 
     /**
@@ -105,8 +137,10 @@ class FavoritesRepository(private val context: Context) {
     }
 
     fun remove(trackId: Long) {
+        val removed = get(trackId)
         _favorites.update { current -> current.filterNot { it.id == trackId } }
         persist()
+        removed?.let { listener?.unliked(it) }
     }
 
     fun updateStreamUrl(trackId: Long, streamUrl: String) {

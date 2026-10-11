@@ -740,6 +740,8 @@ internal object English {
         put("Добавь меня в друзья в YouCloud: @%s", "Add me as a friend on YouCloud: @%s")
         put("Показывать, что я слушаю", "Show what I'm listening to")
         put("Друзья видят трек, который у тебя играет", "Friends see the track you're playing")
+        put("«Любимое» на всех устройствах", "Favourites on every device")
+        put("Лайкнутое здесь — на сайте и других телефонах, а лайкнутое там скачивается сюда", "What you like here is on the website and your other phones, and what you like there downloads here")
         put("Имя", "Name")
         put("Сменить пароль", "Change password")
         put("Сделать новый, если старый потерялся", "Make a new one if the old one is lost")

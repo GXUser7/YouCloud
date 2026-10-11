@@ -2,7 +2,7 @@
   // The full player, over everything: the cover large with its colour glowing behind it (the
   // app's Ambilight), the Expressive slider and big controls, and the lyrics alongside.
   import { serviceName, track } from '../lib/catalog'
-  import { app, currentTrack, cycleRepeat, go, jump, like, next, player, prev, seek, startRadio, toggle, toggleShuffle } from '../lib/state.svelte'
+  import { app, currentTrack, cycleRepeat, go, isLiked, jump, like, next, player, prev, seek, startRadio, toggle, toggleShuffle } from '../lib/state.svelte'
   import { time } from '../lib/format'
   import BlurredCover from './BlurredCover.svelte'
   import Cover from './Cover.svelte'
@@ -15,7 +15,7 @@
   import TrackRow from './TrackRow.svelte'
 
   const t = $derived(currentTrack()!)
-  const liked = $derived(!!player.liked[t.id])
+  const liked = $derived(isLiked(t.id))
   const upNext = $derived(player.queue[player.index + 1] ? track(player.queue[player.index + 1]) : null)
   const duration = $derived(player.duration || t.duration || 1)
   let scrub = $state<number | null>(null)

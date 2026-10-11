@@ -51,15 +51,7 @@ data class YandexTrack(
         val artistList = artists.orEmpty()
         val artistName = artistList.firstOrNull()?.name ?: "Unknown Yandex Artist"
         val rawId = id.substringBefore(":")
-        // Use toLong for numeric IDs with deterministic negative offset to avoid collision with SoundCloud IDs
-        // Falls back to hashCode for non-numeric IDs, with safe abs handling for Int.MIN_VALUE
-        val numericId = rawId.toLongOrNull()
-        val generatedId = if (numericId != null) {
-            -(numericId + 1_000_000_000L)
-        } else {
-            val hash = rawId.hashCode().toLong()
-            -(if (hash == Int.MIN_VALUE.toLong()) Int.MAX_VALUE.toLong() else kotlin.math.abs(hash)) - 1_000_000_000L
-        }
+        val generatedId = yandexTrackId(rawId)
         val albumId = customAlbumId ?: albums?.firstOrNull()?.id?.toString()
         val finalUrn = if (albumId != null) "yandex:track:$rawId:$albumId" else "yandex:track:$rawId"
         return SoundCloudTrack(
@@ -88,6 +80,21 @@ data class YandexTrack(
             trackAuthorization = null,
             media = null
         )
+    }
+}
+
+/**
+ * The app-wide id of the Yandex track [rawId] (its id without the album). Use toLong for numeric
+ * IDs with deterministic negative offset to avoid collision with SoundCloud IDs. Falls back to
+ * hashCode for non-numeric IDs, with safe abs handling for Int.MIN_VALUE.
+ */
+fun yandexTrackId(rawId: String): Long {
+    val numericId = rawId.toLongOrNull()
+    return if (numericId != null) {
+        -(numericId + 1_000_000_000L)
+    } else {
+        val hash = rawId.hashCode().toLong()
+        -(if (hash == Int.MIN_VALUE.toLong()) Int.MAX_VALUE.toLong() else kotlin.math.abs(hash)) - 1_000_000_000L
     }
 }
 

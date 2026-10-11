@@ -7,14 +7,15 @@
 // for them the player only counts time.
 
 import Hls from 'hls.js'
-import { putTrack, track as trackOf, type Service, type Track } from './catalog'
+import { putTrack, serviceName, track as trackOf, type Service, type Track } from './catalog'
+import { favorites, setFavorite } from './favorites.svelte'
 import * as live from './live'
 import { directFailed, reach } from './media.svelte'
 import { WAVE_MODES, WAVE_MOODS } from './mock'
 import * as yandex from './services/yandex'
 import { reason, toast } from './toast.svelte'
 
-export type RouteName = 'home' | 'search' | 'friends' | 'settings' | 'set' | 'artist'
+export type RouteName = 'home' | 'search' | 'liked' | 'friends' | 'settings' | 'set' | 'artist'
 export type Route = { name: RouteName; id?: string }
 export type Panel = 'friends' | 'queue' | 'lyrics'
 export type ThemeMode = 'system' | 'light' | 'dark'
@@ -22,7 +23,7 @@ export type ThemeMode = 'system' | 'light' | 'dark'
 function parseHash(): Route {
   const [name, id] = location.hash.replace(/^#\/?/, '').split('/')
   // «Моя музыка» lives on the service's page now («Любимое»); old links land there.
-  const known: RouteName[] = ['home', 'search', 'friends', 'settings', 'set', 'artist']
+  const known: RouteName[] = ['home', 'search', 'liked', 'friends', 'settings', 'set', 'artist']
   return known.includes(name as RouteName) ? { name: name as RouteName, id: id ? decodeURIComponent(id) : undefined } : { name: 'home' }
 }
 
@@ -404,9 +405,31 @@ $effect.root(() => {
 
 // ------------------------------------------------------------------------------------ likes
 
+/**
+ * What a heart shows. Signed in to YouCloud it is the account's «Любимое», as in the app, so a
+ * track has the same heart on the phone and here; signed out, the service's own like.
+ */
+export const isLiked = (id: string) => (favorites.on ? !!favorites.has[id] : !!player.liked[id])
+
 export async function like(id: string) {
   const t = trackOf(id)
-  const want = !player.liked[id]
+  const want = !isLiked(id)
+  // In «Любимое» it is kept on every device (and downloaded on the phone); liked on the service
+  // besides, where signed in there, as the app does.
+  if (favorites.on) {
+    try {
+      await setFavorite(t, want)
+    } catch (e) {
+      toast(`Не вышло ${want ? 'добавить в «Любимое»' : 'убрать из «Любимого»'}: ${reason(e)}`)
+      return
+    }
+    if (!live.signedIn(t.service)) return
+    player.liked[id] = want
+    live.setLiked(t, want).catch((e) => {
+      toast(`${want ? 'Добавлено в «Любимое»' : 'Убрано из «Любимого»'}, но ${serviceName(t.service)} ${want ? 'лайк не принял' : 'лайк не снял'}: ${reason(e)}`)
+    })
+    return
+  }
   player.liked[id] = want
   try {
     await live.setLiked(t, want)

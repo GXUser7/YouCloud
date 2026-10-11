@@ -546,14 +546,19 @@ fun MusicScreen(viewModel: MusicViewModel) {
     val history by viewModel.history.collectAsState()
 
     // Checks the SoundCloud session whenever the app comes back, so a token that lapsed in the
-    // meantime is renewed before the next tap needs it.
+    // meantime is renewed before the next tap needs it; and «Любимое» hears of changes made on
+    // other devices while the app is in sight.
     val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner) {
         val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
             if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) viewModel.onAppForeground()
+            if (event == androidx.lifecycle.Lifecycle.Event.ON_STOP) viewModel.onAppBackground()
         }
         lifecycleOwner.lifecycle.addObserver(observer)
-        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+            viewModel.onAppBackground()
+        }
     }
 
     BackHandler(enabled = selectedTrack != null && !isLoggedOut) {

@@ -11,6 +11,7 @@ import {
   putSet,
   putTrack,
   sets,
+  tracks as catalogTracks,
   type ScTranscoding,
   type SetKind,
   type Track,
@@ -476,6 +477,8 @@ export interface Stream {
 
 /** The best stream SoundCloud lets this listener have: never the encrypted (DRM) ones. */
 export async function stream(track: Track): Promise<Stream> {
+  // A track known only by its id — from «Любимое», liked in the app — is asked for in full first.
+  if (!track.sc?.transcodings.length) track = catalogTracks.get(putScTrack(await scGet<ScTrack>(`tracks/${track.id.slice('sc:t:'.length)}`)))!
   const usable = (track.sc?.transcodings ?? []).filter((t) => !t.format.protocol.includes('encrypted'))
   const whole = usable.filter((t) => !t.snipped)
   const choices = whole.length ? whole : usable

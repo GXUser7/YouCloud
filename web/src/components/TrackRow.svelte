@@ -1,6 +1,6 @@
 <script lang="ts">
   import { track as trackOf } from '../lib/catalog'
-  import { go, like, player, playTrack } from '../lib/state.svelte'
+  import { go, isLiked, like, player, playTrack } from '../lib/state.svelte'
   import { time } from '../lib/format'
   import Cover from './Cover.svelte'
   import EqBars from './EqBars.svelte'
@@ -32,7 +32,7 @@
 
   const t = $derived(trackOf(id))
   const current = $derived(player.queue[player.index] === id)
-  const liked = $derived(!!player.liked[id])
+  const liked = $derived(isLiked(id))
   const unavailable = $derived(t.playable === false)
 </script>
 

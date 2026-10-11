@@ -3,7 +3,7 @@
   // opens the full player), the controls, the progress, the panels and the volume. One row keeps
   // it as low as a cover, and the page gets the height back.
   import { serviceName } from '../lib/catalog'
-  import { app, currentTrack, cycleRepeat, go, like, next, openPanel, player, prev, seek, toggle, toggleShuffle, type Panel } from '../lib/state.svelte'
+  import { app, currentTrack, cycleRepeat, go, isLiked, like, next, openPanel, player, prev, seek, toggle, toggleShuffle, type Panel } from '../lib/state.svelte'
   import { time } from '../lib/format'
   import Cover from './Cover.svelte'
   import Icon from './Icon.svelte'
@@ -14,7 +14,7 @@
   import WavyProgress from './WavyProgress.svelte'
 
   const t = $derived(currentTrack())
-  const liked = $derived(!!t && !!player.liked[t.id])
+  const liked = $derived(!!t && isLiked(t.id))
   const duration = $derived(player.duration || t?.duration || 0)
   const source = $derived(t ? (player.wave ? 'Моя волна' : player.context || serviceName(t.service)) : '')
 

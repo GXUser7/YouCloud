@@ -3,19 +3,13 @@
 // change comes over Realtime while the site is open. The site tells friends what it plays, as the
 // app's NowPlayingPublisher does.
 
-import { createClient, type RealtimeChannel, type Session } from '@supabase/supabase-js'
+import type { RealtimeChannel, Session } from '@supabase/supabase-js'
 import { artistNames, type Track } from './catalog'
 import { currentTrack, player } from './state.svelte'
+import { SUPABASE_KEY as KEY, SUPABASE_URL as URL, supabase } from './supabase'
 
-const URL = 'https://eolrdgyugwgjkmpzihar.supabase.co'
-// The project's publishable key: what every client ships, the row rules guard the data.
-const KEY = 'sb_publishable_JmC1zt5tZS3TjVAcXARDOw_PgCmide6'
 // Never a real domain: the database checks only the part before the @ against the nick.
 const EMAIL_DOMAIN = 'youcloud.invalid'
-
-export const supabase = createClient(URL, KEY, {
-  auth: { storageKey: 'yc.supabase', persistSession: true, autoRefreshToken: true, detectSessionInUrl: false },
-})
 
 export interface ShowcaseItem {
   title: string

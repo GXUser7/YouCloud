@@ -20,13 +20,20 @@ import java.util.concurrent.TimeUnit
 
 /**
  * What changes on the server, told as it changes: Supabase Realtime's channel over a WebSocket,
- * for the rows of now_playing, friendships and profiles the account may see — the database's own
- * row rules decide which: a friend's track, its own friendships. [onChange] hears the table.
+ * for the rows of [tables] the account may see — the database's own row rules decide which: a
+ * friend's track, its own friendships. With [ownColumn], only the rows whose column holds the
+ * account's id. [onChange] hears the table.
  *
- * Open only while a screen showing friends is ([watch]), and a while after, for the next one; a
- * dropped connection is made again, a little later each time.
+ * Open only while someone [watch]es — a screen showing friends — and a while after, for the next
+ * one; a dropped connection is made again, a little later each time.
  */
-internal class Realtime(private val supabase: Supabase, private val onChange: (table: String) -> Unit) {
+internal class Realtime(
+    private val supabase: Supabase,
+    private val topic: String = "realtime:friends",
+    private val tables: List<String> = listOf("now_playing", "friendships", "profiles"),
+    private val ownColumn: String? = null,
+    private val onChange: (table: String) -> Unit
+) {
     private val http = OkHttpClient.Builder()
         .connectTimeout(15, TimeUnit.SECONDS)
         .readTimeout(0, TimeUnit.SECONDS)
@@ -84,13 +91,13 @@ internal class Realtime(private val supabase: Supabase, private val onChange: (t
         socket = null
     }
 
-    private fun send(socket: WebSocket, topic: String, event: String, payload: JsonObject) {
+    private fun send(socket: WebSocket, to: String, event: String, payload: JsonObject) {
         val message = JsonObject().apply {
-            addProperty("topic", topic)
+            addProperty("topic", to)
             addProperty("event", event)
             add("payload", payload)
             addProperty("ref", (++ref).toString())
-            if (topic == TOPIC) addProperty("join_ref", "1")
+            if (to == topic) addProperty("join_ref", "1")
         }
         socket.send(message.toString())
     }
@@ -98,16 +105,18 @@ internal class Realtime(private val supabase: Supabase, private val onChange: (t
     private inner class Listener(private var token: String) : WebSocketListener() {
         override fun onOpen(webSocket: WebSocket, response: Response) {
             failures = 0
+            val own = ownColumn?.let { column -> supabase.session.value?.userId?.let { "$column=eq.$it" } }
             val changes = JsonArray().apply {
-                TABLES.forEach { table ->
+                tables.forEach { table ->
                     add(JsonObject().apply {
                         addProperty("event", "*")
                         addProperty("schema", "public")
                         addProperty("table", table)
+                        own?.let { addProperty("filter", it) }
                     })
                 }
             }
-            send(webSocket, TOPIC, "phx_join", JsonObject().apply {
+            send(webSocket, topic, "phx_join", JsonObject().apply {
                 add("config", JsonObject().apply {
                     add("broadcast", JsonObject().apply { addProperty("self", false) })
                     add("presence", JsonObject().apply { addProperty("key", "") })
@@ -125,7 +134,7 @@ internal class Realtime(private val supabase: Supabase, private val onChange: (t
                     val fresh = runCatching { supabase.accessToken() }.getOrNull()
                     if (fresh != null && fresh != token) {
                         token = fresh
-                        send(webSocket, TOPIC, "access_token", JsonObject().apply { addProperty("access_token", fresh) })
+                        send(webSocket, topic, "access_token", JsonObject().apply { addProperty("access_token", fresh) })
                     }
                 }
             }
@@ -168,8 +177,6 @@ internal class Realtime(private val supabase: Supabase, private val onChange: (t
 
     private companion object {
         const val TAG = "Realtime"
-        const val TOPIC = "realtime:friends"
-        val TABLES = listOf("now_playing", "friendships", "profiles")
         const val HEARTBEAT_MS = 25_000L
         const val LINGER_MS = 15_000L
         const val RETRY_MS = 3_000L

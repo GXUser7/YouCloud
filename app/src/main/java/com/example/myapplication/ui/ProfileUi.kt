@@ -52,6 +52,7 @@ import androidx.compose.material.icons.rounded.CameraAlt
 import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.ChevronRight
 import androidx.compose.material.icons.rounded.ContentCopy
+import androidx.compose.material.icons.rounded.Favorite
 import androidx.compose.material.icons.rounded.Group
 import androidx.compose.material.icons.rounded.Inbox
 import androidx.compose.material.icons.rounded.Key
@@ -96,6 +97,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
+import com.example.myapplication.data.social.FavoritesSync
 import com.example.myapplication.data.social.Profile
 import com.example.myapplication.data.social.Relation
 import com.example.myapplication.data.social.RecoveryCode
@@ -888,6 +890,8 @@ private fun OwnProfile(
     val me by social.me.collectAsState()
     var adding by rememberSaveable { mutableStateOf(false) }
     val friends by social.friends.collectAsState()
+    val favoritesSync = remember { FavoritesSync.get(context) }
+    val favoritesSynced by favoritesSync.enabled.collectAsState()
     var avatarBusy by remember { mutableStateOf(false) }
     var dialog by remember { mutableStateOf<ProfileDialog?>(null) }
     // A picked place of the showcase held: to be changed or taken away.
@@ -1085,7 +1089,7 @@ private fun OwnProfile(
                 } else {
                     // The account: who sees what, the name, the password, the way back in, leaving.
                     Column(modifier = Modifier.padding(top = 8.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                        val rows = 4
+                        val rows = 5
                         SettingRow(
                             icon = Icons.Rounded.Visibility,
                             title = tr("Показывать, что я слушаю"),
@@ -1101,9 +1105,24 @@ private fun OwnProfile(
                                 )
                             }
                         )
-                        SettingRow(Icons.Rounded.Badge, tr("Имя"), profile?.shownName(), groupedShape(1, rows)) { dialog = ProfileDialog.Name }
-                        SettingRow(Icons.Rounded.Lock, tr("Сменить пароль"), null, groupedShape(2, rows)) { dialog = ProfileDialog.Password }
-                        SettingRow(Icons.Rounded.Key, tr("Код восстановления"), tr("Сделать новый, если старый потерялся"), groupedShape(3, rows)) {
+                        SettingRow(
+                            icon = Icons.Rounded.Favorite,
+                            title = tr("«Любимое» на всех устройствах"),
+                            subtitle = tr("Лайкнутое здесь — на сайте и других телефонах, а лайкнутое там скачивается сюда"),
+                            shape = groupedShape(1, rows),
+                            trailing = {
+                                Switch(
+                                    checked = favoritesSynced,
+                                    onCheckedChange = { on -> favoritesSync.setEnabled(on) },
+                                    thumbContent = if (favoritesSynced) {
+                                        { Icon(Icons.Rounded.Check, contentDescription = null, modifier = Modifier.size(SwitchDefaults.IconSize)) }
+                                    } else null
+                                )
+                            }
+                        )
+                        SettingRow(Icons.Rounded.Badge, tr("Имя"), profile?.shownName(), groupedShape(2, rows)) { dialog = ProfileDialog.Name }
+                        SettingRow(Icons.Rounded.Lock, tr("Сменить пароль"), null, groupedShape(3, rows)) { dialog = ProfileDialog.Password }
+                        SettingRow(Icons.Rounded.Key, tr("Код восстановления"), tr("Сделать новый, если старый потерялся"), groupedShape(4, rows)) {
                             dialog = ProfileDialog.NewCode
                         }
                         Spacer(modifier = Modifier.height(10.dp))

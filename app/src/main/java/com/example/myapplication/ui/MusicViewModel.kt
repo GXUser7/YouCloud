@@ -51,6 +51,7 @@ import com.example.myapplication.data.SharedLink
 import com.example.myapplication.data.SharedLinks
 import com.example.myapplication.data.social.ShowcaseItem
 import com.example.myapplication.data.social.ShowcaseSlot
+import com.example.myapplication.data.social.FavoritesSync
 import com.example.myapplication.data.social.Social
 import com.example.myapplication.data.social.socialMessage
 import com.example.myapplication.data.Playlist
@@ -71,6 +72,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.distinctUntilChangedBy
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.map
@@ -214,6 +216,11 @@ class MusicViewModel(
     // The queue as last set, so reopening the app while music plays can put it back.
     private val queueFile = java.io.File(context.filesDir, "player_queue.json")
     private val playbackResolver = SoundCloudPlaybackResolver(service)
+    // «Любимое» of the YouCloud account, the same on its other phones and the site.
+    private val favoritesSync = FavoritesSync.get(context)
+    private val favoritesSyncLock = Mutex()
+    private var favoritesLive: AutoCloseable? = null
+    private var inForeground = false
     private val mixesRepository = SoundCloudMixesRepository(service, context)
 
     private val _tracks = MutableStateFlow<List<SoundCloudTrack>>(emptyList())
@@ -875,6 +882,76 @@ class MusicViewModel(
                     ?: performDownload(request.track, request.isRedownload)
                 request.onComplete(success)
             }
+        }
+
+        favoritesRepository.listener = favoritesSync
+        viewModelScope.launch {
+            // Signed in, again or as someone else, or turned on: the lists put together, and told
+            // of changes as they are made while the app is open.
+            combine(Social.get(context).session, favoritesSync.enabled) { session, on -> session?.userId?.takeIf { on } }
+                .distinctUntilChanged()
+                .collect { userId ->
+                    favoritesLive?.close()
+                    favoritesLive = null
+                    if (userId == null) return@collect
+                    if (inForeground) favoritesLive = favoritesSync.watchLive()
+                    syncFavorites()
+                }
+        }
+        viewModelScope.launch {
+            // A burst of changes (a likes sync saving a hundred) goes as one.
+            favoritesSync.wanted.drop(1).collectLatest {
+                delay(FAVORITES_SYNC_SETTLE_MS)
+                syncFavorites()
+            }
+        }
+    }
+
+    /** The app out of sight: «Любимое» stops hearing of changes elsewhere until it is back. */
+    fun onAppBackground() {
+        inForeground = false
+        favoritesLive?.close()
+        favoritesLive = null
+    }
+
+    private fun syncFavorites() {
+        viewModelScope.launch {
+            favoritesSyncLock.withLock {
+                val local = favoritesRepository.favorites.value
+                val changes = withContext(Dispatchers.Default) { favoritesSync.exchange(local) } ?: return@withLock
+                if (!changes.isEmpty) applySyncedFavorites(changes)
+            }
+        }
+    }
+
+    /**
+     * Liked or taken out on another device: here too, downloaded or deleted as a like here is. The
+     * services' own likes were that device's to give.
+     */
+    private suspend fun applySyncedFavorites(changes: FavoritesSync.Changes) {
+        for (id in changes.removed) {
+            val favorite = favoritesRepository.get(id) ?: continue
+            favoritesRepository.removeSynced(id)
+            if (favorite.downloadState == DownloadState.DOWNLOADED && favorite.streamUrl != null &&
+                !playlistsRepository.usesStream(favorite.streamUrl)
+            ) {
+                withContext(Dispatchers.IO) {
+                    if (isProgressiveSource(favorite.urn)) {
+                        offlineMusicStore.removeProgressive(favorite.streamUrl)
+                    } else {
+                        offlineMusicStore.removeHls(favorite.streamUrl)
+                    }
+                }
+            }
+        }
+        if (changes.added.isEmpty()) return
+        favoritesRepository.addSynced(changes.added)
+        for (favorite in changes.added) {
+            val track = favorite.toSoundCloudTrack()
+            // A broadcast is kept to come back to; there is nothing to download.
+            if (track.liveVideoId != null) continue
+            favoritesRepository.updateDownloadState(favorite.id, DownloadState.DOWNLOADING)
+            downloadQueue.trySend(DownloadRequest(track, isRedownload = false))
         }
     }
 
@@ -2913,6 +2990,10 @@ class MusicViewModel(
      * by the HTTP layer, before anything the listener taps depends on it.
      */
     fun onAppForeground() {
+        // «Любимое»: what changed on other devices comes, and keeps coming while the app is in sight.
+        inForeground = true
+        if (favoritesLive == null) favoritesLive = favoritesSync.watchLive()
+        syncFavorites()
         if (System.currentTimeMillis() - lastLikeBlockAt >= LIKE_RETRY_AFTER_BLOCK_MS) {
             flushPendingSoundCloudLikes()
         }
@@ -3567,6 +3648,8 @@ class MusicViewModel(
 
     override fun onCleared() {
         super.onCleared()
+        favoritesRepository.listener = null
+        favoritesLive?.close()
         together.leave()
         musicPlayer.release()
     }
@@ -3968,6 +4051,8 @@ class MusicViewModel(
 
     private companion object {
         const val AUTH_RECOVERY_COOLDOWN_MS = 30_000L
+        // How long changes to «Любимое» settle before they go to the account.
+        const val FAVORITES_SYNC_SETTLE_MS = 2_000L
         // How long a track plays before it counts as listened to, for the history.
         const val HISTORY_HEARD_MS = 5_000L
 
@@ -4692,15 +4777,22 @@ class MusicViewModel(
                 }
             } else {
                 if (clientId.isNotBlank()) {
+                    // Liked on another device, a track is known here by little more than its id:
+                    // what SoundCloud needs to give its stream is asked for first.
+                    val full = if (track.trackAuthorization == null || track.media == null) {
+                        runCatching { service.getTrack(track.id, clientId) }.getOrNull() ?: track
+                    } else {
+                        track
+                    }
                     var resolved: String? = null
                     try {
-                        resolved = playbackResolver.resolve(track, clientId)
+                        resolved = playbackResolver.resolve(full, clientId)
                     } catch (e: Exception) {
                         if (e is retrofit2.HttpException && (e.code() == 401 || e.code() == 403)) {
                             val newClientId = SoundCloudApi.fetchSoundCloudClientId()
                             if (newClientId != null) {
                                 settingsRepository.saveClientId(newClientId)
-                                resolved = playbackResolver.resolve(track, newClientId)
+                                resolved = playbackResolver.resolve(full, newClientId)
                             }
                         }
                         if (resolved == null) throw e
