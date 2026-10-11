@@ -362,6 +362,12 @@ export async function setLiked(track: Track, liked: boolean): Promise<void> {
   await yaPostForm(`users/${uid}/likes/tracks/${liked ? 'add-multiple' : 'remove'}`, { 'track-ids': trackKey(track) })
 }
 
+/** «Не рекомендовать»: the track is kept out of the wave and the radio from now on. */
+export async function dislike(track: Track): Promise<void> {
+  const uid = await myUid()
+  await yaPostForm(`users/${uid}/dislikes/tracks/add-multiple`, { 'track-ids': trackKey(track) })
+}
+
 // ---------------------------------------------------------------------------------- radio
 
 /**

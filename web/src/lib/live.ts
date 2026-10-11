@@ -135,6 +135,18 @@ export async function setLiked(t: Track, liked: boolean): Promise<void> {
   if (t.yt) return youtube.setLiked(t, liked)
 }
 
+/**
+ * Tells [t]'s service it isn't liked, where the service hears that and the listener is signed in
+ * there: Yandex's «Не рекомендовать», YouTube Music's thumb down. False where it can't — SoundCloud
+ * has no dislike.
+ */
+export function dislike(t: Track): Promise<void> | false {
+  if (!signedIn(t.service)) return false
+  if (t.service === 'ya' && t.ya) return yandex.dislike(t)
+  if (t.service === 'yt' && t.yt) return youtube.dislike(t)
+  return false
+}
+
 export type Stream = { url: string; hls: boolean }
 
 /** Where the track's sound is, or null for the design's stand-in tracks, which have none. */

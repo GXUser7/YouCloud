@@ -1,9 +1,10 @@
 <script lang="ts">
   // The player's controls as one Expressive button group (app.css, .xgroup): the bar's, with like,
   // shuffle, back, play, forward and repeat; the full player's, large and toned on the cover's
-  // colours, with the like, back, play, forward and shuffle.
+  // colours, with the like, back, play, forward and shuffle. While «Моя волна» or a radio plays,
+  // shuffle gives way to «Не нравится», as in the app: there is no order there to shuffle.
   import { tr } from '../lib/i18n.svelte'
-  import { currentTrack, cycleRepeat, isLiked, like, next, player, prev, toggle, toggleShuffle } from '../lib/state.svelte'
+  import { currentTrack, cycleRepeat, dislike, isLiked, like, next, player, prev, toggle, toggleShuffle } from '../lib/state.svelte'
   import Icon from './Icon.svelte'
   import LoadingIndicator from './LoadingIndicator.svelte'
 
@@ -35,6 +36,10 @@
       <button class="xb toggle like" class:tonal class:on={liked} disabled={!t} onclick={heart} aria-label={tr('Нравится')} aria-pressed={liked} title={liked ? tr('Убрать из любимого') : tr('Нравится')}>
         {#key burst}<span class="ic" class:pop={burst > 0}><Icon name="favorite" fill={liked} size={px.icon} /></span>{/key}
         {#if burst > 0}{#key burst}<span class="ring" aria-hidden="true"></span>{/key}{/if}
+      </button>
+    {:else if item === 'shuffle' && player.radio}
+      <button class="xb opt" class:tonal onclick={dislike} disabled={!t} aria-label={tr('Не нравится')} title={tr('Не нравится')}>
+        <span class="ic swap"><Icon name="heart_broken" size={px.icon} /></span>
       </button>
     {:else if item === 'shuffle'}
       <button class="xb toggle opt" class:tonal class:on={player.shuffle} onclick={toggleShuffle} aria-label={tr('Перемешать')} aria-pressed={player.shuffle} title={tr('Перемешать')}>

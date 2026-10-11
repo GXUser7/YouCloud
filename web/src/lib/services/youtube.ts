@@ -610,6 +610,13 @@ export async function setLiked(t: Track, liked: boolean): Promise<void> {
   await actions.execute(liked ? '/like/like' : '/like/removelike', { target: { videoId: t.yt!.videoId }, client: 'YTMUSIC' })
 }
 
+/** A thumb down: YouTube Music offers less like it. */
+export async function dislike(t: Track): Promise<void> {
+  const client = await yt()
+  const actions: any = (client as any).actions
+  await actions.execute('/like/dislike', { target: { videoId: t.yt!.videoId }, client: 'YTMUSIC' })
+}
+
 // ---------------------------------------------------------------------------------- playback
 
 // The Android VR client: its player answers with plain stream URLs, no script to unscramble them.
