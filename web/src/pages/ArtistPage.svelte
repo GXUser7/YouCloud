@@ -91,7 +91,6 @@
   <section class="hero">
     <div class="banner"><Cover seed={'artist-' + a.id} color={a.color} src={a.image} kind="artist" grain /></div>
     <div class="shade"></div>
-    <button class="back icon-btn glassy l" onclick={() => history.back()} aria-label={tr('Назад')}><Icon name="arrow_back" /></button>
     <div class="who rise">
       <span class="overline kind"><ServiceGlyph service={a.service} size={16} />{tr('Артист · %s', serviceName(a.service))}</span>
       <h1 class="display">{a.name}</h1>
@@ -125,11 +124,6 @@
     position: absolute;
     inset: 0;
     background: linear-gradient(transparent 25%, color-mix(in oklab, var(--surface) 92%, transparent));
-  }
-  .back {
-    position: absolute;
-    top: 20px;
-    left: 36px;
   }
   .who {
     position: relative;

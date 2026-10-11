@@ -1,7 +1,7 @@
 <script lang="ts">
   // «Сцена»: home opens on Material 3 Expressive's carousel — one set large with its name and
-  // play, the next one half that, the rest narrow strips — and the page takes the large one's
-  // colours behind it. Moving on, the large one shrinks away as the next one grows into its place.
+  // play, the next one half that, the rest narrow strips. Moving on, the large one shrinks away
+  // as the next one grows into its place.
   // Under it, the listener's likes in a row, and what the service has besides (the wave, songs).
   import { tr } from '../../lib/i18n.svelte'
   import { set, track as trackOf, type Service, serviceName } from '../../lib/catalog'
@@ -9,7 +9,6 @@
   import { go, player, playQueue, playSet, playTrack, toggle } from '../../lib/state.svelte'
   import { tracksCount } from '../../lib/format'
   import type { Snippet } from 'svelte'
-  import BlurredCover from '../BlurredCover.svelte'
   import Cover from '../Cover.svelte'
   import Icon from '../Icon.svelte'
   import LikedArt from '../LikedArt.svelte'
@@ -72,12 +71,6 @@
     else playQueue(liked.tracks, 0, liked.title, liked.id)
   }
 </script>
-
-{#if current}
-  {#key current.id}
-    <div class="bleed" aria-hidden="true"><BlurredCover seed={current.id} color={current.color} src={current.cover} kind={current.kind} blur={80} saturate={1.4} /></div>
-  {/key}
-{/if}
 
 <section class="stage rise">
   <div class="head">
@@ -154,27 +147,6 @@
 </section>
 
 <style>
-  .bleed {
-    position: absolute;
-    inset: 0 0 auto 0;
-    height: 640px;
-    overflow: hidden;
-    opacity: 0.6;
-    mask-image: linear-gradient(#000 25%, transparent);
-    pointer-events: none;
-    z-index: -1;
-    animation: fade 900ms var(--ease-emph);
-  }
-  .bleed :global(.cover) {
-    width: 100%;
-    height: 100%;
-  }
-  @keyframes fade {
-    from {
-      opacity: 0;
-    }
-  }
-
   .stage {
     margin-top: 24px;
   }

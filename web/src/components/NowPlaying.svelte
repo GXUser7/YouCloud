@@ -1,15 +1,14 @@
 <script lang="ts">
-  // The full player, over everything: the cover large with its colour glowing behind it (the
-  // app's Ambilight), the Expressive slider and big controls, and the lyrics or the queue beside
-  // them — or neither, for the cover and the controls alone, centred. Lyrics and «Далее» are
-  // toggles: pressed again, the column goes. Narrow, the column takes the cover's place instead.
+  // The full player, over everything: the cover large, the Expressive slider and big controls,
+  // and the lyrics or the queue beside them — or neither, for the cover and the controls alone,
+  // centred. Lyrics and «Далее» are toggles: pressed again, the column goes. Narrow, the column
+  // takes the cover's place instead.
   import { flushSync } from 'svelte'
   import { fly } from 'svelte/transition'
   import { tr } from '../lib/i18n.svelte'
   import { serviceName, track } from '../lib/catalog'
   import { app, currentTrack, cycleRepeat, go, jump, player, remember, seek, startRadio } from '../lib/state.svelte'
   import { time } from '../lib/format'
-  import BlurredCover from './BlurredCover.svelte'
   import Cover from './Cover.svelte'
   import Icon from './Icon.svelte'
   import Lyrics from './Lyrics.svelte'
@@ -99,10 +98,6 @@
 <svelte:window onkeydown={(e) => e.key === 'Escape' && close()} />
 
 <div class="np" role="dialog" aria-label={tr('Сейчас играет')}>
-  {#key t.id}
-    <div class="glow" aria-hidden="true"><BlurredCover seed={t.id} color={t.color} src={t.cover} blur={110} saturate={1.4} /></div>
-  {/key}
-  <div class="veil"></div>
 
   <header>
     <button class="icon-btn l glassy" onclick={close} aria-label={tr('Свернуть')}><Icon name="keyboard_arrow_down" size={30} /></button>
@@ -253,28 +248,6 @@
       transform: translateY(28px);
       opacity: 0;
     }
-  }
-  .glow {
-    position: absolute;
-    left: 50%;
-    top: 50%;
-    width: 130vmax;
-    height: 130vmax;
-    translate: -50% -50%;
-    opacity: 0.5;
-    animation: glow-in 1.2s var(--ease-emph);
-  }
-  @keyframes glow-in {
-    from {
-      opacity: 0;
-    }
-  }
-  .veil {
-    position: absolute;
-    inset: 0;
-    background:
-      radial-gradient(80% 60% at 30% 40%, transparent, color-mix(in oklab, var(--surface) 60%, transparent)),
-      linear-gradient(color-mix(in oklab, var(--surface) 20%, transparent), color-mix(in oklab, var(--surface) 70%, transparent));
   }
   header {
     position: relative;

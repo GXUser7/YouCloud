@@ -9,7 +9,6 @@
   import { social } from '../lib/social.svelte'
   import { player, playQueue, toggle } from '../lib/state.svelte'
   import AccountForm from '../components/AccountForm.svelte'
-  import BlurredCover from '../components/BlurredCover.svelte'
   import LikedArt from '../components/LikedArt.svelte'
   import Icon from '../components/Icon.svelte'
   import Loading from '../components/Loading.svelte'
@@ -38,10 +37,6 @@
     playQueue(ids, 0, tr('Любимое'), contextId)
   }
 </script>
-
-<div class="bleed" aria-hidden="true">
-  <BlurredCover seed={ID} color={COLOR} src={favorites.ids.map((id) => track(id).cover).find(Boolean) ?? null} kind="liked" blur={70} saturate={1.3} />
-</div>
 
 <section class="head">
   <div class="art">
@@ -110,20 +105,6 @@
 {/if}
 
 <style>
-  .bleed {
-    position: absolute;
-    inset: 0 0 auto 0;
-    height: 520px;
-    overflow: hidden;
-    opacity: 0.55;
-    mask-image: linear-gradient(#000 20%, transparent);
-    pointer-events: none;
-    z-index: -1;
-  }
-  .bleed :global(.cover) {
-    width: 100%;
-    height: 100%;
-  }
   .head {
     position: relative;
     display: flex;

@@ -1,11 +1,10 @@
 <script lang="ts">
   import { tr } from '../lib/i18n.svelte'
-  import { serviceName, sets, track, tracks } from '../lib/catalog'
+  import { serviceName, sets, track } from '../lib/catalog'
   import { totalMinutes, tracksCount } from '../lib/format'
   import * as live from '../lib/live'
   import { go, player, playQueue, playSet, toggle } from '../lib/state.svelte'
   import { reason } from '../lib/toast.svelte'
-  import BlurredCover from '../components/BlurredCover.svelte'
   import Cover from '../components/Cover.svelte'
   import Icon from '../components/Icon.svelte'
   import LikedArt from '../components/LikedArt.svelte'
@@ -59,11 +58,8 @@
 
 {#snippet head(s: import('../lib/catalog').TrackSet, ids: string[] | null)}
   {@const duration = ids ? ids.reduce((sum, t) => sum + track(t).duration, 0) : 0}
-  {@const firstCover = s.kind === 'liked' && !s.cover ? (ids ?? s.tracks).map((t) => tracks.get(t)?.cover).find(Boolean) : null}
-  <div class="bleed" aria-hidden="true"><BlurredCover seed={s.id} color={s.color} src={s.cover ?? firstCover} kind={s.kind} label={s.label} blur={70} saturate={1.3} /></div>
 
   <section class="head">
-    <button class="back icon-btn glassy l" onclick={() => history.back()} aria-label={tr('Назад')}><Icon name="arrow_back" /></button>
     <div class="art" class:round={s.kind === 'station'}>
       {#if s.kind === 'liked' && !s.cover}
         <LikedArt ids={ids ?? s.tracks} seed={s.id} color={s.color} />
@@ -103,31 +99,12 @@
 {/snippet}
 
 <style>
-  .bleed {
-    position: absolute;
-    inset: 0 0 auto 0;
-    height: 520px;
-    overflow: hidden;
-    opacity: 0.55;
-    mask-image: linear-gradient(#000 20%, transparent);
-    pointer-events: none;
-    z-index: -1;
-  }
-  .bleed :global(.cover) {
-    width: 100%;
-    height: 100%;
-  }
   .head {
     position: relative;
     display: flex;
     align-items: flex-end;
     gap: 32px;
-    padding-top: 64px;
-  }
-  .back {
-    position: absolute;
-    top: 0;
-    left: 0;
+    padding-top: 24px;
   }
   .art {
     width: clamp(200px, 18vw, 260px);
