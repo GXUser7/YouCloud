@@ -371,6 +371,219 @@ p {
   --r: var(--r-s);
 }
 
+/* ---- Expressive button groups ----
+   The player's controls, in the bar and in the full player: buttons side by side where a pressed
+   one widens and its neighbours make room. A toggle that is on squares off, filled with the
+   theme's colour; play is round while paused and squares while it plays. Sizes: the bar's
+   (default), 'l' and 'xl' for the full player.
+   Only transforms move: a button keeps its box, and what widens is its container — a layer of its
+   own, stretched — so a press lays nothing out again and paints nothing but the button. */
+
+.xgroup {
+  --w: 40px;
+  --h: 40px;
+  --play-w: 56px;
+  --play-h: 48px;
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.xgroup.l {
+  --w: 56px;
+  --h: 56px;
+  gap: 6px;
+}
+.xgroup.xl {
+  --w: 72px;
+  --h: 72px;
+  --play-w: 128px;
+  --play-h: 104px;
+  gap: 8px;
+}
+
+.xb {
+  --base: var(--w);
+  --r: calc(var(--h) / 2);
+  /* The container's colour and stretch: a toggle fills it, a press stretches it. */
+  --fill: transparent;
+  --sx: 1;
+  --press: 1.24;
+  --squeeze: 0.86;
+  width: var(--base);
+  height: var(--h);
+  flex: none;
+  display: grid;
+  place-items: center;
+  position: relative;
+  isolation: isolate;
+  border-radius: var(--r);
+  color: var(--on-surface-variant);
+  transition:
+    border-radius var(--d-fast) var(--spring-fast),
+    color 250ms var(--ease-emph);
+}
+.xb > * {
+  grid-area: 1 / 1;
+}
+/* The container, and over it the state layer — a veil of the button's own colour — both stretched
+   together, under the icon. */
+.xb::after,
+.xb::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  transform: scaleX(var(--sx));
+  transition:
+    transform var(--d-fast) var(--spring-fast),
+    background-color 250ms var(--ease-emph),
+    opacity 180ms var(--ease-emph);
+  will-change: transform;
+}
+.xb::after {
+  z-index: -2;
+  background: var(--fill);
+}
+.xb::before {
+  z-index: -1;
+  background: currentColor;
+  opacity: 0;
+}
+.xb:hover::before {
+  opacity: 0.08;
+}
+.xb:active::before {
+  opacity: 0.14;
+}
+.xb:hover {
+  color: var(--on-surface);
+}
+.xb:disabled {
+  opacity: 0.38;
+  pointer-events: none;
+}
+.xb:focus-visible {
+  outline-offset: 3px;
+}
+/* On glass: a tone of its own, as the full player's buttons sit on the cover's colours. */
+.xb.tonal {
+  --fill: color-mix(in oklab, var(--on-surface) 10%, transparent);
+  color: var(--on-surface);
+}
+
+/* Pressed: wider and squarer; the neighbours draw in to give it the room. */
+.xb:active {
+  --sx: var(--press);
+  --r: calc(var(--h) * 0.3);
+}
+.xgroup .xb:has(+ .xb:active),
+.xgroup .xb:active + .xb {
+  --sx: var(--squeeze);
+}
+
+.xb .ic {
+  display: grid;
+  place-items: center;
+  transition: transform var(--d-fast) var(--spring-fast);
+}
+.xb .swap {
+  animation: xb-swap 260ms var(--ease-in-place);
+}
+@keyframes xb-swap {
+  from {
+    transform: scale(0.6) rotate(-30deg);
+    opacity: 0;
+  }
+}
+
+/* Toggles — like, shuffle, repeat, lyrics: on, filled with the theme's colour and squared, as
+   bright as play, readable at a glance on any cover's colours. */
+.xb.toggle.on {
+  --fill: var(--primary);
+  --r: calc(var(--h) * 0.3);
+  color: var(--on-primary);
+}
+.xb.toggle.on:hover {
+  color: var(--on-primary);
+}
+.xb.toggle.on:active {
+  --r: calc(var(--h) / 2);
+}
+.xb .pop {
+  animation: xb-pop 520ms var(--ease-in-place);
+}
+@keyframes xb-pop {
+  0% {
+    transform: scale(0.5);
+  }
+  45% {
+    transform: scale(1.28);
+  }
+}
+.xb .ring {
+  position: absolute;
+  inset: 10%;
+  border-radius: 50%;
+  border: 2px solid var(--primary);
+  pointer-events: none;
+  animation: xb-ring 600ms var(--ease-in-place) forwards;
+}
+@keyframes xb-ring {
+  from {
+    transform: scale(0.4);
+    opacity: 1;
+  }
+  to {
+    transform: scale(1.7);
+    opacity: 0;
+  }
+}
+
+/* Back and forward: the arrow leans the way it goes. */
+.xb.skip {
+  color: var(--on-surface);
+}
+.xb.back:hover .ic {
+  transform: translateX(-2px);
+}
+.xb.forward:hover .ic {
+  transform: translateX(2px);
+}
+.xb.back:active .ic {
+  transform: translateX(-5px) scale(0.92);
+}
+.xb.forward:active .ic {
+  transform: translateX(5px) scale(0.92);
+}
+
+/* Play: round while paused, squared while it plays; its glow stays put. */
+.xb.play {
+  --base: var(--play-w);
+  --fill: var(--primary);
+  --press: 1.12;
+  --r: calc(var(--play-h) / 2);
+  height: var(--play-h);
+  margin: 0 4px;
+  color: var(--on-primary);
+  box-shadow: 0 10px 26px -10px color-mix(in oklab, var(--primary) 85%, transparent);
+  transition:
+    border-radius var(--d-spatial) var(--spring),
+    color 250ms var(--ease-emph);
+}
+.xb.play.playing {
+  --r: calc(var(--play-h) * 0.32);
+}
+.xb.play:hover {
+  color: var(--on-primary);
+}
+.xb.play:active {
+  --r: calc(var(--play-h) * 0.24);
+}
+.xb.play .loader path {
+  fill: var(--on-primary);
+}
+
 /* ---- Chips ---- */
 
 .chip {

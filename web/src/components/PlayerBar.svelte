@@ -6,7 +6,7 @@
   import { serviceName } from '../lib/catalog'
   import { app, currentTrack, go, openPanel, player, remember, seek, type Panel } from '../lib/state.svelte'
   import { time } from '../lib/format'
-  import BarControls from './BarControls.svelte'
+  import PlayerControls from './PlayerControls.svelte'
   import Cover from './Cover.svelte'
   import Icon from './Icon.svelte'
   import ServiceGlyph from './ServiceGlyph.svelte'
@@ -69,7 +69,7 @@
     {/if}
   </section>
 
-  <BarControls />
+  <PlayerControls />
 
   <div class="progress" class:idle={!t}>
     <span class="time now-time">{time(player.position)}</span>
