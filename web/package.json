@@ -8,7 +8,8 @@
     "build": "vite build",
     "preview": "vite preview",
     "check": "svelte-check --tsconfig ./tsconfig.json && tsc -p worker",
-    "deploy": "vite build && wrangler deploy"
+    "deploy": "vite build && wrangler deploy",
+    "test:helper": "node scripts/helper-test.mjs"
   },
   "dependencies": {
     "@material/material-color-utilities": "^0.4.0",
@@ -20,6 +21,7 @@
     "@cloudflare/vite-plugin": "^1.62.5",
     "@cloudflare/workers-types": "^5.20261004.1",
     "@sveltejs/vite-plugin-svelte": "^7.3.1",
+    "playwright-core": "^1.64.0",
     "svelte": "^5.57.1",
     "svelte-check": "^4.7.6",
     "typescript": "~5.9.3",

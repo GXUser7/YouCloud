@@ -174,7 +174,7 @@ export const EN: Record<string, string> = {
   'Бенто': 'Bento',
   'Плитки разного размера: главное крупно, рядом «Любимое»': 'Tiles of different sizes: the main one large, Favourites beside it',
   'Сцена': 'Stage',
-  'Большая карусель, страница в цветах обложки': 'A big carousel, the page in the cover’s colours',
+  'Большая карусель, страница в цветах обложки': "A big carousel, the page in the cover's colours",
   'Для тебя': 'For you',
   'Приветствие и плитки, чтобы сразу включить': 'A greeting and tiles to start playing right away',
   'Доброй ночи': 'Good night',
@@ -348,6 +348,30 @@ export const EN: Record<string, string> = {
   'Firefox держит такое дополнение до перезапуска: потом — снова шаг 2.': 'Firefox keeps such an add-on until it restarts: then do step 2 again.',
   'Скачай': 'Download',
   '— кнопка справа.': '— the button on the right.',
+  'Помощник YouCloud %s подключён': 'YouCloud Helper %s connected',
+  'Помощник %s подключён': 'Helper %s connected',
+  'Звук YouTube находит yt-dlp — как в приложении.': "yt-dlp finds YouTube's sound — as in the app.",
+  'Обнови помощник': 'Update the helper',
+  'Стоит %s, на сайте — %s. Скачай и открой так же, как в первый раз.': 'You have %s, the site has %s. Download it and open it as the first time.',
+  'Поставь помощник YouCloud': 'Install YouCloud Helper',
+  'Маленькая программа рядом с расширением: звук YouTube через yt-dlp, как в приложении, — без «подтвердите, что вы не бот». И статус «Слушает YouCloud» в Discord.':
+    "A small program beside the extension: YouTube's sound through yt-dlp, as in the app — no “confirm you're not a bot”. And a “Listening to YouCloud” status in Discord.",
+  'и открой его — появится': 'and open it — out comes',
+  'Дважды щёлкни по нему. Mac скажет, что не может проверить разработчика:': "Double-click it. The Mac will say it can't verify the developer:",
+  '«Системные настройки» → «Конфиденциальность и безопасность» → «Всё равно открыть»': 'System Settings → Privacy & Security → Open Anyway',
+  'В Терминале помощник поставит себя и скачает yt-dlp. Когда напишет «Готово», вернись сюда.':
+    'In Terminal the helper installs itself and downloads yt-dlp. When it says “Done”, come back here.',
+  'Открой его. Программа без подписи, Windows может предупредить:': "Open it. The program isn't signed, so Windows may warn:",
+  '«Подробнее» → «Выполнить в любом случае»': 'More info → Run anyway',
+  'Помощник поставит себя и скачает yt-dlp. Когда напишет «Готово», вернись сюда.': 'The helper installs itself and downloads yt-dlp. When it says “Done”, come back here.',
+  'Жду помощник — он подключится сам': 'Waiting for the helper — it connects by itself',
+  'Ставится в папку пользователя, права администратора не нужны.': 'It installs into your user folder, no administrator needed.',
+  'Статус в Discord': 'Status in Discord',
+  'Друзья видят, что ты слушаешь: трек, обложку и сколько осталось. На паузе статус пропадает. Нужен запущенный Discord на этом компьютере.':
+    'Friends see what you listen to: the track, its cover and how much is left. On pause the status goes. Needs Discord running on this computer.',
+  'Статуса не видно — в Discord включи «Настройки → Конфиденциальность активности → Показывать текущую активность».':
+    'No status? In Discord turn on Settings → Activity Privacy → Share my activity.',
+  'yt-dlp не ответил': "yt-dlp didn't answer",
   'в новой вкладке и включи': 'in a new tab and turn on',
   '«Режим разработчика»': '“Developer mode”',
   'справа вверху.': 'at the top right.',
@@ -363,7 +387,6 @@ export const EN: Record<string, string> = {
   'Нужно расширение YouCloud': 'The YouCloud extension is needed',
   'Расширение %s устарело: новое — в Настройках, раздел «Расширение»': 'Extension %s is outdated: the new one is in Settings, “Extension”',
   'Расширение не ответило. %s': "The extension didn't answer. %s",
-  'Masaki не ответил': "Masaki didn't answer",
 
   // Sign-ins and links
   '%s подключён: %s': '%s connected: %s',

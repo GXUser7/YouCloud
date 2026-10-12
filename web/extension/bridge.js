@@ -18,8 +18,14 @@ window.addEventListener('message', (event) => {
     // A token caught while this page was closed or reloading waits for the page to be listening.
     handOverTokens()
   }
-  if (data.kind === 'fetch' || data.kind === 'call') {
-    const message = data.kind === 'fetch' ? { type: 'yc-fetch', ...data.request } : { type: 'yc-call', name: data.name }
+  if (data.kind === 'presence') tellPresence(data.track ?? null)
+  if (data.kind === 'fetch' || data.kind === 'call' || data.kind === 'yt-stream') {
+    const message =
+      data.kind === 'fetch'
+        ? { type: 'yc-fetch', ...data.request }
+        : data.kind === 'call'
+          ? { type: 'yc-call', name: data.name }
+          : { type: 'yc-yt-stream', videoId: String(data.videoId ?? ''), fresh: !!data.fresh }
     // After the extension is reloaded this page's copy of it is cut off: say so rather than go quiet.
     try {
       api.runtime
@@ -31,6 +37,22 @@ window.addEventListener('message', (event) => {
     }
   }
 })
+
+// What plays, for the status in Discord, goes along a line of this page's own: when the page goes
+// (closed, reloaded, left), the line breaks and the background takes the status away.
+let line = null
+
+function tellPresence(track) {
+  try {
+    if (!line) {
+      line = api.runtime.connect({ name: 'yc-presence' })
+      line.onDisconnect.addListener(() => (line = null))
+    }
+    line.postMessage({ track })
+  } catch {
+    line = null
+  }
+}
 
 const TOKENS = { yaToken: 'ya-token', scToken: 'sc-token' }
 

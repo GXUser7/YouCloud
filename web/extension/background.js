@@ -3,7 +3,9 @@
 // Cloudflare's away. It reaches only the hosts in the manifest, and answers only YouCloud's pages
 // (the content script runs nowhere else). It also signs the site in: SoundCloud's session from
 // this browser — its cookie, or, signed out, the token its own requests carry once the listener
-// signs in on the tab it opens — and Yandex's token from the Yandex ID login it opens.
+// signs in on the tab it opens — and Yandex's token from the Yandex ID login it opens. With YouCloud
+// Helper installed (web/helper), it hands that program YouTube's sound to find with yt-dlp and what
+// plays, for the listener's status in Discord.
 
 const api = globalThis.browser ?? globalThis.chrome
 
@@ -16,6 +18,7 @@ const PROFILES = [
 ]
 
 const ALLOWED = PROFILES.flatMap((p) => p.domains)
+const SITE_TABS = ['https://youcloud.inkerror67.workers.dev/*', 'http://localhost:5190/*']
 const NOT_IN_A_TAB = -1
 const MARK = 'ycr'
 
@@ -170,8 +173,156 @@ async function relay(message) {
   }
 }
 
+// ------------------------------------------------------------------------------------- the helper
+
+// YouCloud Helper (web/helper): a small program the listener installs once, for what an extension
+// can't reach from inside the browser — yt-dlp for YouTube's sound and the Discord app for the
+// status. The browser starts it on the first ask and keeps it while the port is open; a port held
+// open also keeps this worker alive. Messages carry an id to answer; one without wants no answer.
+const HELPER = 'com.youcloud.helper'
+const HELPER_MISSING = /not found|no such native application|not registered|access to the specified native messaging host is forbidden/i
+let native = null
+
+function helperPort() {
+  if (native) return native
+  const n = { port: api.runtime.connectNative(HELPER), pending: new Map(), seq: 0 }
+  n.port.onMessage.addListener((message) => {
+    const done = n.pending.get(message?.id)
+    if (!done) return
+    n.pending.delete(message.id)
+    done(message)
+  })
+  n.port.onDisconnect.addListener((port) => {
+    // Not installed, or gone: Chrome says why in lastError, Firefox on the port.
+    const error = api.runtime.lastError?.message ?? port?.error?.message ?? 'helper exited'
+    if (native === n) native = null
+    for (const done of n.pending.values()) done({ error })
+    n.pending.clear()
+  })
+  native = n
+  return n
+}
+
+function askHelper(message, timeoutMs = 10_000) {
+  return new Promise((resolve) => {
+    let n
+    try {
+      n = helperPort()
+    } catch (e) {
+      resolve({ error: String(e?.message ?? e) })
+      return
+    }
+    const id = ++n.seq
+    const timer = setTimeout(() => {
+      n.pending.delete(id)
+      resolve({ error: 'timeout' })
+    }, timeoutMs)
+    n.pending.set(id, (answer) => {
+      clearTimeout(timer)
+      resolve(answer)
+    })
+    try {
+      n.port.postMessage({ ...message, id })
+    } catch (e) {
+      n.pending.delete(id)
+      clearTimeout(timer)
+      resolve({ error: String(e?.message ?? e) })
+    }
+  })
+}
+
+/** The helper's version, or null when it isn't installed. Saying hello also gets yt-dlp ready. */
+async function helperHello() {
+  const answer = await askHelper({ type: 'hello' })
+  if (answer.error) return HELPER_MISSING.test(answer.error) ? { value: null } : { error: answer.error }
+  return { value: answer.value }
+}
+
+/** This browser's youtube.com cookies, for the helper to hand yt-dlp when YouTube wants a sign-in.
+ *  None without a session; they go only to the helper, on this computer. */
+async function youtubeCookies() {
+  if (!(await youtubeSapisid())) return []
+  const lists = await Promise.all(['https://www.youtube.com/', 'https://music.youtube.com/'].map((url) => api.cookies.getAll({ url })))
+  const seen = new Set()
+  return lists
+    .flat()
+    .filter((c) => {
+      const key = `${c.domain}|${c.path}|${c.name}`
+      if (seen.has(key)) return false
+      seen.add(key)
+      return true
+    })
+    .map((c) => ({
+      domain: c.domain,
+      hostOnly: c.hostOnly,
+      path: c.path,
+      secure: c.secure,
+      httpOnly: c.httpOnly,
+      expirationDate: c.expirationDate ?? 0,
+      name: c.name,
+      value: c.value,
+    }))
+}
+
+/** [videoId]'s sound from the helper's yt-dlp. The first time it fetches yt-dlp, hence the long wait. */
+async function ytStream(message) {
+  const videoId = String(message.videoId ?? '')
+  const answer = await askHelper({ type: 'yt-stream', videoId, fresh: !!message.fresh, cookies: await youtubeCookies() }, 120_000)
+  return answer.error ? { error: answer.error } : { value: answer.value }
+}
+
+// The status in Discord follows the tab that told what plays last; a tab that only says it plays
+// nothing doesn't take it from one that plays. The tab's line breaking (closed, reloaded, left)
+// takes the status away.
+let presenceFrom = null
+
+function tellPresence(track) {
+  // Nothing to show and no helper running: not worth starting it.
+  if (!native && !track?.playing) return
+  try {
+    helperPort().port.postMessage({ type: 'presence', track })
+  } catch {
+    // the helper went away; the next change starts it again
+  }
+}
+
+api.runtime.onConnect.addListener((port) => {
+  if (port.name !== 'yc-presence' || port.sender?.id !== api.runtime.id) return
+  port.onMessage.addListener((message) => {
+    const track = message?.track ?? null
+    if (!track?.playing && presenceFrom !== port) return
+    presenceFrom = port
+    tellPresence(track)
+  })
+  port.onDisconnect.addListener(() => {
+    if (presenceFrom === port) {
+      presenceFrom = null
+      tellPresence(null)
+    }
+    letHelperGo()
+  })
+})
+
+// With YouCloud closed everywhere the helper isn't needed: let it go (and with it the worker).
+let idle
+function letHelperGo() {
+  clearTimeout(idle)
+  idle = setTimeout(async () => {
+    if (!native || native.pending.size) return
+    const open = await api.tabs.query({ url: SITE_TABS }).catch(() => [{}])
+    if (open.length || !native) return
+    native.port.disconnect()
+    native = null
+  }, 15_000)
+}
+
+api.tabs.onRemoved.addListener(() => {
+  if (native) letHelperGo()
+})
+
 /** The site's other asks: who is signed in where, and a Yandex login. */
 async function call(name) {
+  if (name === 'helper') return helperHello()
   if (name === 'sc-token') {
     const cookie = await api.cookies.get({ url: 'https://soundcloud.com/', name: 'oauth_token' })
     return { value: cookie?.value ? decodeURIComponent(cookie.value) : null }
@@ -248,6 +399,12 @@ api.runtime.onMessage.addListener((message, sender, sendResponse) => {
       .catch((e) => sendResponse({ error: String(e?.message ?? e) }))
     return true
   }
+  if (message?.type === 'yc-yt-stream') {
+    ytStream(message)
+      .then(sendResponse)
+      .catch((e) => sendResponse({ error: String(e?.message ?? e) }))
+    return true
+  }
   if (message?.type === 'yc-ya-token') {
     caughtYandexToken(message, sender)
   }
@@ -255,7 +412,6 @@ api.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
 // Installed or updated while YouCloud is open: Chrome gives already open pages no content script,
 // so the site's tabs get their bridge here — the site sees the extension without a reload.
-const SITE_TABS = ['https://youcloud.inkerror67.workers.dev/*', 'http://localhost:5190/*']
 
 api.runtime.onInstalled.addListener(async () => {
   const tabs = await api.tabs.query({ url: SITE_TABS })

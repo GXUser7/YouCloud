@@ -25,12 +25,21 @@ export function extensionVersion(dir: string): string {
 }
 
 export function packExtension(dir: string): Buffer {
+  return packZip(filesOf(dir).map((name) => ({ name, data: readFileSync(join(dir, name)) })))
+}
+
+export type ZipEntry = {
+  name: string
+  data: Buffer
+  /** Unix permissions, kept for the Mac's unarchiver: 0o755 makes the file a program it can run. */
+  mode?: number
+}
+
+export function packZip(entries: ZipEntry[]): Buffer {
   const parts: Buffer[] = []
   const central: Buffer[] = []
   let offset = 0
-  const names = filesOf(dir)
-  for (const name of names) {
-    const data = readFileSync(join(dir, name))
+  for (const { name, data, mode } of entries) {
     const packed = deflateRawSync(data, { level: 9 })
     const path = Buffer.from(name, 'utf8')
     const crc = crc32(data)
@@ -50,7 +59,8 @@ export function packExtension(dir: string): Buffer {
 
     const entry = Buffer.alloc(46)
     entry.writeUInt32LE(0x02014b50, 0)
-    entry.writeUInt16LE(20, 4) // made by
+    // made by: Unix where the entry carries permissions, so they are read at all
+    entry.writeUInt16LE(mode === undefined ? 20 : (3 << 8) | 20, 4)
     entry.writeUInt16LE(20, 6) // version needed
     entry.writeUInt16LE(0x0800, 8)
     entry.writeUInt16LE(8, 10)
@@ -60,6 +70,7 @@ export function packExtension(dir: string): Buffer {
     entry.writeUInt32LE(packed.length, 20)
     entry.writeUInt32LE(data.length, 24)
     entry.writeUInt16LE(path.length, 28)
+    if (mode !== undefined) entry.writeUInt32LE(((0o100000 | mode) << 16) >>> 0, 38) // a regular file, its permissions
     entry.writeUInt32LE(offset, 42)
     central.push(entry, path)
 
@@ -68,8 +79,8 @@ export function packExtension(dir: string): Buffer {
   const directory = Buffer.concat(central)
   const end = Buffer.alloc(22)
   end.writeUInt32LE(0x06054b50, 0)
-  end.writeUInt16LE(names.length, 8)
-  end.writeUInt16LE(names.length, 10)
+  end.writeUInt16LE(entries.length, 8)
+  end.writeUInt16LE(entries.length, 10)
   end.writeUInt32LE(directory.length, 12)
   end.writeUInt32LE(offset, 16)
   return Buffer.concat([...parts, directory, end])

@@ -30,7 +30,7 @@ function parseHash(): Route {
   return known.includes(name as RouteName) ? { name: name as RouteName, id: id ? decodeURIComponent(id) : undefined } : { name: 'home' }
 }
 
-function stored<T>(key: string, fallback: T): T {
+export function stored<T>(key: string, fallback: T): T {
   try {
     const raw = localStorage.getItem('yc.' + key)
     return raw == null ? fallback : (JSON.parse(raw) as T)

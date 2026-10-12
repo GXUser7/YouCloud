@@ -15,6 +15,7 @@
   import ButtonGroup from '../components/ButtonGroup.svelte'
   import ConnectionCheck from '../components/ConnectionCheck.svelte'
   import ExtensionCard from '../components/ExtensionCard.svelte'
+  import HelperCard from '../components/HelperCard.svelte'
   import Cover from '../components/Cover.svelte'
   import Icon from '../components/Icon.svelte'
   import PageHeader from '../components/PageHeader.svelte'
@@ -106,7 +107,7 @@
 <PageHeader title={tr('Настройки')} subtitle={tr('Аккаунты, оформление и сайт')} />
 
 <div class="grid">
-  <div class="wide"><ExtensionCard always /></div>
+  <div class="wide"><ExtensionCard always /><HelperCard /></div>
   <section class="card glass profile rise">
     {#if social.me}
       {@const me = social.me}

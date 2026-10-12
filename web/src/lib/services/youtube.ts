@@ -769,8 +769,9 @@ export function streamFailed(videoId: string): boolean {
   return ['YTDLP', 'VR', ...SIGNED_IN_CLIENTS].some((c) => !skip.has(c))
 }
 
-/** The track's sound: in Masaki its yt-dlp's; elsewhere Android VR when YouTube lets it, else the
- *  clients signed in — which, in a plain browser, YouTube refuses for some tracks altogether. */
+/** The track's sound: in Masaki or with the helper, yt-dlp's; elsewhere Android VR when YouTube
+ *  lets it, else the clients signed in — which, in a plain browser, YouTube refuses for some
+ *  tracks altogether. */
 export async function stream(t: Track): Promise<string> {
   const videoId = t.yt!.videoId
   const kept = streams.get(videoId)
@@ -782,8 +783,9 @@ export async function stream(t: Track): Promise<string> {
   // the signed-in ones' refusals after it only add to it.
   let first = ''
   const skip = refused.get(videoId) ?? new Set<string>()
-  // Masaki asks yt-dlp, which gets past what the clients below run into; they stay for when it can't.
-  if (!skip.has('YTDLP') && (await extension()) && hostStreams()) {
+  // Masaki or the helper ask yt-dlp, which gets past what the clients below run into; they stay for
+  // when it can't.
+  if (!skip.has('YTDLP') && (await extension()) && (await hostStreams())) {
     try {
       url = (await hostStream(videoId)).url
       from = 'YTDLP'

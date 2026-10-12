@@ -4,9 +4,13 @@
 //
 // Masaki (the listener's own browser) answers the same messages itself, with nothing to install:
 // its hello says host 'masaki', and the page then fits itself to the browser around it.
+//
+// YouCloud Helper (web/helper), a small program beside the extension, does what Masaki does beyond
+// it: YouTube's sound through yt-dlp, and the status in Discord.
 
 import { tr } from './i18n.svelte'
 import { version as latest } from '../../extension/manifest.json'
+import { version as latestHelper } from '../../helper/version.json'
 
 type Answer = { status?: number; statusText?: string; headers?: [string, string][]; body?: string; value?: unknown; error?: string }
 
@@ -134,7 +138,7 @@ function explain(error: string): string {
 }
 
 /** One of the extension's own asks: 'sc-token' (SoundCloud's session cookie), 'sc-login', 'ya-login'. */
-export async function extensionCall<T = unknown>(name: 'sc-token' | 'sc-login' | 'ya-login' | 'yt-account' | 'yt-login' | 'yt-cookies', timeoutMs = 10_000): Promise<T> {
+export async function extensionCall<T = unknown>(name: 'sc-token' | 'sc-login' | 'ya-login' | 'yt-account' | 'yt-login' | 'yt-cookies' | 'helper', timeoutMs = 10_000): Promise<T> {
   const v = await extension()
   if (!v) throw new Error(tr('Нужно расширение YouCloud'))
   if (older(v, SIGN_IN_VERSION)) {
@@ -158,17 +162,55 @@ export async function extensionCall<T = unknown>(name: 'sc-token' | 'sc-login' |
 /** Masaki from 0.7 finds YouTube's sound itself, with yt-dlp, as the Android app does. */
 const HOST_STREAM_VERSION = [0, 7, 0]
 
-/** Whether the browser around the site finds YouTube's sound itself (Masaki with yt-dlp). */
-export const hostStreams = () => host === 'masaki' && !!version && !older(version, HOST_STREAM_VERSION)
+/** The oldest extension that knows the helper: 0.6 hands it YouTube's sound and what plays. */
+const HELPER_EXTENSION_VERSION = [0, 6, 0]
 
-/** [videoId]'s sound from Masaki's yt-dlp, from this browser's IP and YouTube sign-in. The first
- *  time Masaki fetches yt-dlp itself, hence the long wait allowed. */
+export type HelperInfo = { version: string; os: string }
+
+/** The helper this site hands out (web/helper/version.json). */
+export const LATEST_HELPER = latestHelper as string
+export const HELPER_DOWNLOADS = { windows: '/youcloud-helper.exe', mac: '/youcloud-helper-mac.zip' }
+export const helperOutdated = (v: string) => older(v, LATEST_HELPER.split('.').map(Number))
+
+/** Whether the helper can be had here: an extension that knows it, and not Masaki, which needs none. */
+export const helperPossible = () => !!version && host !== 'masaki' && !older(version, HELPER_EXTENSION_VERSION)
+
+let helperFound: HelperInfo | null = null
+let helperAsk: Promise<HelperInfo | null> | null = null
+
+/** The helper, through the extension: its version, or null without it (or in Masaki, which needs
+ *  none). Found once it stays found; not found, [again] asks anew — just after installing it. */
+export function helper(again = false): Promise<HelperInfo | null> {
+  if (helperFound) return Promise.resolve(helperFound)
+  if (again) helperAsk = null
+  helperAsk ??= (async () => {
+    await extension()
+    if (!helperPossible()) return null
+    try {
+      const info = await extensionCall<HelperInfo | null>('helper')
+      if (info?.version) helperFound = info
+      return info?.version ? info : null
+    } catch {
+      return null
+    }
+  })()
+  return helperAsk
+}
+
+/** Whether something beside the site finds YouTube's sound with yt-dlp: Masaki itself, or the helper. */
+export async function hostStreams(): Promise<boolean> {
+  if (host === 'masaki') return !!version && !older(version, HOST_STREAM_VERSION)
+  return !!(await helper())
+}
+
+/** [videoId]'s sound from yt-dlp (Masaki's or the helper's), from this browser's IP and YouTube
+ *  sign-in. The first time yt-dlp is fetched, hence the long wait allowed. */
 export function hostStream(videoId: string, timeoutMs = 120_000): Promise<{ url: string; expire: number }> {
   const id = ++seq
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
       waiting.delete(id)
-      reject(new Error(tr('Masaki не ответил')))
+      reject(new Error(tr('yt-dlp не ответил')))
     }, timeoutMs)
     waiting.set(id, (answer) => {
       clearTimeout(timer)
@@ -177,6 +219,24 @@ export function hostStream(videoId: string, timeoutMs = 120_000): Promise<{ url:
     })
     post({ kind: 'yt-stream', id, videoId })
   })
+}
+
+/** What plays, for the status in Discord (null: nothing). The helper shows it; the extension takes
+ *  it away when this page goes. */
+export function tellPresence(track: PresenceTrack | null) {
+  post({ kind: 'presence', track })
+}
+
+export type PresenceTrack = {
+  title: string
+  artist: string
+  album: string
+  artwork: string
+  playing: boolean
+  /** Seconds; null for a broadcast, which has no length. */
+  duration: number | null
+  /** Seconds, as of now. */
+  position: number | null
 }
 
 /** Called with the token a login caught (Yandex ID's, SoundCloud's), whenever one arrives. */
