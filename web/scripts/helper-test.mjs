@@ -64,9 +64,23 @@ fs.writeFileSync(
 const args = process.argv.slice(2)
 const id = new URL(args.at(-1)).searchParams.get('v')
 const cookies = args.includes('--cookies') ? fs.readFileSync(args[args.indexOf('--cookies') + 1], 'utf8') : ''
-fs.appendFileSync(${JSON.stringify(calls)}, JSON.stringify({ id, cookies: !!cookies, js: args[args.indexOf('--js-runtimes') + 1] }) + '\\n')
+const live = args[args.indexOf('-f') + 1].includes('m3u8')
+fs.appendFileSync(${JSON.stringify(calls)}, JSON.stringify({ id, cookies: !!cookies, live, js: args[args.indexOf('--js-runtimes') + 1] }) + '\\n')
 const ok = () => console.log(JSON.stringify({ url: 'https://rr1---sn-test.googlevideo.com/videoplayback?expire=' + (Math.floor(Date.now() / 1000) + 21600) + '&id=' + id }))
-if (id === 'needsignin0') {
+// A broadcast: asked for as a file it has none (yt-dlp passes over its live formats); asked for as
+// one, its HLS playlist, with expire in the path.
+const broadcast = () => {
+  if (!live) {
+    console.error('ERROR: [youtube] ' + id + ': No video formats found!; please report this issue on  https://github.com/yt-dlp/yt-dlp/issues?q= , filling out the appropriate issue template')
+    process.exit(1)
+  }
+  console.log(JSON.stringify({ url: 'https://manifest.googlevideo.com/api/manifest/hls_playlist/expire/' + (Math.floor(Date.now() / 1000) + 21600) + '/id/' + id + '.1/itag/234/source/yt_live_broadcast/playlist/index.m3u8', is_live: true, protocol: 'm3u8_native' }))
+}
+if (id === 'livestream1') broadcast()
+else if (id === 'livesignin1') {
+  if (cookies) broadcast()
+  else { console.error("ERROR: [youtube] livesignin1: Sign in to confirm you're not a bot"); process.exit(1) }
+} else if (id === 'needsignin0') {
   if (cookies.startsWith('# Netscape HTTP Cookie File') && /\\tSAPISID\\tmade-up/.test(cookies)) ok()
   else { console.error("ERROR: [youtube] needsignin0: Sign in to confirm you're not a bot"); process.exit(1) }
 } else if (id === 'refusedvid1') {
@@ -260,6 +274,18 @@ try {
 
   const refused = await ask(page, { kind: 'yt-stream', id: 5, videoId: 'refusedvid1' })
   check(refused.error === 'Video unavailable', `отказ YouTube дошёл до сайта: «${refused.error}»`)
+  console.log('Трансляции')
+  const live = await ask(page, { kind: 'yt-stream', id: 60, videoId: 'livestream1', live: true })
+  check(/^https:\/\/manifest\.googlevideo\.com\/api\/manifest\/hls_playlist\//.test(live.value?.url ?? '') && live.value?.live === true, 'трансляция: плейлист HLS и live')
+  check(live.value?.expire > Date.now() + 5 * 3600_000, 'срок плейлиста — из expire в пути')
+  const runs = (id) => log().filter((c) => c.id === id).map((c) => `${c.cookies ? 'вход' : 'гость'}:${c.live ? 'эфир' : 'файл'}`).join(' ')
+  check(runs('livestream1') === 'гость:эфир', 'сайт сказал «трансляция» — yt-dlp спрошен один раз, сразу как трансляция')
+  const guessed = await ask(page, { kind: 'yt-stream', id: 61, videoId: 'livestream1', fresh: true })
+  check(guessed.value?.live === true, 'сайт не знал — помощник сам понял, что это трансляция')
+  check(runs('livestream1') === 'гость:эфир гость:файл гость:эфир', `как файл — форматов нет, тогда как трансляция (${runs('livestream1')})`)
+  const notLive = await ask(page, { kind: 'yt-stream', id: 62, videoId: 'refusedvid1', fresh: true })
+  check(notLive.error === 'Video unavailable' && !runs('refusedvid1').includes('эфир'), `отказ — не трансляция, спрошен только как файл: «${notLive.error}»`)
+
   const bad = await ask(page, { kind: 'yt-stream', id: 6, videoId: 'nope' })
   check(!!bad.error && !log().some((c) => c.id === 'nope'), 'неверный id до yt-dlp не доходит')
 
@@ -274,6 +300,9 @@ try {
   const tries = log().filter((c) => c.id === 'needsignin0')
   check(tries.at(-2)?.cookies === false && tries.at(-1)?.cookies === true, 'сначала без входа, потом с куками')
   check(!fs.readdirSync(path.join(home, 'yt-dlp', 'tmp')).length, 'файл с куками удалён после запуска')
+  const liveSignIn = await ask(page, { kind: 'yt-stream', id: 9, videoId: 'livesignin1' })
+  check(liveSignIn.value?.live === true, 'трансляция, о которой сайт не знал, — со входом браузера')
+  check(runs('livesignin1') === 'гость:файл вход:файл вход:эфир', `гостем отказ, со входом как файл — нет форматов, тогда как трансляция (${runs('livesignin1')})`)
 
   console.log('Статус в Discord')
   const track = { title: 'Тестовый трек', artist: 'Masaki Band', album: 'Альбом для Discord', artwork: 'https://example.com/cover.jpg', playing: true, duration: 200, position: 10 }

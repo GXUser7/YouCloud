@@ -20,6 +20,7 @@ type request struct {
 	Type    string   `json:"type"`
 	VideoID string   `json:"videoId"`
 	Fresh   bool     `json:"fresh"`
+	Live    bool     `json:"live"`
 	Cookies []cookie `json:"cookies"`
 	Track   *Track   `json:"track"`
 }
@@ -96,7 +97,7 @@ func handle(req request) {
 		go prepare()
 		reply(map[string]any{"version": Version, "os": runtime.GOOS}, nil)
 	case "yt-stream":
-		found, err := resolve(req.VideoID, req.Fresh, req.Cookies)
+		found, err := resolve(req.VideoID, req.Fresh, req.Live, req.Cookies)
 		if err != nil {
 			log.Printf("yt-stream %s: %v", req.VideoID, err)
 			reply(nil, err)

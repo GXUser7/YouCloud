@@ -20,6 +20,12 @@
       phase = 'none'
       return
     }
+    // A broadcast has no song's words to look for.
+    if (player.live) {
+      phase = 'none'
+      onsource?.(null)
+      return
+    }
     // The design's stand-in tracks — no service behind them — keep the design's lyrics.
     if (!track.sc && !track.ya && !track.yt) {
       lines = designLyrics.map(([at, text]) => ({ at, text }))
@@ -59,7 +65,7 @@
   <div class="state"><LoadingIndicator size={48} /></div>
 {:else if phase === 'none'}
   <div class="state muted">
-    <p class="none">{tr('У этого трека нет текста')}</p>
+    <p class="none">{player.live ? tr('У прямого эфира нет текста') : tr('У этого трека нет текста')}</p>
   </div>
 {:else}
   <div class="lyrics {size}" class:plain={!synced} bind:this={box}>

@@ -12,7 +12,7 @@ import { tr } from './i18n.svelte'
 import { version as latest } from '../../extension/manifest.json'
 import { version as latestHelper } from '../../helper/version.json'
 
-type Answer = { status?: number; statusText?: string; headers?: [string, string][]; body?: string; value?: unknown; error?: string }
+type Answer = { status?: number; statusText?: string; headers?: [string, string][]; body?: string; base64?: boolean; value?: unknown; error?: string }
 
 let version: string | null = null
 /** Who answers: 'masaki' when the browser itself does, null for the extension. */
@@ -94,6 +94,8 @@ export type ExtensionInit = {
   /** YouTube, as this browser is signed in there: the extension adds the session itself, the way
    *  named ('native3', 'dnr3', 'native1', 'dnr1'; true is the extension's default). */
   session?: boolean | string
+  /** The answer as bytes (a broadcast's pieces), which travel as base64. */
+  binary?: boolean
   timeoutMs?: number
 }
 
@@ -111,11 +113,22 @@ export function extensionFetch(url: string, init: ExtensionInit = {}): Promise<R
       else {
         // A status that has no body (204, 304) can't be given one, even an empty one.
         const empty = [101, 204, 205, 304].includes(answer.status ?? 200)
-        resolve(new Response(empty ? null : (answer.body ?? ''), { status: answer.status, statusText: answer.statusText, headers: answer.headers }))
+        const body = empty ? null : answer.base64 ? bytesOf(answer.body ?? '') : (answer.body ?? '')
+        resolve(new Response(body, { status: answer.status, statusText: answer.statusText, headers: answer.headers }))
       }
     })
     post({ kind: 'fetch', id, request: { url, ...request } })
   })
+}
+
+/** Bytes that came as base64. */
+function bytesOf(text: string): Uint8Array<ArrayBuffer> {
+  const from = (Uint8Array as unknown as { fromBase64?: (s: string) => Uint8Array<ArrayBuffer> }).fromBase64
+  if (from) return from(text)
+  const raw = atob(text)
+  const bytes = new Uint8Array(raw.length)
+  for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i)
+  return bytes
 }
 
 /** The oldest extension that can sign in everywhere: 0.4 signs YouTube's requests with its session. */
@@ -197,15 +210,26 @@ export function helper(again = false): Promise<HelperInfo | null> {
   return helperAsk
 }
 
+/** The oldest that fetch a YouTube broadcast's playlist and pieces for the page: Masaki 0.8, the extension 0.6.1. */
+const MEDIA_VERSION = { masaki: [0, 8, 0], extension: [0, 6, 1] }
+
+/** Whether the extension (or Masaki) fetches a broadcast's pieces, as a YouTube broadcast plays only so. */
+export const mediaRelay = () => !!version && !older(version, host === 'masaki' ? MEDIA_VERSION.masaki : MEDIA_VERSION.extension)
+
 /** Whether something beside the site finds YouTube's sound with yt-dlp: Masaki itself, or the helper. */
 export async function hostStreams(): Promise<boolean> {
   if (host === 'masaki') return !!version && !older(version, HOST_STREAM_VERSION)
   return !!(await helper())
 }
 
+/** yt-dlp's answer: the sound's link and when it runs out (ms); [live], a broadcast's HLS playlist.
+ *  Masaki before 0.8 and the helper before 1.1 don't say live, nor know a broadcast. */
+export type HostStream = { url: string; expire: number; live?: boolean }
+
 /** [videoId]'s sound from yt-dlp (Masaki's or the helper's), from this browser's IP and YouTube
- *  sign-in. The first time yt-dlp is fetched, hence the long wait allowed. */
-export function hostStream(videoId: string, timeoutMs = 120_000): Promise<{ url: string; expire: number }> {
+ *  sign-in; [live], the site knows it for a broadcast. The first time yt-dlp is fetched, hence the
+ *  long wait allowed. */
+export function hostStream(videoId: string, live = false, timeoutMs = 120_000): Promise<HostStream> {
   const id = ++seq
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
@@ -215,9 +239,9 @@ export function hostStream(videoId: string, timeoutMs = 120_000): Promise<{ url:
     waiting.set(id, (answer) => {
       clearTimeout(timer)
       if (answer.error) reject(new Error(answer.error))
-      else resolve(answer.value as { url: string; expire: number })
+      else resolve(answer.value as HostStream)
     })
-    post({ kind: 'yt-stream', id, videoId })
+    post({ kind: 'yt-stream', id, videoId, live })
   })
 }
 

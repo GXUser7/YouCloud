@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "YouCloud — домашний IP",
   "short_name": "YouCloud",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "description": "Даёт сайту YouCloud ходить в Яндекс Музыку и YouTube с твоего IP и входить в SoundCloud и Яндекс без копирования токенов.",
   "icons": {
     "16": "icons/16.png",
@@ -23,6 +23,7 @@
     "https://*.yandex.net/*",
     "https://*.youtube.com/*",
     "https://youtubei.googleapis.com/*",
+    "https://*.googlevideo.com/*",
     "https://soundcloud.com/*",
     "https://api-v2.soundcloud.com/*",
     "https://youcloud.inkerror67.workers.dev/*",

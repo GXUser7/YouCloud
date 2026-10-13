@@ -11,7 +11,7 @@ import { i18n, tr } from '../i18n.svelte'
 import type { Innertube } from 'youtubei.js/web'
 import { artists as artistIndex, colorFor, putArtist, putSet, putTrack, sets, tracks as catalogTracks, type SetKind, type Track, type TrackSet } from '../catalog'
 import { accounts } from '../accounts.svelte'
-import { extension, extensionCall, hostStream, hostStreams } from '../extension'
+import { extension, extensionCall, extensionHost, hostStream, hostStreams, mediaRelay } from '../extension'
 import { at, getText, HttpError, postJson, request } from '../net'
 
 const ORIGIN = 'https://music.youtube.com'
@@ -318,8 +318,8 @@ const LIVE_AFTER_S = 24 * 3600
 
 /**
  * The lengths of [ids] that have none — home's songs, which YouTube Music shows without one — as
- * its player asks for a queue, fifty at a time. A broadcast is told by its running time and
- * marked live instead.
+ * its player asks for a queue, fifty at a time. A broadcast is marked live instead: the queue
+ * gives it a «Прямая трансляция» badge and no length, or (a 24/7 one, before) its running time.
  */
 async function fillLengths(ids: string[]): Promise<void> {
   const missing = [...new Set(ids)].filter((id) => {
@@ -336,8 +336,13 @@ async function fillLengths(ids: string[]): Promise<void> {
       for (const q of answer?.data?.queueDatas ?? []) {
         const v = q.content?.playlistPanelVideoRenderer ?? q.content?.playlistPanelVideoWrapperRenderer?.primaryRenderer?.playlistPanelVideoRenderer
         const t = v?.videoId && catalogTracks.get(`yt:t:${v.videoId}`)
-        const seconds = lengthOf(v?.lengthText?.runs?.[0]?.text ?? v?.lengthText?.simpleText)
-        if (!t || seconds == null) continue
+        if (!t) continue
+        if ((v.badges ?? []).some((b: any) => b.liveBadge || b.liveBadgeRenderer)) {
+          t.live = true
+          continue
+        }
+        const seconds = lengthOf(v.lengthText?.runs?.[0]?.text ?? v.lengthText?.simpleText)
+        if (seconds == null) continue
         if (seconds > LIVE_AFTER_S) t.live = true
         else t.duration = seconds
       }
@@ -466,6 +471,8 @@ export async function search(q: string): Promise<SearchResult> {
   const into = { tracks: [] as string[], sets: [] as string[], artists: [] as string[] }
   for (const shelf of (found.contents ?? []) as any[]) sortItems(shelf.contents ?? [], into)
   const tracks = [...new Set(into.tracks)]
+  // A video found without a length is mostly a broadcast: the queue says, briefly waited for.
+  await Promise.race([fillLengths(tracks).catch(() => {}), new Promise((done) => setTimeout(done, 2000))])
   const artists = [...new Set(into.artists)]
   const albums = [...new Set(into.sets.filter((id) => id.startsWith('yt:al:')))]
   const playlists = [...new Set(into.sets.filter((id) => id.startsWith('yt:pl:')))]
@@ -636,6 +643,9 @@ export interface Playability {
   status: string
   reason: string
   audio: { url: string; mimeType: string; bitrate: number }[]
+  /** A broadcast going on now: its sound is [hls], the HLS playlist. */
+  live: boolean
+  hls: string | null
 }
 
 /** Whether YouTube will hand this browser [videoId]'s sound without signing in, and where it is. */
@@ -650,9 +660,12 @@ export async function playability(videoId: string): Promise<Playability> {
     status: at(answer, 'playabilityStatus', 'status') ?? 'UNKNOWN',
     reason: at(answer, 'playabilityStatus', 'reason') ?? '',
     audio: formats
-      .filter((f) => f.mimeType?.startsWith('audio/') && f.url)
+      // A broadcast's adaptive formats are its pieces of a few seconds (targetDurationSec), not files.
+      .filter((f) => f.mimeType?.startsWith('audio/') && f.url && !f.targetDurationSec)
       .map((f) => ({ url: f.url, mimeType: f.mimeType, bitrate: f.bitrate }))
       .sort((a, b) => b.bitrate - a.bitrate),
+    live: !!at(answer, 'videoDetails', 'isLive'),
+    hls: at(answer, 'streamingData', 'hlsManifestUrl') ?? null,
   }
 }
 
@@ -733,7 +746,9 @@ if (import.meta.env.DEV) {
  */
 const SIGNED_IN_CLIENTS = ['TV', 'WEB_EMBEDDED'] as const
 
-const reachable = (f: any) => !!(f.url || f.signature_cipher || f.cipher)
+// A file to fetch: not a broadcast's piece of a few seconds (target_duration_sec), which a
+// broadcast's adaptive formats are.
+const reachable = (f: any) => !!(f.url || f.signature_cipher || f.cipher) && !f.target_duration_sec
 
 /**
  * The format to listen to: audio alone, with an address to fetch it from; the original track
@@ -755,8 +770,31 @@ function pickAudio(streaming: any): any | null {
 
 // Stream URLs are signed for a few hours; within that they're reused — unless one won't play,
 // when the client that gave it is passed over for that video next time.
-const streams = new Map<string, { url: string; until: number; client: string }>()
+const streams = new Map<string, { url: string; until: number; client: string; live: boolean }>()
 const refused = new Map<string, Set<string>>()
+
+/** An HLS playlist rather than a file: how YouTube and yt-dlp give a broadcast's sound. */
+const isHls = (url: string) => /\/api\/manifest\/hls_|\.m3u8(\?|$)/.test(url)
+
+/** When [url] runs out, ms: its `expire`, which a broadcast's playlist carries in its path. */
+function expiryOf(url: string): number {
+  const u = new URL(url)
+  const seconds = Number(u.searchParams.get('expire') ?? u.pathname.match(/\/expire\/(\d+)/)?.[1])
+  return seconds > 0 ? seconds * 1000 : Date.now() + 3_600_000
+}
+
+/**
+ * A broadcast's HLS playlist as YouTube's player would fetch it: an `n` in its path (/n/…/) is
+ * unscrambled by the player script as a stream URL's is in its query — so asked on a made-up one.
+ */
+async function unscrambled(manifest: string): Promise<string> {
+  const n = new URL(manifest).pathname.match(/\/n\/([^/]+)\//)?.[1]
+  if (!n) return manifest
+  const client = await ytPlayer()
+  const probe = await client.session.player!.decipher(`https://rr1---sn-yc.googlevideo.com/videoplayback?n=${n}`)
+  const solved = new URL(probe).searchParams.get('n')
+  return solved ? manifest.replace(`/n/${n}/`, `/n/${solved}/`) : manifest
+}
 
 /** [videoId]'s stream wouldn't play: forget it, and whether another client is left to ask. */
 export function streamFailed(videoId: string): boolean {
@@ -769,14 +807,33 @@ export function streamFailed(videoId: string): boolean {
   return ['YTDLP', 'VR', ...SIGNED_IN_CLIENTS].some((c) => !skip.has(c))
 }
 
-/** The track's sound: in Masaki or with the helper, yt-dlp's; elsewhere Android VR when YouTube
- *  lets it, else the clients signed in — which, in a plain browser, YouTube refuses for some
- *  tracks altogether. */
-export async function stream(t: Track): Promise<string> {
+export type Stream = { url: string; hls: boolean; live: boolean; bridge: boolean }
+
+/** A broadcast plays only with its pieces fetched by the extension or Masaki: one too old for that is named. */
+function liveRelayed() {
+  if (mediaRelay()) return
+  throw new Error(
+    extensionHost() === 'masaki'
+      ? tr('Эфиры YouTube играют в Masaki 0.8 и новее — обнови Masaki')
+      : tr('Эфиры YouTube играют с расширением 0.6.1 и новее — обнови его в Настройках'),
+  )
+}
+
+/**
+ * The track's sound: in Masaki or with the helper, yt-dlp's; elsewhere Android VR when YouTube
+ * lets it, else the clients signed in — which, in a plain browser, YouTube refuses for some
+ * tracks altogether. A broadcast's sound is its HLS playlist, and the track is marked live
+ * whichever way that came out.
+ */
+export async function stream(t: Track): Promise<Stream> {
   const videoId = t.yt!.videoId
   const kept = streams.get(videoId)
-  if (kept && kept.until > Date.now()) return kept.url
+  if (kept && kept.until > Date.now()) {
+    if (kept.live) liveRelayed()
+    return { url: kept.url, hls: kept.live, live: kept.live, bridge: kept.live }
+  }
   let url: string | null = null
+  let live = !!t.live
   let from = 'VR'
   let refusal = ''
   // What the first client said is what the listener can act on ("confirm you're not a bot");
@@ -787,7 +844,9 @@ export async function stream(t: Track): Promise<string> {
   // when it can't.
   if (!skip.has('YTDLP') && (await extension()) && (await hostStreams())) {
     try {
-      url = (await hostStream(videoId)).url
+      const found = await hostStream(videoId, live)
+      url = found.url
+      live = !!found.live || isHls(found.url)
       from = 'YTDLP'
     } catch (e) {
       refusal = first = `yt-dlp: ${(e as Error).message}`
@@ -796,7 +855,10 @@ export async function stream(t: Track): Promise<string> {
   if (!url && !skip.has('VR')) {
     try {
       const vr = await playability(videoId)
-      if (vr.status === 'OK' && vr.audio[0]) url = vr.audio[0].url
+      if (vr.status === 'OK' && vr.live && vr.hls) {
+        url = await unscrambled(vr.hls)
+        live = true
+      } else if (vr.status === 'OK' && vr.audio[0]) url = vr.audio[0].url
       else refusal = first = vr.reason || vr.status
     } catch (e) {
       refusal = first = (e as Error).message
@@ -822,6 +884,13 @@ export async function stream(t: Track): Promise<string> {
         refusal = info.playability_status?.reason ?? status
         continue
       }
+      // A broadcast: the HLS playlist with all its qualities, which the browser picks from.
+      if (info.basic_info?.is_live && info.streaming_data?.hls_manifest_url) {
+        url = await unscrambled(info.streaming_data.hls_manifest_url)
+        live = true
+        from = name
+        break
+      }
       const format = pickAudio(info.streaming_data)
       if (!format) {
         refusal = tr('YouTube отдал только поток SABR, без ссылок')
@@ -836,9 +905,11 @@ export async function stream(t: Track): Promise<string> {
       throw new Error(first && first !== refusal ? tr('YouTube не отдал звук: %s; с входом — %s', first, refusal) : `YouTube: ${refusal}`)
     }
   }
-  const expire = Number(new URL(url!).searchParams.get('expire')) * 1000
-  streams.set(videoId, { url: url!, until: (expire || Date.now() + 3_600_000) - 10 * 60_000, client: from })
-  return url!
+  streams.set(videoId, { url: url!, until: expiryOf(url!) - 10 * 60_000, client: from, live })
+  // Told by its sound: a broadcast found as one, or a recording of one that has ended.
+  t.live = live
+  if (live) liveRelayed()
+  return { url: url!, hls: live, live, bridge: live }
 }
 
 // ---------------------------------------------------------------------------------- connection check

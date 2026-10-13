@@ -72,11 +72,17 @@
   <PlayerControls />
 
   <div class="progress" class:idle={!t}>
-    <span class="time now-time">{time(player.position)}</span>
-    <WavyProgress value={duration ? player.position / duration : 0} playing={player.playing && !player.loading} {duration} onseek={t ? (f) => seek(f * duration) : undefined} />
-    <button class="time end-time" onclick={flipTime} title={left ? tr('Показать длину') : tr('Показать, сколько осталось')}>
-      {left && duration ? `−${time(Math.max(0, duration - player.position))}` : time(duration)}
-    </button>
+    {#if player.live}
+      <!-- A broadcast has no end to be part way to: «В эфире» and the line run full, as in the app. -->
+      <span class="live-mark" title={tr('Прямая трансляция')}><span class="dot"></span><span class="label">{tr('В эфире')}</span></span>
+      <WavyProgress value={1} playing={player.playing && !player.loading} />
+    {:else}
+      <span class="time now-time">{time(player.position)}</span>
+      <WavyProgress value={duration ? player.position / duration : 0} playing={player.playing && !player.loading} {duration} onseek={t ? (f) => seek(f * duration) : undefined} />
+      <button class="time end-time" onclick={flipTime} title={left ? tr('Показать длину') : tr('Показать, сколько осталось')}>
+        {left && duration ? `−${time(Math.max(0, duration - player.position))}` : time(duration)}
+      </button>
+    {/if}
   </div>
 
   <div class="side">
@@ -252,6 +258,23 @@
     border-radius: var(--r-xs);
     background: var(--state-press);
   }
+  .live-mark {
+    flex: none;
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding-left: 6px;
+    font-size: 12.5px;
+    font-weight: 700;
+    white-space: nowrap;
+    color: var(--on-surface);
+  }
+  .dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: #ff3b30;
+  }
 
   /* ---- Panels and volume ---- */
   .side {
@@ -303,7 +326,8 @@
   /* Narrower, things step aside for the progress in this order: the times, shuffle and repeat,
      and only then the volume, which the listener keeps at hand. */
   @media (max-width: 1240px) {
-    .time {
+    .time,
+    .live-mark .label {
       display: none;
     }
   }

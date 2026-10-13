@@ -241,14 +241,45 @@ func upper(b bool) string {
 }
 
 // Found is the sound of a video: a link <audio> plays, good until expire (ms since the epoch).
+// A broadcast's (live) is the address of its HLS playlist.
 type Found struct {
 	URL    string `json:"url"`
 	Expire int64  `json:"expire"`
+	Live   bool   `json:"live,omitempty"`
 }
 
 var errorPrefix = regexp.MustCompile(`^ERROR:\s*(\[youtube\]\s*[\w-]+:\s*)?`)
 
-func run(exe, videoID, cookies string) (Found, error) {
+// What yt-dlp is asked for: a video's sound as a file over HTTPS — <audio> plays it itself, and
+// HLS and DASH manifests aren't needed — or a broadcast's, which is only HLS: its audio-only
+// playlist (itags 233, 234), else a whole one with fair sound (93: 360p with 128 kbit/s AAC), else
+// the smallest. A broadcast's DASH is left out as yt-dlp leaves it out without --live-from-start.
+var (
+	fileArgs = []string{"-f", "bestaudio[protocol=https]/bestaudio", "--extractor-args", "youtube:skip=hls,dash"}
+	liveArgs = []string{"-f", "bestaudio[protocol^=m3u8]/234/233/93/worst[protocol^=m3u8]", "--extractor-args", "youtube:skip=dash"}
+)
+
+// A broadcast asked for as a file: yt-dlp passes over its live formats, and none is left.
+var noFormats = regexp.MustCompile(`(?i)no video formats found|requested format is not available`)
+
+// expiryOf: when [link] runs out, ms since the epoch — from its expire, which a broadcast's
+// playlist carries in its path (/expire/1760400000/) rather than its query; an hour if it has none.
+func expiryOf(link string) int64 {
+	if u, err := url.Parse(link); err == nil {
+		s := u.Query().Get("expire")
+		if m := expirePath.FindStringSubmatch(u.Path); s == "" && m != nil {
+			s = m[1]
+		}
+		if n, err := strconv.ParseInt(s, 10, 64); err == nil && n > 0 {
+			return n * 1000
+		}
+	}
+	return time.Now().Add(time.Hour).UnixMilli()
+}
+
+var expirePath = regexp.MustCompile(`/expire/(\d+)`)
+
+func run(exe, videoID, cookies string, live bool) (Found, error) {
 	js, err := jsRuntime()
 	if err != nil {
 		return Found{}, err
@@ -256,12 +287,16 @@ func run(exe, videoID, cookies string) (Found, error) {
 	args := []string{
 		"--ignore-config", "--no-playlist", "--dump-json", "--no-warnings",
 		"--socket-timeout", "15",
-		// Only files over HTTPS: <audio> plays them itself, HLS and DASH manifests aren't needed.
-		"-f", "bestaudio[protocol=https]/bestaudio",
-		"--extractor-args", "youtube:skip=hls,dash",
+	}
+	if live {
+		args = append(args, liveArgs...)
+	} else {
+		args = append(args, fileArgs...)
+	}
+	args = append(args,
 		"--js-runtimes", js,
 		"--cache-dir", filepath.Join(ytdlpDir(), "cache"),
-	}
+	)
 	if cookies != "" {
 		args = append(args, "--cookies", cookies)
 	}
@@ -276,16 +311,11 @@ func run(exe, videoID, cookies string) (Found, error) {
 	runErr := cmd.Run()
 
 	var j struct {
-		URL string `json:"url"`
+		URL    string `json:"url"`
+		IsLive bool   `json:"is_live"`
 	}
 	if json.Unmarshal([]byte(stdout.String()), &j) == nil && j.URL != "" {
-		expire := time.Now().Add(time.Hour).UnixMilli()
-		if u, err := url.Parse(j.URL); err == nil {
-			if s, err := strconv.ParseInt(u.Query().Get("expire"), 10, 64); err == nil && s > 0 {
-				expire = s * 1000
-			}
-		}
-		return Found{URL: j.URL, Expire: expire}, nil
+		return Found{URL: j.URL, Expire: expiryOf(j.URL), Live: live || j.IsLive}, nil
 	}
 	// "ERROR: [youtube] id: Sign in to confirm…" — the reason is the last ERROR line.
 	reason := ""
@@ -312,9 +342,25 @@ func run(exe, videoID, cookies string) (Found, error) {
 	return Found{}, errors.New(reason)
 }
 
-// runWith: signed out first; refused, again with the browser's sign-in, if it has one.
-func runWith(exe, videoID string, cookies []cookie) (Found, error) {
-	found, anonymous := run(exe, videoID, "")
+// runWith: signed out first; refused, again with the browser's sign-in, if it has one. [live]: the
+// site knows it for a broadcast. A video asked for as a file that has none is a broadcast the site
+// didn't know of: it is asked for again as one, and as one from then on.
+func runWith(exe, videoID string, cookies []cookie, live bool) (Found, error) {
+	attempt := func(file string) (Found, error) {
+		found, err := run(exe, videoID, file, live)
+		if err == nil || live || !noFormats.MatchString(err.Error()) {
+			return found, err
+		}
+		live = true
+		again, liveErr := run(exe, videoID, file, true)
+		if liveErr == nil || !noFormats.MatchString(liveErr.Error()) {
+			return again, liveErr
+		}
+		// Not a broadcast either: the first refusal says why.
+		live = false
+		return found, err
+	}
+	found, anonymous := attempt("")
 	if anonymous == nil {
 		return found, nil
 	}
@@ -333,7 +379,7 @@ func runWith(exe, videoID string, cookies []cookie) (Found, error) {
 		return Found{}, anonymous
 	}
 	defer os.Remove(file)
-	return run(exe, videoID, file)
+	return attempt(file)
 }
 
 var (
@@ -351,8 +397,8 @@ type resolveFlight struct {
 }
 
 // resolve: a link kept while it has time left; otherwise a fresh one from yt-dlp. fresh: the kept
-// one wouldn't play, ask anew.
-func resolve(videoID string, fresh bool, cookies []cookie) (Found, error) {
+// one wouldn't play, ask anew. live: the site knows the video for a broadcast.
+func resolve(videoID string, fresh, live bool, cookies []cookie) (Found, error) {
 	if !videoIDPattern.MatchString(videoID) {
 		return Found{}, errNoID
 	}
@@ -369,7 +415,7 @@ func resolve(videoID string, fresh bool, cookies []cookie) (Found, error) {
 		f = &resolveFlight{done: make(chan struct{})}
 		inflight[videoID] = f
 		go func() {
-			f.found, f.err = resolveNow(videoID, cookies)
+			f.found, f.err = resolveNow(videoID, live, cookies)
 			foundMu.Lock()
 			if f.err == nil {
 				foundLinks[videoID] = f.found
@@ -384,12 +430,12 @@ func resolve(videoID string, fresh bool, cookies []cookie) (Found, error) {
 	return f.found, f.err
 }
 
-func resolveNow(videoID string, cookies []cookie) (Found, error) {
+func resolveNow(videoID string, live bool, cookies []cookie) (Found, error) {
 	exe, err := ensureYtdlp()
 	if err != nil {
 		return Found{}, fmt.Errorf("не удалось скачать yt-dlp: %w", err)
 	}
-	found, err := runWith(exe, videoID, cookies)
+	found, err := runWith(exe, videoID, cookies, live)
 	if err == nil {
 		return found, nil
 	}
@@ -408,5 +454,5 @@ func resolveNow(videoID string, cookies []cookie) (Found, error) {
 	if readState().SHA256 == before {
 		return Found{}, err
 	}
-	return runWith(exe, videoID, cookies)
+	return runWith(exe, videoID, cookies, live)
 }

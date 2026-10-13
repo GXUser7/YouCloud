@@ -30,8 +30,8 @@ export async function refreshPresence() {
           // Discord fetches the cover itself: the service's own address, not the Worker's.
           artwork: t.cover && /^https:\/\//.test(t.cover) ? t.cover : '',
           playing: player.playing,
-          duration: t.live ? null : player.duration || t.duration || null,
-          position: t.live ? null : player.position,
+          duration: player.live ? null : player.duration || t.duration || null,
+          position: player.live ? null : player.position,
         }
       : null
   const key = JSON.stringify(track && [t!.id, track.playing, player.seeks, Math.round(track.duration ?? 0)])
@@ -46,6 +46,7 @@ $effect.root(() => {
     void player.playing
     void player.seeks
     void player.duration
+    void player.live
     void discord.on
     void refreshPresence()
   })

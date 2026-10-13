@@ -143,22 +143,27 @@
         {/each}
       </div>
 
-      <div class="seek">
-        <Slider
-          value={(scrub ?? player.position) / duration}
-          thickness={18}
-          label={tr('Перемотка')}
-          onchange={(f) => (scrub = f * duration)}
-          onrelease={(f) => {
-            seek(f * duration)
-            scrub = null
-          }}
-        />
-        <div class="times">
-          <span>{time(scrub ?? player.position)}</span>
-          <span>{time(duration)}</span>
+      {#if player.live}
+        <!-- A broadcast's place for the slider, as tall as it: «В эфире», with a red dot, as in the app. -->
+        <div class="seek live" title={tr('Прямая трансляция')}><span class="dot"></span>{tr('В эфире')}</div>
+      {:else}
+        <div class="seek">
+          <Slider
+            value={(scrub ?? player.position) / duration}
+            thickness={18}
+            label={tr('Перемотка')}
+            onchange={(f) => (scrub = f * duration)}
+            onrelease={(f) => {
+              seek(f * duration)
+              scrub = null
+            }}
+          />
+          <div class="times">
+            <span>{time(scrub ?? player.position)}</span>
+            <span>{time(duration)}</span>
+          </div>
         </div>
-      </div>
+      {/if}
 
       <div class="main-row">
         <PlayerControls size="xl" tonal items={['like', 'prev', 'play', 'next', 'shuffle']} />
@@ -349,6 +354,20 @@
   }
   .seek {
     margin-top: 26px;
+  }
+  .seek.live {
+    height: 57px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 15px;
+    font-weight: 600;
+  }
+  .dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background: #ff3b30;
   }
   .times {
     display: flex;

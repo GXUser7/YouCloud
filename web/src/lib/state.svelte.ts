@@ -1,8 +1,9 @@
 // What the site shows and plays.
 //
 // The player is an <audio>: SoundCloud's streams through hls.js (or straight, when progressive),
-// Yandex's as a signed MP3 link. The next tracks of the queue are made ready in <audio>s of their
-// own while one plays, and the one that comes takes over from it, as the app fetches them ahead.
+// Yandex's as a signed MP3 link, a YouTube broadcast as its HLS playlist, joined where it is now.
+// The next tracks of the queue are made ready in <audio>s of their own while one plays, and the
+// one that comes takes over from it, as the app fetches them ahead.
 // A radio — Yandex's Rotor or SoundCloud's related tracks — tops the queue up before it runs out,
 // and Rotor hears what was finished, skipped or disliked, as in the app. The queue survives a
 // reload. The design's stand-in tracks have no sound, so for them the player only counts time.
@@ -12,6 +13,7 @@ import Hls from 'hls.js'
 import { untrack } from 'svelte'
 import { putTrack, serviceName, track as trackOf, type Service, type Track } from './catalog'
 import { favorites, setFavorite } from './favorites.svelte'
+import { BridgeLoader } from './hlsBridge'
 import * as live from './live'
 import { directFailed, reach } from './media.svelte'
 import { WAVE_MODES, WAVE_MOODS } from './mock'
@@ -114,6 +116,8 @@ export const player = $state({
   liked: {} as Record<string, boolean>,
   /** Counts jumps within a track, for whoever follows where it is (friends' "now playing"). */
   seeks: 0,
+  /** What plays is a broadcast: no length, no seeking — «В эфире» where the progress is. */
+  live: false,
 })
 
 export const currentTrack = (): Track | undefined => (player.queue.length ? trackOf(player.queue[player.index]) : undefined)
@@ -127,6 +131,8 @@ let loadSeq = 0
 let streamUrl: string | null = null
 let attempt = 0
 let wantPlay = false
+/** When the playing <audio> was paused last: a broadcast paused for long is joined anew. */
+let pausedAt = 0
 
 /**
  * An <audio> of the player's: the one playing, or one a track to come is made ready in. What it
@@ -144,13 +150,16 @@ function sound(): HTMLAudioElement {
   on('waiting', () => (player.loading = true))
   on('pause', () => {
     if (!el.ended) player.playing = false
+    pausedAt = Date.now()
   })
   on('timeupdate', () => {
     player.position = el.currentTime
-    remember('position', Math.floor(el.currentTime))
+    // A broadcast is joined where it is now, not where it was left.
+    remember('position', player.live ? 0 : Math.floor(el.currentTime))
   })
   on('durationchange', () => {
-    if (Number.isFinite(el.duration) && el.duration > 0) player.duration = el.duration
+    // A broadcast's is how much of it the browser can reach, which grows: not a length.
+    if (!player.live && Number.isFinite(el.duration) && el.duration > 0) player.duration = el.duration
   })
   on('ended', () => next(true))
   on('error', () => {
@@ -165,21 +174,36 @@ function setVolume() {
   audio.volume = player.muted ? 0 : player.volume
 }
 
-/** Puts [s] into [el]: through hls.js where the browser doesn't play HLS itself. */
+/** Puts [s] into [el]: through hls.js where the browser doesn't play HLS itself, or where its pieces
+ *  come through the extension ([bridge]). A broadcast starts where it is now, whatever [startAt] says. */
 function attach(el: HTMLAudioElement, s: live.Stream, startAt: number, fatal: (e: Error) => void): Hls | null {
-  if (s.hls && !el.canPlayType('application/vnd.apple.mpegurl') && Hls.isSupported()) {
+  if (s.live) startAt = 0
+  if (s.hls && (s.bridge || !el.canPlayType('application/vnd.apple.mpegurl')) && Hls.isSupported()) {
     const h = new Hls({
       enableWorker: true,
-      startPosition: startAt,
-      // The playlist names its pieces by SoundCloud's own addresses: each goes the way that works.
-      xhrSetup: (xhr, url) => {
-        const via = reach(url)
-        if (via !== url) xhr.open('GET', via, true)
-      },
+      // -1, for a broadcast: at its live edge, not at the start of what it keeps.
+      startPosition: s.live ? -1 : startAt,
+      liveDurationInfinity: true,
+      ...(s.bridge
+        ? { loader: BridgeLoader }
+        : {
+            // The playlist names its pieces by SoundCloud's own addresses: each goes the way that works.
+            xhrSetup: (xhr: XMLHttpRequest, url: string) => {
+              const via = reach(url)
+              if (via !== url) xhr.open('GET', via, true)
+            },
+          }),
     })
     h.on(Hls.Events.ERROR, (_, data) => {
       if (data.fatal) fatal(new Error(data.details))
     })
+    // A broadcast's playlist with every quality (YouTube's own clients give that one): sound is all
+    // that's wanted, so no more picture than 360p, which comes with the full 128 kbit/s of sound.
+    if (s.live)
+      h.on(Hls.Events.MANIFEST_PARSED, () => {
+        const sized = h.levels.map((l, i) => [l.height, i] as const).filter(([height]) => height > 0 && height <= 360)
+        if (sized.length && sized.length < h.levels.length) h.autoLevelCapping = sized.sort((a, b) => b[0] - a[0])[0][1]
+      })
     h.loadSource(reach(s.url))
     h.attachMedia(el)
     return h
@@ -206,7 +230,8 @@ async function loadCurrent(autoplay: boolean, startAt = 0, retry = 0) {
   streamUrl = null
   detach()
   silent = false
-  player.position = startAt
+  player.live = !!t?.live
+  player.position = player.live ? 0 : startAt
   player.duration = t?.duration ?? 0
   if (!t) {
     player.playing = false
@@ -227,6 +252,9 @@ async function loadCurrent(autoplay: boolean, startAt = 0, retry = 0) {
       player.playing = autoplay
       return
     }
+    // Whether it is a broadcast is known for sure once its sound is found.
+    player.live = !!s.live
+    if (s.live) player.duration = player.position = 0
     streamUrl = s.url
     hls = attach(audio, s, startAt, (e) => seq === loadSeq && recover(t, e))
     loaded = t.id
@@ -309,7 +337,8 @@ function upcoming(): string[] {
     const id = player.queue[i]
     const t = trackOf(id)
     // The design's stand-in tracks have no sound to get ready.
-    if (id !== player.queue[player.index] && !ids.includes(id) && (t?.sc || t?.ya || t?.yt)) ids.push(id)
+    // Nor has a broadcast: held ready, it would fall behind the moment it is in.
+    if (id !== player.queue[player.index] && !ids.includes(id) && (t?.sc || t?.ya || t?.yt) && !t.live) ids.push(id)
   }
   return ids
 }
@@ -339,7 +368,7 @@ function prepare(t: Track): Ready {
       // Reached, it is asked for again, and the listener hears why it won't play.
     }
     if (r.gone) return
-    if (!s) {
+    if (!s || s.live) {
       letGo(r)
       return
     }
@@ -452,6 +481,9 @@ export function playTrack(id: string, ids: string[], context = '', contextId: st
   playQueue(ids, Math.max(0, ids.indexOf(id)), context, contextId)
 }
 
+/** Paused longer than this, a broadcast is joined where it is now when it plays again. */
+const LIVE_REJOIN_MS = 20_000
+
 export function toggle() {
   const t = currentTrack()
   if (!t) return
@@ -463,15 +495,22 @@ export function toggle() {
     loadCurrent(true, player.position)
     return
   }
-  if (audio.paused) audio.play().catch((e) => failed(t, e))
-  else audio.pause()
+  if (audio.paused) {
+    // A broadcast paused for a while plays on from where it is now, as a radio does.
+    if (player.live && Date.now() - pausedAt > LIVE_REJOIN_MS) {
+      loadCurrent(true)
+      return
+    }
+    audio.play().catch((e) => failed(t, e))
+  } else audio.pause()
 }
 
 /** The next track; [disliked], the one left was disliked — the radio heard that, not a skip. */
 export function next(auto = false, disliked = false) {
   const t = currentTrack()
   if (!t) return
-  if (auto && player.repeat === 'one') {
+  // A broadcast that ended can't be played again: the next one comes.
+  if (auto && player.repeat === 'one' && !player.live) {
     seek(0)
     if (!silent) audio.play().catch(() => {})
     return
@@ -509,6 +548,8 @@ export function jump(index: number) {
 }
 
 export function seek(seconds: number) {
+  // A broadcast has nowhere to go: it plays as it happens.
+  if (player.live) return
   const s = Math.max(0, Math.min(player.duration || currentTrack()?.duration || 0, seconds))
   player.position = s
   player.seeks++
@@ -789,7 +830,8 @@ function restoreQueue() {
     player.index = Math.min(saved.index, player.queue.length - 1)
     player.context = saved.context
     player.contextId = saved.contextId
-    player.position = stored('position', 0)
+    player.live = !!currentTrack()?.live
+    player.position = player.live ? 0 : stored('position', 0)
     player.duration = currentTrack()?.duration ?? 0
   } catch {
     // a queue from an older version: start empty

@@ -15,8 +15,13 @@ const PROFILES = [
   { domains: ['yandex.net'], headers: { origin: null, referer: null, 'user-agent': 'Yandex-Music-API' } },
   { domains: ['music.youtube.com'], headers: { origin: 'https://music.youtube.com', referer: 'https://music.youtube.com/' } },
   { domains: ['www.youtube.com', 'youtubei.googleapis.com'], headers: { origin: 'https://www.youtube.com', referer: 'https://www.youtube.com/' } },
+  // A YouTube broadcast's playlist and pieces, read as they are for hls.js on the page — asked as
+  // yt-dlp and the app ask them, without the extension's own origin.
+  { domains: ['googlevideo.com'], headers: { origin: null, referer: null } },
 ]
 
+/** Where the media itself is: only read (GET), and nothing of the listener's goes along. */
+const MEDIA = ['googlevideo.com']
 const ALLOWED = PROFILES.flatMap((p) => p.domains)
 const SITE_TABS = ['https://youcloud.inkerror67.workers.dev/*', 'http://localhost:5190/*']
 const NOT_IN_A_TAB = -1
@@ -129,6 +134,25 @@ async function relay(message) {
     return { error: `host not allowed: ${url.hostname}` }
   }
   await ready
+  // A broadcast's playlist and pieces: the page can't take them itself — googlevideo answers across
+  // sites only YouTube's own pages, and Chrome's own HLS takes no pieces from another host than the
+  // playlist's but by CORS. The pieces come back as base64 ([binary]).
+  if (MEDIA.some((d) => url.hostname.endsWith('.' + d))) {
+    if ((message.method ?? 'GET') !== 'GET') return { error: 'only GET' }
+    try {
+      const range = message.headers?.range
+      const response = await fetch(url.href, { headers: range ? { range } : {}, credentials: 'omit' })
+      return {
+        status: response.status,
+        statusText: response.statusText,
+        headers: [...response.headers],
+        body: message.binary ? base64(await response.arrayBuffer()) : await response.text(),
+        base64: !!message.binary,
+      }
+    } catch (e) {
+      return { error: String(e?.message ?? e) }
+    }
+  }
   // Signed in as this browser is on YouTube: its cookies go along, and the request is signed with
   // SAPISIDHASH for the origin the rules give it. The cookies never leave the extension.
   const headers = { ...(message.headers ?? {}) }
@@ -171,6 +195,15 @@ async function relay(message) {
   } catch (e) {
     return { error: String(e?.message ?? e) }
   }
+}
+
+/** [buffer] as base64, for a message (which carries text). */
+function base64(buffer) {
+  const bytes = new Uint8Array(buffer)
+  if (bytes.toBase64) return bytes.toBase64()
+  let text = ''
+  for (let i = 0; i < bytes.length; i += 0x8000) text += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000))
+  return btoa(text)
 }
 
 // ------------------------------------------------------------------------------------- the helper
@@ -264,10 +297,11 @@ async function youtubeCookies() {
     }))
 }
 
-/** [videoId]'s sound from the helper's yt-dlp. The first time it fetches yt-dlp, hence the long wait. */
+/** [videoId]'s sound from the helper's yt-dlp; a broadcast's ([live]) is its HLS playlist. The first
+ *  time it fetches yt-dlp, hence the long wait. */
 async function ytStream(message) {
   const videoId = String(message.videoId ?? '')
-  const answer = await askHelper({ type: 'yt-stream', videoId, fresh: !!message.fresh, cookies: await youtubeCookies() }, 120_000)
+  const answer = await askHelper({ type: 'yt-stream', videoId, fresh: !!message.fresh, live: !!message.live, cookies: await youtubeCookies() }, 120_000)
   return answer.error ? { error: answer.error } : { value: answer.value }
 }
 

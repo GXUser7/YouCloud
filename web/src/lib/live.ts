@@ -147,13 +147,15 @@ export function dislike(t: Track): Promise<void> | false {
   return false
 }
 
-export type Stream = { url: string; hls: boolean }
+/** Where a track's sound is; [hls], an HLS playlist; [live], a broadcast's, with no length or end;
+ *  [bridge], its playlist and pieces fetched through the extension (see hlsBridge.ts). */
+export type Stream = { url: string; hls: boolean; live?: boolean; bridge?: boolean }
 
 /** Where the track's sound is, or null for the design's stand-in tracks, which have none. */
 export async function stream(t: Track): Promise<Stream | null> {
   if (t.sc) return soundcloud.stream(t)
   if (t.ya) return { url: await yandex.stream(t), hls: false }
-  if (t.yt) return { url: await youtube.stream(t), hls: false }
+  if (t.yt) return youtube.stream(t)
   return null
 }
 
