@@ -2710,7 +2710,8 @@ private fun ContentsFoldButton(open: () -> Float, folded: Boolean, onClick: () -
     val glassShape = RoundedCornerShape(16.dp)
     val tint = PanelColors.accent.copy(alpha = 0.14f)
     // 16 dp square in the bar, round (half its size) folded.
-    fun corner() = (ContentsFoldSize.value / 2f - (ContentsFoldSize.value / 2f - 16f) * open().coerceIn(0f, 1f)).dp
+    // Square either way, like the toolbar's buttons.
+    fun corner() = 16.dp
     Box(
         modifier = modifier
             .size(ContentsFoldSize)
@@ -2720,6 +2721,9 @@ private fun ContentsFoldButton(open: () -> Float, folded: Boolean, onClick: () -
                 val grown = 1f + (ContentsFoldedSize / ContentsFoldSize - 1f) * (1f - open().coerceIn(0f, 1f))
                 scaleX = grown
                 scaleY = grown
+                // Folded, right over the avatar's button: its middle is 4 dp further out than the
+                // play button's.
+                translationX = 4.dp.toPx() * (1f - open().coerceIn(0f, 1f))
             }
     ) {
         // Its own glass comes up as the bar folds away from around it.
