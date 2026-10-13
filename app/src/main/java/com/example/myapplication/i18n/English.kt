@@ -82,6 +82,8 @@ internal object English {
         put("Подборка пока не загрузилась.", "The selection hasn't loaded yet.")
         put("Станция", "Station")
         put("Чарт недели", "Chart of the week")
+        put("Все разделы", "All sections")
+        put("Свернуть разделы", "Hide sections")
         put("Мои плейлисты", "My playlists")
         put("Создайте свой первый плейлист, нажав кнопку выше.", "Create your first playlist with the button above.")
         put("ВМЕСТЕ", "TOGETHER")

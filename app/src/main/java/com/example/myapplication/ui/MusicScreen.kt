@@ -80,6 +80,8 @@ import androidx.compose.material.icons.rounded.Forum
 import androidx.compose.material.icons.rounded.Groups
 import androidx.compose.material.icons.rounded.TouchApp
 import androidx.compose.material.icons.rounded.KeyboardArrowDown
+import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.GridView
 import androidx.compose.material.icons.rounded.HowToReg
 import androidx.compose.material.icons.rounded.PersonAddAlt1
 import androidx.compose.foundation.lazy.itemsIndexed
@@ -191,6 +193,8 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.contentColorFor
 import androidx.compose.material3.ElevatedCard
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.carousel.HorizontalMultiBrowseCarousel
+import androidx.compose.material3.carousel.rememberCarouselState
 import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.FilledTonalIconButton
@@ -253,6 +257,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.Role
@@ -284,6 +289,7 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Reorder
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.wrapContentHeight
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ButtonDefaults
@@ -1974,35 +1980,70 @@ private fun HomeScreen(
                     // painted into a picture of its own on every frame, out of sight.
                     alpha = if (away >= 1f) 0f else 1f - 0.45f * away
                 }
+            // The section the pager is on, or on its way to: picked from the contents, the title
+            // goes straight to it, not through every section on the way.
+            val shownSection = sections.getOrElse(sectionPager.targetPage) { sections.first() }
             val titleBlock: @Composable () -> Unit = {
-                Box(
+                Column(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(start = 20.dp, top = 12.dp, end = 20.dp)
-                        .heightIn(min = 64.dp),
-                    contentAlignment = if (landscape) Alignment.CenterStart else Alignment.Center
+                        .padding(start = 20.dp, top = 12.dp, end = 20.dp),
+                    horizontalAlignment = if (landscape) Alignment.Start else Alignment.CenterHorizontally
                 ) {
-                    AnimatedContent(
-                        targetState = sections.getOrElse(sectionPager.currentPage) { sections.first() },
-                        transitionSpec = {
-                            val forward = sections.indexOfFirst { it.key == targetState.key } >
-                                sections.indexOfFirst { it.key == initialState.key }
-                            (slideInVertically { h -> if (forward) h / 2 else -h / 2 } + fadeIn()) togetherWith
-                                (slideOutVertically { h -> if (forward) -h / 2 else h / 2 } + fadeOut())
-                        },
-                        contentKey = { it.key },
-                        modifier = Modifier.fillMaxWidth(),
-                        label = "homeTitle"
-                    ) { section ->
-                        Text(
-                            text = section.title,
-                            style = MaterialTheme.typography.displaySmall,
-                            textAlign = if (landscape) TextAlign.Start else TextAlign.Center,
-                            maxLines = if (landscape) 2 else 1,
-                            overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.fillMaxWidth()
-                        )
+                    // Which service this is, over the section's name: the toolbar's marks say it
+                    // only to who knows them. Not where the one section bears the service's name.
+                    if (sections.size > 1 || sections.first().title != shown.title) {
+                        ServiceLabel(service = shown)
                     }
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(min = 48.dp),
+                        contentAlignment = if (landscape) Alignment.CenterStart else Alignment.Center
+                    ) {
+                        AnimatedContent(
+                            targetState = shownSection,
+                            transitionSpec = {
+                                val forward = sections.indexOfFirst { it.key == targetState.key } >
+                                    sections.indexOfFirst { it.key == initialState.key }
+                                (slideInVertically { h -> if (forward) h / 2 else -h / 2 } + fadeIn()) togetherWith
+                                    (slideOutVertically { h -> if (forward) -h / 2 else h / 2 } + fadeOut())
+                            },
+                            contentKey = { it.key },
+                            modifier = Modifier.fillMaxWidth(),
+                            label = "homeTitle"
+                        ) { section ->
+                            Text(
+                                text = section.title,
+                                style = MaterialTheme.typography.displaySmall,
+                                textAlign = if (landscape) TextAlign.Start else TextAlign.Center,
+                                maxLines = if (landscape) 2 else 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                        }
+                    }
+                }
+            }
+            // What the section holds, under its name.
+            val subtitleBlock: @Composable () -> Unit = {
+                AnimatedContent(
+                    targetState = shownSection.subtitle,
+                    transitionSpec = { fadeIn(tween(220)) togetherWith fadeOut(tween(120)) },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 20.dp),
+                    label = "homeSubtitle"
+                ) { subtitle ->
+                    Text(
+                        text = subtitle,
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        textAlign = if (landscape) TextAlign.Start else TextAlign.Center,
+                        maxLines = if (landscape) 2 else 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.fillMaxWidth()
+                    )
                 }
             }
             val notices: @Composable () -> Unit = {
@@ -2166,42 +2207,37 @@ private fun HomeScreen(
                         )
                     }
                 }
-                    if (sections.size > 1) {
-                        SectionIndicator(
-                            pager = sectionPager,
-                            modifier = Modifier
-                                .align(Alignment.CenterEnd)
-                                .padding(end = 5.dp)
-                        )
-                    }
                 }
             }
-            val hintBlock: @Composable () -> Unit = {
-                // The section below (or, at the last, back to the first): says the page goes on
-                // downward, and takes you there. Its room is kept where there is no section to go
-                // to, so that every page's middle, where its carousel sits, is at the same height.
+            val contentsBlock: @Composable () -> Unit = {
+                // Every section of the service a tap away, in a bar over the mini player: before, a
+                // section took a swipe for each one above it. Its room is kept where the service has
+                // one section, so that every page's middle, where its carousel sits, is at the same
+                // height.
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(NextSectionHintHeight)
-                        // Sideways it stands under the title and the subtitle, its word starting
-                        // where theirs do: their inset less the pill's own.
-                        .padding(start = if (landscape) 20.dp - NextSectionHintPadding else 0.dp),
-                    contentAlignment = Alignment.Center
+                        .height(SectionContentsRoom)
                 ) {
                     if (sections.size > 1) {
-                        val current = sectionPager.currentPage
-                        val atEnd = current >= sections.lastIndex
-                        NextSectionHint(
-                            title = if (atEnd) sections.first().title else sections[current + 1].title,
-                            upward = atEnd,
-                            alignment = if (landscape) Alignment.CenterStart else Alignment.Center,
-                            onClick = {
+                        SectionContents(
+                            entries = sections.map { section ->
+                                ContentsEntry(
+                                    title = section.title,
+                                    live = section.shelf?.tracks?.any { it.liveVideoId != null } == true
+                                )
+                            },
+                            current = sectionPager.targetPage,
+                            onPick = { index ->
                                 haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                serviceScope.launch {
-                                    sectionPager.animateScrollToPage(if (atEnd) 0 else current + 1)
-                                }
-                            }
+                                serviceScope.launch { sectionPager.animateScrollToPage(index) }
+                            },
+                            modifier = Modifier
+                                .align(Alignment.BottomCenter)
+                                .padding(start = 16.dp, end = 16.dp, bottom = SectionContentsGap)
+                                // Its list of every section grows upward, over the carousel, not
+                                // pushing it.
+                                .wrapContentHeight(align = Alignment.Bottom, unbounded = true)
                         )
                     }
                 }
@@ -2218,29 +2254,20 @@ private fun HomeScreen(
                             .fillMaxHeight()
                     ) {
                         titleBlock()
-                        // What the section is, under its name: there is room for it on the side.
-                        val subtitle = sections.getOrElse(sectionPager.currentPage) { sections.first() }.subtitle
-                        if (subtitle.isNotBlank()) {
-                            Text(
-                                text = subtitle,
-                                style = MaterialTheme.typography.bodyLarge,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                maxLines = 2,
-                                overflow = TextOverflow.Ellipsis,
-                                modifier = Modifier.padding(horizontal = 20.dp)
-                            )
-                        }
+                        subtitleBlock()
                         notices()
-                        hintBlock()
+                        Spacer(modifier = Modifier.height(8.dp))
+                        contentsBlock()
                         Spacer(modifier = Modifier.weight(1f))
                     }
                 }
             } else {
                 Column(modifier = pageModifier) {
                     titleBlock()
+                    subtitleBlock()
                     notices()
                     sectionsBlock(Modifier.fillMaxWidth().weight(1f))
-                    hintBlock()
+                    contentsBlock()
                     // Room for the toolbar and the mini player over it, whether that is up or not: made
                     // only when it came up, the room shrank the page, and all that is centred on it (a
                     // carousel, the wave's shape) jumped up as a track started.
@@ -2330,72 +2357,188 @@ private fun HomeScreen(
     }
 }
 
-/**
- * Where among a service's sections the page is: a short rail at the screen's edge with a thumb
- * that slides along it as the sections are swiped — a list that goes on downward, at a glance.
- */
+/** The service a home page belongs to, over its title: its mark and its name, in the accent. */
 @Composable
-private fun SectionIndicator(pager: androidx.compose.foundation.pager.PagerState, modifier: Modifier = Modifier) {
-    val count = pager.pageCount
-    val rail = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.16f)
-    val thumb = PanelColors.accent
-    Box(
-        modifier = modifier
-            .width(4.dp)
-            .height((count * 14).coerceIn(28, 96).dp)
-            .drawBehind {
-                val corner = androidx.compose.ui.geometry.CornerRadius(size.width / 2f)
-                drawRoundRect(color = rail, cornerRadius = corner)
-                val length = (size.height / count).coerceAtLeast(8.dp.toPx())
-                val position = (pager.currentPage + pager.currentPageOffsetFraction).coerceIn(0f, (count - 1).toFloat())
-                val top = if (count > 1) (size.height - length) * position / (count - 1) else 0f
-                drawRoundRect(
-                    color = thumb,
-                    topLeft = Offset(0f, top),
-                    size = androidx.compose.ui.geometry.Size(size.width, length),
-                    cornerRadius = corner
-                )
-            }
-    )
+private fun ServiceLabel(service: HomeService) {
+    Row(
+        modifier = Modifier.semantics(mergeDescendants = true) {},
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(6.dp)
+    ) {
+        val icon = service.icon
+        if (icon != null) {
+            Icon(imageVector = icon(), contentDescription = null, tint = PanelColors.accent, modifier = Modifier.size(18.dp))
+        }
+        Text(
+            text = service.title,
+            style = MaterialTheme.typography.titleSmall,
+            color = PanelColors.accent,
+            maxLines = 1
+        )
+    }
 }
 
-private val NextSectionHintHeight = 36.dp
-private val NextSectionHintPadding = 14.dp
+/** A section in a home page's contents: its name, and whether something in it is on air now. */
+@androidx.compose.runtime.Immutable
+private data class ContentsEntry(val title: String, val live: Boolean)
 
-/** The next section's name under the carousel, with a nudging chevron: the page goes on below. */
+/** The gap under the contents, over the mini player's place; the room they keep with it. */
+private val SectionContentsGap = 12.dp
+private val SectionContentsRoom = 64.dp + SectionContentsGap
+
+/**
+ * A home page's contents, in a bar over the mini player where the thumb is: every section of the
+ * service by its name, the one shown lit, each a tap away. The button at its start lays them all
+ * out at once: the bar grows upward over the carousel, without moving it, and shrinks back once
+ * one is picked. Glass over the backdrop alone, so nothing of it is blurred on any frame.
+ */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun NextSectionHint(
-    title: String,
-    upward: Boolean,
-    onClick: () -> Unit,
-    alignment: Alignment = Alignment.Center
+private fun SectionContents(
+    entries: List<ContentsEntry>,
+    current: Int,
+    onPick: (Int) -> Unit,
+    modifier: Modifier = Modifier
 ) {
-    val clock = rememberLoopClock()
-    Box(modifier = Modifier.fillMaxWidth(), contentAlignment = alignment) {
-        Row(
-            modifier = Modifier
-                .clip(CircleShape)
-                .clickable(onClick = onClick)
-                .padding(horizontal = NextSectionHintPadding, vertical = 6.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(4.dp)
+    var expanded by remember { mutableStateOf(false) }
+    BackHandler(enabled = expanded) { expanded = false }
+    val glass = LocalGlass.current
+    val shape = RoundedCornerShape(32.dp)
+    Surface(
+        modifier = modifier
+            .fillMaxWidth()
+            .glassOr(shape, PanelColors.container),
+        shape = shape,
+        color = if (glass) Color.Transparent else PanelColors.container,
+        contentColor = PanelColors.content,
+        shadowElevation = if (glass) 0.dp else 6.dp
+    ) {
+        Column(
+            modifier = Modifier.animateContentSize(
+                animationSpec = spring(dampingRatio = 0.9f, stiffness = Spring.StiffnessMediumLow)
+            )
         ) {
-            Text(
-                text = title,
-                style = MaterialTheme.typography.labelLarge,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.widthIn(max = 240.dp)
-            )
-            Icon(
-                imageVector = if (upward) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
-                contentDescription = null,
-                tint = PanelColors.accent,
+            if (expanded) {
+                FlowRow(
+                    modifier = Modifier
+                        .heightIn(max = 320.dp)
+                        .verticalScroll(rememberScrollState())
+                        .padding(start = 12.dp, top = 14.dp, end = 12.dp, bottom = 2.dp),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    entries.forEachIndexed { index, entry ->
+                        ContentsChip(
+                            entry = entry,
+                            selected = index == current,
+                            onClick = {
+                                expanded = false
+                                onPick(index)
+                            }
+                        )
+                    }
+                }
+            }
+            Row(
                 modifier = Modifier
-                    .size(20.dp)
-                    .graphicsLayer { translationY = (if (upward) -3f else 3f) * loopValue(clock.longValue, 900, 0f, 1f) * density }
-            )
+                    .fillMaxWidth()
+                    .height(64.dp)
+                    .padding(horizontal = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                Surface(
+                    onClick = { expanded = !expanded },
+                    shape = RoundedCornerShape(16.dp),
+                    color = PanelColors.accent.copy(alpha = 0.14f),
+                    contentColor = PanelColors.accent,
+                    modifier = Modifier.size(48.dp)
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Icon(
+                            imageVector = if (expanded) Icons.Rounded.Close else Icons.Rounded.GridView,
+                            contentDescription = if (expanded) tr("Свернуть разделы") else tr("Все разделы"),
+                            modifier = Modifier.size(24.dp)
+                        )
+                    }
+                }
+                if (expanded) {
+                    Text(
+                        text = tr("Все разделы") + " · " + entries.size,
+                        style = MaterialTheme.typography.titleSmall,
+                        color = PanelColors.content.copy(alpha = 0.8f),
+                        modifier = Modifier.padding(start = 6.dp)
+                    )
+                } else {
+                    val listState = rememberLazyListState(initialFirstVisibleItemIndex = (current - 1).coerceAtLeast(0))
+                    // The section shown kept in sight, with the one before it, as the pages move.
+                    LaunchedEffect(current) {
+                        val info = listState.layoutInfo
+                        val item = info.visibleItemsInfo.firstOrNull { it.index == current }
+                        if (item == null || item.offset < info.viewportStartOffset || item.offset + item.size > info.viewportEndOffset) {
+                            listState.animateScrollToItem((current - 1).coerceAtLeast(0))
+                        }
+                    }
+                    LazyRow(
+                        state = listState,
+                        modifier = Modifier
+                            .weight(1f)
+                            // Nor does a swipe along the names, at their end, move on to the next service.
+                            .nestedScroll(KeepSidewaysSwipe),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        contentPadding = PaddingValues(end = 4.dp)
+                    ) {
+                        itemsIndexed(entries) { index, entry ->
+                            ContentsChip(entry = entry, selected = index == current, onClick = { onPick(index) })
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/** A section's name in the contents: lit, and squarer, while it is the one shown. */
+@Composable
+private fun ContentsChip(entry: ContentsEntry, selected: Boolean, onClick: () -> Unit) {
+    val corner by animateDpAsState(
+        targetValue = if (selected) 14.dp else 24.dp,
+        animationSpec = spring(dampingRatio = 0.7f, stiffness = Spring.StiffnessMediumLow),
+        label = "contentsChipCorner"
+    )
+    val container by animateColorAsState(
+        targetValue = if (selected) PanelColors.accent else PanelColors.content.copy(alpha = 0.07f),
+        animationSpec = tween(250),
+        label = "contentsChipContainer"
+    )
+    val content by animateColorAsState(
+        targetValue = if (selected) PanelColors.onAccent else PanelColors.content,
+        animationSpec = tween(250),
+        label = "contentsChipContent"
+    )
+    Surface(
+        onClick = onClick,
+        shape = RoundedCornerShape(corner),
+        color = container,
+        contentColor = content,
+        modifier = Modifier
+            .height(48.dp)
+            .semantics { this.selected = selected }
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 16.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            // On air now, as YouTube's broadcasts are: the red of the player's «В эфире».
+            if (entry.live) {
+                Box(
+                    modifier = Modifier
+                        .size(8.dp)
+                        .background(Color(0xFFFF3B30), CircleShape)
+                )
+            }
+            Text(text = entry.title, style = MaterialTheme.typography.titleSmall, maxLines = 1)
         }
     }
 }
@@ -2981,17 +3124,6 @@ private fun CarouselEmptyText(text: String) {
     }
 }
 
-/**
- * A centred hero carousel: the cover in focus always sits in the middle — the first one too — and
- * its neighbours squeeze into narrow strips on both sides as they leave, rather than sliding away
- * whole. Each cover is masked and re-centred inside its strip, never squashed.
- *
- * Built on a pager rather than Material's HorizontalCenteredHeroCarousel, which shifts its first
- * and last items to the edges, so the focused cover is not centred there. The geometry closes by
- * itself: pages are [coverWidth] wide and centred by the content padding, so a neighbour's page
- * starts exactly [HeroStrip] plus the margin from the screen edge, and the mask only has to
- * narrow from the full cover to that strip as the page moves out.
- */
 // Swallows what a sideways scroller leaves over of a swipe, so nothing sideways around it moves.
 private val KeepSidewaysSwipe = object : NestedScrollConnection {
     override fun onPostScroll(consumed: Offset, available: Offset, source: NestedScrollSource): Offset =
@@ -3004,183 +3136,136 @@ private val KeepSidewaysSwipe = object : NestedScrollConnection {
 // How a page of services settles: soft, a touch of give, no wobble.
 private val ServicePageSpring = spring<Float>(dampingRatio = 0.86f, stiffness = 320f)
 
-private val HeroAsideBlur = 10.dp
-private const val HeroAsideWash = 0.45f
-private const val HeroAsideShade = 0.18f
-
+/**
+ * A home section's covers as Material 3's multi-browse carousel: a large cover in front, a
+ * smaller one and a sliver of the next beside it — three at a glance where one stood alone. A
+ * cover beside comes to the front when tapped; the one in front opens. The caption under the
+ * covers follows the one in front.
+ *
+ * Only the covers' masks change on a frame of a swipe: the blur, the wash and the shadow the
+ * centred carousel laid on its covers went with it.
+ */
 @Composable
 private fun HomeHeroCarousel(items: List<HeroItem>) {
     if (items.isEmpty()) return
     val haptic = LocalHapticFeedback.current
     val scope = rememberCoroutineScope()
-    val pagerState = rememberPagerState { items.size }
+    val state = rememberCarouselState { items.size }
 
     BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
         val landscape = isLandscape()
-        // Sideways the caption is a line of title and a line under it, and no taller than that:
-        // room kept for more stood empty under it, and the covers crowded up against the top.
-        val captionHeight = if (landscape) 60.dp else 88.dp
-        val captionGap = if (landscape) 12.dp else 16.dp
+        // A line of title and two of subtitle under the covers; sideways one of each.
+        val captionHeight = if (landscape) 52.dp else 76.dp
+        val captionGap = 12.dp
         val margin = 16.dp
-        // Sideways the page is wider than tall: the cover square, as tall as leaves the caption room
-        // and a margin above and below.
-        val coverWidth = if (landscape) {
-            minOf(
-                maxWidth - (margin + HeroStrip + HeroGap) * 2,
-                maxHeight - captionHeight - captionGap - HeroLandscapeMargin * 2
-            ).coerceAtLeast(120.dp)
-        } else {
-            maxWidth - (margin + HeroStrip + HeroGap) * 2
-        }
-        val sidePadding = (maxWidth - coverWidth) / 2
-        // Close to square: a little taller than wide at most, and never taller than leaves room for
-        // the caption under it with the covers in the middle of the page.
-        val carouselHeight = if (landscape) {
-            coverWidth
-        } else {
-            (maxHeight - (captionHeight + captionGap) * 2).coerceIn(160.dp, coverWidth * 1.08f)
-        }
-        // Sideways the covers and their caption are centred together: there is no room to spare.
-        val carouselTop = if (landscape) {
-            ((maxHeight - carouselHeight - captionGap - captionHeight) / 2).coerceAtLeast(0.dp)
-        } else {
-            (maxHeight - carouselHeight) / 2
-        }
-        val density = LocalDensity.current
-        val coverPx = with(density) { coverWidth.toPx() }
-        val stripPx = with(density) { HeroStrip.toPx() }
-        val radiusPx = with(density) { 32.dp.toPx() }
+        // The cover in front square: as tall as leaves the caption its room (sideways, and a margin
+        // above and below), and no wider than leaves the two beside it theirs.
+        val coverSize = minOf(
+            maxHeight - captionHeight - captionGap - (if (landscape) HeroLandscapeMargin * 2 else 0.dp),
+            (maxWidth - margin * 2) * 0.72f
+        ).coerceAtLeast(120.dp)
+        // The covers and their caption together in the middle of the page.
+        val top = ((maxHeight - coverSize - captionGap - captionHeight) / 2).coerceAtLeast(0.dp)
 
-        // The covers in the middle of the page by themselves, the caption hanging under them:
-        // centred along with it, the covers stood off the middle the rest of home keeps (the wave's
-        // shape), and higher or lower from one page to the next.
-        Box(modifier = Modifier.fillMaxSize()) {
-            HorizontalPager(
-                state = pagerState,
-                pageSize = androidx.compose.foundation.pager.PageSize.Fixed(coverWidth),
-                contentPadding = PaddingValues(horizontal = sidePadding),
-                pageSpacing = HeroGap,
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(top = top)
+        ) {
+            HorizontalMultiBrowseCarousel(
+                state = state,
+                preferredItemWidth = coverSize,
+                itemSpacing = HeroGap,
+                contentPadding = PaddingValues(horizontal = margin),
                 modifier = Modifier
-                    .align(Alignment.TopCenter)
-                    .padding(top = carouselTop)
                     .fillMaxWidth()
-                    .height(carouselHeight)
+                    .height(coverSize)
                     // What the carousel doesn't use of a swipe, at its first or last cover, isn't
                     // passed on to the pages of services around it.
                     .nestedScroll(KeepSidewaysSwipe)
-            ) { page ->
-                val item = items[page]
-                // Signed distance from the focused slot: positive to the right.
-                fun distance() = page - (pagerState.currentPage + pagerState.currentPageOffsetFraction)
-                fun visibleWidth() = lerp(coverPx, stripPx, distance().absoluteValue.coerceIn(0f, 1f))
+            ) { index ->
+                val item = items[index]
+                val drawInfo = carouselItemDrawInfo
                 Box(
                     modifier = Modifier
                         .fillMaxSize()
-                        .graphicsLayer {
-                            val d = distance()
-                            val w = visibleWidth()
-                            // The mask keeps the side that faces the focused cover.
-                            val left = if (d > 0f) 0f else coverPx - w
-                            clip = true
-                            shape = HeroStripShape(left, w, radiusPx)
-                            // The cover in front floats above the backdrop; strips sit on it.
-                            shadowElevation = (1f - d.absoluteValue.coerceIn(0f, 1f)) * 14.dp.toPx()
-                        }
+                        .maskClip(RoundedCornerShape(32.dp))
+                        .background(MaterialTheme.colorScheme.surfaceContainerHigh)
                         .clickable {
                             haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                            // A strip brings its cover to the front; the cover in front opens.
-                            if (page == pagerState.currentPage) {
+                            // A cover beside comes to the front; the cover in front opens.
+                            if (index == state.currentItem) {
                                 item.onClick()
                             } else {
-                                scope.launch { pagerState.animateScrollToPage(page) }
+                                scope.launch { state.animateScrollToItem(index) }
                             }
-                        }
+                        },
+                    contentAlignment = Alignment.Center
                 ) {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .graphicsLayer {
-                                // Re-centres the picture inside whatever the mask leaves visible.
-                                translationX = -kotlin.math.sign(distance()) * (coverPx - visibleWidth()) / 2f
-                                // Out of focus beside the one in front, so the eye stays there.
-                                val aside = distance().absoluteValue.coerceIn(0f, 1f)
-                                val radius = HeroAsideBlur.toPx() * aside
-                                renderEffect = if (radius > 0.5f) BlurEffect(radius, radius, TileMode.Clamp) else null
-                            }
-                            .background(MaterialTheme.colorScheme.surfaceContainerHigh),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        if (item.collage.isNotEmpty()) {
-                            CoverCollage(urls = item.collage)
-                        } else if (!item.artworkUrl.isNullOrBlank()) {
-                            AsyncImage(
-                                model = item.artworkUrl,
-                                contentDescription = item.title,
-                                modifier = Modifier.fillMaxSize(),
-                                contentScale = ContentScale.Crop
-                            )
-                        } else if (item.icon != null) {
-                            // A glyph cut down to a strip reads as a glitch, so it fades out first.
-                            Box(
+                    if (item.collage.isNotEmpty()) {
+                        CoverCollage(urls = item.collage)
+                    } else if (!item.artworkUrl.isNullOrBlank()) {
+                        AsyncImage(
+                            model = item.artworkUrl,
+                            contentDescription = item.title,
+                            modifier = Modifier.fillMaxSize(),
+                            contentScale = ContentScale.Crop
+                        )
+                    } else if (item.icon != null) {
+                        // As IconCover draws it, but only the glyph fades: whole while the cover is
+                        // wider than it, gone by the time the cover is a sliver — a glyph cut down
+                        // reads as a glitch. The panel tone under it stays.
+                        Box(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .background(PanelColors.container),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = item.icon,
+                                contentDescription = null,
+                                tint = PanelColors.accent,
                                 modifier = Modifier
-                                    .fillMaxSize()
+                                    .size(HeroGlyphSize)
                                     .graphicsLayer {
-                                        alpha = (1f - distance().absoluteValue * 1.8f).coerceIn(0f, 1f)
+                                        val glyph = HeroGlyphSize.toPx()
+                                        alpha = ((drawInfo.size - glyph) / (glyph * 0.25f)).coerceIn(0f, 1f)
                                     }
-                            ) {
-                                IconCover(icon = item.icon, iconSize = 84.dp)
-                            }
-                        }
-                        if (item.isPlaying || LocalNowPlaying.current.lights(item.source, item.trackId)) {
-                            NowPlayingBadge(
-                                modifier = Modifier
-                                    .align(Alignment.TopEnd)
-                                    .padding(14.dp),
-                                // Moving on the card in front only: aside it is a sliver.
-                                running = page == pagerState.currentPage
                             )
-                        }
-                        if (item.isLoading) {
-                            AppContainedLoadingIndicator(modifier = Modifier.size(72.dp))
                         }
                     }
-                    // The theme's colour over the covers aside, and a little shade.
-                    val wash = PanelColors.container
-                    Box(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .drawBehind {
-                                val aside = distance().absoluteValue.coerceIn(0f, 1f)
-                                if (aside > 0f) {
-                                    drawRect(wash.copy(alpha = HeroAsideWash * aside))
-                                    drawRect(Color.Black.copy(alpha = HeroAsideShade * aside))
-                                }
-                            }
-                    )
+                    if (item.isPlaying || LocalNowPlaying.current.lights(item.source, item.trackId)) {
+                        NowPlayingBadge(
+                            modifier = Modifier
+                                .align(Alignment.TopEnd)
+                                .padding(14.dp),
+                            // Moving on the cover in front only: beside it, it is cut off.
+                            running = index == state.currentItem
+                        )
+                    }
+                    if (item.isLoading) {
+                        AppContainedLoadingIndicator(modifier = Modifier.size(72.dp))
+                    }
                 }
             }
 
-            val current = items.getOrNull(pagerState.currentPage) ?: items.first()
+            val current = items.getOrNull(state.currentItem) ?: items.first()
             AnimatedContent(
                 targetState = current,
                 transitionSpec = { fadeIn(tween(220)) togetherWith fadeOut(tween(120)) },
                 contentKey = { it.key },
                 label = "heroCaption",
-                modifier = Modifier
-                    .align(Alignment.TopCenter)
-                    .padding(top = carouselTop + carouselHeight + captionGap)
+                modifier = Modifier.padding(top = captionGap)
             ) { item ->
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
                         .height(captionHeight)
-                        .padding(horizontal = 28.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally
+                        .padding(horizontal = margin + 4.dp)
                 ) {
                     Text(
                         text = item.title,
-                        style = MaterialTheme.typography.headlineSmall,
-                        textAlign = TextAlign.Center,
+                        style = MaterialTheme.typography.titleLarge,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
@@ -3189,7 +3274,6 @@ private fun HomeHeroCarousel(items: List<HeroItem>) {
                             text = item.subtitle,
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            textAlign = TextAlign.Center,
                             maxLines = if (landscape) 1 else 2,
                             overflow = TextOverflow.Ellipsis
                         )
@@ -3200,29 +3284,11 @@ private fun HomeHeroCarousel(items: List<HeroItem>) {
     }
 }
 
-/** Width a neighbouring cover narrows to, and the gap between covers. */
-private val HeroStrip = 36.dp
+/** The gap between covers, and the glyph on a cover that has no picture. */
 private val HeroGap = 8.dp
+private val HeroGlyphSize = 84.dp
 // Sideways, the room above the covers and below their caption.
 private val HeroLandscapeMargin = 24.dp
-
-/** A rounded rectangle over [width] of the page from [left]: the part of a cover left visible. */
-private class HeroStripShape(
-    private val left: Float,
-    private val width: Float,
-    private val radius: Float
-) : Shape {
-    override fun createOutline(size: Size, layoutDirection: LayoutDirection, density: Density): Outline =
-        Outline.Rounded(
-            androidx.compose.ui.geometry.RoundRect(
-                left = left,
-                top = 0f,
-                right = left + width,
-                bottom = size.height,
-                cornerRadius = androidx.compose.ui.geometry.CornerRadius(radius.coerceAtMost(width / 2f))
-            )
-        )
-}
 
 /**
  * What plays, for the cards of the carousels to light the one it came from: whether it plays,
