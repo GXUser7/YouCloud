@@ -215,6 +215,15 @@ class SettingsRepository(
         preferences.edit().putBoolean(KEY_ONBOARDING_DONE, done).apply()
     }
 
+    // Whether home's contents, held for a slider, have been shown: to who went through the gestures
+    // before they came, on their own, once.
+    val contentsTaught = MutableStateFlow(preferences.getBoolean(KEY_CONTENTS_TAUGHT, false))
+
+    fun setContentsTaught(done: Boolean) {
+        contentsTaught.value = done
+        preferences.edit().putBoolean(KEY_CONTENTS_TAUGHT, done).apply()
+    }
+
     // The app's theme, over the phone's: "system", "light" or "dark" (see ui.Appearance, which
     // has Android apply it). Kept here too, as Android doesn't say which an app has.
     val themeMode = MutableStateFlow(preferences.getString(KEY_THEME_MODE, null) ?: "system")
@@ -492,6 +501,7 @@ class SettingsRepository(
         const val KEY_OPEN_PLAYER_ON_TAP = "open_player_on_tap"
         const val KEY_SMOOTH_MOTION = "smooth_motion"
         const val KEY_ONBOARDING_DONE = "onboarding_done"
+        const val KEY_CONTENTS_TAUGHT = "contents_taught"
         const val KEY_THEME_MODE = "theme_mode"
         const val KEY_YT_WEB_SEARCH = "yt_web_search"
         const val KEY_YT_ARTIST_SHOW_ALL = "yt_artist_show_all"

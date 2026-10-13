@@ -6,6 +6,21 @@ import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.layout.offset
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
+import androidx.compose.material.icons.rounded.GridView
+import androidx.compose.runtime.derivedStateOf
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.layout.LayoutCoordinates
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.unit.IntOffset
+import kotlin.math.roundToInt
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
@@ -119,9 +134,14 @@ import kotlinx.coroutines.launch
  * moves only when touched.
  */
 @Composable
-internal fun OnboardingOverlay(onFinish: () -> Unit) {
+internal fun OnboardingOverlay(
+    onFinish: () -> Unit,
+    // Only what came after the gestures were gone through: home's contents, as their own step.
+    onlyNew: Boolean = false
+) {
+    val steps = if (onlyNew) listOf(OnboardingStep.Contents) else OnboardingStep.entries
     var step by rememberSaveable { mutableIntStateOf(0) }
-    val last = OnboardingStep.entries.lastIndex
+    val last = steps.lastIndex
     BackHandler { if (step > 0) step-- else onFinish() }
 
     val colors = MaterialTheme.colorScheme
@@ -148,7 +168,7 @@ internal fun OnboardingOverlay(onFinish: () -> Unit) {
                     .height(48.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                StepDots(current = step, count = OnboardingStep.entries.size, modifier = Modifier.weight(1f))
+                StepDots(current = step, count = steps.size, modifier = Modifier.weight(1f))
                 if (step < last) TextButton(onClick = onFinish) { Text(tr("Пропустить")) }
             }
             AnimatedContent(
@@ -164,13 +184,17 @@ internal fun OnboardingOverlay(onFinish: () -> Unit) {
                     .weight(1f)
             ) { shown ->
                 val next = { if (shown < last) step = shown + 1 else onFinish() }
-                when (OnboardingStep.entries[shown]) {
+                when (steps[shown]) {
                     OnboardingStep.Intro -> IntroStep(onNext = next)
                     OnboardingStep.MiniPlayer -> MiniPlayerStep(onNext = next)
                     OnboardingStep.PlayerCover -> PlayerCoverStep(onNext = next)
                     OnboardingStep.PlayerPull -> PlayerPullStep(onNext = next)
                     OnboardingStep.Windows -> WindowsStep(onNext = next)
                     OnboardingStep.Wave -> WaveStep(onNext = next)
+                    OnboardingStep.Contents -> ContentsStep(
+                        onNext = next,
+                        kicker = if (onlyNew) tr("Новое на главной") else tr("Жест 6 из %s", GESTURE_STEPS)
+                    )
                     OnboardingStep.Done -> DoneStep(onNext = next)
                 }
             }
@@ -178,10 +202,10 @@ internal fun OnboardingOverlay(onFinish: () -> Unit) {
     }
 }
 
-private enum class OnboardingStep { Intro, MiniPlayer, PlayerCover, PlayerPull, Windows, Wave, Done }
+private enum class OnboardingStep { Intro, MiniPlayer, PlayerCover, PlayerPull, Windows, Wave, Contents, Done }
 
-// The steps that teach a gesture, for "Жест 2 из 5".
-private const val GESTURE_STEPS = 5
+// The steps that teach a gesture, for "Жест 2 из 6".
+private const val GESTURE_STEPS = 6
 
 /** The gestures a finger demonstrates. */
 private enum class Hint { SwipeLeft, SwipeRight, SwipeUp, SwipeDown, Tap, LongPress }
@@ -765,6 +789,409 @@ private fun WaveStep(onNext: () -> Unit) {
             }
         }
     )
+}
+
+/**
+ * Home's contents, as on home: the lit section held turns the row into a slider through the
+ * section's covers, the squares lay them out as a grid, and the button over the play button folds
+ * the row away and back.
+ */
+@Composable
+private fun ContentsStep(onNext: () -> Unit, kicker: String) {
+    var slidOnce by remember { mutableStateOf(false) }
+    var gridOnce by remember { mutableStateOf(false) }
+    var foldedOnce by remember { mutableStateOf(false) }
+    val tasks = listOf(
+        tr("Зажми раздел и веди — обложки пролетают") to slidOnce,
+        tr("Нажми на квадраты — все обложки сеткой") to gridOnce,
+        tr("Сверни разделы кнопкой над паузой") to foldedOnce
+    )
+    StepLayout(
+        kicker = kicker,
+        title = tr("Разделы на главной"),
+        text = tr("Внизу главной — разделы сервиса. Зажми тот, что горит, и веди пальцем: ряд станет " +
+            "ползунком через все обложки раздела. Квадраты показывают их сеткой, а кнопка над паузой " +
+            "сворачивает разделы, когда они не нужны."),
+        button = if (slidOnce && gridOnce && foldedOnce) tr("Дальше") else tr("Пропустить шаг"),
+        onNext = onNext,
+        tasks = tasks,
+        demo = {
+            ScreenFrame(place = tr("Главная")) {
+                ContentsDemo(
+                    hint = when {
+                        !slidOnce -> 0
+                        !gridOnce -> 1
+                        !foldedOnce -> 2
+                        else -> -1
+                    },
+                    onSlid = { slidOnce = true },
+                    onGrid = { gridOnce = true },
+                    onFolded = { foldedOnce = true }
+                )
+            }
+        }
+    )
+}
+
+// The small screen's contents: a play button's size, with the fold button right over it.
+private val DemoButton = 32.dp
+private val DemoFoldInset = 6.dp
+private val DemoFoldRoom = DemoFoldInset + DemoButton + 6.dp
+private const val DEMO_COVERS = 12
+
+private class DemoSpots {
+    var root: LayoutCoordinates? = null
+    var chip: LayoutCoordinates? = null
+    var fold: LayoutCoordinates? = null
+}
+
+@Composable
+private fun coverHue(index: Int): Color =
+    lerp(demoHue(index), if (index % 2 == 0) Color.White else Color.Black, 0.1f * (index % 4))
+
+@Composable
+private fun BoxScope.ContentsDemo(hint: Int, onSlid: () -> Unit, onGrid: () -> Unit, onFolded: () -> Unit) {
+    val colors = MaterialTheme.colorScheme
+    val haptic = LocalHapticFeedback.current
+    var index by remember { mutableIntStateOf(2) }
+    var sliding by remember { mutableStateOf(false) }
+    var folded by remember { mutableStateOf(false) }
+    var grid by remember { mutableStateOf(false) }
+    val slide = remember { mutableFloatStateOf(0f) }
+    val open = animateFloatAsState(
+        if (folded && !sliding) 0f else 1f,
+        spring(dampingRatio = 0.9f, stiffness = 400f),
+        label = "demoContentsOpen"
+    )
+    val barShown by remember { derivedStateOf { open.value > 0.001f } }
+    val spots = remember { DemoSpots() }
+    val container = PanelColors.container
+    val content = PanelColors.content
+    val accent = PanelColors.accent
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(start = 8.dp, top = 14.dp, end = 8.dp, bottom = 10.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Text(tr("Новые релизы"), style = MaterialTheme.typography.titleMedium, maxLines = 1)
+        Text(tr("%s релизов", DEMO_COVERS), style = MaterialTheme.typography.labelMedium, color = colors.onSurfaceVariant, maxLines = 1)
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .weight(1f),
+            contentAlignment = Alignment.Center
+        ) {
+            Box(modifier = Modifier.fillMaxWidth(0.8f).aspectRatio(1f)) { DemoCover(hue = coverHue(index)) }
+        }
+        Text(tr("Релиз %s", index + 1), style = MaterialTheme.typography.titleSmall, maxLines = 1)
+        Spacer(modifier = Modifier.height(8.dp))
+        BoxWithConstraints(modifier = Modifier.fillMaxWidth().height(40.dp)) {
+            val width = maxWidth
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .onGloballyPositioned { spots.root = it }
+                    .pointerInput(Unit) {
+                        awaitEachGesture {
+                            val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+                            val root = spots.root ?: return@awaitEachGesture
+                            fun on(spot: LayoutCoordinates?) = spot != null && spot.isAttached &&
+                                root.localBoundingBoxOf(spot).contains(down.position)
+                            if (!on(spots.chip) && !on(spots.fold)) return@awaitEachGesture
+                            val early = withTimeoutOrNull(viewConfiguration.longPressTimeoutMillis) {
+                                var gone = false
+                                while (!gone) {
+                                    val change = awaitPointerEvent(PointerEventPass.Initial).changes
+                                        .firstOrNull { it.id == down.id }
+                                    gone = change == null || !change.pressed ||
+                                        (change.position - down.position).getDistance() > viewConfiguration.touchSlop
+                                }
+                                true
+                            }
+                            if (early != null) return@awaitEachGesture
+                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                            val thumb = 16.dp.toPx()
+                            val from = 4.dp.toPx() + thumb
+                            val travel = (size.width - (4.dp + DemoFoldRoom).toPx() - 2f * thumb).coerceAtLeast(1f)
+                            fun under(x: Float) = ((x - from) / travel).coerceIn(0f, 1f)
+                            slide.floatValue = under(down.position.x)
+                            index = (slide.floatValue * (DEMO_COVERS - 1)).roundToInt()
+                            sliding = true
+                            while (true) {
+                                val change = awaitPointerEvent(PointerEventPass.Initial).changes
+                                    .firstOrNull { it.id == down.id } ?: break
+                                change.consume()
+                                if (!change.pressed) break
+                                slide.floatValue = under(change.position.x)
+                                val at = (slide.floatValue * (DEMO_COVERS - 1)).roundToInt()
+                                if (at != index) {
+                                    index = at
+                                    haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                }
+                            }
+                            sliding = false
+                            onSlid()
+                        }
+                    }
+            ) {
+                if (barShown) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .graphicsLayer {
+                                clip = true
+                                shape = FoldFromEnd(open.value, DemoFoldRoom.toPx(), 20.dp.toPx())
+                                alpha = (open.value * 2.5f).coerceAtMost(1f)
+                            }
+                            .background(container)
+                    ) {
+                        if (sliding) {
+                            DemoSlider(number = index + 1, fraction = { slide.floatValue })
+                        } else {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .padding(start = 4.dp, end = DemoFoldRoom),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
+                                Surface(
+                                    shape = RoundedCornerShape(12.dp),
+                                    color = accent,
+                                    contentColor = PanelColors.onAccent,
+                                    modifier = Modifier
+                                        .height(30.dp)
+                                        .onGloballyPositioned { spots.chip = it }
+                                ) {
+                                    Box(contentAlignment = Alignment.Center, modifier = Modifier.padding(horizontal = 10.dp)) {
+                                        Text(tr("Релизы") + " · ${index + 1}/$DEMO_COVERS", style = MaterialTheme.typography.labelMedium, maxLines = 1)
+                                    }
+                                }
+                                Surface(
+                                    shape = RoundedCornerShape(15.dp),
+                                    color = content.copy(alpha = 0.07f),
+                                    contentColor = content,
+                                    modifier = Modifier.height(30.dp).weight(1f)
+                                ) {
+                                    Box(contentAlignment = Alignment.CenterStart, modifier = Modifier.padding(horizontal = 10.dp)) {
+                                        Text(tr("Чарт"), style = MaterialTheme.typography.labelMedium, maxLines = 1, overflow = TextOverflow.Clip)
+                                    }
+                                }
+                                Surface(
+                                    onClick = {
+                                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                        grid = true
+                                        onGrid()
+                                    },
+                                    shape = RoundedCornerShape(10.dp),
+                                    color = accent.copy(alpha = 0.14f),
+                                    contentColor = accent,
+                                    modifier = Modifier.size(DemoButton)
+                                ) {
+                                    Box(contentAlignment = Alignment.Center) {
+                                        Icon(Icons.Rounded.GridView, contentDescription = tr("Все обложки раздела"), modifier = Modifier.size(18.dp))
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                DemoFoldButton(
+                    open = { open.value },
+                    folded = folded,
+                    onClick = {
+                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                        folded = !folded
+                        if (folded) onFolded()
+                    },
+                    modifier = Modifier
+                        .align(Alignment.CenterEnd)
+                        .padding(end = DemoFoldInset)
+                        .onGloballyPositioned { spots.fold = it }
+                )
+            }
+            // A finger on what is to be tried next: the lit section, the squares, the fold button.
+            when (hint) {
+                0 -> GestureHint(
+                    hint = Hint.LongPress,
+                    modifier = Modifier.matchParentSize(),
+                    anchor = Alignment.CenterStart,
+                    anchorInset = if (folded) width - DemoFoldInset - DemoButton / 2 - 40.dp else 10.dp
+                )
+                1 -> if (!folded && !grid) GestureHint(
+                    hint = Hint.Tap,
+                    modifier = Modifier.matchParentSize(),
+                    anchor = Alignment.CenterStart,
+                    anchorInset = width - DemoFoldRoom - DemoButton / 2 - 40.dp
+                )
+                2 -> GestureHint(
+                    hint = Hint.Tap,
+                    modifier = Modifier.matchParentSize(),
+                    anchor = Alignment.CenterStart,
+                    anchorInset = width - DemoFoldInset - DemoButton / 2 - 40.dp
+                )
+            }
+        }
+        Spacer(modifier = Modifier.height(6.dp))
+        // The mini player under them: the fold button stands over its play button.
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(44.dp)
+                .clip(RoundedCornerShape(22.dp))
+                .background(container)
+                .padding(start = 6.dp, end = DemoFoldInset),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Box(modifier = Modifier.size(32.dp).clip(CircleShape)) { DemoCover(hue = demoHue(0)) }
+            Column(modifier = Modifier.weight(1f)) {
+                Text(DemoTracks[0].first, style = MaterialTheme.typography.labelMedium, color = content, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(DemoTracks[0].second, style = MaterialTheme.typography.labelSmall, color = content.copy(alpha = 0.7f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
+            Box(
+                modifier = Modifier
+                    .size(DemoButton)
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(accent),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(Icons.Rounded.Pause, contentDescription = null, tint = PanelColors.onAccent, modifier = Modifier.size(18.dp))
+            }
+        }
+    }
+    // The covers as a grid, from below, within the small screen.
+    if (grid) {
+        Box(
+            modifier = Modifier
+                .matchParentSize()
+                .background(Color.Black.copy(alpha = 0.35f))
+                .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) { grid = false }
+        )
+    }
+    AnimatedVisibility(
+        visible = grid,
+        enter = slideInVertically { it } + fadeIn(),
+        exit = slideOutVertically { it } + fadeOut(),
+        modifier = Modifier.align(Alignment.BottomCenter)
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp))
+                .background(colors.surfaceContainer)
+                .padding(10.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            Box(
+                modifier = Modifier
+                    .align(Alignment.CenterHorizontally)
+                    .size(width = 28.dp, height = 3.dp)
+                    .clip(CircleShape)
+                    .background(colors.onSurfaceVariant.copy(alpha = 0.4f))
+            )
+            Text(tr("Новые релизы"), style = MaterialTheme.typography.titleSmall, maxLines = 1)
+            repeat(DEMO_COVERS / 4) { row ->
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    repeat(4) { col ->
+                        val at = row * 4 + col
+                        Box(
+                            modifier = Modifier
+                                .weight(1f)
+                                .aspectRatio(1f)
+                                .then(if (at == index) Modifier.border(2.dp, accent, RoundedCornerShape(10.dp)).padding(3.dp) else Modifier)
+                                .clip(RoundedCornerShape(8.dp))
+                                .clickable {
+                                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                    index = at
+                                    grid = false
+                                }
+                        ) {
+                            DemoCover(hue = coverHue(at))
+                            Text(
+                                text = "${at + 1}",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = Color.White,
+                                modifier = Modifier
+                                    .align(Alignment.TopStart)
+                                    .padding(3.dp)
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/** The small fold button: square in the row, round and a little bigger folded, as on home. */
+@Composable
+private fun DemoFoldButton(open: () -> Float, folded: Boolean, onClick: () -> Unit, modifier: Modifier = Modifier) {
+    val container = PanelColors.container
+    val tint = PanelColors.accent.copy(alpha = 0.14f)
+    fun corner() = (DemoButton.value / 2f - (DemoButton.value / 2f - 10f) * open().coerceIn(0f, 1f)).dp
+    Box(
+        modifier = modifier
+            .size(DemoButton)
+            .graphicsLayer {
+                val grown = 1f + 0.23f * (1f - open().coerceIn(0f, 1f))
+                scaleX = grown
+                scaleY = grown
+                shape = RoundedCornerShape(corner())
+                clip = true
+            }
+            .drawBehind {
+                val p = open().coerceIn(0f, 1f)
+                drawRect(container, alpha = 1f - p)
+                drawRect(tint, alpha = p)
+            }
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center
+    ) {
+        Icon(
+            imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
+            contentDescription = if (folded) tr("Показать разделы") else tr("Свернуть разделы"),
+            tint = PanelColors.accent,
+            modifier = Modifier
+                .size(20.dp)
+                .graphicsLayer { rotationZ = 180f * (1f - open()) }
+        )
+    }
+}
+
+/** The small row as a slider: the cover's number on the thumb, under the finger. */
+@Composable
+private fun DemoSlider(number: Int, fraction: () -> Float) {
+    val accent = PanelColors.accent
+    val track = PanelColors.content.copy(alpha = 0.07f)
+    val fill = accent.copy(alpha = 0.3f)
+    val density = LocalDensity.current
+    BoxWithConstraints(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(start = 4.dp, top = 4.dp, end = DemoFoldRoom, bottom = 4.dp)
+            .clip(RoundedCornerShape(16.dp))
+            .drawBehind {
+                drawRect(track)
+                val thumb = size.height / 2f
+                val x = thumb + fraction() * (size.width - 2f * thumb)
+                drawRoundRect(fill, size = Size(x + thumb, size.height), cornerRadius = CornerRadius(thumb, thumb))
+            }
+    ) {
+        val widthPx = constraints.maxWidth.toFloat()
+        val thumbPx = constraints.maxHeight.toFloat()
+        Box(
+            modifier = Modifier
+                .align(Alignment.CenterStart)
+                .offset { IntOffset(((widthPx - thumbPx) * fraction()).roundToInt(), 0) }
+                .size(with(density) { thumbPx.toDp() })
+                .background(accent, CircleShape),
+            contentAlignment = Alignment.Center
+        ) {
+            Text("$number", style = MaterialTheme.typography.labelMedium, color = PanelColors.onAccent, maxLines = 1)
+        }
+    }
 }
 
 @Composable

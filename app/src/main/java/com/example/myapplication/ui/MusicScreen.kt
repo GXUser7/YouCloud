@@ -266,6 +266,16 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.DpOffset
 import androidx.compose.ui.unit.IntOffset
+import androidx.compose.runtime.staticCompositionLocalOf
+import androidx.compose.runtime.SideEffect
+import androidx.compose.runtime.Stable
+import androidx.compose.foundation.pager.PagerState
+import androidx.compose.ui.layout.LayoutCoordinates
+import androidx.compose.ui.geometry.RoundRect
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
@@ -1533,8 +1543,15 @@ fun MusicScreen(viewModel: MusicViewModel) {
     // The first time the app opens (and whenever asked for again in settings): the gestures
     // nothing on screen shows, each tried out on the real thing.
     val onboardingDone by viewModel.settingsRepo.onboardingDone.collectAsState()
+    val contentsTaught by viewModel.settingsRepo.contentsTaught.collectAsState()
     if (!onboardingDone && !isLoggedOut) {
-        OnboardingOverlay(onFinish = { viewModel.settingsRepo.setOnboardingDone(true) })
+        OnboardingOverlay(onFinish = {
+            viewModel.settingsRepo.setOnboardingDone(true)
+            viewModel.settingsRepo.setContentsTaught(true)
+        })
+    } else if (!contentsTaught && !isLoggedOut) {
+        // The gestures were gone through before the contents could be held: just their step, once.
+        OnboardingOverlay(onlyNew = true, onFinish = { viewModel.settingsRepo.setContentsTaught(true) })
     }
 
     val context = LocalContext.current
@@ -1802,6 +1819,16 @@ private fun HomeScreen(
     var reselected by remember { mutableIntStateOf(0) }
     var showCreatePlaylistDialog by remember { mutableStateOf(false) }
     var playlistNameInput by remember { mutableStateOf("") }
+    // The contents folded into their button, as they were left, launch to launch.
+    val context = LocalContext.current
+    val settings = remember(context) { context.getSharedPreferences("app_settings", Context.MODE_PRIVATE) }
+    var contentsFolded by remember { mutableStateOf(settings.getBoolean(KEY_CONTENTS_FOLDED, false)) }
+    val foldContents: (Boolean) -> Unit = { fold ->
+        contentsFolded = fold
+        settings.edit().putBoolean(KEY_CONTENTS_FOLDED, fold).apply()
+    }
+    // A section's covers laid out as a grid, opened from its contents.
+    var coverGrid by remember { mutableStateOf<CoverGrid?>(null) }
 
     val mixes = mixSection?.mixes.orEmpty()
     val stations = stationSection?.mixes.orEmpty()
@@ -1949,6 +1976,8 @@ private fun HomeScreen(
             val initialPage = sections.indexOfFirst { it.key == lastSection[shown] }.takeIf { it >= 0 }
                 ?: sections.indexOfFirst { it.category == savedCategory }.coerceAtLeast(0)
             val sectionPager = rememberPagerState(initialPage = initialPage) { sections.size }
+            // Each section's carousel, as its contents reach it: by the section's key.
+            val heroHandles = remember { mutableStateMapOf<String, HeroHandle>() }
 
             // Only a page the pager has come to rest on is remembered: reporting every page it
             // passes pulled the pager back to one of them mid-flight.
@@ -2073,6 +2102,8 @@ private fun HomeScreen(
                     modifier = Modifier.fillMaxSize()
                 ) { page ->
                     val section = sections.getOrElse(page) { sections.first() }
+                    val heroSlot = remember(section.key) { HeroSlot(section.key, heroHandles) }
+                    androidx.compose.runtime.CompositionLocalProvider(LocalHeroSlot provides heroSlot) {
                     when (section.category) {
                         HomeCategory.Mixes, HomeCategory.Stations, HomeCategory.Trending -> MixCarousel(
                             mixes = when (section.category) {
@@ -2207,6 +2238,7 @@ private fun HomeScreen(
                             }
                         )
                     }
+                    }
                 }
                 }
             }
@@ -2245,15 +2277,21 @@ private fun HomeScreen(
                                 )
                             },
                             current = sectionPager.targetPage,
+                            hero = sections.getOrNull(sectionPager.targetPage)?.let { heroHandles[it.key] },
+                            folded = contentsFolded,
+                            onFold = { fold ->
+                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                foldContents(fold)
+                            },
+                            onOpenGrid = { handle ->
+                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                coverGrid = CoverGrid(shownSection.title, handle)
+                            },
                             onPick = { index ->
                                 haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                                 serviceScope.launch { sectionPager.animateScrollToPage(index) }
                             },
-                            modifier = Modifier
-                                .padding(start = 16.dp, end = 16.dp, bottom = SectionContentsGap)
-                                // Its list of every section grows upward, over the carousel, not
-                                // pushing it.
-                                .wrapContentHeight(align = Alignment.Bottom, unbounded = true)
+                            modifier = Modifier.padding(start = 16.dp, end = 16.dp, bottom = SectionContentsGap)
                         )
                     }
                 }
@@ -2339,6 +2377,8 @@ private fun HomeScreen(
     }
     }
 
+    coverGrid?.let { grid -> CoverGridSheet(grid = grid, onDismiss = { coverGrid = null }) }
+
     if (showCreatePlaylistDialog) {
         AlertDialog(
             onDismissRequest = { showCreatePlaylistDialog = false },
@@ -2407,121 +2447,506 @@ private val SectionContentsRoom = 64.dp + SectionContentsGap
  */
 private val SectionContentsDrop = 72.dp + 16.dp
 
+/** The contents' fold button: the mini player's play button's size, and right over it (see [PlayerBar]). */
+private val ContentsFoldSize = 52.dp
+private val ContentsFoldInset = 10.dp
+/** Folded, the button alone: the size of the toolbar's search and avatar buttons. */
+private val ContentsFoldedSize = 64.dp
+/** Between the grid button and the fold button: as between search and the avatar on the toolbar. */
+private val ContentsButtonGap = 8.dp
+/** What the bar keeps clear at its end for that button, with a gap before it. */
+private val ContentsFoldRoom = ContentsFoldInset + ContentsFoldSize + ContentsButtonGap
+private const val KEY_CONTENTS_FOLDED = "home_contents_folded"
+
+/**
+ * Where a home carousel is: the pager over a section's covers, and the covers, so that the
+ * section's contents can show the place in it, slide through it and lay it out as a grid.
+ */
+@Stable
+private class HeroHandle(val pager: PagerState) {
+    // Read as the grid opens, never while home draws.
+    var items: List<HeroItem> = emptyList()
+}
+
+/** The section a carousel is drawn for, and where it says it is there; none off home's pages. */
+private class HeroSlot(val key: String, val handles: MutableMap<String, HeroHandle>)
+
+private val LocalHeroSlot = staticCompositionLocalOf<HeroSlot?> { null }
+
+/** A section's covers as a grid: its name over them, and its carousel to bring the one picked to. */
+private class CoverGrid(val title: String, val handle: HeroHandle)
+
+/** Where a held finger may start the slider: on the lit section, or on the fold button. */
+private class ContentsSpots {
+    var root: LayoutCoordinates? = null
+    var chip: LayoutCoordinates? = null
+    var fold: LayoutCoordinates? = null
+}
+
+/**
+ * The bar as far as it is out: [open] 1 whole, 0 folded down to [keep] at its end, the button's
+ * place. It comes out from that end toward its start and folds back the other way. Only this
+ * outline moves: nothing is laid out again on the way.
+ */
+internal class FoldFromEnd(private val open: Float, private val keep: Float, private val radius: Float) : Shape {
+    override fun createOutline(size: Size, layoutDirection: LayoutDirection, density: Density): Outline {
+        val shut = (size.width - keep).coerceAtLeast(0f) * (1f - open)
+        val left = if (layoutDirection == LayoutDirection.Ltr) shut else 0f
+        val right = if (layoutDirection == LayoutDirection.Ltr) size.width else size.width - shut
+        return Outline.Rounded(RoundRect(left, 0f, right, size.height, CornerRadius(radius, radius)))
+    }
+}
+
 /**
  * A home page's contents, in a bar over the mini player where the thumb is: every section of the
- * service by its name, the one shown lit, each a tap away. The button at its start lays them all
- * out at once: the bar grows upward over the carousel, without moving it, and shrinks back once
- * one is picked. Glass over the backdrop alone, so nothing of it is blurred on any frame.
+ * service by its name, the one shown lit with the place in it. Held, the lit one turns the bar into
+ * a slider through the section's covers; the grid button lays them all out at once. The button at
+ * its end, right over the mini player's play button, folds the bar into itself and brings it back;
+ * folded, it is held for the slider too. Glass over the backdrop alone, so nothing of it is blurred
+ * on any frame.
  */
-@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun SectionContents(
     entries: List<ContentsEntry>,
     current: Int,
+    hero: HeroHandle?,
+    folded: Boolean,
+    onFold: (Boolean) -> Unit,
+    onOpenGrid: (HeroHandle) -> Unit,
     onPick: (Int) -> Unit,
     modifier: Modifier = Modifier
 ) {
-    var expanded by remember { mutableStateOf(false) }
-    BackHandler(enabled = expanded) { expanded = false }
+    val haptic = LocalHapticFeedback.current
     val glass = LocalGlass.current
-    val shape = RoundedCornerShape(32.dp)
-    Surface(
+    val density = LocalDensity.current
+    val barShape = RoundedCornerShape(32.dp)
+    val spots = remember { ContentsSpots() }
+    // Held on the lit section, or on the folded button: the bar is a slider until let go.
+    var sliding by remember { mutableStateOf(false) }
+    val open = remember { Animatable(if (folded) 0f else 1f) }
+    LaunchedEffect(folded, sliding) {
+        open.animateTo(
+            if (folded && !sliding) 0f else 1f,
+            spring(dampingRatio = 0.9f, stiffness = Spring.StiffnessMediumLow)
+        )
+    }
+    // Folded, the bar isn't there at all, to lay out or to draw.
+    val barShown by remember { derivedStateOf { open.value > 0.001f } }
+    // Where the slider's thumb is, 0..1: read only as it is placed and drawn.
+    val slide = remember { mutableFloatStateOf(0f) }
+    // The cover the slider asks for; the carousel jumps there, one jump at a time.
+    var wanted by remember { mutableIntStateOf(-1) }
+    LaunchedEffect(hero) {
+        val pager = hero?.pager ?: return@LaunchedEffect
+        snapshotFlow { wanted }.collectLatest { index ->
+            if (index in 0 until pager.pageCount && index != pager.currentPage) pager.scrollToPage(index)
+        }
+    }
+    // The place in the section, on the lit name: changes as covers do, not as frames do.
+    val place by remember(hero) {
+        derivedStateOf { hero?.let { "${it.pager.currentPage + 1}/${it.pager.pageCount}" } }
+    }
+    val number by remember(hero) {
+        derivedStateOf { (if (wanted >= 0) wanted else hero?.pager?.currentPage ?: 0) + 1 }
+    }
+    val radiusPx = with(density) { 32.dp.toPx() }
+    val keepPx = with(density) { ContentsFoldRoom.toPx() }
+
+    Box(
         modifier = modifier
             .fillMaxWidth()
-            .glassOr(shape, PanelColors.container),
-        shape = shape,
-        color = if (glass) Color.Transparent else PanelColors.container,
-        contentColor = PanelColors.content,
-        shadowElevation = if (glass) 0.dp else 6.dp
-    ) {
-        Column(
-            modifier = Modifier.animateContentSize(
-                animationSpec = spring(dampingRatio = 0.9f, stiffness = Spring.StiffnessMediumLow)
-            )
-        ) {
-            if (expanded) {
-                FlowRow(
-                    modifier = Modifier
-                        .heightIn(max = 320.dp)
-                        .verticalScroll(rememberScrollState())
-                        .padding(start = 12.dp, top = 14.dp, end = 12.dp, bottom = 2.dp),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    verticalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    entries.forEachIndexed { index, entry ->
-                        ContentsChip(
-                            entry = entry,
-                            selected = index == current,
-                            onClick = {
-                                expanded = false
-                                onPick(index)
-                            }
-                        )
+            .height(64.dp)
+            .onGloballyPositioned { spots.root = it }
+            .pointerInput(hero) {
+                val pager = hero?.pager ?: return@pointerInput
+                awaitEachGesture {
+                    val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+                    val root = spots.root ?: return@awaitEachGesture
+                    fun on(spot: LayoutCoordinates?) = spot != null && spot.isAttached &&
+                        root.localBoundingBoxOf(spot).contains(down.position)
+                    if (pager.pageCount < 2 || !(on(spots.chip) || on(spots.fold))) return@awaitEachGesture
+                    // Let go or moved off before the long press: a tap or a scroll, not the slider.
+                    val early = withTimeoutOrNull(viewConfiguration.longPressTimeoutMillis) {
+                        var gone = false
+                        while (!gone) {
+                            val change = awaitPointerEvent(PointerEventPass.Initial).changes
+                                .firstOrNull { it.id == down.id }
+                            gone = change == null || !change.pressed ||
+                                (change.position - down.position).getDistance() > viewConfiguration.touchSlop
+                        }
+                        true
                     }
-                }
-            }
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(64.dp)
-                    .padding(horizontal = 8.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(6.dp)
-            ) {
-                Surface(
-                    onClick = { expanded = !expanded },
-                    shape = RoundedCornerShape(16.dp),
-                    color = PanelColors.accent.copy(alpha = 0.14f),
-                    contentColor = PanelColors.accent,
-                    modifier = Modifier.size(48.dp)
-                ) {
-                    Box(contentAlignment = Alignment.Center) {
-                        Icon(
-                            imageVector = if (expanded) Icons.Rounded.Close else Icons.Rounded.GridView,
-                            contentDescription = if (expanded) tr("Свернуть разделы") else tr("Все разделы"),
-                            modifier = Modifier.size(24.dp)
-                        )
-                    }
-                }
-                if (expanded) {
-                    Text(
-                        text = tr("Все разделы") + " · " + entries.size,
-                        style = MaterialTheme.typography.titleSmall,
-                        color = PanelColors.content.copy(alpha = 0.8f),
-                        modifier = Modifier.padding(start = 6.dp)
-                    )
-                } else {
-                    val listState = rememberLazyListState(initialFirstVisibleItemIndex = (current - 1).coerceAtLeast(0))
-                    // The section shown kept in sight, with the one before it, as the pages move.
-                    LaunchedEffect(current) {
-                        val info = listState.layoutInfo
-                        val item = info.visibleItemsInfo.firstOrNull { it.index == current }
-                        if (item == null || item.offset < info.viewportStartOffset || item.offset + item.size > info.viewportEndOffset) {
-                            listState.animateScrollToItem((current - 1).coerceAtLeast(0))
+                    if (early != null) return@awaitEachGesture
+                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                    // The cover under the finger, straight away: the thumb comes up right under it,
+                    // so a section held in the middle of the bar reaches both ends of the section.
+                    val last = pager.pageCount - 1
+                    val thumb = 24.dp.toPx()
+                    val from = 8.dp.toPx() + thumb
+                    val travel = (size.width - (8.dp + ContentsFoldRoom).toPx() - 2f * thumb).coerceAtLeast(1f)
+                    fun under(x: Float) = ((x - from) / travel).coerceIn(0f, 1f)
+                    slide.floatValue = under(down.position.x)
+                    wanted = (slide.floatValue * last).roundToInt()
+                    sliding = true
+                    while (true) {
+                        val change = awaitPointerEvent(PointerEventPass.Initial).changes
+                            .firstOrNull { it.id == down.id } ?: break
+                        change.consume()
+                        if (!change.pressed) break
+                        val f = under(change.position.x)
+                        slide.floatValue = f
+                        val index = (f * last).roundToInt()
+                        if (index != wanted) {
+                            wanted = index
+                            haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
                         }
                     }
-                    LazyRow(
-                        state = listState,
+                    sliding = false
+                    wanted = -1
+                }
+            }
+    ) {
+        if (barShown) {
+            Surface(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .graphicsLayer {
+                        val p = open.value
+                        clip = true
+                        shape = FoldFromEnd(p, keepPx, radiusPx)
+                        alpha = (p * 2.5f).coerceAtMost(1f)
+                    }
+                    .glassOr(barShape, PanelColors.container),
+                shape = barShape,
+                color = if (glass) Color.Transparent else PanelColors.container,
+                contentColor = PanelColors.content,
+                shadowElevation = if (glass) 0.dp else 6.dp
+            ) {
+                if (sliding && hero != null) {
+                    ContentsSlider(
+                        title = entries.getOrNull(current)?.title.orEmpty(),
+                        count = hero.pager.pageCount,
+                        number = { number },
+                        fraction = { slide.floatValue }
+                    )
+                } else {
+                    Row(
                         modifier = Modifier
-                            .weight(1f)
-                            // Nor does a swipe along the names, at their end, move on to the next service.
-                            .nestedScroll(KeepSidewaysSwipe),
-                        horizontalArrangement = Arrangement.spacedBy(6.dp),
-                        contentPadding = PaddingValues(end = 4.dp)
+                            .fillMaxSize()
+                            .padding(start = 8.dp, end = ContentsFoldRoom),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
-                        itemsIndexed(entries) { index, entry ->
-                            ContentsChip(entry = entry, selected = index == current, onClick = { onPick(index) })
+                        val listState = rememberLazyListState(initialFirstVisibleItemIndex = (current - 1).coerceAtLeast(0))
+                        // The section shown kept in sight, with the one before it, as the pages move.
+                        LaunchedEffect(current) {
+                            val info = listState.layoutInfo
+                            val item = info.visibleItemsInfo.firstOrNull { it.index == current }
+                            if (item == null || item.offset < info.viewportStartOffset || item.offset + item.size > info.viewportEndOffset) {
+                                listState.animateScrollToItem((current - 1).coerceAtLeast(0))
+                            }
+                        }
+                        LazyRow(
+                            state = listState,
+                            modifier = Modifier
+                                .weight(1f)
+                                // Nor does a swipe along the names, at their end, move on to the next service.
+                                .nestedScroll(KeepSidewaysSwipe),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            contentPadding = PaddingValues(end = 4.dp)
+                        ) {
+                            itemsIndexed(entries) { index, entry ->
+                                val selected = index == current
+                                ContentsChip(
+                                    entry = entry,
+                                    selected = selected,
+                                    count = if (selected) place else null,
+                                    onClick = { onPick(index) },
+                                    modifier = if (selected) Modifier.onGloballyPositioned { spots.chip = it } else Modifier
+                                )
+                            }
+                        }
+                        if (hero != null) {
+                            Surface(
+                                onClick = { onOpenGrid(hero) },
+                                shape = RoundedCornerShape(16.dp),
+                                color = PanelColors.accent.copy(alpha = 0.14f),
+                                contentColor = PanelColors.accent,
+                                modifier = Modifier.size(ContentsFoldSize)
+                            ) {
+                                Box(contentAlignment = Alignment.Center) {
+                                    Icon(
+                                        imageVector = Icons.Rounded.GridView,
+                                        contentDescription = tr("Все обложки раздела"),
+                                        modifier = Modifier.size(24.dp)
+                                    )
+                                }
+                            }
                         }
                     }
                 }
             }
         }
+        ContentsFoldButton(
+            open = { open.value },
+            folded = folded,
+            onClick = { onFold(!folded) },
+            modifier = Modifier
+                .align(Alignment.CenterEnd)
+                .padding(end = ContentsFoldInset)
+                .onGloballyPositioned { spots.fold = it }
+        )
     }
 }
 
+/**
+ * The contents' fold button, the mini player's play button's size and right over it: › folds the
+ * bar into it, ‹ brings the bar back out. In the bar it is square, like the grid button beside it,
+ * a tint on the bar's glass; folded, it is round like the play button under it, with glass of its
+ * own. Its corners follow the bar as it goes, drawn only.
+ */
+@Composable
+private fun ContentsFoldButton(open: () -> Float, folded: Boolean, onClick: () -> Unit, modifier: Modifier = Modifier) {
+    val glassShape = RoundedCornerShape(16.dp)
+    val tint = PanelColors.accent.copy(alpha = 0.14f)
+    // 16 dp square in the bar, round (half its size) folded.
+    fun corner() = (ContentsFoldSize.value / 2f - (ContentsFoldSize.value / 2f - 16f) * open().coerceIn(0f, 1f)).dp
+    Box(
+        modifier = modifier
+            .size(ContentsFoldSize)
+            // Folded it grows to the toolbar's buttons' size, around its own middle: scaled as it
+            // is drawn, so the bar beside it is never laid out again.
+            .graphicsLayer {
+                val grown = 1f + (ContentsFoldedSize / ContentsFoldSize - 1f) * (1f - open().coerceIn(0f, 1f))
+                scaleX = grown
+                scaleY = grown
+            }
+    ) {
+        // Its own glass comes up as the bar folds away from around it.
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .graphicsLayer {
+                    alpha = 1f - open()
+                    shape = RoundedCornerShape(corner())
+                    clip = true
+                }
+                .glassOr(glassShape, PanelColors.container)
+        )
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .graphicsLayer {
+                    shape = RoundedCornerShape(corner())
+                    clip = true
+                }
+                .drawBehind { drawRect(color = tint, alpha = open().coerceIn(0f, 1f)) }
+                .clickable(onClick = onClick),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(
+                imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                contentDescription = if (folded) tr("Показать разделы") else tr("Свернуть разделы"),
+                tint = PanelColors.accent,
+                modifier = Modifier
+                    .size(28.dp)
+                    .graphicsLayer { rotationZ = 180f * (1f - open()) }
+            )
+        }
+    }
+}
+
+/** The bar as a slider through the section: its name, the cover's number on the thumb, how many there are. */
+@Composable
+private fun ContentsSlider(title: String, count: Int, number: () -> Int, fraction: () -> Float) {
+    val accent = PanelColors.accent
+    val trackColor = PanelColors.content.copy(alpha = 0.07f)
+    val fillColor = accent.copy(alpha = 0.3f)
+    val density = LocalDensity.current
+    BoxWithConstraints(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(start = 8.dp, top = 8.dp, end = ContentsFoldRoom, bottom = 8.dp)
+            .clip(RoundedCornerShape(24.dp))
+            .drawBehind {
+                drawRect(trackColor)
+                val thumb = size.height / 2f
+                val x = thumb + fraction() * (size.width - 2f * thumb)
+                drawRoundRect(fillColor, size = Size(x + thumb, size.height), cornerRadius = CornerRadius(thumb, thumb))
+            }
+    ) {
+        val widthPx = constraints.maxWidth.toFloat()
+        val thumbPx = constraints.maxHeight.toFloat()
+        Text(
+            text = title,
+            style = MaterialTheme.typography.titleSmall,
+            color = PanelColors.content,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            // Clear of the thumb at either end of the track; it passes over them on the way.
+            modifier = Modifier
+                .align(Alignment.CenterStart)
+                .padding(start = 58.dp, end = 120.dp)
+        )
+        Text(
+            text = tr("из %s", count),
+            style = MaterialTheme.typography.titleSmall,
+            color = accent,
+            modifier = Modifier
+                .align(Alignment.CenterEnd)
+                .padding(end = 58.dp)
+        )
+        Box(
+            modifier = Modifier
+                .align(Alignment.CenterStart)
+                .offset { IntOffset(((widthPx - thumbPx) * fraction()).roundToInt(), 0) }
+                .size(with(density) { thumbPx.toDp() })
+                .background(accent, CircleShape),
+            contentAlignment = Alignment.Center
+        ) {
+            Text(
+                text = number().toString(),
+                style = MaterialTheme.typography.labelLarge,
+                color = PanelColors.onAccent,
+                maxLines = 1
+            )
+        }
+    }
+}
+
+/**
+ * A section's covers as a grid from below, up to the middle of the screen, under the thumb: the one
+ * in front ringed, each numbered; the one tapped comes to the front as the grid goes. Covers asked
+ * for at a cell's size, not the carousel's.
+ */
+@Composable
+private fun CoverGridSheet(grid: CoverGrid, onDismiss: () -> Unit) {
+    val sheetState = rememberModalBottomSheetState()
+    val scope = rememberCoroutineScope()
+    val haptic = LocalHapticFeedback.current
+    val covers = remember(grid) { grid.handle.items }
+    val pager = grid.handle.pager
+    val current = pager.currentPage
+    val gridState = rememberLazyGridState(initialFirstVisibleItemIndex = ((current / 4) - 1).coerceAtLeast(0) * 4)
+    val colors = MaterialTheme.colorScheme
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = sheetState,
+        containerColor = colors.background,
+        contentColor = colors.onBackground,
+        dragHandle = {
+            Box(
+                modifier = Modifier
+                    .padding(top = 12.dp, bottom = 8.dp)
+                    .size(width = 36.dp, height = 4.dp)
+                    .clip(CircleShape)
+                    .background(colors.onSurfaceVariant.copy(alpha = 0.4f))
+            )
+        }
+    ) {
+        Text(
+            text = grid.title,
+            style = MaterialTheme.typography.titleLarge,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.padding(horizontal = 20.dp)
+        )
+        Text(
+            text = tr("%s из %s", current + 1, covers.size),
+            style = MaterialTheme.typography.bodyMedium,
+            color = colors.onSurfaceVariant,
+            modifier = Modifier.padding(start = 20.dp, top = 2.dp, end = 20.dp, bottom = 12.dp)
+        )
+        LazyVerticalGrid(
+            columns = GridCells.Fixed(4),
+            state = gridState,
+            contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 24.dp),
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            items(covers.size) { index ->
+                CoverGridCell(
+                    item = covers[index],
+                    number = index + 1,
+                    current = index == current,
+                    onClick = {
+                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                        scope.launch { pager.scrollToPage(index) }
+                        scope.launch { sheetState.hide() }.invokeOnCompletion {
+                            if (!sheetState.isVisible) onDismiss()
+                        }
+                    }
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun CoverGridCell(item: HeroItem, number: Int, current: Boolean, onClick: () -> Unit) {
+    val shape = RoundedCornerShape(16.dp)
+    Column(
+        modifier = Modifier
+            .clip(shape)
+            .clickable(onClick = onClick),
+        verticalArrangement = Arrangement.spacedBy(6.dp)
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .aspectRatio(1f)
+                .then(if (current) Modifier.border(3.dp, PanelColors.accent, shape).padding(5.dp) else Modifier)
+                .clip(shape)
+                .background(MaterialTheme.colorScheme.surfaceContainerHigh),
+            contentAlignment = Alignment.Center
+        ) {
+            val url = item.collage.firstOrNull() ?: item.artworkUrl
+            val icon = item.icon
+            if (!url.isNullOrBlank()) {
+                AsyncImage(
+                    model = gridArtworkUrl(url),
+                    contentDescription = null,
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier.fillMaxSize()
+                )
+            } else if (icon != null) {
+                Icon(imageVector = icon, contentDescription = null, tint = PanelColors.accent, modifier = Modifier.size(28.dp))
+            }
+            Text(
+                text = number.toString(),
+                style = MaterialTheme.typography.labelSmall,
+                color = Color.White,
+                modifier = Modifier
+                    .align(Alignment.TopStart)
+                    .padding(6.dp)
+                    .background(Color.Black.copy(alpha = 0.45f), RoundedCornerShape(10.dp))
+                    .padding(horizontal = 6.dp, vertical = 1.dp)
+            )
+        }
+        Text(
+            text = item.title,
+            style = MaterialTheme.typography.labelMedium,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
+    }
+}
+
+/** A cover small enough for a grid cell: the carousel asks for them at 500 dp. */
+private fun gridArtworkUrl(url: String): String =
+    (artworkUrlForSize(url, 96.dp) ?: url).replace("t500x500", "t300x300")
+
 /** A section's name in the contents: lit, and squarer, while it is the one shown. */
 @Composable
-private fun ContentsChip(entry: ContentsEntry, selected: Boolean, onClick: () -> Unit) {
+private fun ContentsChip(
+    entry: ContentsEntry,
+    selected: Boolean,
+    onClick: () -> Unit,
+    // The place in the section, on the lit one: «· 14/50».
+    count: String? = null,
+    modifier: Modifier = Modifier
+) {
     val corner by animateDpAsState(
         targetValue = if (selected) 14.dp else 24.dp,
         animationSpec = spring(dampingRatio = 0.7f, stiffness = Spring.StiffnessMediumLow),
@@ -2542,7 +2967,7 @@ private fun ContentsChip(entry: ContentsEntry, selected: Boolean, onClick: () ->
         shape = RoundedCornerShape(corner),
         color = container,
         contentColor = content,
-        modifier = Modifier
+        modifier = modifier
             .height(48.dp)
             .semantics { this.selected = selected }
     ) {
@@ -2559,7 +2984,11 @@ private fun ContentsChip(entry: ContentsEntry, selected: Boolean, onClick: () ->
                         .background(Color(0xFFFF3B30), CircleShape)
                 )
             }
-            Text(text = entry.title, style = MaterialTheme.typography.titleSmall, maxLines = 1)
+            Text(
+                text = if (count != null) entry.title + " · " + count else entry.title,
+                style = MaterialTheme.typography.titleSmall,
+                maxLines = 1
+            )
         }
     }
 }
@@ -3178,6 +3607,16 @@ private fun HomeHeroCarousel(items: List<HeroItem>) {
     val haptic = LocalHapticFeedback.current
     val scope = rememberCoroutineScope()
     val pagerState = rememberPagerState { items.size }
+    // Its section's contents reach it here: to show the place in it, slide through it, open it as a grid.
+    val handle = remember(pagerState) { HeroHandle(pagerState) }
+    SideEffect { handle.items = items }
+    val slot = LocalHeroSlot.current
+    if (slot != null) {
+        DisposableEffect(slot, handle) {
+            slot.handles[slot.key] = handle
+            onDispose { if (slot.handles[slot.key] === handle) slot.handles.remove(slot.key) }
+        }
+    }
 
     BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
         val landscape = isLandscape()
