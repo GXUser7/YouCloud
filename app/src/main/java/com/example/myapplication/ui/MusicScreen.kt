@@ -193,8 +193,6 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.contentColorFor
 import androidx.compose.material3.ElevatedCard
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.carousel.HorizontalMultiBrowseCarousel
-import androidx.compose.material3.carousel.rememberCarouselState
 import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.FilledTonalIconButton
@@ -3124,6 +3122,17 @@ private fun CarouselEmptyText(text: String) {
     }
 }
 
+/**
+ * A centred hero carousel: the cover in focus always sits in the middle — the first one too — and
+ * its neighbours squeeze into narrow strips on both sides as they leave, rather than sliding away
+ * whole. Each cover is masked and re-centred inside its strip, never squashed.
+ *
+ * Built on a pager rather than Material's HorizontalCenteredHeroCarousel, which shifts its first
+ * and last items to the edges, so the focused cover is not centred there. The geometry closes by
+ * itself: pages are [coverWidth] wide and centred by the content padding, so a neighbour's page
+ * starts exactly [HeroStrip] plus the margin from the screen edge, and the mask only has to
+ * narrow from the full cover to that strip as the page moves out.
+ */
 // Swallows what a sideways scroller leaves over of a swipe, so nothing sideways around it moves.
 private val KeepSidewaysSwipe = object : NestedScrollConnection {
     override fun onPostScroll(consumed: Offset, available: Offset, source: NestedScrollSource): Offset =
@@ -3136,136 +3145,183 @@ private val KeepSidewaysSwipe = object : NestedScrollConnection {
 // How a page of services settles: soft, a touch of give, no wobble.
 private val ServicePageSpring = spring<Float>(dampingRatio = 0.86f, stiffness = 320f)
 
-/**
- * A home section's covers as Material 3's multi-browse carousel: a large cover in front, a
- * smaller one and a sliver of the next beside it — three at a glance where one stood alone. A
- * cover beside comes to the front when tapped; the one in front opens. The caption under the
- * covers follows the one in front.
- *
- * Only the covers' masks change on a frame of a swipe: the blur, the wash and the shadow the
- * centred carousel laid on its covers went with it.
- */
+private val HeroAsideBlur = 10.dp
+private const val HeroAsideWash = 0.45f
+private const val HeroAsideShade = 0.18f
+
 @Composable
 private fun HomeHeroCarousel(items: List<HeroItem>) {
     if (items.isEmpty()) return
     val haptic = LocalHapticFeedback.current
     val scope = rememberCoroutineScope()
-    val state = rememberCarouselState { items.size }
+    val pagerState = rememberPagerState { items.size }
 
     BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
         val landscape = isLandscape()
-        // A line of title and two of subtitle under the covers; sideways one of each.
-        val captionHeight = if (landscape) 52.dp else 76.dp
-        val captionGap = 12.dp
+        // Sideways the caption is a line of title and a line under it, and no taller than that:
+        // room kept for more stood empty under it, and the covers crowded up against the top.
+        val captionHeight = if (landscape) 60.dp else 88.dp
+        val captionGap = if (landscape) 12.dp else 16.dp
         val margin = 16.dp
-        // The cover in front square: as tall as leaves the caption its room (sideways, and a margin
-        // above and below), and no wider than leaves the two beside it theirs.
-        val coverSize = minOf(
-            maxHeight - captionHeight - captionGap - (if (landscape) HeroLandscapeMargin * 2 else 0.dp),
-            (maxWidth - margin * 2) * 0.72f
-        ).coerceAtLeast(120.dp)
-        // The covers and their caption together in the middle of the page.
-        val top = ((maxHeight - coverSize - captionGap - captionHeight) / 2).coerceAtLeast(0.dp)
+        // Sideways the page is wider than tall: the cover square, as tall as leaves the caption room
+        // and a margin above and below.
+        val coverWidth = if (landscape) {
+            minOf(
+                maxWidth - (margin + HeroStrip + HeroGap) * 2,
+                maxHeight - captionHeight - captionGap - HeroLandscapeMargin * 2
+            ).coerceAtLeast(120.dp)
+        } else {
+            maxWidth - (margin + HeroStrip + HeroGap) * 2
+        }
+        val sidePadding = (maxWidth - coverWidth) / 2
+        // Close to square: a little taller than wide at most, and never taller than leaves room for
+        // the caption under it with the covers in the middle of the page.
+        val carouselHeight = if (landscape) {
+            coverWidth
+        } else {
+            (maxHeight - (captionHeight + captionGap) * 2).coerceIn(160.dp, coverWidth * 1.08f)
+        }
+        // Sideways the covers and their caption are centred together: there is no room to spare.
+        val carouselTop = if (landscape) {
+            ((maxHeight - carouselHeight - captionGap - captionHeight) / 2).coerceAtLeast(0.dp)
+        } else {
+            (maxHeight - carouselHeight) / 2
+        }
+        val density = LocalDensity.current
+        val coverPx = with(density) { coverWidth.toPx() }
+        val stripPx = with(density) { HeroStrip.toPx() }
+        val radiusPx = with(density) { 32.dp.toPx() }
 
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(top = top)
-        ) {
-            HorizontalMultiBrowseCarousel(
-                state = state,
-                preferredItemWidth = coverSize,
-                itemSpacing = HeroGap,
-                contentPadding = PaddingValues(horizontal = margin),
+        // The covers in the middle of the page by themselves, the caption hanging under them:
+        // centred along with it, the covers stood off the middle the rest of home keeps (the wave's
+        // shape), and higher or lower from one page to the next.
+        Box(modifier = Modifier.fillMaxSize()) {
+            HorizontalPager(
+                state = pagerState,
+                pageSize = androidx.compose.foundation.pager.PageSize.Fixed(coverWidth),
+                contentPadding = PaddingValues(horizontal = sidePadding),
+                pageSpacing = HeroGap,
                 modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .padding(top = carouselTop)
                     .fillMaxWidth()
-                    .height(coverSize)
+                    .height(carouselHeight)
                     // What the carousel doesn't use of a swipe, at its first or last cover, isn't
                     // passed on to the pages of services around it.
                     .nestedScroll(KeepSidewaysSwipe)
-            ) { index ->
-                val item = items[index]
-                val drawInfo = carouselItemDrawInfo
+            ) { page ->
+                val item = items[page]
+                // Signed distance from the focused slot: positive to the right.
+                fun distance() = page - (pagerState.currentPage + pagerState.currentPageOffsetFraction)
+                fun visibleWidth() = lerp(coverPx, stripPx, distance().absoluteValue.coerceIn(0f, 1f))
                 Box(
                     modifier = Modifier
                         .fillMaxSize()
-                        .maskClip(RoundedCornerShape(32.dp))
-                        .background(MaterialTheme.colorScheme.surfaceContainerHigh)
+                        .graphicsLayer {
+                            val d = distance()
+                            val w = visibleWidth()
+                            // The mask keeps the side that faces the focused cover.
+                            val left = if (d > 0f) 0f else coverPx - w
+                            clip = true
+                            shape = HeroStripShape(left, w, radiusPx)
+                            // The cover in front floats above the backdrop; strips sit on it.
+                            shadowElevation = (1f - d.absoluteValue.coerceIn(0f, 1f)) * 14.dp.toPx()
+                        }
                         .clickable {
                             haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                            // A cover beside comes to the front; the cover in front opens.
-                            if (index == state.currentItem) {
+                            // A strip brings its cover to the front; the cover in front opens.
+                            if (page == pagerState.currentPage) {
                                 item.onClick()
                             } else {
-                                scope.launch { state.animateScrollToItem(index) }
+                                scope.launch { pagerState.animateScrollToPage(page) }
                             }
-                        },
-                    contentAlignment = Alignment.Center
+                        }
                 ) {
-                    if (item.collage.isNotEmpty()) {
-                        CoverCollage(urls = item.collage)
-                    } else if (!item.artworkUrl.isNullOrBlank()) {
-                        AsyncImage(
-                            model = item.artworkUrl,
-                            contentDescription = item.title,
-                            modifier = Modifier.fillMaxSize(),
-                            contentScale = ContentScale.Crop
-                        )
-                    } else if (item.icon != null) {
-                        // As IconCover draws it, but only the glyph fades: whole while the cover is
-                        // wider than it, gone by the time the cover is a sliver — a glyph cut down
-                        // reads as a glitch. The panel tone under it stays.
-                        Box(
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .background(PanelColors.container),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Icon(
-                                imageVector = item.icon,
-                                contentDescription = null,
-                                tint = PanelColors.accent,
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .graphicsLayer {
+                                // Re-centres the picture inside whatever the mask leaves visible.
+                                translationX = -kotlin.math.sign(distance()) * (coverPx - visibleWidth()) / 2f
+                                // Out of focus beside the one in front, so the eye stays there.
+                                val aside = distance().absoluteValue.coerceIn(0f, 1f)
+                                val radius = HeroAsideBlur.toPx() * aside
+                                renderEffect = if (radius > 0.5f) BlurEffect(radius, radius, TileMode.Clamp) else null
+                            }
+                            .background(MaterialTheme.colorScheme.surfaceContainerHigh),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        if (item.collage.isNotEmpty()) {
+                            CoverCollage(urls = item.collage)
+                        } else if (!item.artworkUrl.isNullOrBlank()) {
+                            AsyncImage(
+                                model = item.artworkUrl,
+                                contentDescription = item.title,
+                                modifier = Modifier.fillMaxSize(),
+                                contentScale = ContentScale.Crop
+                            )
+                        } else if (item.icon != null) {
+                            // A glyph cut down to a strip reads as a glitch, so it fades out first.
+                            Box(
                                 modifier = Modifier
-                                    .size(HeroGlyphSize)
+                                    .fillMaxSize()
                                     .graphicsLayer {
-                                        val glyph = HeroGlyphSize.toPx()
-                                        alpha = ((drawInfo.size - glyph) / (glyph * 0.25f)).coerceIn(0f, 1f)
+                                        alpha = (1f - distance().absoluteValue * 1.8f).coerceIn(0f, 1f)
                                     }
+                            ) {
+                                IconCover(icon = item.icon, iconSize = 84.dp)
+                            }
+                        }
+                        if (item.isPlaying || LocalNowPlaying.current.lights(item.source, item.trackId)) {
+                            NowPlayingBadge(
+                                modifier = Modifier
+                                    .align(Alignment.TopEnd)
+                                    .padding(14.dp),
+                                // Moving on the card in front only: aside it is a sliver.
+                                running = page == pagerState.currentPage
                             )
                         }
+                        if (item.isLoading) {
+                            AppContainedLoadingIndicator(modifier = Modifier.size(72.dp))
+                        }
                     }
-                    if (item.isPlaying || LocalNowPlaying.current.lights(item.source, item.trackId)) {
-                        NowPlayingBadge(
-                            modifier = Modifier
-                                .align(Alignment.TopEnd)
-                                .padding(14.dp),
-                            // Moving on the cover in front only: beside it, it is cut off.
-                            running = index == state.currentItem
-                        )
-                    }
-                    if (item.isLoading) {
-                        AppContainedLoadingIndicator(modifier = Modifier.size(72.dp))
-                    }
+                    // The theme's colour over the covers aside, and a little shade.
+                    val wash = PanelColors.container
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .drawBehind {
+                                val aside = distance().absoluteValue.coerceIn(0f, 1f)
+                                if (aside > 0f) {
+                                    drawRect(wash.copy(alpha = HeroAsideWash * aside))
+                                    drawRect(Color.Black.copy(alpha = HeroAsideShade * aside))
+                                }
+                            }
+                    )
                 }
             }
 
-            val current = items.getOrNull(state.currentItem) ?: items.first()
+            val current = items.getOrNull(pagerState.currentPage) ?: items.first()
             AnimatedContent(
                 targetState = current,
                 transitionSpec = { fadeIn(tween(220)) togetherWith fadeOut(tween(120)) },
                 contentKey = { it.key },
                 label = "heroCaption",
-                modifier = Modifier.padding(top = captionGap)
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .padding(top = carouselTop + carouselHeight + captionGap)
             ) { item ->
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
                         .height(captionHeight)
-                        .padding(horizontal = margin + 4.dp)
+                        .padding(horizontal = 28.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
                 ) {
                     Text(
                         text = item.title,
-                        style = MaterialTheme.typography.titleLarge,
+                        style = MaterialTheme.typography.headlineSmall,
+                        textAlign = TextAlign.Center,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
@@ -3274,6 +3330,7 @@ private fun HomeHeroCarousel(items: List<HeroItem>) {
                             text = item.subtitle,
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            textAlign = TextAlign.Center,
                             maxLines = if (landscape) 1 else 2,
                             overflow = TextOverflow.Ellipsis
                         )
@@ -3284,11 +3341,29 @@ private fun HomeHeroCarousel(items: List<HeroItem>) {
     }
 }
 
-/** The gap between covers, and the glyph on a cover that has no picture. */
+/** Width a neighbouring cover narrows to, and the gap between covers. */
+private val HeroStrip = 36.dp
 private val HeroGap = 8.dp
-private val HeroGlyphSize = 84.dp
 // Sideways, the room above the covers and below their caption.
 private val HeroLandscapeMargin = 24.dp
+
+/** A rounded rectangle over [width] of the page from [left]: the part of a cover left visible. */
+private class HeroStripShape(
+    private val left: Float,
+    private val width: Float,
+    private val radius: Float
+) : Shape {
+    override fun createOutline(size: Size, layoutDirection: LayoutDirection, density: Density): Outline =
+        Outline.Rounded(
+            androidx.compose.ui.geometry.RoundRect(
+                left = left,
+                top = 0f,
+                right = left + width,
+                bottom = size.height,
+                cornerRadius = androidx.compose.ui.geometry.CornerRadius(radius.coerceAtMost(width / 2f))
+            )
+        )
+}
 
 /**
  * What plays, for the cards of the carousels to light the one it came from: whether it plays,
