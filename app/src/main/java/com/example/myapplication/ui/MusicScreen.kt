@@ -265,6 +265,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.DpOffset
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
@@ -708,6 +709,7 @@ fun MusicScreen(viewModel: MusicViewModel) {
                             clientId = clientId,
                             playingMixId = playingMixId,
                             isPlaying = isPlaying,
+                            hasTrack = currentTrackTitle != null,
                             isClientIdExpired = isClientIdExpired,
                             needsRelogin = needsRelogin,
                             downloadedCount = downloadedTracks.size,
@@ -1748,6 +1750,7 @@ private fun HomeScreen(
     clientId: String,
     playingMixId: String?,
     isPlaying: Boolean,
+    hasTrack: Boolean,
     isClientIdExpired: Boolean,
     needsRelogin: Boolean,
     downloadedCount: Int,
@@ -2207,6 +2210,14 @@ private fun HomeScreen(
                 }
                 }
             }
+            // With nothing playing, the mini player's place is empty, and the contents come down into
+            // it, over the toolbar. Moved, not laid out again: the carousel above stays where it is
+            // when a track starts and the contents go back up. Sideways they head the pane instead.
+            val contentsDrop by animateDpAsState(
+                targetValue = if (hasTrack || landscape) 0.dp else SectionContentsDrop,
+                animationSpec = spring(dampingRatio = Spring.DampingRatioLowBouncy, stiffness = Spring.StiffnessMediumLow),
+                label = "contentsDrop"
+            )
             val contentsBlock: @Composable () -> Unit = {
                 // Every section of the service a tap away, in a bar over the mini player: before, a
                 // section took a swipe for each one above it. Its room is kept where the service has
@@ -2217,7 +2228,15 @@ private fun HomeScreen(
                         .fillMaxWidth()
                         .height(SectionContentsRoom)
                 ) {
-                    if (sections.size > 1) {
+                    // Gone, like the mini player, while the avatar's menu stands over their place.
+                    AnimatedVisibility(
+                        visible = sections.size > 1 && !accountMenu.open,
+                        enter = slideInVertically(initialOffsetY = { it }) + fadeIn(),
+                        exit = slideOutVertically(targetOffsetY = { it }) + fadeOut(),
+                        modifier = Modifier
+                            .align(Alignment.BottomCenter)
+                            .offset { IntOffset(0, contentsDrop.roundToPx()) }
+                    ) {
                         SectionContents(
                             entries = sections.map { section ->
                                 ContentsEntry(
@@ -2231,7 +2250,6 @@ private fun HomeScreen(
                                 serviceScope.launch { sectionPager.animateScrollToPage(index) }
                             },
                             modifier = Modifier
-                                .align(Alignment.BottomCenter)
                                 .padding(start = 16.dp, end = 16.dp, bottom = SectionContentsGap)
                                 // Its list of every section grows upward, over the carousel, not
                                 // pushing it.
@@ -2383,6 +2401,11 @@ private data class ContentsEntry(val title: String, val live: Boolean)
 /** The gap under the contents, over the mini player's place; the room they keep with it. */
 private val SectionContentsGap = 12.dp
 private val SectionContentsRoom = 64.dp + SectionContentsGap
+/**
+ * How far the contents come down with no mini player: its height and the gap over it, so that they
+ * stand on the toolbar where the mini player would, the same 12 dp over it.
+ */
+private val SectionContentsDrop = 72.dp + 16.dp
 
 /**
  * A home page's contents, in a bar over the mini player where the thumb is: every section of the
