@@ -683,6 +683,20 @@ internal object English {
 
     // Accounts and friends.
     private fun HashMap<String, String>.part6() {
+        // Home's shelves.
+        put("раздел", "section")
+        put("раздела", "sections")
+        put("разделов", "sections")
+        put("Моя форма и %s", "My Wave and %s")
+        put("Скачанное, история и плейлисты", "Downloads, history and playlists")
+        put("Весь раздел", "The whole section")
+        put("Весь раздел «%s»", "All of «%s»")
+        put("Опустить главную", "Lower home")
+        put("Отступ между названием сервиса и первой полкой: она ниже, ближе к большому пальцу, как на прежней главной",
+            "A gap between the service's name and its first shelf: the shelf sits lower, nearer the thumb, as on the old home")
+        put("Нажми на форму — волна включится", "Tap the shape — the wave starts")
+        put("Первая полка во вкладке Яндекс Музыки. Нажатие на форму включает волну, а настроение и режим выбираются прямо под ней.",
+            "The first shelf on Yandex Music's tab. A tap on the shape starts the wave; the mood and the mode are picked right under it.")
         put("Что-то пошло не так", "Something went wrong")
         put("Нет связи с сервером. Проверь интернет", "Can't reach the server. Check your connection")
         put("В этой сборке аккаунты не настроены", "Accounts aren't set up in this build")

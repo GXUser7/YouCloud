@@ -825,6 +825,9 @@ internal fun CoverImage(
 // region Artwork URLs
 
 private val SizedPathPattern = Regex("\\d{2,4}x\\d{2,4}")
+// Google's image servers (YouTube Music's covers) take the size after "=": "=w544-h544-…" or "=s544".
+private val GoogleSizePattern = Regex("=w\\d{2,4}-h\\d{2,4}")
+private val GoogleSquarePattern = Regex("=s\\d{2,4}(?=[-&]|$)")
 
 /**
  * SoundCloud serves several artwork sizes. Asking for t500x500 everywhere meant a 50dp queue
@@ -843,6 +846,15 @@ internal fun artworkUrlForSize(url: String?, size: Dp): String? {
             else -> "1000x1000"
         }
         return SizedPathPattern.replace(url, yandexSize)
+    }
+    if (url.contains("googleusercontent.com") || url.contains("ggpht.com")) {
+        // A 100 dp tile of home's shelves fetched YouTube's 544 px cover, a row of them at a time.
+        val px = (size.value * 3f).toInt().coerceIn(120, 1200)
+        return when {
+            GoogleSizePattern.containsMatchIn(url) -> GoogleSizePattern.replace(url, "=w$px-h$px")
+            GoogleSquarePattern.containsMatchIn(url) -> GoogleSquarePattern.replace(url, "=s$px")
+            else -> url
+        }
     }
     val variant = when {
         size <= 64.dp -> "t200x200"

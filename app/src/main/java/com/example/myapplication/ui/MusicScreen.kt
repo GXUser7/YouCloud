@@ -253,6 +253,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.material.icons.filled.VerticalAlignBottom
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.selected
@@ -513,6 +514,7 @@ fun MusicScreen(viewModel: MusicViewModel) {
     val videoGlow by viewModel.settingsRepo.videoGlow.collectAsState()
     val videoGlowStyle by viewModel.settingsRepo.videoGlowStyle.collectAsState()
     val coverGlowStyle by viewModel.settingsRepo.coverGlowStyle.collectAsState()
+    val homeTopGap by viewModel.settingsRepo.homeTopGap.collectAsState()
 
     // The playing track's cover colours are worked out before the player opens, so it opens in
     // them instead of fading over from the app's own every time; and its neighbours' in the queue
@@ -719,7 +721,6 @@ fun MusicScreen(viewModel: MusicViewModel) {
                             clientId = clientId,
                             playingMixId = playingMixId,
                             isPlaying = isPlaying,
-                            hasTrack = currentTrackTitle != null,
                             isClientIdExpired = isClientIdExpired,
                             needsRelogin = needsRelogin,
                             downloadedCount = downloadedTracks.size,
@@ -740,6 +741,7 @@ fun MusicScreen(viewModel: MusicViewModel) {
                                 onPick = viewModel::pickYandexWave,
                                 onReset = viewModel::resetYandexWave
                             ),
+                            topGap = homeTopGap,
                             onOpenPlaylist = viewModel::openPlaylist,
                             onOpenYandexPlaylist = { playlist ->
                                 haptic.performHapticFeedback(HapticFeedbackType.LongPress)
@@ -1543,15 +1545,10 @@ fun MusicScreen(viewModel: MusicViewModel) {
     // The first time the app opens (and whenever asked for again in settings): the gestures
     // nothing on screen shows, each tried out on the real thing.
     val onboardingDone by viewModel.settingsRepo.onboardingDone.collectAsState()
-    val contentsTaught by viewModel.settingsRepo.contentsTaught.collectAsState()
     if (!onboardingDone && !isLoggedOut) {
         OnboardingOverlay(onFinish = {
             viewModel.settingsRepo.setOnboardingDone(true)
-            viewModel.settingsRepo.setContentsTaught(true)
         })
-    } else if (!contentsTaught && !isLoggedOut) {
-        // The gestures were gone through before the contents could be held: just their step, once.
-        OnboardingOverlay(onlyNew = true, onFinish = { viewModel.settingsRepo.setContentsTaught(true) })
     }
 
     val context = LocalContext.current
@@ -1671,16 +1668,6 @@ private class HomeWave(
     val onReset: () -> Unit
 )
 
-/** A page of home's vertical pager: one of a service's sections. */
-private class HomeSection(
-    val key: String,
-    val category: HomeCategory,
-    val title: String,
-    val subtitle: String,
-    // A YouTube Music section is a row of its home, one of many.
-    val shelf: YtShelf? = null
-)
-
 /**
  * A row of YouTube Music's home as hero tiles: each song its own tile, playing with the row's
  * songs after it, and each playlist, mix or album a tile that opens it.
@@ -1746,6 +1733,66 @@ private fun UnderPages(hidden: () -> Boolean, shown: () -> Float = { 1f }, conte
 /** What home's floating toolbar takes off the bottom edge, including its gap to the mini player. */
 private val HomeToolbarClearance = 64.dp + 12.dp
 
+/** What home's feed keeps clear at its foot: the floating toolbar, the mini player over it, a gap. */
+private val FeedBottomRoom = HomeToolbarClearance + 72.dp + 12.dp + 16.dp
+
+/** What a shelf shows its items as: picked from what it holds, never from its name. */
+private enum class ShelfKind { Stage, Squares, Tracks, Circles, Live, Genres }
+
+/** A note in a shelf's place — not signed in, not loaded, failed — and what can be done about it. */
+@androidx.compose.runtime.Immutable
+private class ShelfNote(val text: String, val action: String? = null, val onAction: () -> Unit = {})
+
+/**
+ * A shelf of home's feed: a section of a service as a row of what is in it, or a note in its place
+ * while there is nothing to show.
+ */
+@androidx.compose.runtime.Immutable
+private class HomeShelf(
+    val key: String,
+    val title: String,
+    val kind: ShelfKind,
+    items: List<HeroItem>,
+    val note: ShelfNote? = null,
+    val loading: Boolean = false,
+    // Something in it is on air now, as YouTube's broadcasts are.
+    val live: Boolean = false,
+    // How many it holds, when one of its items only makes another (a new playlist).
+    count: Int? = null
+) {
+    // Each once: a row's items are told apart by their keys, and a key twice in one row stops the app.
+    val items: List<HeroItem> = items.distinctBy { it.key }
+    val count: Int = count ?: this.items.size
+
+    // Opened whole only when it holds more than a glance takes in.
+    val openable: Boolean get() = note == null && items.size > 2
+}
+
+/** A row of YouTube Music's or Yandex Music's home as a shelf: songs alone as rows of songs, broadcasts as frames. */
+private fun rowShelf(key: String, shelf: YtShelf, items: List<HeroItem>, lead: Boolean): HomeShelf {
+    val live = shelf.tracks.any { it.liveVideoId != null }
+    val kind = when {
+        lead -> ShelfKind.Stage
+        live -> ShelfKind.Live
+        shelf.sets.isEmpty() && shelf.tracks.isNotEmpty() -> ShelfKind.Tracks
+        else -> ShelfKind.Squares
+    }
+    return HomeShelf(key = key, title = shelf.title, kind = kind, items = items, live = live)
+}
+
+/** The service's own line under its name, over its feed. */
+private fun feedLine(service: HomeService, shelves: List<HomeShelf>): String {
+    val sections = plural(shelves.size, tr("раздел"), tr("раздела"), tr("разделов"))
+    return when (service) {
+        HomeService.Yandex -> tr("Моя форма и %s", sections)
+        HomeService.Downloads -> tr("Скачанное, история и плейлисты")
+        else -> {
+            val total = shelves.sumOf { it.items.size }
+            if (total == 0) sections else sections + " · " + plural(total, tr("подборка"), tr("подборки"), tr("подборок"))
+        }
+    }
+}
+
 @Composable
 private fun HomeScreen(
     mixSection: MixSection?,
@@ -1767,7 +1814,6 @@ private fun HomeScreen(
     clientId: String,
     playingMixId: String?,
     isPlaying: Boolean,
-    hasTrack: Boolean,
     isClientIdExpired: Boolean,
     needsRelogin: Boolean,
     downloadedCount: Int,
@@ -1778,6 +1824,7 @@ private fun HomeScreen(
     yandexShelves: List<YtShelf>,
     onPlayYandexTrack: (SoundCloudTrack, List<SoundCloudTrack>) -> Unit,
     wave: HomeWave,
+    topGap: Boolean,
     onOpenPlaylist: (Playlist) -> Unit,
     onOpenYandexPlaylist: (SoundCloudPlaylist) -> Unit,
     onCreatePlaylist: (String) -> Unit,
@@ -1798,6 +1845,7 @@ private fun HomeScreen(
     updates: com.example.myapplication.data.UpdateRepository
 ) {
     val haptic = LocalHapticFeedback.current
+    val scope = rememberCoroutineScope()
     // The toolbar picks a service; a service not connected in settings isn't offered.
     val services = remember(ytConnected, yandexConnected) {
         HomeService.entries.filter { service ->
@@ -1808,141 +1856,221 @@ private fun HomeScreen(
             }
         }
     }
-    // [selectedTab] is the category's ordinal, so it survives rows coming and going.
+    // [selectedTab] is a category's ordinal, kept between launches: the service it belongs to.
     val savedCategory = HomeCategory.entries.getOrNull(selectedTab)
     var pickedService by remember { mutableStateOf(savedCategory?.service ?: HomeService.SoundCloud) }
     // Signed out of the service meanwhile: SoundCloud's page instead.
     val service = pickedService.takeIf { it in services } ?: HomeService.SoundCloud
-    // Where each service was left (its section's key), so coming back to it lands there.
-    val lastSection = remember { mutableStateMapOf<HomeService, String>() }
-    // The toolbar tapped on the service already shown: back to its first section.
-    var reselected by remember { mutableIntStateOf(0) }
     var showCreatePlaylistDialog by remember { mutableStateOf(false) }
     var playlistNameInput by remember { mutableStateOf("") }
-    // The contents folded into their button, as they were left, launch to launch.
-    val context = LocalContext.current
-    val settings = remember(context) { context.getSharedPreferences("app_settings", Context.MODE_PRIVATE) }
-    var contentsFolded by remember { mutableStateOf(settings.getBoolean(KEY_CONTENTS_FOLDED, false)) }
-    val foldContents: (Boolean) -> Unit = { fold ->
-        contentsFolded = fold
-        settings.edit().putBoolean(KEY_CONTENTS_FOLDED, fold).apply()
-    }
-    // A section's covers laid out as a grid, opened from its contents.
-    var coverGrid by remember { mutableStateOf<CoverGrid?>(null) }
+    // Each service's feed where it was left: there again when the service comes back into view,
+    // the pager having let go of its page meanwhile.
+    val feedStates = HomeService.entries.associateWith { rememberLazyListState() }
+    // A shelf opened whole over its feed: by its service and its key, so that it shows what the
+    // shelf holds now, not what it held when it was opened.
+    var opened by remember { mutableStateOf<Pair<HomeService, String>?>(null) }
 
     val mixes = mixSection?.mixes.orEmpty()
     val stations = stationSection?.mixes.orEmpty()
     val trending = trendingSection?.mixes.orEmpty()
     val ytRows = remember(ytShelves) { ytShelves.filter { it.tracks.isNotEmpty() || it.sets.isNotEmpty() } }
 
-    fun sectionsOf(shown: HomeService): List<HomeSection> = when (shown) {
-        HomeService.SoundCloud -> listOf(
-            HomeSection(
-                key = "mixes",
-                category = HomeCategory.Mixes,
-                title = HomeCategory.Mixes.title,
-                subtitle = if (mixes.isEmpty()) {
-                    tr("Подборки для тебя")
-                } else {
-                    plural(mixes.size, tr("подборка"), tr("подборки"), tr("подборок")) + tr(" для тебя")
-                }
-            ),
-            HomeSection(
-                key = "stations",
-                category = HomeCategory.Stations,
-                title = HomeCategory.Stations.title,
-                subtitle = if (stations.isEmpty()) tr("Станции по артистам") else plural(stations.size, tr("станция"), tr("станции"), tr("станций"))
-            ),
-            HomeSection(
-                key = "trending",
-                category = HomeCategory.Trending,
-                title = HomeCategory.Trending.title,
-                subtitle = if (trending.isEmpty()) {
-                    tr("Чарты SoundCloud по жанрам")
-                } else {
-                    tr("Чарты: ") + plural(trending.size, tr("жанр"), tr("жанра"), tr("жанров"))
-                }
-            )
-        )
-        HomeService.Yandex -> listOf(
-            HomeSection(
-                key = "wave",
-                category = HomeCategory.MyWave,
-                title = HomeCategory.MyWave.title,
-                subtitle = tr("Бесконечный поток под твой вкус")
-            ),
-            HomeSection(
-                key = "library",
-                category = HomeCategory.Library,
-                title = HomeCategory.Library.title,
-                subtitle = if (yandexPlaylists.isEmpty()) {
-                    tr("Плейлисты Яндекс Музыки")
-                } else {
-                    plural(yandexPlaylists.size, tr("плейлист"), tr("плейлиста"), tr("плейлистов")) + tr(" Яндекс Музыки")
-                }
-            )
-        ) + yandexShelves.map { shelf ->
-            // Each row of Yandex Music's home a section of its own, as YouTube Music's are.
-            HomeSection(
-                key = "ya-" + shelf.title,
-                category = HomeCategory.YandexShelf,
-                title = shelf.title,
-                subtitle = listOfNotNull(
-                    shelf.tracks.size.takeIf { it > 0 }?.let { plural(it, tr("трек"), tr("трека"), tr("треков")) },
-                    shelf.sets.size.takeIf { it > 0 }?.let { plural(it, tr("подборка"), tr("подборки"), tr("подборок")) }
-                ).joinToString(" · "),
-                shelf = shelf
+    // The shelves, each worked out again only when what it shows changes: never as a frame goes by,
+    // nor as playing starts or stops — the covers that stand for what plays light up by themselves
+    // (see LocalNowPlaying).
+    val soundCloudFeed = remember(mixes, stations, trending, hasOauthToken, mixesError, mixesLoading, loadingMixId) {
+        fun items(list: List<SoundCloudMix>, kind: HomeCategory) = list.map { mix ->
+            HeroItem(
+                key = mix.id,
+                title = when (kind) {
+                    HomeCategory.Stations -> mix.title
+                    HomeCategory.Trending -> localizedGenre(mix.title)
+                    else -> localizedMixTitle(mix.title)
+                },
+                // Mixes ship their artist list in `description`. Stations put "Artist station"
+                // there, which is not a caption — the station's artist is its title. A genre's
+                // description is an English sentence about the chart.
+                subtitle = when (kind) {
+                    HomeCategory.Stations -> tr("Станция")
+                    HomeCategory.Trending -> tr("Чарт недели")
+                    else -> mix.description?.takeIf { it.isNotBlank() }
+                },
+                // The stage's cover is large; a station's circle and a genre's tile are not.
+                artworkUrl = artworkUrlForSize(mix.artworkUrl, if (kind == HomeCategory.Mixes) 500.dp else 120.dp),
+                // What a mix's queue is started from (see MusicViewModel.playingFrom).
+                source = "mix-${mix.id}",
+                isLoading = loadingMixId == mix.id,
+                onClick = { onOpenMix(mix) }
             )
         }
-        // Each row of YouTube Music's home a section of its own, as on the site.
-        HomeService.YouTube -> ytRows.map { shelf ->
-            HomeSection(
-                key = "yt-" + shelf.title,
-                category = HomeCategory.YouTube,
-                title = shelf.title,
-                subtitle = listOfNotNull(
-                    shelf.tracks.size.takeIf { it > 0 }?.let { plural(it, tr("трек"), tr("трека"), tr("треков")) },
-                    shelf.sets.size.takeIf { it > 0 }?.let { plural(it, tr("подборка"), tr("подборки"), tr("подборок")) }
-                ).joinToString(" · "),
-                shelf = shelf
-            )
-        }.ifEmpty {
-            listOf(HomeSection("yt", HomeCategory.YouTube, "YouTube Music", tr("Подборки для тебя")))
+        fun note(list: List<SoundCloudMix>, missing: String, error: String?): ShelfNote? = when {
+            list.isNotEmpty() || mixesLoading -> null
+            error != null -> ShelfNote(error, tr("Повторить"), onReloadMixes)
+            else -> ShelfNote(missing, tr("Обновить"), onReloadMixes)
         }
-        HomeService.Downloads -> listOf(
-            HomeSection(
-                key = "mine",
-                category = HomeCategory.MyMusic,
-                title = HomeCategory.MyMusic.title,
-                subtitle = plural(downloadedCount, tr("трек"), tr("трека"), tr("треков")) + tr(" на устройстве")
+        if (!hasOauthToken) {
+            // Said once, on the first shelf: the other two would only say it again.
+            listOf(
+                HomeShelf(
+                    key = "mixes",
+                    title = HomeCategory.Mixes.title,
+                    kind = ShelfKind.Stage,
+                    items = emptyList(),
+                    note = ShelfNote(tr("Добавь OAuth-токен в настройках, чтобы увидеть персональные миксы."), tr("Открыть настройки"), onOpenSettings)
+                )
             )
-        )
+        } else {
+            listOf(
+                HomeShelf("mixes", HomeCategory.Mixes.title, ShelfKind.Stage, items(mixes, HomeCategory.Mixes),
+                    note = note(mixes, tr("Подборка пока не загрузилась."), mixesError), loading = mixesLoading && mixes.isEmpty()),
+                HomeShelf("stations", HomeCategory.Stations.title, ShelfKind.Circles, items(stations, HomeCategory.Stations),
+                    note = note(stations, tr("Станции пока не загрузились."), null), loading = mixesLoading && stations.isEmpty()),
+                HomeShelf("trending", HomeCategory.Trending.title, ShelfKind.Genres, items(trending, HomeCategory.Trending),
+                    note = note(trending, tr("Тренды пока не загрузились."), null), loading = mixesLoading && trending.isEmpty())
+            )
+        }
     }
+    val yandexFeed = remember(yandexPlaylists, yandexShelves) {
+        listOf(
+            HomeShelf(
+                key = "library",
+                title = HomeCategory.Library.title,
+                kind = ShelfKind.Squares,
+                items = yandexPlaylists.map { playlist ->
+                    HeroItem(
+                        key = "yandex-${playlist.id}",
+                        title = playlist.title ?: tr("Без названия"),
+                        subtitle = plural(playlist.trackCount, tr("трек"), tr("трека"), tr("треков")),
+                        artworkUrl = playlist.artworkUrl,
+                        icon = if (playlist.id == -100L) Icons.Rounded.Favorite else Icons.Default.Album,
+                        source = "set-${playlist.id}",
+                        onClick = { onOpenYandexPlaylist(playlist) }
+                    )
+                },
+                note = if (yandexPlaylists.isEmpty()) ShelfNote(tr("Плейлисты Яндекс Музыки пока не загрузились.")) else null
+            )
+        ) + yandexShelves.mapIndexed { index, shelf ->
+            // Each row of Yandex Music's home a shelf of its own, as YouTube Music's are.
+            rowShelf("ya-$index-${shelf.title}", shelf, ytShelfItems(shelf, onOpenYtSet, onPlayYandexTrack), lead = false)
+        }
+    }
+    val youTubeFeed = remember(ytRows, ytError, ytLoading) {
+        if (ytRows.isEmpty()) {
+            listOf(
+                HomeShelf(
+                    key = "yt",
+                    title = "YouTube Music",
+                    kind = ShelfKind.Stage,
+                    items = emptyList(),
+                    note = when {
+                        ytError != null -> ShelfNote(ytError, tr("Повторить"), onReloadYt)
+                        ytLoading -> null
+                        else -> ShelfNote(tr("Подборки YouTube Music пока не загрузились."), tr("Обновить"), onReloadYt)
+                    },
+                    loading = ytLoading
+                )
+            )
+        } else {
+            // Each row of YouTube Music's home a shelf of its own, as on the site; the first on the stage.
+            ytRows.mapIndexed { index, shelf ->
+                rowShelf("yt-$index-${shelf.title}", shelf, ytShelfItems(shelf, onOpenYtSet, onPlayYtTrack), lead = index == 0)
+            }
+        }
+    }
+    val myMusicFeed = remember(downloadedCount, downloadedFolderArtworkUri, history, playlists) {
+        fun item(playlist: Playlist): HeroItem {
+            val count = plural(playlist.tracks.size, tr("трек"), tr("трека"), tr("треков"))
+            return HeroItem(
+                key = "local-${playlist.id}",
+                title = playlist.name,
+                subtitle = if (playlist.isLikedAlbum) {
+                    listOfNotNull(playlist.artist?.takeIf { it.isNotBlank() }, count).joinToString(" · ")
+                } else {
+                    count
+                },
+                artworkUrl = playlist.artworkUrl,
+                icon = if (playlist.isLikedAlbum) Icons.Default.Album else Icons.AutoMirrored.Filled.QueueMusic,
+                source = "playlist-${playlist.id}",
+                onClick = { onOpenPlaylist(playlist) }
+            )
+        }
+        // Liked albums newest first, as they are kept; hand-made playlists after, and a new one last.
+        val (albums, own) = playlists.partition { it.isLikedAlbum }
+        buildList {
+            // What is on the phone, on the stage as the other services lead with theirs: where
+            // the listener goes most.
+            add(
+                HomeShelf(
+                    key = "device",
+                    title = tr("На устройстве"),
+                    kind = ShelfKind.Stage,
+                    items = listOf(
+                        HeroItem(
+                            key = "downloads",
+                            title = tr("Скачанное"),
+                            subtitle = plural(downloadedCount, tr("трек"), tr("трека"), tr("треков")),
+                            artworkUrl = downloadedFolderArtworkUri,
+                            icon = Icons.Default.Download,
+                            source = "downloads",
+                            onClick = onOpenDownloads
+                        ),
+                        // What was listened to: its latest covers together, as a folder of them.
+                        HeroItem(
+                            key = "history",
+                            title = tr("История"),
+                            subtitle = if (history.isEmpty()) tr("Пока пусто") else plural(history.size, tr("трек"), tr("трека"), tr("треков")),
+                            artworkUrl = null,
+                            collage = recentCovers(history),
+                            icon = Icons.Default.History,
+                            source = "history",
+                            onClick = onOpenHistory
+                        )
+                    )
+                )
+            )
+            if (albums.isNotEmpty()) add(HomeShelf("albums", tr("Альбомы"), ShelfKind.Squares, albums.map(::item)))
+            add(
+                HomeShelf(
+                    key = "playlists",
+                    title = tr("Плейлисты"),
+                    kind = ShelfKind.Squares,
+                    count = own.size,
+                    items = own.map(::item) + HeroItem(
+                        key = "create",
+                        title = tr("Создать плейлист"),
+                        subtitle = tr("Своя подборка"),
+                        artworkUrl = null,
+                        icon = Icons.Default.Add,
+                        onClick = { showCreatePlaylistDialog = true }
+                    )
+                )
+            )
+        }
+    }
+    fun shelvesOf(shown: HomeService): List<HomeShelf> = when (shown) {
+        HomeService.SoundCloud -> soundCloudFeed
+        HomeService.Yandex -> yandexFeed
+        HomeService.YouTube -> youTubeFeed
+        HomeService.Downloads -> myMusicFeed
+    }
+    val openedShelf = opened?.let { (shown, key) -> shelvesOf(shown).firstOrNull { it.key == key }?.let { shown to it } }
 
     // The services side by side, a page each, following the finger.
-    val serviceScope = rememberCoroutineScope()
     val servicePager = rememberPagerState(initialPage = services.indexOf(service).coerceAtLeast(0)) { services.size }
     // The service the toolbar lights: the page the pager is on, even mid-swipe.
     val shownService = services.getOrElse(servicePager.currentPage) { service }
-    // A page come to rest is the service picked.
+    // A page come to rest is the service picked, kept for the next launch.
     LaunchedEffect(servicePager.settledPage, services) {
         val settled = services.getOrNull(servicePager.settledPage) ?: return@LaunchedEffect
         if (settled != pickedService) {
             pickedService = settled
-            val target = sectionsOf(settled).firstOrNull { it.key == lastSection[settled] } ?: sectionsOf(settled).first()
-            onTabSelected(target.category.ordinal)
+            HomeCategory.entries.firstOrNull { it.service == settled }?.let { onTabSelected(it.ordinal) }
         }
     }
     // A service signed in or out of: the pages shift, the one shown stays.
     LaunchedEffect(services) {
         val index = services.indexOf(service)
         if (index >= 0 && index != servicePager.currentPage) servicePager.scrollToPage(index)
-    }
-
-    fun switchTo(picked: HomeService) {
-        val index = services.indexOf(picked)
-        if (index < 0) return
-        serviceScope.launch { servicePager.animateScrollToPage(index, animationSpec = ServicePageSpring) }
     }
 
     val hasWarning = clientId.isBlank() || needsRelogin || isClientIdExpired
@@ -1953,15 +2081,62 @@ private fun HomeScreen(
         onOpenFriends = onOpenFriends,
         onOpenPerson = onOpenPerson
     )
+    val notices: @Composable () -> Unit = {
+        if (hasWarning) {
+            Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
+                when {
+                    clientId.isBlank() -> ClientIdWarningCard(onOpenSettings = onOpenSettings)
+                    needsRelogin -> ReloginRequiredCard(onRelogin = onRelogin)
+                    else -> ClientIdExpiredWarningCard(
+                        onOpenSettings = onOpenSettings,
+                        onAutoRefresh = onAutoRefreshClientId
+                    )
+                }
+            }
+        }
+        UpdateBanner(
+            updates = updates,
+            modifier = Modifier.padding(start = 16.dp, top = 8.dp, end = 16.dp)
+        )
+    }
+    val landscape = isLandscape()
+    // The way down to the first shelf, for whoever reached the old home's covers in the middle of
+    // the screen better than the top of it: set in settings.
+    val gap = if (topGap && !landscape) (LocalConfiguration.current.screenHeightDp * TopGapFraction).dp else 0.dp
+
+    // Under a shelf opened whole: dimmed as it comes, there again at once while it is pulled
+    // away, and once it has settled not drawn at all, nor moving by itself.
+    val pageShown = remember { Animatable(0f) }
+    var pagePulled by remember { mutableStateOf(false) }
+    LaunchedEffect(openedShelf != null) { pageShown.animateTo(if (openedShelf != null) 1f else 0f, tween(if (openedShelf != null) 240 else 160)) }
+    val feedHidden by remember { derivedStateOf { pageShown.value >= 1f && !pagePulled } }
+    val outerCovered = LocalCovered.current
+    val feedCovered = remember(outerCovered) { { outerCovered() || feedHidden } }
+    // The feed and a shelf opened over it, recorded for the toolbar floating over them: its glass
+    // shows them blurred, as the mini player's and search's tabs do, rather than the backdrop
+    // alone painted over them. The glass inside the record keeps to the backdrop.
+    val backdrop = LocalFrostSources.current
+    val feedFrost = rememberFrostSource()
 
     Box(modifier = Modifier.fillMaxSize()) {
     // Home stands on the moving backdrop: its panels and buttons are glass.
     androidx.compose.runtime.CompositionLocalProvider(LocalGlass provides true) {
-        // A service a page: a swipe anywhere the carousels don't take it drags the next one in,
-        // and lets it settle on a spring.
+    Box(modifier = Modifier.fillMaxSize().frostSource(feedFrost)) {
+        // A service a page: a swipe anywhere the rows don't take it drags the next one in, and lets
+        // it settle on a spring.
+        androidx.compose.runtime.CompositionLocalProvider(LocalCovered provides feedCovered) {
         HorizontalPager(
             state = servicePager,
-            modifier = Modifier.fillMaxSize(),
+            modifier = Modifier
+                .fillMaxSize()
+                .drawWithContent { if (!feedHidden) drawContent() }
+                .graphicsLayer {
+                    val under = if (pagePulled) 0f else pageShown.value
+                    alpha = 1f - 0.65f * under
+                    val scale = 1f - 0.02f * under
+                    scaleX = scale
+                    scaleY = scale
+                },
             key = { services[it] },
             beyondViewportPageCount = 1,
             flingBehavior = androidx.compose.foundation.pager.PagerDefaults.flingBehavior(
@@ -1972,34 +2147,12 @@ private fun HomeScreen(
             )
         ) { page ->
             val shown = services[page]
-            val sections = sectionsOf(shown)
-            val initialPage = sections.indexOfFirst { it.key == lastSection[shown] }.takeIf { it >= 0 }
-                ?: sections.indexOfFirst { it.category == savedCategory }.coerceAtLeast(0)
-            val sectionPager = rememberPagerState(initialPage = initialPage) { sections.size }
-            // Each section's carousel, as its contents reach it: by the section's key.
-            val heroHandles = remember { mutableStateMapOf<String, HeroHandle>() }
-
-            // Only a page the pager has come to rest on is remembered: reporting every page it
-            // passes pulled the pager back to one of them mid-flight.
-            LaunchedEffect(sectionPager, sectionPager.settledPage) {
-                val settled = sections.getOrNull(sectionPager.settledPage) ?: return@LaunchedEffect
-                lastSection[shown] = settled.key
-                if (shown == service && settled.category.ordinal != selectedTab) onTabSelected(settled.category.ordinal)
-            }
-            LaunchedEffect(reselected) {
-                if (reselected > 0 && shown == service) sectionPager.animateScrollToPage(0)
-            }
-
-            // Upright: the title, the carousel, the next section, the toolbar below. Sideways:
-            // the carousel on the left, and on the right, under the thumb, the title, where it
-            // goes on, and the mini player and the toolbar at the foot.
-            val landscape = isLandscape()
+            val shelves = shelvesOf(shown)
+            val line = feedLine(shown, shelves)
             val pageModifier = Modifier
                 .fillMaxSize()
-                .statusBarsPadding()
-                .navigationBarsPadding()
-                // The page on its way out sinks back a little and dims, the one coming in
-                // rises from it.
+                // The page on its way out sinks back a little and dims, the one coming in rises
+                // from it.
                 .graphicsLayer {
                     val away = ((servicePager.currentPage - page) + servicePager.currentPageOffsetFraction)
                         .absoluteValue.coerceIn(0f, 1f)
@@ -2010,326 +2163,83 @@ private fun HomeScreen(
                     // painted into a picture of its own on every frame, out of sight.
                     alpha = if (away >= 1f) 0f else 1f - 0.45f * away
                 }
-            // The section the pager is on, or on its way to: picked from the contents, the title
-            // goes straight to it, not through every section on the way.
-            val shownSection = sections.getOrElse(sectionPager.targetPage) { sections.first() }
-            val titleBlock: @Composable () -> Unit = {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(start = 20.dp, top = 12.dp, end = 20.dp),
-                    horizontalAlignment = if (landscape) Alignment.Start else Alignment.CenterHorizontally
-                ) {
-                    // Which service this is, over the section's name: the toolbar's marks say it
-                    // only to who knows them. Not where the one section bears the service's name.
-                    if (sections.size > 1 || sections.first().title != shown.title) {
-                        ServiceLabel(service = shown)
-                    }
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .heightIn(min = 48.dp),
-                        contentAlignment = if (landscape) Alignment.CenterStart else Alignment.Center
-                    ) {
-                        AnimatedContent(
-                            targetState = shownSection,
-                            transitionSpec = {
-                                val forward = sections.indexOfFirst { it.key == targetState.key } >
-                                    sections.indexOfFirst { it.key == initialState.key }
-                                (slideInVertically { h -> if (forward) h / 2 else -h / 2 } + fadeIn()) togetherWith
-                                    (slideOutVertically { h -> if (forward) -h / 2 else h / 2 } + fadeOut())
-                            },
-                            contentKey = { it.key },
-                            modifier = Modifier.fillMaxWidth(),
-                            label = "homeTitle"
-                        ) { section ->
-                            Text(
-                                text = section.title,
-                                style = MaterialTheme.typography.displaySmall,
-                                textAlign = if (landscape) TextAlign.Start else TextAlign.Center,
-                                maxLines = if (landscape) 2 else 1,
-                                overflow = TextOverflow.Ellipsis,
-                                modifier = Modifier.fillMaxWidth()
-                            )
-                        }
-                    }
-                }
+            // A service's page kept beside the one shown is covered too: «Моя форма» turning on it
+            // drew frames nobody saw.
+            val pageCovered = remember(page, feedCovered) {
+                { feedCovered() || (servicePager.settledPage != page && !servicePager.isScrollInProgress) }
             }
-            // What the section holds, under its name.
-            val subtitleBlock: @Composable () -> Unit = {
-                AnimatedContent(
-                    targetState = shownSection.subtitle,
-                    transitionSpec = { fadeIn(tween(220)) togetherWith fadeOut(tween(120)) },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 20.dp),
-                    label = "homeSubtitle"
-                ) { subtitle ->
-                    Text(
-                        text = subtitle,
-                        style = MaterialTheme.typography.bodyLarge,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        textAlign = if (landscape) TextAlign.Start else TextAlign.Center,
-                        maxLines = if (landscape) 2 else 1,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                }
-            }
-            val notices: @Composable () -> Unit = {
-                if (hasWarning) {
-                    Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
-                        when {
-                            clientId.isBlank() -> ClientIdWarningCard(onOpenSettings = onOpenSettings)
-                            needsRelogin -> ReloginRequiredCard(onRelogin = onRelogin)
-                            else -> ClientIdExpiredWarningCard(
-                                onOpenSettings = onOpenSettings,
-                                onAutoRefresh = onAutoRefreshClientId
-                            )
-                        }
-                    }
-                }
-
-                UpdateBanner(
-                    updates = updates,
-                    modifier = Modifier.padding(start = 16.dp, top = 8.dp, end = 16.dp)
+            val feed: @Composable (Modifier, Boolean) -> Unit = { feedModifier, header ->
+                androidx.compose.runtime.CompositionLocalProvider(LocalCovered provides pageCovered) {
+                ServiceFeed(
+                    service = shown,
+                    line = line,
+                    shelves = shelves,
+                    wave = wave.takeIf { shown == HomeService.Yandex },
+                    isPlaying = isPlaying,
+                    listState = feedStates.getValue(shown),
+                    header = header,
+                    topGap = gap,
+                    notices = notices,
+                    onOpenShelf = { shelf ->
+                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                        opened = shown to shelf.key
+                    },
+                    modifier = feedModifier
                 )
-            }
-            val sectionsBlock: @Composable (Modifier) -> Unit = { blockModifier ->
-                Box(modifier = blockModifier) {
-                VerticalPager(
-                    state = sectionPager,
-                    modifier = Modifier.fillMaxSize()
-                ) { page ->
-                    val section = sections.getOrElse(page) { sections.first() }
-                    val heroSlot = remember(section.key) { HeroSlot(section.key, heroHandles) }
-                    androidx.compose.runtime.CompositionLocalProvider(LocalHeroSlot provides heroSlot) {
-                    when (section.category) {
-                        HomeCategory.Mixes, HomeCategory.Stations, HomeCategory.Trending -> MixCarousel(
-                            mixes = when (section.category) {
-                                HomeCategory.Stations -> stations
-                                HomeCategory.Trending -> trending
-                                else -> mixes
-                            },
-                            kind = section.category,
-                            isLoading = mixesLoading,
-                            hasOauthToken = hasOauthToken,
-                            errorMessage = if (section.category == HomeCategory.Mixes) mixesError else null,
-                            loadingMixId = loadingMixId,
-                            playingMixId = playingMixId,
-                            isPlaying = isPlaying,
-                            onOpenMix = onOpenMix,
-                            onReload = onReloadMixes,
-                            onOpenSettings = onOpenSettings
-                        )
-
-                        HomeCategory.YouTube -> {
-                            val shelf = section.shelf
-                            when {
-                                shelf != null -> HomeHeroCarousel(
-                                    items = remember(shelf) { ytShelfItems(shelf, onOpenYtSet, onPlayYtTrack) }
-                                )
-                                ytError != null -> CarouselMessage(
-                                    text = ytError,
-                                    actionLabel = tr("Повторить"),
-                                    onAction = onReloadYt
-                                )
-                                ytLoading -> CarouselSkeleton()
-                                else -> CarouselMessage(
-                                    text = tr("Подборки YouTube Music пока не загрузились."),
-                                    actionLabel = tr("Обновить"),
-                                    onAction = onReloadYt
-                                )
-                            }
-                        }
-
-                        HomeCategory.MyWave -> MyWavePage(
-                            waveOn = wave.on,
-                            isPlaying = isPlaying,
-                            starting = wave.starting,
-                            picks = wave.picks,
-                            onToggle = wave.onToggle,
-                            onPick = wave.onPick,
-                            onReset = wave.onReset
-                        )
-
-                        HomeCategory.YandexShelf -> section.shelf?.let { shelf ->
-                            HomeHeroCarousel(items = remember(shelf) { ytShelfItems(shelf, onOpenYtSet, onPlayYandexTrack) })
-                        }
-
-                        HomeCategory.Library -> {
-                            if (yandexPlaylists.isEmpty()) {
-                                CarouselEmptyText(tr("Плейлисты Яндекс Музыки пока не загрузились."))
-                            } else {
-                                HomeHeroCarousel(
-                                    items = yandexPlaylists.map { playlist ->
-                                        HeroItem(
-                                            key = "yandex-${playlist.id}",
-                                            title = playlist.title ?: tr("Без названия"),
-                                            subtitle = plural(playlist.trackCount, tr("трек"), tr("трека"), tr("треков")),
-                                            artworkUrl = playlist.artworkUrl,
-                                            icon = if (playlist.id == -100L) Icons.Rounded.Favorite else Icons.Default.Album,
-                                            source = "set-${playlist.id}",
-                                            onClick = { onOpenYandexPlaylist(playlist) }
-                                        )
-                                    }
-                                )
-                            }
-                        }
-
-                        HomeCategory.MyMusic -> HomeHeroCarousel(
-                            items = buildList {
-                                add(
-                                    HeroItem(
-                                        key = "downloads",
-                                        title = tr("Скачанное"),
-                                        subtitle = plural(downloadedCount, tr("трек"), tr("трека"), tr("треков")),
-                                        artworkUrl = downloadedFolderArtworkUri,
-                                        icon = Icons.Default.Download,
-                                        source = "downloads",
-                                        onClick = onOpenDownloads
-                                    )
-                                )
-                                // What was listened to, between the phone's own tracks and the
-                                // collections: its latest covers together, as a folder of them.
-                                add(
-                                    HeroItem(
-                                        key = "history",
-                                        title = tr("История"),
-                                        subtitle = if (history.isEmpty()) tr("Пока пусто") else plural(history.size, tr("трек"), tr("трека"), tr("треков")),
-                                        artworkUrl = null,
-                                        collage = recentCovers(history),
-                                        icon = Icons.Default.History,
-                                        source = "history",
-                                        onClick = onOpenHistory
-                                    )
-                                )
-                                // Liked albums sit right next to "Скачанное", newest first;
-                                // hand-made playlists follow.
-                                playlists.sortedByDescending { it.isLikedAlbum }.forEach { playlist ->
-                                    val count = plural(playlist.tracks.size, tr("трек"), tr("трека"), tr("треков"))
-                                    add(
-                                        HeroItem(
-                                            key = "local-${playlist.id}",
-                                            title = playlist.name,
-                                            subtitle = if (playlist.isLikedAlbum) {
-                                                listOfNotNull(playlist.artist?.takeIf { it.isNotBlank() }, count)
-                                                    .joinToString(" · ")
-                                            } else {
-                                                count
-                                            },
-                                            artworkUrl = playlist.artworkUrl,
-                                            icon = if (playlist.isLikedAlbum) Icons.Default.Album else Icons.AutoMirrored.Filled.QueueMusic,
-                                            source = "playlist-${playlist.id}",
-                                            onClick = { onOpenPlaylist(playlist) }
-                                        )
-                                    )
-                                }
-                                add(
-                                    HeroItem(
-                                        key = "create",
-                                        title = tr("Создать плейлист"),
-                                        subtitle = tr("Своя подборка"),
-                                        artworkUrl = null,
-                                        icon = Icons.Default.Add,
-                                        onClick = { showCreatePlaylistDialog = true }
-                                    )
-                                )
-                            }
-                        )
-                    }
-                    }
-                }
-                }
-            }
-            // With nothing playing, the mini player's place is empty, and the contents come down into
-            // it, over the toolbar. Moved, not laid out again: the carousel above stays where it is
-            // when a track starts and the contents go back up. Sideways they head the pane instead.
-            val contentsDrop by animateDpAsState(
-                targetValue = if (hasTrack || landscape) 0.dp else SectionContentsDrop,
-                animationSpec = spring(dampingRatio = Spring.DampingRatioLowBouncy, stiffness = Spring.StiffnessMediumLow),
-                label = "contentsDrop"
-            )
-            val contentsBlock: @Composable () -> Unit = {
-                // Every section of the service a tap away, in a bar over the mini player: before, a
-                // section took a swipe for each one above it. Its room is kept where the service has
-                // one section, so that every page's middle, where its carousel sits, is at the same
-                // height.
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(SectionContentsRoom)
-                ) {
-                    // Gone, like the mini player, while the avatar's menu stands over their place.
-                    AnimatedVisibility(
-                        visible = sections.size > 1 && !accountMenu.open,
-                        enter = slideInVertically(initialOffsetY = { it }) + fadeIn(),
-                        exit = slideOutVertically(targetOffsetY = { it }) + fadeOut(),
-                        modifier = Modifier
-                            .align(Alignment.BottomCenter)
-                            .offset { IntOffset(0, contentsDrop.roundToPx()) }
-                    ) {
-                        SectionContents(
-                            entries = sections.map { section ->
-                                ContentsEntry(
-                                    title = section.title,
-                                    live = section.shelf?.tracks?.any { it.liveVideoId != null } == true
-                                )
-                            },
-                            current = sectionPager.targetPage,
-                            hero = sections.getOrNull(sectionPager.targetPage)?.let { heroHandles[it.key] },
-                            folded = contentsFolded,
-                            onFold = { fold ->
-                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                foldContents(fold)
-                            },
-                            onOpenGrid = { handle ->
-                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                coverGrid = CoverGrid(shownSection.title, handle)
-                            },
-                            onPick = { index ->
-                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                serviceScope.launch { sectionPager.animateScrollToPage(index) }
-                            },
-                            modifier = Modifier.padding(start = 16.dp, end = 16.dp, bottom = SectionContentsGap)
-                        )
-                    }
                 }
             }
             if (landscape) {
+                // Sideways the shelves on the left, and on the right, by the thumb, the service's
+                // name over the mini player and the toolbar at the foot.
                 Row(modifier = pageModifier) {
-                    // Centred on the whole of the left: the camera's cutout at the screen's edge is
-                    // never reached by a cover in the middle, and kept clear of by the pane.
-                    sectionsBlock(Modifier.weight(1f).fillMaxHeight())
+                    feed(Modifier.weight(1f).fillMaxHeight(), false)
                     Column(
                         modifier = Modifier
                             .windowInsetsPadding(WindowInsets.displayCutout.only(WindowInsetsSides.End))
                             .width(LandscapePaneWidth)
                             .fillMaxHeight()
+                            .statusBarsPadding()
+                            .padding(top = 12.dp)
                     ) {
-                        titleBlock()
-                        subtitleBlock()
-                        notices()
-                        Spacer(modifier = Modifier.height(8.dp))
-                        contentsBlock()
-                        Spacer(modifier = Modifier.weight(1f))
+                        FeedHeader(service = shown, line = line)
                     }
                 }
             } else {
-                Column(modifier = pageModifier) {
-                    titleBlock()
-                    subtitleBlock()
-                    notices()
-                    sectionsBlock(Modifier.fillMaxWidth().weight(1f))
-                    contentsBlock()
-                    // Room for the toolbar and the mini player over it, whether that is up or not: made
-                    // only when it came up, the room shrank the page, and all that is centred on it (a
-                    // carousel, the wave's shape) jumped up as a track started.
-                    Spacer(modifier = Modifier.height(8.dp + HomeToolbarClearance + 72.dp + 12.dp))
+                feed(pageModifier, true)
+            }
+        }
+        }
+
+        // A shelf opened whole, over the feed and under the toolbar.
+        AnimatedContent(
+            targetState = openedShelf,
+            transitionSpec = {
+                (fadeIn(tween(240)) + slideInVertically(tween(320)) { it / 30 }) togetherWith fadeOut(tween(160))
+            },
+            contentKey = { it?.second?.key },
+            label = "shelfPage",
+            modifier = Modifier.fillMaxSize()
+        ) { shown ->
+            if (shown != null) {
+                androidx.compose.runtime.CompositionLocalProvider(LocalPagePulled provides { pagePulled = it }) {
+                    ShelfPage(
+                        service = shown.first,
+                        shelf = shown.second,
+                        onClose = {
+                            // Pulled away, the feed is in full view already: it isn't dimmed again
+                            // only to come back.
+                            if (pagePulled) scope.launch { pageShown.snapTo(0f) }
+                            pagePulled = false
+                            opened = null
+                        }
+                    )
                 }
             }
         }
+    }
+    }
 
+        androidx.compose.runtime.CompositionLocalProvider(LocalFrostSources provides backdrop + feedFrost) {
         // Over home, under the toolbar: the avatar's button stays where it is, the menu's toggle.
         AccountMenuOverlay(
             state = accountMenu,
@@ -2350,8 +2260,20 @@ private fun HomeScreen(
                 haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                 when {
                     accountMenu.open -> accountMenu.close()
-                    picked == service && picked == shownService -> reselected++
-                    else -> switchTo(picked)
+                    // The service shown tapped again: the shelf over it closes, or the feed goes
+                    // back to its top.
+                    picked == service && picked == shownService -> {
+                        if (opened != null) {
+                            opened = null
+                        } else {
+                            scope.launch { feedStates.getValue(picked).animateScrollToItem(0) }
+                        }
+                    }
+                    else -> {
+                        opened = null
+                        val index = services.indexOf(picked)
+                        if (index >= 0) scope.launch { servicePager.animateScrollToPage(index, animationSpec = ServicePageSpring) }
+                    }
                 }
             },
             onSearch = {
@@ -2374,10 +2296,8 @@ private fun HomeScreen(
                     .padding(16.dp)
             }
         )
+        }
     }
-    }
-
-    coverGrid?.let { grid -> CoverGridSheet(grid = grid, onDismiss = { coverGrid = null }) }
 
     if (showCreatePlaylistDialog) {
         AlertDialog(
@@ -2413,587 +2333,636 @@ private fun HomeScreen(
     }
 }
 
-/** The service a home page belongs to, over its title: its mark and its name, in the accent. */
-@Composable
-private fun ServiceLabel(service: HomeService) {
-    Row(
-        modifier = Modifier.semantics(mergeDescendants = true) {},
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(6.dp)
-    ) {
-        val icon = service.icon
-        if (icon != null) {
-            Icon(imageVector = icon(), contentDescription = null, tint = PanelColors.accent, modifier = Modifier.size(18.dp))
-        }
-        Text(
-            text = service.title,
-            style = MaterialTheme.typography.titleSmall,
-            color = PanelColors.accent,
-            maxLines = 1
-        )
-    }
-}
+/**
+ * How far down the first shelf goes with the top gap on: a twelfth of the screen, which puts the
+ * stage about where the old home's carousel was. A fifth sank it too low.
+ */
+private const val TopGapFraction = 1f / 12f
 
-/** A section in a home page's contents: its name, and whether something in it is on air now. */
+// A shelf's room above and below it, and the edges its rows keep.
+private val ShelfTop = 24.dp
+private val ShelfBottom = 4.dp
+private val ShelfEdge = 20.dp
+private val ShelfGap = 12.dp
+private val StageCaptionHeight = 80.dp
+private val ShelfTrackHeight = 66.dp
+private val ShelfTrackCover = 54.dp
+
+/**
+ * How large a shelf's things are, worked out from how wide the feed is: sizes fixed for one phone
+ * read as tiny on a larger one. The stage is as wide as the old home's carousel; a row of covers
+ * shows two and a half, so it is plain it goes on.
+ */
 @androidx.compose.runtime.Immutable
-private data class ContentsEntry(val title: String, val live: Boolean)
-
-/** The gap under the contents, over the mini player's place; the room they keep with it. */
-private val SectionContentsGap = 12.dp
-private val SectionContentsRoom = 64.dp + SectionContentsGap
-/**
- * How far the contents come down with no mini player: its height and the gap over it, so that they
- * stand on the toolbar where the mini player would, the same 12 dp over it.
- */
-private val SectionContentsDrop = 72.dp + 16.dp
-
-/** The contents' fold button: the mini player's play button's size, and right over it (see [PlayerBar]). */
-private val ContentsFoldSize = 52.dp
-private val ContentsFoldInset = 10.dp
-/** Folded, the button alone: the size of the toolbar's search and avatar buttons. */
-private val ContentsFoldedSize = 64.dp
-/** Between the grid button and the fold button: as between search and the avatar on the toolbar. */
-private val ContentsButtonGap = 8.dp
-/** What the bar keeps clear at its end for that button, with a gap before it. */
-private val ContentsFoldRoom = ContentsFoldInset + ContentsFoldSize + ContentsButtonGap
-private const val KEY_CONTENTS_FOLDED = "home_contents_folded"
-
-/**
- * Where a home carousel is: the pager over a section's covers, and the covers, so that the
- * section's contents can show the place in it, slide through it and lay it out as a grid.
- */
-@Stable
-private class HeroHandle(val pager: PagerState) {
-    // Read as the grid opens, never while home draws.
-    var items: List<HeroItem> = emptyList()
+private class ShelfMetrics(width: Dp, height: Dp) {
+    // Sideways the feed is wider than it is tall: the stage never taller than half the screen.
+    val stage: Dp = minOf(width - (16.dp + HeroStrip + HeroGap) * 2, height * 0.46f).coerceIn(200.dp, 440.dp)
+    val square: Dp = ((width - ShelfEdge - ShelfGap * 2) / 2.55f).coerceIn(112.dp, 210.dp)
+    val circle: Dp = square * 0.92f
+    val live: Dp = ((width - ShelfEdge * 2) * 0.84f).coerceIn(240.dp, 460.dp)
+    val trackRow: Dp = (width - ShelfEdge * 2 - 32.dp).coerceIn(260.dp, 440.dp)
+    val genreWidth: Dp = ((width - ShelfEdge - ShelfGap) / 2.3f).coerceIn(150.dp, 260.dp)
+    val genreHeight: Dp = genreWidth * 0.5f
+    val wave: Dp = minOf(width * 0.64f, height * 0.42f).coerceIn(220.dp, 360.dp)
 }
 
-/** The section a carousel is drawn for, and where it says it is there; none off home's pages. */
-private class HeroSlot(val key: String, val handles: MutableMap<String, HeroHandle>)
+private val LocalShelfMetrics = staticCompositionLocalOf { ShelfMetrics(400.dp, 860.dp) }
 
-private val LocalHeroSlot = staticCompositionLocalOf<HeroSlot?> { null }
-
-/** A section's covers as a grid: its name over them, and its carousel to bring the one picked to. */
-private class CoverGrid(val title: String, val handle: HeroHandle)
-
-/** Where a held finger may start the slider: on the lit section, or on the fold button. */
-private class ContentsSpots {
-    var root: LayoutCoordinates? = null
-    var chip: LayoutCoordinates? = null
-    var fold: LayoutCoordinates? = null
-}
-
-/**
- * The bar as far as it is out: [open] 1 whole, 0 folded down to [keep] at its end, the button's
- * place. It comes out from that end toward its start and folds back the other way. Only this
- * outline moves: nothing is laid out again on the way.
- */
-internal class FoldFromEnd(private val open: Float, private val keep: Float, private val radius: Float) : Shape {
-    override fun createOutline(size: Size, layoutDirection: LayoutDirection, density: Density): Outline {
-        val shut = (size.width - keep).coerceAtLeast(0f) * (1f - open)
-        val left = if (layoutDirection == LayoutDirection.Ltr) shut else 0f
-        val right = if (layoutDirection == LayoutDirection.Ltr) size.width else size.width - shut
-        return Outline.Rounded(RoundRect(left, 0f, right, size.height, CornerRadius(radius, radius)))
+/** [content] with the shelves sized for the room it has. */
+@Composable
+private fun SizedShelves(modifier: Modifier = Modifier, content: @Composable androidx.compose.foundation.layout.BoxWithConstraintsScope.() -> Unit) {
+    val screenHeight = LocalConfiguration.current.screenHeightDp.dp
+    BoxWithConstraints(modifier = modifier) {
+        val metrics = remember(maxWidth, screenHeight) { ShelfMetrics(maxWidth, screenHeight) }
+        androidx.compose.runtime.CompositionLocalProvider(LocalShelfMetrics provides metrics) {
+            content()
+        }
     }
 }
 
 /**
- * A home page's contents, in a bar over the mini player where the thumb is: every section of the
- * service by its name, the one shown lit with the place in it. Held, the lit one turns the bar into
- * a slider through the section's covers; the grid button lays them all out at once. The button at
- * its end, right over the mini player's play button, folds the bar into itself and brings it back;
- * folded, it is held for the slider too. Glass over the backdrop alone, so nothing of it is blurred
- * on any frame.
+ * A service's home: its name, then its shelves one under another, each sideways on its own. The top
+ * of the screen holds what is looked at; what is pressed comes down to the thumb as the feed moves.
+ * Scrolled past its name, the name stays on a bar at the top.
  */
 @Composable
-private fun SectionContents(
-    entries: List<ContentsEntry>,
-    current: Int,
-    hero: HeroHandle?,
-    folded: Boolean,
-    onFold: (Boolean) -> Unit,
-    onOpenGrid: (HeroHandle) -> Unit,
-    onPick: (Int) -> Unit,
+private fun ServiceFeed(
+    service: HomeService,
+    line: String,
+    shelves: List<HomeShelf>,
+    wave: HomeWave?,
+    isPlaying: Boolean,
+    listState: androidx.compose.foundation.lazy.LazyListState,
+    header: Boolean,
+    topGap: Dp,
+    notices: @Composable () -> Unit,
+    onOpenShelf: (HomeShelf) -> Unit,
     modifier: Modifier = Modifier
 ) {
-    val haptic = LocalHapticFeedback.current
-    val glass = LocalGlass.current
-    val density = LocalDensity.current
-    val barShape = RoundedCornerShape(32.dp)
-    val spots = remember { ContentsSpots() }
-    // Held on the lit section, or on the folded button: the bar is a slider until let go.
-    var sliding by remember { mutableStateOf(false) }
-    val open = remember { Animatable(if (folded) 0f else 1f) }
-    LaunchedEffect(folded, sliding) {
-        open.animateTo(
-            if (folded && !sliding) 0f else 1f,
-            spring(dampingRatio = 0.9f, stiffness = Spring.StiffnessMediumLow)
-        )
-    }
-    // Folded, the bar isn't there at all, to lay out or to draw.
-    val barShown by remember { derivedStateOf { open.value > 0.001f } }
-    // Where the slider's thumb is, 0..1: read only as it is placed and drawn.
-    val slide = remember { mutableFloatStateOf(0f) }
-    // The cover the slider asks for; the carousel jumps there, one jump at a time.
-    var wanted by remember { mutableIntStateOf(-1) }
-    LaunchedEffect(hero) {
-        val pager = hero?.pager ?: return@LaunchedEffect
-        snapshotFlow { wanted }.collectLatest { index ->
-            if (index in 0 until pager.pageCount && index != pager.currentPage) pager.scrollToPage(index)
+    val top = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
+    val bottom = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
+    SizedShelves(modifier = modifier) {
+        LazyColumn(
+            state = listState,
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(top = top + 8.dp, bottom = bottom + FeedBottomRoom)
+        ) {
+            if (header) {
+                item(key = "header", contentType = "header") { FeedHeader(service = service, line = line) }
+            }
+            item(key = "notices", contentType = "notices") { notices() }
+            if (topGap > 0.dp) {
+                item(key = "gap", contentType = "gap") { Spacer(modifier = Modifier.height(topGap)) }
+            }
+            if (wave != null) {
+                item(key = "wave", contentType = "wave") {
+                    Column(modifier = Modifier.padding(top = ShelfTop, bottom = ShelfBottom)) {
+                        ShelfHeader(
+                            title = tr("Моя форма"),
+                            count = null,
+                            action = if (wave.picks.isEmpty()) null else {
+                                { TextButton(onClick = wave.onReset) { Text(tr("Сбросить")) } }
+                            }
+                        )
+                        MyWaveShelf(
+                            waveOn = wave.on,
+                            isPlaying = isPlaying,
+                            starting = wave.starting,
+                            picks = wave.picks,
+                            onToggle = wave.onToggle,
+                            onPick = wave.onPick,
+                            size = LocalShelfMetrics.current.wave
+                        )
+                    }
+                }
+            }
+            items(shelves, key = { it.key }, contentType = { it.kind }) { shelf ->
+                ShelfView(shelf = shelf, onOpen = { onOpenShelf(shelf) })
+            }
         }
+        if (header) CollapsingTopBar(title = service.title, collapsed = rememberCollapsed(listState, 40.dp))
     }
-    // The place in the section, on the lit name: changes as covers do, not as frames do.
-    val place by remember(hero) {
-        derivedStateOf { hero?.let { "${it.pager.currentPage + 1}/${it.pager.pageCount}" } }
-    }
-    val number by remember(hero) {
-        derivedStateOf { (if (wanted >= 0) wanted else hero?.pager?.currentPage ?: 0) + 1 }
-    }
-    val radiusPx = with(density) { 32.dp.toPx() }
-    val keepPx = with(density) { ContentsFoldRoom.toPx() }
+}
 
-    Box(
-        modifier = modifier
+/** The service over its feed: its mark in an Expressive cookie, its name, and its own line. */
+@Composable
+private fun FeedHeader(service: HomeService, line: String) {
+    Row(
+        modifier = Modifier
             .fillMaxWidth()
-            .height(64.dp)
-            .onGloballyPositioned { spots.root = it }
-            .pointerInput(hero) {
-                val pager = hero?.pager ?: return@pointerInput
-                awaitEachGesture {
-                    val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
-                    val root = spots.root ?: return@awaitEachGesture
-                    fun on(spot: LayoutCoordinates?) = spot != null && spot.isAttached &&
-                        root.localBoundingBoxOf(spot).contains(down.position)
-                    if (pager.pageCount < 2 || !(on(spots.chip) || on(spots.fold))) return@awaitEachGesture
-                    // Let go or moved off before the long press: a tap or a scroll, not the slider.
-                    val early = withTimeoutOrNull(viewConfiguration.longPressTimeoutMillis) {
-                        var gone = false
-                        while (!gone) {
-                            val change = awaitPointerEvent(PointerEventPass.Initial).changes
-                                .firstOrNull { it.id == down.id }
-                            gone = change == null || !change.pressed ||
-                                (change.position - down.position).getDistance() > viewConfiguration.touchSlop
-                        }
-                        true
-                    }
-                    if (early != null) return@awaitEachGesture
-                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                    // The cover under the finger, straight away: the thumb comes up right under it,
-                    // so a section held in the middle of the bar reaches both ends of the section.
-                    val last = pager.pageCount - 1
-                    val thumb = 24.dp.toPx()
-                    val from = 8.dp.toPx() + thumb
-                    val travel = (size.width - (8.dp + ContentsFoldRoom).toPx() - 2f * thumb).coerceAtLeast(1f)
-                    fun under(x: Float) = ((x - from) / travel).coerceIn(0f, 1f)
-                    slide.floatValue = under(down.position.x)
-                    wanted = (slide.floatValue * last).roundToInt()
-                    sliding = true
-                    while (true) {
-                        val change = awaitPointerEvent(PointerEventPass.Initial).changes
-                            .firstOrNull { it.id == down.id } ?: break
-                        change.consume()
-                        if (!change.pressed) break
-                        val f = under(change.position.x)
-                        slide.floatValue = f
-                        val index = (f * last).roundToInt()
-                        if (index != wanted) {
-                            wanted = index
-                            haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                        }
-                    }
-                    sliding = false
-                    wanted = -1
-                }
-            }
+            .padding(start = ShelfEdge, top = 8.dp, end = ShelfEdge)
+            .semantics(mergeDescendants = true) {},
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(16.dp)
     ) {
-        if (barShown) {
-            Surface(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .graphicsLayer {
-                        val p = open.value
-                        clip = true
-                        shape = FoldFromEnd(p, keepPx, radiusPx)
-                        alpha = (p * 2.5f).coerceAtMost(1f)
-                    }
-                    .glassOr(barShape, PanelColors.container),
-                shape = barShape,
-                color = if (glass) Color.Transparent else PanelColors.container,
-                contentColor = PanelColors.content,
-                shadowElevation = if (glass) 0.dp else 6.dp
-            ) {
-                if (sliding && hero != null) {
-                    ContentsSlider(
-                        title = entries.getOrNull(current)?.title.orEmpty(),
-                        count = hero.pager.pageCount,
-                        number = { number },
-                        fraction = { slide.floatValue }
-                    )
-                } else {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .padding(start = 8.dp, end = ContentsFoldRoom),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        val listState = rememberLazyListState(initialFirstVisibleItemIndex = (current - 1).coerceAtLeast(0))
-                        // The section shown kept in sight, with the one before it, as the pages move.
-                        LaunchedEffect(current) {
-                            val info = listState.layoutInfo
-                            val item = info.visibleItemsInfo.firstOrNull { it.index == current }
-                            if (item == null || item.offset < info.viewportStartOffset || item.offset + item.size > info.viewportEndOffset) {
-                                listState.animateScrollToItem((current - 1).coerceAtLeast(0))
-                            }
-                        }
-                        LazyRow(
-                            state = listState,
-                            modifier = Modifier
-                                .weight(1f)
-                                // Nor does a swipe along the names, at their end, move on to the next service.
-                                .nestedScroll(KeepSidewaysSwipe),
-                            horizontalArrangement = Arrangement.spacedBy(6.dp),
-                            contentPadding = PaddingValues(end = 4.dp)
-                        ) {
-                            itemsIndexed(entries) { index, entry ->
-                                val selected = index == current
-                                ContentsChip(
-                                    entry = entry,
-                                    selected = selected,
-                                    count = if (selected) place else null,
-                                    onClick = { onPick(index) },
-                                    modifier = if (selected) Modifier.onGloballyPositioned { spots.chip = it } else Modifier
-                                )
-                            }
-                        }
-                        if (hero != null) {
-                            Surface(
-                                onClick = { onOpenGrid(hero) },
-                                shape = RoundedCornerShape(16.dp),
-                                color = PanelColors.accent.copy(alpha = 0.14f),
-                                contentColor = PanelColors.accent,
-                                modifier = Modifier.size(ContentsFoldSize)
-                            ) {
-                                Box(contentAlignment = Alignment.Center) {
-                                    Icon(
-                                        imageVector = Icons.Rounded.GridView,
-                                        contentDescription = tr("Все обложки раздела"),
-                                        modifier = Modifier.size(24.dp)
-                                    )
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        ContentsFoldButton(
-            open = { open.value },
-            folded = folded,
-            onClick = { onFold(!folded) },
-            modifier = Modifier
-                .align(Alignment.CenterEnd)
-                .padding(end = ContentsFoldInset)
-                .onGloballyPositioned { spots.fold = it }
-        )
-    }
-}
-
-/**
- * The contents' fold button, the mini player's play button's size and right over it: › folds the
- * bar into it, ‹ brings the bar back out. In the bar it is square, like the grid button beside it,
- * a tint on the bar's glass; folded, it is round like the play button under it, with glass of its
- * own. Its corners follow the bar as it goes, drawn only.
- */
-@Composable
-private fun ContentsFoldButton(open: () -> Float, folded: Boolean, onClick: () -> Unit, modifier: Modifier = Modifier) {
-    val glassShape = RoundedCornerShape(16.dp)
-    val tint = PanelColors.accent.copy(alpha = 0.14f)
-    // 16 dp square in the bar, round (half its size) folded.
-    // Square either way, like the toolbar's buttons.
-    fun corner() = 16.dp
-    Box(
-        modifier = modifier
-            .size(ContentsFoldSize)
-            // Folded it grows to the toolbar's buttons' size, around its own middle: scaled as it
-            // is drawn, so the bar beside it is never laid out again.
-            .graphicsLayer {
-                val grown = 1f + (ContentsFoldedSize / ContentsFoldSize - 1f) * (1f - open().coerceIn(0f, 1f))
-                scaleX = grown
-                scaleY = grown
-                // Folded, right over the avatar's button: its middle is 4 dp further out than the
-                // play button's.
-                translationX = 4.dp.toPx() * (1f - open().coerceIn(0f, 1f))
-            }
-    ) {
-        // Its own glass comes up as the bar folds away from around it.
         Box(
             modifier = Modifier
-                .fillMaxSize()
-                .graphicsLayer {
-                    alpha = 1f - open()
-                    shape = RoundedCornerShape(corner())
-                    clip = true
-                }
-                .glassOr(glassShape, PanelColors.container)
-        )
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .graphicsLayer {
-                    shape = RoundedCornerShape(corner())
-                    clip = true
-                }
-                .drawBehind { drawRect(color = tint, alpha = open().coerceIn(0f, 1f)) }
-                .clickable(onClick = onClick),
+                .size(56.dp)
+                .clip(PolygonShape(androidx.compose.material3.MaterialShapes.Cookie9Sided))
+                .background(PanelColors.accent),
             contentAlignment = Alignment.Center
         ) {
-            Icon(
-                imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
-                contentDescription = if (folded) tr("Показать разделы") else tr("Свернуть разделы"),
-                tint = PanelColors.accent,
-                modifier = Modifier
-                    .size(28.dp)
-                    .graphicsLayer { rotationZ = 180f * (1f - open()) }
-            )
-        }
-    }
-}
-
-/** The bar as a slider through the section: its name, the cover's number on the thumb, how many there are. */
-@Composable
-private fun ContentsSlider(title: String, count: Int, number: () -> Int, fraction: () -> Float) {
-    val accent = PanelColors.accent
-    val trackColor = PanelColors.content.copy(alpha = 0.07f)
-    val fillColor = accent.copy(alpha = 0.3f)
-    val density = LocalDensity.current
-    BoxWithConstraints(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(start = 8.dp, top = 8.dp, end = ContentsFoldRoom, bottom = 8.dp)
-            .clip(RoundedCornerShape(24.dp))
-            .drawBehind {
-                drawRect(trackColor)
-                val thumb = size.height / 2f
-                val x = thumb + fraction() * (size.width - 2f * thumb)
-                drawRoundRect(fillColor, size = Size(x + thumb, size.height), cornerRadius = CornerRadius(thumb, thumb))
+            service.icon?.let { icon ->
+                Icon(imageVector = icon(), contentDescription = null, tint = PanelColors.onAccent, modifier = Modifier.size(28.dp))
             }
-    ) {
-        val widthPx = constraints.maxWidth.toFloat()
-        val thumbPx = constraints.maxHeight.toFloat()
-        Text(
-            text = title,
-            style = MaterialTheme.typography.titleSmall,
-            color = PanelColors.content,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-            // Clear of the thumb at either end of the track; it passes over them on the way.
-            modifier = Modifier
-                .align(Alignment.CenterStart)
-                .padding(start = 58.dp, end = 120.dp)
-        )
-        Text(
-            text = tr("из %s", count),
-            style = MaterialTheme.typography.titleSmall,
-            color = accent,
-            modifier = Modifier
-                .align(Alignment.CenterEnd)
-                .padding(end = 58.dp)
-        )
-        Box(
-            modifier = Modifier
-                .align(Alignment.CenterStart)
-                .offset { IntOffset(((widthPx - thumbPx) * fraction()).roundToInt(), 0) }
-                .size(with(density) { thumbPx.toDp() })
-                .background(accent, CircleShape),
-            contentAlignment = Alignment.Center
-        ) {
+        }
+        Column(modifier = Modifier.weight(1f)) {
             Text(
-                text = number().toString(),
-                style = MaterialTheme.typography.labelLarge,
-                color = PanelColors.onAccent,
-                maxLines = 1
+                text = service.title,
+                style = MaterialTheme.typography.displaySmall.copy(fontSize = 27.sp, lineHeight = 33.sp),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            Text(
+                text = line,
+                style = MaterialTheme.typography.bodyLarge,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
             )
         }
     }
 }
 
 /**
- * A section's covers as a grid from below, up to the middle of the screen, under the thumb: the one
- * in front ringed, each numbered; the one tapped comes to the front as the grid goes. Covers asked
- * for at a cell's size, not the carousel's.
+ * A shelf's name, how many are in it and, when there is more than it shows, the way to all of it:
+ * the name itself and the arrow at its end.
  */
 @Composable
-private fun CoverGridSheet(grid: CoverGrid, onDismiss: () -> Unit) {
-    val sheetState = rememberModalBottomSheetState()
-    val scope = rememberCoroutineScope()
-    val haptic = LocalHapticFeedback.current
-    val covers = remember(grid) { grid.handle.items }
-    val pager = grid.handle.pager
-    val current = pager.currentPage
-    val gridState = rememberLazyGridState(initialFirstVisibleItemIndex = ((current / 4) - 1).coerceAtLeast(0) * 4)
-    val colors = MaterialTheme.colorScheme
-    ModalBottomSheet(
-        onDismissRequest = onDismiss,
-        sheetState = sheetState,
-        containerColor = colors.background,
-        contentColor = colors.onBackground,
-        dragHandle = {
-            Box(
-                modifier = Modifier
-                    .padding(top = 12.dp, bottom = 8.dp)
-                    .size(width = 36.dp, height = 4.dp)
-                    .clip(CircleShape)
-                    .background(colors.onSurfaceVariant.copy(alpha = 0.4f))
-            )
-        }
+private fun ShelfHeader(
+    title: String,
+    count: Int?,
+    live: Boolean = false,
+    onOpen: (() -> Unit)? = null,
+    action: (@Composable () -> Unit)? = null
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(48.dp)
+            .padding(start = ShelfEdge, end = 8.dp),
+        verticalAlignment = Alignment.CenterVertically
     ) {
-        Text(
-            text = grid.title,
-            style = MaterialTheme.typography.titleLarge,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.padding(horizontal = 20.dp)
-        )
-        Text(
-            text = tr("%s из %s", current + 1, covers.size),
-            style = MaterialTheme.typography.bodyMedium,
-            color = colors.onSurfaceVariant,
-            modifier = Modifier.padding(start = 20.dp, top = 2.dp, end = 20.dp, bottom = 12.dp)
-        )
-        LazyVerticalGrid(
-            columns = GridCells.Fixed(4),
-            state = gridState,
-            contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 24.dp),
-            horizontalArrangement = Arrangement.spacedBy(10.dp),
-            verticalArrangement = Arrangement.spacedBy(14.dp),
-            modifier = Modifier.fillMaxWidth()
+        Row(
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxHeight()
+                .then(if (onOpen != null) Modifier.clickable(onClickLabel = tr("Весь раздел"), onClick = onOpen) else Modifier),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
         ) {
-            items(covers.size) { index ->
-                CoverGridCell(
-                    item = covers[index],
-                    number = index + 1,
-                    current = index == current,
-                    onClick = {
-                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                        scope.launch { pager.scrollToPage(index) }
-                        scope.launch { sheetState.hide() }.invokeOnCompletion {
-                            if (!sheetState.isVisible) onDismiss()
-                        }
-                    }
-                )
+            // On air now, as YouTube's broadcasts are: the red of the player's «В эфире».
+            if (live) Box(modifier = Modifier.size(10.dp).background(Color(0xFFFF3B30), CircleShape))
+            Text(
+                text = title,
+                style = MaterialTheme.typography.titleLarge.copy(fontSize = 21.sp, lineHeight = 26.sp, fontWeight = FontWeight.Bold),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f, fill = false)
+            )
+            if (count != null && count > 0) {
+                Text(text = count.toString(), style = MaterialTheme.typography.titleMedium, color = PanelColors.accent, maxLines = 1)
+            }
+        }
+        action?.invoke()
+        if (onOpen != null) {
+            Surface(
+                onClick = onOpen,
+                shape = CircleShape,
+                color = Color.Transparent,
+                contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(48.dp)
+            ) {
+                Box(contentAlignment = Alignment.Center) {
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                        contentDescription = tr("Весь раздел «%s»", title),
+                        modifier = Modifier.size(28.dp)
+                    )
+                }
             }
         }
     }
 }
 
+/** A shelf: its header, then its items as its kind lays them out, or what stands in for them. */
 @Composable
-private fun CoverGridCell(item: HeroItem, number: Int, current: Boolean, onClick: () -> Unit) {
-    val shape = RoundedCornerShape(16.dp)
-    Column(
+private fun ShelfView(shelf: HomeShelf, onOpen: () -> Unit) {
+    val metrics = LocalShelfMetrics.current
+    Column(modifier = Modifier.fillMaxWidth().padding(top = ShelfTop, bottom = ShelfBottom)) {
+        ShelfHeader(
+            title = shelf.title,
+            count = shelf.count.takeIf { shelf.note == null },
+            live = shelf.live,
+            onOpen = if (shelf.openable) onOpen else null
+        )
+        when {
+            shelf.note != null -> ShelfNoteView(shelf.note)
+            shelf.items.isEmpty() -> ShelfLoading(shelf.kind)
+            else -> when (shelf.kind) {
+                ShelfKind.Stage -> Box(modifier = Modifier.padding(top = 8.dp)) { HomeHeroCarousel(items = shelf.items, cover = metrics.stage) }
+                ShelfKind.Squares -> ShelfRow(shelf.items) { ShelfSquare(it) }
+                ShelfKind.Circles -> ShelfRow(shelf.items) { ShelfCircle(it) }
+                ShelfKind.Live -> ShelfRow(shelf.items) { ShelfLive(it) }
+                ShelfKind.Tracks -> ShelfGrid(shelf.items, rows = 3, rowHeight = ShelfTrackHeight, gap = 2.dp) { ShelfTrack(it, Modifier.width(metrics.trackRow)) }
+                ShelfKind.Genres -> ShelfGrid(shelf.items, rows = 2, rowHeight = metrics.genreHeight, gap = ShelfGap) { ShelfGenre(it, Modifier.width(metrics.genreWidth)) }
+            }
+        }
+    }
+}
+
+/** A shelf's items in a sideways row. What the row has no use for of a swipe stays with it. */
+@Composable
+private fun ShelfRow(items: List<HeroItem>, item: @Composable (HeroItem) -> Unit) {
+    LazyRow(
         modifier = Modifier
-            .clip(shape)
-            .clickable(onClick = onClick),
-        verticalArrangement = Arrangement.spacedBy(6.dp)
+            .fillMaxWidth()
+            .nestedScroll(KeepSidewaysSwipe),
+        contentPadding = PaddingValues(start = ShelfEdge, top = 8.dp, end = ShelfEdge, bottom = 4.dp),
+        horizontalArrangement = Arrangement.spacedBy(ShelfGap)
+    ) {
+        items(items, key = { it.key }, contentType = { "item" }) { item(it) }
+    }
+}
+
+/** A shelf's items in [rows] going sideways, column by column: songs three to a column, genres two. */
+@Composable
+private fun ShelfGrid(items: List<HeroItem>, rows: Int, rowHeight: Dp, gap: Dp, item: @Composable (HeroItem) -> Unit) {
+    androidx.compose.foundation.lazy.grid.LazyHorizontalGrid(
+        rows = GridCells.Fixed(rows),
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(rowHeight * rows + gap * (rows - 1) + 12.dp)
+            .nestedScroll(KeepSidewaysSwipe),
+        contentPadding = PaddingValues(start = ShelfEdge, top = 8.dp, end = ShelfEdge, bottom = 4.dp),
+        horizontalArrangement = Arrangement.spacedBy(ShelfGap),
+        verticalArrangement = Arrangement.spacedBy(gap)
+    ) {
+        items(items.size, key = { items[it].key }, contentType = { "item" }) { index -> item(items[index]) }
+    }
+}
+
+/**
+ * Pressed, a cover rounds off toward [pressedCorner] and gives a little, as Expressive's buttons do.
+ * Read as it is drawn: a press moves the picture, it composes nothing.
+ */
+@Composable
+private fun Modifier.pressMorph(interaction: MutableInteractionSource, corner: Dp, pressedCorner: Dp): Modifier {
+    val pressed by interaction.collectIsPressedAsState()
+    val shapeCorner = animateDpAsState(
+        targetValue = if (pressed) pressedCorner else corner,
+        animationSpec = spring(dampingRatio = 0.6f, stiffness = Spring.StiffnessMediumLow),
+        label = "pressCorner"
+    )
+    val scale = animateFloatAsState(
+        targetValue = if (pressed) 0.95f else 1f,
+        animationSpec = spring(dampingRatio = 0.6f, stiffness = Spring.StiffnessMediumLow),
+        label = "pressScale"
+    )
+    return graphicsLayer {
+        scaleX = scale.value
+        scaleY = scale.value
+        shape = RoundedCornerShape(shapeCorner.value)
+        clip = true
+    }
+}
+
+/** An item's cover at [size]: its picture asked for at that size, its folder's covers, or its mark. */
+@Composable
+private fun ShelfCover(item: HeroItem, size: Dp, modifier: Modifier = Modifier, badge: Boolean = true) {
+    Box(
+        modifier = modifier.background(MaterialTheme.colorScheme.surfaceContainerHigh),
+        contentAlignment = Alignment.Center
+    ) {
+        val icon = item.icon
+        when {
+            item.collage.isNotEmpty() -> CoverCollage(urls = item.collage, cellSize = size / 2)
+            !item.artworkUrl.isNullOrBlank() -> AsyncImage(
+                model = artworkUrlForSize(item.artworkUrl, size) ?: item.artworkUrl,
+                contentDescription = null,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxSize()
+            )
+            icon != null -> IconCover(icon = icon, iconSize = size * 0.38f)
+        }
+        if (badge && (item.isPlaying || LocalNowPlaying.current.lights(item.source, item.trackId))) {
+            NowPlayingBadge(
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(8.dp)
+                    .graphicsLayer {
+                        scaleX = 0.8f
+                        scaleY = 0.8f
+                        transformOrigin = androidx.compose.ui.graphics.TransformOrigin(1f, 0f)
+                    }
+            )
+        }
+        if (item.isLoading) AppContainedLoadingIndicator(modifier = Modifier.size(size * 0.4f))
+    }
+}
+
+/** An item's name and the line under it, as every tile of a row has them. */
+@Composable
+private fun TileCaption(item: HeroItem, center: Boolean = false) {
+    Column(horizontalAlignment = if (center) Alignment.CenterHorizontally else Alignment.Start) {
+        Text(
+            text = item.title,
+            style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.SemiBold),
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+            textAlign = if (center) TextAlign.Center else TextAlign.Start
+        )
+        if (!item.subtitle.isNullOrBlank()) {
+            Text(
+                text = item.subtitle,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                textAlign = if (center) TextAlign.Center else TextAlign.Start
+            )
+        }
+    }
+}
+
+/** A collection: a square cover, its name in up to two lines, and a line under it. */
+@Composable
+private fun ShelfSquare(item: HeroItem, modifier: Modifier = Modifier, fill: Boolean = false) {
+    val haptic = LocalHapticFeedback.current
+    val interaction = remember { MutableInteractionSource() }
+    val size = LocalShelfMetrics.current.square
+    Column(
+        modifier = modifier
+            .then(if (fill) Modifier.fillMaxWidth() else Modifier.width(size))
+            .clickable(interactionSource = interaction, indication = null) {
+                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                item.onClick()
+            },
+        verticalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        ShelfCover(
+            item = item,
+            size = size,
+            modifier = Modifier
+                .then(if (fill) Modifier.fillMaxWidth().aspectRatio(1f) else Modifier.size(size))
+                .pressMorph(interaction, corner = 24.dp, pressedCorner = size / 2)
+        )
+        TileCaption(item)
+    }
+}
+
+/**
+ * A station: rounder than a collection, its name under it in the middle. Not a circle: SoundCloud
+ * draws a station's cover as a square with its name in a corner, and a circle cut it off. Pressed,
+ * it does round off whole.
+ */
+@Composable
+private fun ShelfCircle(item: HeroItem, modifier: Modifier = Modifier, fill: Boolean = false) {
+    val haptic = LocalHapticFeedback.current
+    val interaction = remember { MutableInteractionSource() }
+    val size = LocalShelfMetrics.current.circle
+    Column(
+        modifier = modifier
+            .then(if (fill) Modifier.fillMaxWidth() else Modifier.width(size))
+            .clickable(interactionSource = interaction, indication = null) {
+                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                item.onClick()
+            },
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        ShelfCover(
+            item = item,
+            size = size,
+            modifier = Modifier
+                .then(if (fill) Modifier.fillMaxWidth().aspectRatio(1f) else Modifier.size(size))
+                .pressMorph(interaction, corner = size * 0.32f, pressedCorner = size / 2)
+        )
+        TileCaption(item.copy(subtitle = null), center = true)
+    }
+}
+
+/** A broadcast: its frame, as wide as video is, marked on air, and what it is under it. */
+@Composable
+private fun ShelfLive(item: HeroItem, modifier: Modifier = Modifier, fill: Boolean = false) {
+    val haptic = LocalHapticFeedback.current
+    val interaction = remember { MutableInteractionSource() }
+    val width = LocalShelfMetrics.current.live
+    Column(
+        modifier = modifier
+            .then(if (fill) Modifier.fillMaxWidth() else Modifier.width(width))
+            .clickable(interactionSource = interaction, indication = null) {
+                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                item.onClick()
+            },
+        verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .aspectRatio(1f)
-                .then(if (current) Modifier.border(3.dp, PanelColors.accent, shape).padding(5.dp) else Modifier)
-                .clip(shape)
-                .background(MaterialTheme.colorScheme.surfaceContainerHigh),
-            contentAlignment = Alignment.Center
+                .aspectRatio(16f / 9f)
+                .pressMorph(interaction, corner = 24.dp, pressedCorner = 48.dp)
         ) {
-            val url = item.collage.firstOrNull() ?: item.artworkUrl
-            val icon = item.icon
-            if (!url.isNullOrBlank()) {
-                AsyncImage(
-                    model = gridArtworkUrl(url),
-                    contentDescription = null,
-                    contentScale = ContentScale.Crop,
-                    modifier = Modifier.fillMaxSize()
-                )
-            } else if (icon != null) {
-                Icon(imageVector = icon, contentDescription = null, tint = PanelColors.accent, modifier = Modifier.size(28.dp))
-            }
+            ShelfCover(item = item, size = width, modifier = Modifier.fillMaxSize())
             Text(
-                text = number.toString(),
-                style = MaterialTheme.typography.labelSmall,
+                text = tr("В эфире"),
+                style = MaterialTheme.typography.labelLarge,
                 color = Color.White,
                 modifier = Modifier
                     .align(Alignment.TopStart)
-                    .padding(6.dp)
-                    .background(Color.Black.copy(alpha = 0.45f), RoundedCornerShape(10.dp))
-                    .padding(horizontal = 6.dp, vertical = 1.dp)
+                    .padding(12.dp)
+                    .background(Color(0xFFFF3B30), RoundedCornerShape(8.dp))
+                    .padding(horizontal = 8.dp, vertical = 3.dp)
             )
         }
-        Text(
-            text = item.title,
-            style = MaterialTheme.typography.labelMedium,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis
-        )
+        TileCaption(item)
     }
 }
 
-/** A cover small enough for a grid cell: the carousel asks for them at 500 dp. */
-private fun gridArtworkUrl(url: String): String =
-    (artworkUrlForSize(url, 96.dp) ?: url).replace("t500x500", "t300x300")
-
-/** A section's name in the contents: lit, and squarer, while it is the one shown. */
+/** A song: a small cover, its name and its artist, played at once when tapped; lit while it plays. */
 @Composable
-private fun ContentsChip(
-    entry: ContentsEntry,
-    selected: Boolean,
-    onClick: () -> Unit,
-    // The place in the section, on the lit one: «· 14/50».
-    count: String? = null,
-    modifier: Modifier = Modifier
-) {
-    val corner by animateDpAsState(
-        targetValue = if (selected) 14.dp else 24.dp,
-        animationSpec = spring(dampingRatio = 0.7f, stiffness = Spring.StiffnessMediumLow),
-        label = "contentsChipCorner"
-    )
-    val container by animateColorAsState(
-        targetValue = if (selected) PanelColors.accent else PanelColors.content.copy(alpha = 0.07f),
-        animationSpec = tween(250),
-        label = "contentsChipContainer"
-    )
-    val content by animateColorAsState(
-        targetValue = if (selected) PanelColors.onAccent else PanelColors.content,
-        animationSpec = tween(250),
-        label = "contentsChipContent"
-    )
-    Surface(
-        onClick = onClick,
-        shape = RoundedCornerShape(corner),
-        color = container,
-        contentColor = content,
+private fun ShelfTrack(item: HeroItem, modifier: Modifier = Modifier) {
+    val haptic = LocalHapticFeedback.current
+    val interaction = remember { MutableInteractionSource() }
+    val playing = item.isPlaying || LocalNowPlaying.current.lights(item.source, item.trackId)
+    Row(
         modifier = modifier
-            .height(48.dp)
-            .semantics { this.selected = selected }
+            .height(ShelfTrackHeight)
+            .clip(RoundedCornerShape(18.dp))
+            .clickable(interactionSource = interaction, indication = androidx.compose.material3.ripple()) {
+                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                item.onClick()
+            },
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(14.dp)
     ) {
-        Row(
-            modifier = Modifier.padding(horizontal = 16.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(6.dp)
-        ) {
-            // On air now, as YouTube's broadcasts are: the red of the player's «В эфире».
-            if (entry.live) {
-                Box(
-                    modifier = Modifier
-                        .size(8.dp)
-                        .background(Color(0xFFFF3B30), CircleShape)
-                )
-            }
+        ShelfCover(
+            item = item,
+            size = ShelfTrackCover,
+            badge = false,
+            modifier = Modifier
+                .size(ShelfTrackCover)
+                .pressMorph(interaction, corner = 14.dp, pressedCorner = ShelfTrackCover / 2)
+        )
+        Column(modifier = Modifier.weight(1f)) {
             Text(
-                text = if (count != null) entry.title + " · " + count else entry.title,
-                style = MaterialTheme.typography.titleSmall,
-                maxLines = 1
+                text = item.title,
+                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold),
+                color = if (playing) PanelColors.accent else MaterialTheme.colorScheme.onSurface,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            if (!item.subtitle.isNullOrBlank()) {
+                Text(text = item.subtitle, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
+        }
+        if (playing) {
+            NowPlayingBadge(
+                modifier = Modifier.graphicsLayer {
+                    scaleX = 0.8f
+                    scaleY = 0.8f
+                }
             )
         }
+    }
+}
+
+/** A genre's chart: a tile with its name over its cover. */
+@Composable
+private fun ShelfGenre(item: HeroItem, modifier: Modifier = Modifier) {
+    val haptic = LocalHapticFeedback.current
+    val interaction = remember { MutableInteractionSource() }
+    val metrics = LocalShelfMetrics.current
+    Box(
+        modifier = modifier
+            .height(metrics.genreHeight)
+            .pressMorph(interaction, corner = 24.dp, pressedCorner = 42.dp)
+            .clickable(interactionSource = interaction, indication = null) {
+                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                item.onClick()
+            }
+    ) {
+        ShelfCover(item = item, size = metrics.genreWidth, modifier = Modifier.fillMaxSize())
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Brush.horizontalGradient(listOf(Color.Black.copy(alpha = 0.72f), Color.Black.copy(alpha = 0.12f))))
+        )
+        Column(modifier = Modifier.align(Alignment.BottomStart).padding(horizontal = 16.dp, vertical = 12.dp)) {
+            Text(text = item.title, style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.ExtraBold), color = Color.White, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            if (!item.subtitle.isNullOrBlank()) {
+                Text(text = item.subtitle, style = MaterialTheme.typography.bodySmall, color = Color.White.copy(alpha = 0.78f), maxLines = 1)
+            }
+        }
+    }
+}
+
+/** What stands in a shelf's place while it loads: still placeholders, nothing to redraw. */
+@Composable
+private fun ShelfLoading(kind: ShelfKind) {
+    val metrics = LocalShelfMetrics.current
+    if (kind == ShelfKind.Stage) {
+        Box(
+            modifier = Modifier.fillMaxWidth().height(metrics.stage + StageCaptionHeight + 8.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            AppLoadingIndicator(modifier = Modifier.size(80.dp))
+        }
+        return
+    }
+    val placeholder = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.06f)
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(start = ShelfEdge, top = 8.dp, end = ShelfEdge, bottom = 4.dp),
+        horizontalArrangement = Arrangement.spacedBy(ShelfGap)
+    ) {
+        repeat(3) {
+            Box(modifier = Modifier.size(metrics.square).background(placeholder, RoundedCornerShape(24.dp)))
+        }
+    }
+}
+
+/** A shelf's note: what is wrong, and the button that does something about it. */
+@Composable
+private fun ShelfNoteView(note: ShelfNote) {
+    Column(
+        modifier = Modifier.fillMaxWidth().padding(start = ShelfEdge, top = 8.dp, end = ShelfEdge, bottom = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(14.dp)
+    ) {
+        Text(text = note.text, style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        note.action?.let { action ->
+            Button(onClick = note.onAction, modifier = Modifier.heightIn(min = 48.dp)) { Text(action) }
+        }
+    }
+}
+
+/**
+ * A shelf opened whole, over its feed: every item in it at once, as a grid of covers or a list of
+ * songs. Like every page over home it has no back button: pulled down it closes, as do the system's
+ * back and the service tapped again on the toolbar.
+ */
+@Composable
+private fun ShelfPage(service: HomeService, shelf: HomeShelf, onClose: () -> Unit) {
+    BackHandler(onBack = onClose)
+    val gridState = rememberLazyGridState()
+    val collapsedPx = with(LocalDensity.current) { 56.dp.roundToPx() }
+    val collapsed by remember(gridState) {
+        derivedStateOf { gridState.firstVisibleItemIndex > 0 || gridState.firstVisibleItemScrollOffset > collapsedPx }
+    }
+    val top = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
+    val bottom = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
+    SizedShelves(
+        modifier = Modifier
+            .fillMaxSize()
+            // A touch on the page stops there: none reaches the feed under it.
+            .pointerInput(Unit) { }
+            .pullToClose(onClose)
+            .pageGlass(MaterialTheme.colorScheme.background)
+    ) {
+        // As many to a line as fit at about a shelf's size.
+        val columns = when (shelf.kind) {
+            ShelfKind.Tracks, ShelfKind.Live -> 1
+            ShelfKind.Genres -> 2
+            else -> ((maxWidth - ShelfEdge * 2) / (LocalShelfMetrics.current.square * 0.85f)).toInt().coerceIn(2, 6)
+        }
+        LazyVerticalGrid(
+            columns = GridCells.Fixed(columns),
+            state = gridState,
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(start = ShelfEdge, top = top + 16.dp, end = ShelfEdge, bottom = bottom + FeedBottomRoom),
+            horizontalArrangement = Arrangement.spacedBy(ShelfGap),
+            verticalArrangement = Arrangement.spacedBy(if (shelf.kind == ShelfKind.Tracks) 2.dp else 20.dp)
+        ) {
+            item(key = "head", span = { androidx.compose.foundation.lazy.grid.GridItemSpan(maxLineSpan) }, contentType = "head") {
+                Column(modifier = Modifier.padding(top = 8.dp, bottom = 8.dp)) {
+                    Text(
+                        text = shelf.title,
+                        style = MaterialTheme.typography.displaySmall.copy(fontSize = 27.sp, lineHeight = 33.sp),
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    Text(
+                        text = service.title + " · " + if (shelf.kind == ShelfKind.Tracks) {
+                            plural(shelf.count, tr("трек"), tr("трека"), tr("треков"))
+                        } else {
+                            plural(shelf.count, tr("подборка"), tr("подборки"), tr("подборок"))
+                        },
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+            items(shelf.items.size, key = { shelf.items[it].key }, contentType = { "item" }) { index ->
+                val item = shelf.items[index]
+                when (shelf.kind) {
+                    ShelfKind.Tracks -> ShelfTrack(item, Modifier.fillMaxWidth())
+                    ShelfKind.Circles -> ShelfCircle(item, fill = true)
+                    ShelfKind.Live -> ShelfLive(item, fill = true)
+                    ShelfKind.Genres -> ShelfGenre(item, Modifier.fillMaxWidth())
+                    else -> ShelfSquare(item, fill = true)
+                }
+            }
+        }
+        CollapsingTopBar(title = shelf.title, collapsed = collapsed)
     }
 }
 
@@ -3489,95 +3458,6 @@ private data class HeroItem(
     val onClick: () -> Unit
 )
 
-@Composable
-private fun MixCarousel(
-    mixes: List<SoundCloudMix>,
-    kind: HomeCategory,
-    isLoading: Boolean,
-    hasOauthToken: Boolean,
-    errorMessage: String?,
-    loadingMixId: String?,
-    playingMixId: String?,
-    isPlaying: Boolean,
-    onOpenMix: (SoundCloudMix) -> Unit,
-    onReload: () -> Unit,
-    onOpenSettings: () -> Unit
-) {
-    val isStations = kind == HomeCategory.Stations
-    val isTrending = kind == HomeCategory.Trending
-    if (!hasOauthToken) {
-        CarouselMessage(
-            text = tr("Добавь OAuth-токен в настройках, чтобы увидеть персональные миксы."),
-            actionLabel = tr("Открыть настройки"),
-            onAction = onOpenSettings
-        )
-        return
-    }
-
-    if (mixes.isEmpty()) {
-        when {
-            errorMessage != null -> CarouselMessage(
-                text = errorMessage,
-                actionLabel = tr("Повторить"),
-                onAction = onReload
-            )
-            isLoading -> CarouselSkeleton()
-            else -> CarouselMessage(
-                text = when {
-                    isStations -> tr("Станции пока не загрузились.")
-                    isTrending -> tr("Тренды пока не загрузились.")
-                    else -> tr("Подборка пока не загрузилась.")
-                },
-                actionLabel = tr("Обновить"),
-                onAction = onReload
-            )
-        }
-        return
-    }
-
-    HomeHeroCarousel(
-        items = mixes.map { mix ->
-            HeroItem(
-                key = mix.id,
-                title = when {
-                    isStations -> mix.title
-                    isTrending -> localizedGenre(mix.title)
-                    else -> localizedMixTitle(mix.title)
-                },
-                // Mixes ship their artist list in `description`. Stations put "Artist station"
-                // there, which is not a caption — the station's artist is its title. A genre's
-                // description is an English sentence about the chart.
-                subtitle = when {
-                    isStations -> tr("Станция")
-                    isTrending -> tr("Чарт недели")
-                    else -> mix.description?.takeIf { it.isNotBlank() }
-                },
-                artworkUrl = artworkUrlForSize(mix.artworkUrl, 500.dp),
-                isPlaying = playingMixId == mix.id && isPlaying,
-                isLoading = loadingMixId == mix.id,
-                onClick = { onOpenMix(mix) }
-            )
-        }
-    )
-}
-
-@Composable
-private fun CarouselEmptyText(text: String) {
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(horizontal = 40.dp),
-        contentAlignment = Alignment.Center
-    ) {
-        Text(
-            text = text,
-            style = MaterialTheme.typography.bodyLarge,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            textAlign = TextAlign.Center
-        )
-    }
-}
-
 /**
  * A centred hero carousel: the cover in focus always sits in the middle — the first one too — and
  * its neighbours squeeze into narrow strips on both sides as they leave, rather than sliding away
@@ -3601,77 +3481,31 @@ private val KeepSidewaysSwipe = object : NestedScrollConnection {
 // How a page of services settles: soft, a touch of give, no wobble.
 private val ServicePageSpring = spring<Float>(dampingRatio = 0.86f, stiffness = 320f)
 
-private val HeroAsideBlur = 10.dp
 private const val HeroAsideWash = 0.45f
 private const val HeroAsideShade = 0.18f
 
 @Composable
-private fun HomeHeroCarousel(items: List<HeroItem>) {
+private fun HomeHeroCarousel(items: List<HeroItem>, cover: Dp) {
     if (items.isEmpty()) return
     val haptic = LocalHapticFeedback.current
     val scope = rememberCoroutineScope()
     val pagerState = rememberPagerState { items.size }
-    // Its section's contents reach it here: to show the place in it, slide through it, open it as a grid.
-    val handle = remember(pagerState) { HeroHandle(pagerState) }
-    SideEffect { handle.items = items }
-    val slot = LocalHeroSlot.current
-    if (slot != null) {
-        DisposableEffect(slot, handle) {
-            slot.handles[slot.key] = handle
-            onDispose { if (slot.handles[slot.key] === handle) slot.handles.remove(slot.key) }
-        }
-    }
+    val density = LocalDensity.current
+    val coverPx = with(density) { cover.toPx() }
+    val stripPx = with(density) { HeroStrip.toPx() }
+    val radiusPx = with(density) { 30.dp.toPx() }
 
-    BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
-        val landscape = isLandscape()
-        // Sideways the caption is a line of title and a line under it, and no taller than that:
-        // room kept for more stood empty under it, and the covers crowded up against the top.
-        val captionHeight = if (landscape) 60.dp else 88.dp
-        val captionGap = if (landscape) 12.dp else 16.dp
-        val margin = 16.dp
-        // Sideways the page is wider than tall: the cover square, as tall as leaves the caption room
-        // and a margin above and below.
-        val coverWidth = if (landscape) {
-            minOf(
-                maxWidth - (margin + HeroStrip + HeroGap) * 2,
-                maxHeight - captionHeight - captionGap - HeroLandscapeMargin * 2
-            ).coerceAtLeast(120.dp)
-        } else {
-            maxWidth - (margin + HeroStrip + HeroGap) * 2
-        }
-        val sidePadding = (maxWidth - coverWidth) / 2
-        // Close to square: a little taller than wide at most, and never taller than leaves room for
-        // the caption under it with the covers in the middle of the page.
-        val carouselHeight = if (landscape) {
-            coverWidth
-        } else {
-            (maxHeight - (captionHeight + captionGap) * 2).coerceIn(160.dp, coverWidth * 1.08f)
-        }
-        // Sideways the covers and their caption are centred together: there is no room to spare.
-        val carouselTop = if (landscape) {
-            ((maxHeight - carouselHeight - captionGap - captionHeight) / 2).coerceAtLeast(0.dp)
-        } else {
-            (maxHeight - carouselHeight) / 2
-        }
-        val density = LocalDensity.current
-        val coverPx = with(density) { coverWidth.toPx() }
-        val stripPx = with(density) { HeroStrip.toPx() }
-        val radiusPx = with(density) { 32.dp.toPx() }
-
-        // The covers in the middle of the page by themselves, the caption hanging under them:
-        // centred along with it, the covers stood off the middle the rest of home keeps (the wave's
-        // shape), and higher or lower from one page to the next.
-        Box(modifier = Modifier.fillMaxSize()) {
+    Column(modifier = Modifier.fillMaxWidth()) {
+        BoxWithConstraints(modifier = Modifier.fillMaxWidth().height(cover)) {
+            val sidePadding = ((maxWidth - cover) / 2).coerceAtLeast(0.dp)
             HorizontalPager(
                 state = pagerState,
-                pageSize = androidx.compose.foundation.pager.PageSize.Fixed(coverWidth),
+                pageSize = androidx.compose.foundation.pager.PageSize.Fixed(cover),
                 contentPadding = PaddingValues(horizontal = sidePadding),
                 pageSpacing = HeroGap,
+                key = { items[it].key },
                 modifier = Modifier
-                    .align(Alignment.TopCenter)
-                    .padding(top = carouselTop)
-                    .fillMaxWidth()
-                    .height(carouselHeight)
+                    .fillMaxSize()
                     // What the carousel doesn't use of a swipe, at its first or last cover, isn't
                     // passed on to the pages of services around it.
                     .nestedScroll(KeepSidewaysSwipe)
@@ -3706,19 +3540,15 @@ private fun HomeHeroCarousel(items: List<HeroItem>) {
                     Box(
                         modifier = Modifier
                             .fillMaxSize()
-                            .graphicsLayer {
-                                // Re-centres the picture inside whatever the mask leaves visible.
-                                translationX = -kotlin.math.sign(distance()) * (coverPx - visibleWidth()) / 2f
-                                // Out of focus beside the one in front, so the eye stays there.
-                                val aside = distance().absoluteValue.coerceIn(0f, 1f)
-                                val radius = HeroAsideBlur.toPx() * aside
-                                renderEffect = if (radius > 0.5f) BlurEffect(radius, radius, TileMode.Clamp) else null
-                            }
+                            // Re-centres the picture inside whatever the mask leaves visible. No blur
+                            // on the covers aside any more: in a list that scrolls, a blurred layer
+                            // was worked out again on every frame of the scroll, for two slivers.
+                            .graphicsLayer { translationX = -kotlin.math.sign(distance()) * (coverPx - visibleWidth()) / 2f }
                             .background(MaterialTheme.colorScheme.surfaceContainerHigh),
                         contentAlignment = Alignment.Center
                     ) {
                         if (item.collage.isNotEmpty()) {
-                            CoverCollage(urls = item.collage)
+                            CoverCollage(urls = item.collage, cellSize = cover / 2)
                         } else if (!item.artworkUrl.isNullOrBlank()) {
                             AsyncImage(
                                 model = item.artworkUrl,
@@ -3735,7 +3565,7 @@ private fun HomeHeroCarousel(items: List<HeroItem>) {
                                         alpha = (1f - distance().absoluteValue * 1.8f).coerceIn(0f, 1f)
                                     }
                             ) {
-                                IconCover(icon = item.icon, iconSize = 84.dp)
+                                IconCover(icon = item.icon, iconSize = cover * 0.36f)
                             }
                         }
                         if (item.isPlaying || LocalNowPlaying.current.lights(item.source, item.trackId)) {
@@ -3766,41 +3596,39 @@ private fun HomeHeroCarousel(items: List<HeroItem>) {
                     )
                 }
             }
+        }
 
-            val current = items.getOrNull(pagerState.currentPage) ?: items.first()
-            AnimatedContent(
-                targetState = current,
-                transitionSpec = { fadeIn(tween(220)) togetherWith fadeOut(tween(120)) },
-                contentKey = { it.key },
-                label = "heroCaption",
+        val current = items.getOrNull(pagerState.currentPage) ?: items.first()
+        AnimatedContent(
+            targetState = current,
+            transitionSpec = { fadeIn(tween(220)) togetherWith fadeOut(tween(120)) },
+            contentKey = { it.key },
+            label = "heroCaption",
+            modifier = Modifier.fillMaxWidth()
+        ) { item ->
+            Column(
                 modifier = Modifier
-                    .align(Alignment.TopCenter)
-                    .padding(top = carouselTop + carouselHeight + captionGap)
-            ) { item ->
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(captionHeight)
-                        .padding(horizontal = 28.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally
-                ) {
+                    .fillMaxWidth()
+                    .height(StageCaptionHeight)
+                    .padding(start = 28.dp, top = 12.dp, end = 28.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Text(
+                    text = item.title,
+                    style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
+                    textAlign = TextAlign.Center,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                if (!item.subtitle.isNullOrBlank()) {
                     Text(
-                        text = item.title,
-                        style = MaterialTheme.typography.headlineSmall,
+                        text = item.subtitle,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                         textAlign = TextAlign.Center,
-                        maxLines = 1,
+                        maxLines = 2,
                         overflow = TextOverflow.Ellipsis
                     )
-                    if (!item.subtitle.isNullOrBlank()) {
-                        Text(
-                            text = item.subtitle,
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            textAlign = TextAlign.Center,
-                            maxLines = if (landscape) 1 else 2,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                    }
                 }
             }
         }
@@ -3930,45 +3758,6 @@ private fun CarouselPageIndicator(
                     .clip(CircleShape)
                     .background(color)
             )
-        }
-    }
-}
-
-@Composable
-private fun CarouselSkeleton() {
-    Box(
-        modifier = Modifier.fillMaxSize(),
-        contentAlignment = Alignment.Center
-    ) {
-        AppLoadingIndicator(modifier = Modifier.size(96.dp))
-    }
-}
-
-@Composable
-private fun CarouselMessage(
-    text: String,
-    actionLabel: String,
-    onAction: () -> Unit
-) {
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(horizontal = 40.dp),
-        verticalArrangement = Arrangement.Center,
-        horizontalAlignment = Alignment.CenterHorizontally
-    ) {
-        Text(
-            text = text,
-            style = MaterialTheme.typography.bodyLarge,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            textAlign = TextAlign.Center
-        )
-        Spacer(modifier = Modifier.height(20.dp))
-        Button(
-            onClick = onAction,
-            modifier = Modifier.heightIn(min = 48.dp)
-        ) {
-            Text(actionLabel)
         }
     }
 }
@@ -4186,6 +3975,7 @@ private fun SettingsScreen(
         // Section 0: Look
         item {
             val backgroundMotion by settingsRepository.backgroundMotion.collectAsState()
+            val homeTopGap by settingsRepository.homeTopGap.collectAsState()
             val playerCoverColors by settingsRepository.playerCoverColors.collectAsState()
             val openPlayerOnTap by settingsRepository.openPlayerOnTap.collectAsState()
             val smoothMotion by settingsRepository.smoothMotion.collectAsState()
@@ -4253,6 +4043,17 @@ private fun SettingsScreen(
                             subtitle = tr("Объёмные фигуры на фоне наклоняются и трясутся вместе с телефоном (акселерометр)"),
                             checked = backgroundMotion,
                             onCheckedChange = settingsRepository::setBackgroundMotion
+                        )
+                        HorizontalDivider(
+                            color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.25f),
+                            modifier = Modifier.padding(horizontal = 18.dp)
+                        )
+                        SettingsSwitchRow(
+                            icon = Icons.Default.VerticalAlignBottom,
+                            title = tr("Опустить главную"),
+                            subtitle = tr("Отступ между названием сервиса и первой полкой: она ниже, ближе к большому пальцу, как на прежней главной"),
+                            checked = homeTopGap,
+                            onCheckedChange = settingsRepository::setHomeTopGap
                         )
                         HorizontalDivider(
                             color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.25f),
@@ -6518,10 +6319,12 @@ private fun recentCovers(tracks: List<SoundCloudTrack>): List<String> =
  * otherwise the latest alone.
  */
 @Composable
-private fun CoverCollage(urls: List<String>, modifier: Modifier = Modifier) {
+private fun CoverCollage(urls: List<String>, modifier: Modifier = Modifier, cellSize: Dp? = null) {
+    // Asked for at the size a cell is shown when it is known: on home's stage, four 800 px covers
+    // were fetched for a square of 224 dp.
     @Composable
     fun Cover(url: String, cell: Modifier) = AsyncImage(
-        model = ArtworkUrls.highRes(url) ?: url,
+        model = cellSize?.let { artworkUrlForSize(url, it) } ?: ArtworkUrls.highRes(url) ?: url,
         contentDescription = null,
         modifier = cell,
         contentScale = ContentScale.Crop

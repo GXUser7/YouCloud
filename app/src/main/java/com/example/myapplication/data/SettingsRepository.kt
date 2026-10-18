@@ -137,6 +137,15 @@ class SettingsRepository(
         preferences.edit().putBoolean(KEY_BACKGROUND_MOTION, enabled).apply()
     }
 
+    // Home's first shelf lower down, a gap over it under the service's name: for whoever reached
+    // the old home's covers, in the middle of the screen, better than the top of it.
+    val homeTopGap = MutableStateFlow(preferences.getBoolean(KEY_HOME_TOP_GAP, false))
+
+    fun setHomeTopGap(enabled: Boolean) {
+        homeTopGap.value = enabled
+        preferences.edit().putBoolean(KEY_HOME_TOP_GAP, enabled).apply()
+    }
+
     // The full-screen player takes its palette from the cover instead of the wallpaper. Only the
     // player: the rest of the app keeps the system colours either way.
     val playerCoverColors = MutableStateFlow(preferences.getBoolean(KEY_PLAYER_COVER_COLORS, true))
@@ -488,6 +497,7 @@ class SettingsRepository(
         const val KEY_YTM_ACCOUNT = "ytmusic_account"
         const val KEY_SHOW_DEBUG_PERCENTAGE = "show_debug_percentage"
         const val KEY_BACKGROUND_MOTION = "background_motion"
+        const val KEY_HOME_TOP_GAP = "home_top_gap"
         const val KEY_PLAYER_VIDEOS = "player_videos"
         const val KEY_VIDEO_YOUTUBE = "video_youtube"
         const val KEY_VIDEO_YANDEX = "video_yandex"

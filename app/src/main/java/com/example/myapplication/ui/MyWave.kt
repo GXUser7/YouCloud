@@ -99,49 +99,48 @@ internal class WaveChoice(
 }
 
 /**
- * Yandex Music's wave on home, as "Моя форма": one large shape in the theme's colours in the middle
- * of the page, turning slowly while the wave plays, and its play button in the middle of it —
- * round, squaring while it plays. The shape takes the form of the mood picked.
- *
- * Held down, it brings up the wave's settings — mood and mode — on a pane of the frosted glass the
- * rest of home stands on: that glass is drawn from the backdrop's own softened layer, not blurred
- * live, so it costs a weak phone nothing more than the rest of home does.
+ * Yandex Music's wave as the first shelf of its home, "Моя форма": one large shape in the theme's
+ * colours, turning slowly by itself and faster while the wave plays, its play button in the middle
+ * — round, squaring while it plays. The whole shape is the button: its lower edge is where the
+ * thumb reaches, the middle of it may not be. Under it the mood and the mode, there to be tapped
+ * rather than held for; the shape takes the form of the mood picked.
  */
 @Composable
-internal fun MyWavePage(
+internal fun MyWaveShelf(
     waveOn: Boolean,
     isPlaying: Boolean,
     starting: Boolean,
     picks: Map<String, String>,
     onToggle: () -> Unit,
     onPick: (key: String, seed: String) -> Unit,
-    onReset: () -> Unit
+    modifier: Modifier = Modifier,
+    size: androidx.compose.ui.unit.Dp = WaveShelfSize
 ) {
     val playing = waveOn && isPlaying
     val colors = MaterialTheme.colorScheme
     val haptic = LocalHapticFeedback.current
-    var tuning by rememberSaveable { mutableStateOf(false) }
     val mood = WaveTuning.moods.firstOrNull { it.seed == picks[WaveTuning.MOOD] }
-
-    Box(modifier = Modifier.fillMaxSize()) {
-        BoxWithConstraints(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-            val side = min(maxWidth.value * 0.8f, maxHeight.value * 0.8f).dp
+    val side = size
+    Column(modifier = modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
+        Box(
+            modifier = Modifier
+                .padding(top = 4.dp)
+                .size(side)
+                .clickable(
+                    interactionSource = remember { MutableInteractionSource() },
+                    indication = null,
+                    onClickLabel = if (playing) tr("Пауза") else tr("Слушать"),
+                    onClick = onToggle
+                ),
+            contentAlignment = Alignment.Center
+        ) {
             WaveShape(
                 lobes = mood?.lobes ?: DEFAULT_LOBES,
                 depth = mood?.depth ?: DEFAULT_DEPTH,
                 light = lerp(colors.primary, Color.White, 0.3f),
                 color = colors.primary,
                 playing = playing,
-                modifier = Modifier
-                    .size(side)
-                    .pointerInput(Unit) {
-                        detectTapGestures(
-                            onLongPress = {
-                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                tuning = true
-                            }
-                        )
-                    }
+                modifier = Modifier.fillMaxSize()
             )
             val corner by animateFloatAsState(
                 targetValue = if (playing) 30f else 50f,
@@ -168,41 +167,45 @@ internal fun MyWavePage(
                 }
             }
         }
-
-        // A tap beside the settings puts them away. Not dimmed: the page is only part of the
-        // screen, and a shade over it stood out as a dark box.
-        if (tuning) {
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) {
-                        tuning = false
-                    }
-            )
-        }
-        AnimatedVisibility(
-            visible = tuning,
-            enter = fadeIn(tween(160)) + scaleIn(spring(dampingRatio = 0.7f, stiffness = 520f), initialScale = 0.85f),
-            exit = fadeOut(tween(120)) + scaleOut(tween(140), targetScale = 0.92f),
-            modifier = Modifier.align(Alignment.Center)
-        ) {
-            WaveTuningPane(
-                picks = picks,
-                onPick = { key, seed ->
-                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                    onPick(key, seed)
-                },
-                onReset = {
-                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                    onReset()
-                }
-            )
-        }
+        WaveChoices(
+            picks = picks,
+            onPick = { key, seed ->
+                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                onPick(key, seed)
+            },
+            modifier = Modifier.padding(start = 20.dp, top = 6.dp, end = 20.dp)
+        )
     }
-    // Not from under a page opened over home, or the player: the back gesture is theirs.
-    val covered = LocalCovered.current
-    val hidden by remember(covered) { androidx.compose.runtime.derivedStateOf(covered) }
-    if (tuning && !hidden) BackHandler { tuning = false }
+}
+
+/** The shape on home's shelf: about as large as the other services' first covers. */
+internal val WaveShelfSize = 236.dp
+
+/** The wave's mood and mode, a connected button group each under its name. */
+@Composable
+internal fun WaveChoices(
+    picks: Map<String, String>,
+    onPick: (key: String, seed: String) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Column(modifier = modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        PaneLabel(tr("Настроение"))
+        ChoiceGroup(
+            choices = WaveTuning.moods,
+            picked = picks[WaveTuning.MOOD],
+            onPick = { onPick(WaveTuning.MOOD, it) },
+            // Four in a row: a size smaller, for "Спокойное" to fit beside the others.
+            textStyle = MaterialTheme.typography.labelMedium
+        )
+        PaneLabel(tr("Режим"), modifier = Modifier.padding(top = 6.dp))
+        ChoiceGroup(
+            choices = WaveTuning.modes,
+            picked = picks[WaveTuning.MODE],
+            onPick = { onPick(WaveTuning.MODE, it) },
+            textStyle = MaterialTheme.typography.labelLarge,
+            height = 40.dp
+        )
+    }
 }
 
 /** The wave's settings on frosted glass: the moods and the modes, a connected button group each. */
@@ -235,30 +238,17 @@ internal fun WaveTuningPane(
             )
             if (picks.isNotEmpty()) TextButton(onClick = onReset) { Text(tr("Сбросить")) }
         }
-        PaneLabel(tr("Настроение"))
-        ChoiceGroup(
-            choices = WaveTuning.moods,
-            picked = picks[WaveTuning.MOOD],
-            onPick = { onPick(WaveTuning.MOOD, it) },
-            // Four in a row: a size smaller, for "Спокойное" to fit beside the others.
-            textStyle = MaterialTheme.typography.labelMedium
-        )
-        PaneLabel(tr("Режим"))
-        ChoiceGroup(
-            choices = WaveTuning.modes,
-            picked = picks[WaveTuning.MODE],
-            onPick = { onPick(WaveTuning.MODE, it) },
-            textStyle = MaterialTheme.typography.labelLarge
-        )
+        WaveChoices(picks = picks, onPick = onPick, modifier = Modifier.padding(end = 8.dp))
     }
 }
 
 @Composable
-private fun PaneLabel(text: String) {
+private fun PaneLabel(text: String, modifier: Modifier = Modifier) {
     Text(
         text = text,
         style = MaterialTheme.typography.labelLarge,
-        color = MaterialTheme.colorScheme.onSurfaceVariant
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = modifier
     )
 }
 
@@ -271,14 +261,14 @@ private fun ChoiceGroup(
     choices: List<WaveChoice>,
     picked: String?,
     onPick: (String) -> Unit,
-    textStyle: androidx.compose.ui.text.TextStyle
+    textStyle: androidx.compose.ui.text.TextStyle,
+    height: androidx.compose.ui.unit.Dp = 44.dp
 ) {
     val colors = MaterialTheme.colorScheme
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(end = 8.dp)
-            .height(44.dp),
+            .height(height),
         horizontalArrangement = Arrangement.spacedBy(3.dp)
     ) {
         choices.forEachIndexed { index, mode ->
