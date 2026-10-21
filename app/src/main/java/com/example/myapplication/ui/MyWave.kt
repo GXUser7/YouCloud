@@ -23,6 +23,8 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -114,7 +116,9 @@ internal fun MyWaveShelf(
     onToggle: () -> Unit,
     onPick: (key: String, seed: String) -> Unit,
     modifier: Modifier = Modifier,
-    size: androidx.compose.ui.unit.Dp = WaveShelfSize
+    size: androidx.compose.ui.unit.Dp = WaveShelfSize,
+    // "Сбросить" by the mood's name once something is picked; null, none.
+    onReset: (() -> Unit)? = null
 ) {
     val playing = waveOn && isPlaying
     val colors = MaterialTheme.colorScheme
@@ -169,6 +173,7 @@ internal fun MyWaveShelf(
         }
         WaveChoices(
             picks = picks,
+            onReset = onReset,
             onPick = { key, seed ->
                 haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                 onPick(key, seed)
@@ -181,64 +186,46 @@ internal fun MyWaveShelf(
 /** The shape on home's shelf: about as large as the other services' first covers. */
 internal val WaveShelfSize = 236.dp
 
-/** The wave's mood and mode, a connected button group each under its name. */
+/**
+ * The wave's mood and mode, a connected button group each under its name. [compact]: a size
+ * smaller all through, for the gestures' small screen of home.
+ */
 @Composable
 internal fun WaveChoices(
     picks: Map<String, String>,
     onPick: (key: String, seed: String) -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    onReset: (() -> Unit)? = null,
+    compact: Boolean = false
 ) {
-    Column(modifier = modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        PaneLabel(tr("Настроение"))
+    val type = MaterialTheme.typography
+    Column(modifier = modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(if (compact) 4.dp else 6.dp)) {
+        Row(modifier = Modifier.fillMaxWidth().heightIn(min = 20.dp), verticalAlignment = Alignment.CenterVertically) {
+            PaneLabel(tr("Настроение"), modifier = Modifier.weight(1f))
+            if (onReset != null && picks.isNotEmpty()) {
+                TextButton(
+                    onClick = onReset,
+                    contentPadding = PaddingValues(horizontal = 12.dp),
+                    modifier = Modifier.height(32.dp)
+                ) { Text(tr("Сбросить")) }
+            }
+        }
         ChoiceGroup(
             choices = WaveTuning.moods,
             picked = picks[WaveTuning.MOOD],
             onPick = { onPick(WaveTuning.MOOD, it) },
             // Four in a row: a size smaller, for "Спокойное" to fit beside the others.
-            textStyle = MaterialTheme.typography.labelMedium
+            textStyle = if (compact) type.labelSmall else type.labelMedium,
+            height = if (compact) 32.dp else 44.dp
         )
-        PaneLabel(tr("Режим"), modifier = Modifier.padding(top = 6.dp))
+        PaneLabel(tr("Режим"), modifier = Modifier.padding(top = if (compact) 2.dp else 6.dp))
         ChoiceGroup(
             choices = WaveTuning.modes,
             picked = picks[WaveTuning.MODE],
             onPick = { onPick(WaveTuning.MODE, it) },
-            textStyle = MaterialTheme.typography.labelLarge,
-            height = 40.dp
+            textStyle = if (compact) type.labelSmall else type.labelLarge,
+            height = if (compact) 30.dp else 40.dp
         )
-    }
-}
-
-/** The wave's settings on frosted glass: the moods and the modes, a connected button group each. */
-@Composable
-internal fun WaveTuningPane(
-    picks: Map<String, String>,
-    onPick: (key: String, seed: String) -> Unit,
-    onReset: () -> Unit
-) {
-    val shape = RoundedCornerShape(36.dp)
-    val colors = MaterialTheme.colorScheme
-    Column(
-        modifier = Modifier
-            .padding(horizontal = 20.dp)
-            .widthIn(max = 420.dp)
-            .fillMaxWidth()
-            // Frosted a little thicker than home's panels, for the settings to read over the shape.
-            .glassOr(shape, colors.surfaceContainerHigh, glassAlpha = 0.74f)
-            .background(glassFill(colors.surfaceContainerHigh), shape)
-            // Taps inside don't reach the page behind, where they would put the pane away.
-            .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) {}
-            .padding(start = 20.dp, end = 12.dp, top = 16.dp, bottom = 20.dp),
-        verticalArrangement = Arrangement.spacedBy(14.dp)
-    ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(
-                text = tr("Настроить волну"),
-                style = MaterialTheme.typography.titleLarge,
-                modifier = Modifier.weight(1f)
-            )
-            if (picks.isNotEmpty()) TextButton(onClick = onReset) { Text(tr("Сбросить")) }
-        }
-        WaveChoices(picks = picks, onPick = onPick, modifier = Modifier.padding(end = 8.dp))
     }
 }
 

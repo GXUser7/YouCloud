@@ -67,8 +67,20 @@ object SharedLinks {
      * The page of an album or playlist on its service, as a link to it shared would be — what
      * [parse] opens again. Null for a set of the phone's own.
      */
-    fun linkOf(set: SoundCloudPlaylist): String? {
-        val ref = set.permalinkUrl ?: return null
+    fun linkOf(set: SoundCloudPlaylist): String? = linkOfRef(set.permalinkUrl)
+
+    /** The page of a mix or station on soundcloud.com. */
+    fun linkOf(mix: SoundCloudMix): String? =
+        mix.url ?: mix.permalink.removePrefix("soundcloud:system-playlists:")
+            .takeIf { it.isNotBlank() && '/' !in it }
+            ?.let { "https://soundcloud.com/discover/sets/$it" }
+
+    /**
+     * The page of an album or playlist by the reference the app keeps for it (a set's permalink, a
+     * saved album's key). Null for one of the phone's own, or a mix kept from some day.
+     */
+    fun linkOfRef(ref: String?): String? {
+        ref ?: return null
         YouTubeMusicClient.parseSetRef(ref)?.let { (browseId, playlistId) ->
             return when {
                 browseId.isNotBlank() -> "https://music.youtube.com/browse/$browseId"

@@ -54,7 +54,7 @@
   {#if liked}
     <div class="tile liked-tile">
       <button class="open" onclick={() => go('set/' + liked.id)}>
-        <span class="art"><LikedArt ids={liked.tracks} seed={liked.id} color={liked.color} badge={false} /></span>
+        <span class="art"><LikedArt ids={liked.tracks} seed={liked.id} color={liked.color} /></span>
         <span class="text"><span class="ellipsis title">{tr('Любимое')}</span><span class="ellipsis sub">{tracksCount(liked.tracks.length)}</span></span>
       </button>
       <button class="go" onclick={playLiked} aria-label={tr('Играть любимое')}><Icon name={playingIcon(liked.id)} fill size={24} /></button>

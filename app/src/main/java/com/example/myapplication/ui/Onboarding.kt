@@ -77,6 +77,13 @@ import androidx.compose.material.icons.rounded.SkipNext
 import androidx.compose.material.icons.rounded.SkipPrevious
 import androidx.compose.material.icons.rounded.TouchApp
 import androidx.compose.material3.Button
+import androidx.compose.ui.semantics.selected
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.material.icons.rounded.Check
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -142,6 +149,38 @@ internal fun OnboardingOverlay(
     val last = steps.lastIndex
     BackHandler { if (step > 0) step-- else onFinish() }
 
+    OverlayFrame(current = step, count = steps.size, onSkip = if (step < last) onFinish else null) {
+        AnimatedContent(
+            targetState = step,
+            transitionSpec = {
+                val forward = targetState > initialState
+                (slideInHorizontally(tween(320)) { w -> if (forward) w / 4 else -w / 4 } + fadeIn(tween(320))) togetherWith
+                    (slideOutHorizontally(tween(220)) { w -> if (forward) -w / 4 else w / 4 } + fadeOut(tween(180)))
+            },
+            label = "onboardingStep",
+            modifier = Modifier.fillMaxSize()
+        ) { shown ->
+            val next = { if (shown < last) step = shown + 1 else onFinish() }
+            when (steps[shown]) {
+                OnboardingStep.Intro -> IntroStep(onNext = next)
+                OnboardingStep.MiniPlayer -> MiniPlayerStep(onNext = next)
+                OnboardingStep.PlayerCover -> PlayerCoverStep(onNext = next)
+                OnboardingStep.PlayerPull -> PlayerPullStep(onNext = next)
+                OnboardingStep.Windows -> WindowsStep(onNext = next)
+                OnboardingStep.Wave -> WaveStep(onNext = next)
+                OnboardingStep.Home -> HomeStep(onNext = next)
+                OnboardingStep.Done -> DoneStep(onNext = next)
+            }
+        }
+    }
+}
+
+/**
+ * What the app's overlays stand in: the backdrop's tone, where the steps are, "Пропустить" while
+ * [onSkip] is there, and the step itself under them. Nothing under it is reachable while it is up.
+ */
+@Composable
+private fun OverlayFrame(current: Int, count: Int, onSkip: (() -> Unit)?, content: @Composable () -> Unit) {
     val colors = MaterialTheme.colorScheme
     Box(
         modifier = Modifier
@@ -153,7 +192,6 @@ internal fun OnboardingOverlay(
                     1f to colors.background
                 )
             )
-            // Nothing under the overlay is reachable while it is up.
             .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) {}
             .statusBarsPadding()
             .navigationBarsPadding()
@@ -166,40 +204,19 @@ internal fun OnboardingOverlay(
                     .height(48.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                StepDots(current = step, count = steps.size, modifier = Modifier.weight(1f))
-                if (step < last) TextButton(onClick = onFinish) { Text(tr("Пропустить")) }
+                // One step alone has nowhere to be among others.
+                if (count > 1) StepDots(current = current, count = count, modifier = Modifier.weight(1f)) else Spacer(modifier = Modifier.weight(1f))
+                if (onSkip != null) TextButton(onClick = onSkip) { Text(tr("Пропустить")) }
             }
-            AnimatedContent(
-                targetState = step,
-                transitionSpec = {
-                    val forward = targetState > initialState
-                    (slideInHorizontally(tween(320)) { w -> if (forward) w / 4 else -w / 4 } + fadeIn(tween(320))) togetherWith
-                        (slideOutHorizontally(tween(220)) { w -> if (forward) -w / 4 else w / 4 } + fadeOut(tween(180)))
-                },
-                label = "onboardingStep",
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .weight(1f)
-            ) { shown ->
-                val next = { if (shown < last) step = shown + 1 else onFinish() }
-                when (steps[shown]) {
-                    OnboardingStep.Intro -> IntroStep(onNext = next)
-                    OnboardingStep.MiniPlayer -> MiniPlayerStep(onNext = next)
-                    OnboardingStep.PlayerCover -> PlayerCoverStep(onNext = next)
-                    OnboardingStep.PlayerPull -> PlayerPullStep(onNext = next)
-                    OnboardingStep.Windows -> WindowsStep(onNext = next)
-                    OnboardingStep.Wave -> WaveStep(onNext = next)
-                    OnboardingStep.Done -> DoneStep(onNext = next)
-                }
-            }
+            Box(modifier = Modifier.fillMaxWidth().weight(1f)) { content() }
         }
     }
 }
 
-private enum class OnboardingStep { Intro, MiniPlayer, PlayerCover, PlayerPull, Windows, Wave, Done }
+private enum class OnboardingStep { Intro, MiniPlayer, PlayerCover, PlayerPull, Windows, Wave, Home, Done }
 
-// The steps that teach a gesture, for "Жест 2 из 5".
-private const val GESTURE_STEPS = 5
+// The steps that teach a gesture, for "Жест 2 из 6".
+private const val GESTURE_STEPS = 6
 
 /** The gestures a finger demonstrates. */
 private enum class Hint { SwipeLeft, SwipeRight, SwipeUp, SwipeDown, Tap, LongPress }
@@ -706,30 +723,40 @@ private fun WaveStep(onNext: () -> Unit) {
     StepLayout(
         kicker = tr("Жест 5 из %s", GESTURE_STEPS),
         title = tr("«Моя форма» на главной"),
-        text = tr("Первая полка во вкладке Яндекс Музыки. Нажатие на форму включает волну, а " +
+        text = tr("Большая карусель во вкладке Яндекс Музыки. Нажатие на форму включает волну, а " +
             "настроение и режим выбираются прямо под ней."),
         button = if (pressed && mood != null) tr("Дальше") else tr("Пропустить шаг"),
         onNext = onNext,
         tasks = tasks,
         demo = {
-            ScreenFrame(place = tr("Главная · Яндекс Музыка")) {
+            // The tab as it is now: the shape held in focus, and the mood and the mode always right
+            // under it — no pane of settings any more, nothing to hold. Wider than the other small
+            // screens, for the four moods to fit in a row as they do on home.
+            ScreenFrame(place = tr("Главная · Яндекс Музыка"), aspect = 0.8f) {
                 Column(
                     modifier = Modifier
                         .fillMaxSize()
-                        .padding(14.dp),
+                        .padding(horizontal = 10.dp, vertical = 12.dp),
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
+                    Text(
+                        text = tr("Яндекс Музыка").uppercase(),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = colors.onSurfaceVariant,
+                        maxLines = 1
+                    )
                     Text(tr("Моя форма"), style = MaterialTheme.typography.titleLarge, maxLines = 1)
                     Box(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .weight(1f),
+                            .weight(1f)
+                            .padding(vertical = 6.dp),
                         contentAlignment = Alignment.Center
                     ) {
                         Box(
                             modifier = Modifier
-                                .fillMaxWidth(0.92f)
-                                .aspectRatio(1f),
+                                .fillMaxHeight()
+                                .aspectRatio(1f, matchHeightConstraintsFirst = true),
                             contentAlignment = Alignment.Center
                         ) {
                             WaveShape(
@@ -749,27 +776,145 @@ private fun WaveStep(onNext: () -> Unit) {
                             if (!pressed) GestureHint(hint = Hint.Tap, modifier = Modifier.matchParentSize())
                         }
                     }
+                    WaveChoices(
+                        picks = picks,
+                        onPick = { key, seed ->
+                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                            if (picks[key] == seed) picks.remove(key) else picks[key] = seed
+                        },
+                        onReset = { picks.clear() },
+                        compact = true
+                    )
                 }
-            }
-            // The mood and the mode under the shape once the wave is on, as wide as they are on
-            // home: the small screen is too narrow for four in a row.
-            AnimatedVisibility(
-                visible = pressed,
-                enter = fadeIn(tween(160)) + scaleIn(spring(dampingRatio = 0.7f, stiffness = 520f), initialScale = 0.85f),
-                exit = fadeOut(tween(120)) + scaleOut(tween(140), targetScale = 0.92f),
-                modifier = Modifier.align(Alignment.BottomCenter)
-            ) {
-                WaveTuningPane(
-                    picks = picks,
-                    onPick = { key, seed ->
-                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                        if (picks[key] == seed) picks.remove(key) else picks[key] = seed
-                    },
-                    onReset = { picks.clear() }
-                )
             }
         }
     )
+}
+
+/**
+ * Home as it is now: each service opens on its one big thing, held in focus. A swipe up takes the
+ * page on to the rest of its shelves, a swipe down brings it back to the carousel — let go half way,
+ * it goes on to the nearer, never stopping between the two.
+ */
+@Composable
+private fun HomeStep(onNext: () -> Unit) {
+    var upOnce by remember { mutableStateOf(false) }
+    var downOnce by remember { mutableStateOf(false) }
+    var onShelves by remember { mutableStateOf(false) }
+    val tasks = listOf(
+        tr("Смахни вверх — откроются разделы") to upOnce,
+        tr("Смахни вниз — вернёшься к карусели") to downOnce
+    )
+    StepLayout(
+        kicker = tr("Жест 6 из %s", GESTURE_STEPS),
+        title = tr("Главное — под пальцем"),
+        text = tr("Каждый сервис открывается на большой карусели. Свайп вверх уводит к остальным " +
+            "разделам, вниз — притягивает обратно: на полпути страница не останавливается. «Все» " +
+            "под обложкой открывает весь раздел."),
+        button = if (upOnce && downOnce) tr("Дальше") else tr("Пропустить шаг"),
+        onNext = onNext,
+        tasks = tasks,
+        demo = {
+            val haptic = LocalHapticFeedback.current
+            val scope = rememberCoroutineScope()
+            val shift = remember { Animatable(0f) }
+            val flingPx = with(LocalDensity.current) { QueueFlingVelocity.toPx() }
+            ScreenFrame(place = tr("Главная")) {
+                BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+                    val pagePx = constraints.maxHeight.toFloat().coerceAtLeast(1f)
+                    // 0 on the carousel, 1 on the shelves.
+                    fun away() = (-shift.value / pagePx).coerceIn(0f, 1f)
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .graphicsLayer {
+                                translationY = shift.value
+                                val gone = away()
+                                alpha = 1f - 0.5f * gone
+                                scaleX = 1f - 0.06f * gone
+                                scaleY = 1f - 0.06f * gone
+                            }
+                    ) { HomeMock() }
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .graphicsLayer { translationY = pagePx + shift.value }
+                    ) { ShelvesMock() }
+                    Box(
+                        modifier = Modifier
+                            .matchParentSize()
+                            .pointerInput(Unit) {
+                                val velocity = VelocityTracker()
+                                var from = 0f
+                                detectVerticalDragGestures(
+                                    onDragStart = {
+                                        velocity.resetTracking()
+                                        from = away()
+                                    },
+                                    onVerticalDrag = { change, dy ->
+                                        velocity.addPosition(change.uptimeMillis, change.position)
+                                        change.consume()
+                                        scope.launch(start = CoroutineStart.UNDISPATCHED) {
+                                            shift.snapTo((shift.value + dy).coerceIn(-pagePx, 0f))
+                                        }
+                                    },
+                                    onDragEnd = {
+                                        val speed = velocity.calculateVelocity().y
+                                        // The magnet: on to the shelves or back to the carousel,
+                                        // whichever it was flung toward, or the nearer.
+                                        val toShelves = if (kotlin.math.abs(speed) > flingPx) speed < 0f else away() > 0.5f
+                                        if (toShelves && from < 0.5f) upOnce = true
+                                        if (!toShelves && from > 0.5f) downOnce = true
+                                        onShelves = toShelves
+                                        haptic.performHapticFeedback(HapticFeedbackType.SegmentTick)
+                                        scope.launch { shift.animateTo(if (toShelves) -pagePx else 0f, QueueSpring, initialVelocity = speed) }
+                                    },
+                                    onDragCancel = { scope.launch { shift.animateTo(if (onShelves) -pagePx else 0f, QueueSpring) } }
+                                )
+                            }
+                    ) {
+                        when {
+                            !upOnce -> GestureHint(hint = Hint.SwipeUp, modifier = Modifier.matchParentSize())
+                            onShelves && !downOnce -> GestureHint(hint = Hint.SwipeDown, modifier = Modifier.matchParentSize())
+                        }
+                    }
+                }
+            }
+        }
+    )
+}
+
+/** Home's shelves as the small screens show them: a few, each its name with "Все" and a row of covers. */
+@Composable
+private fun ShelvesMock() {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(horizontal = 14.dp, vertical = 16.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp)
+    ) {
+        listOf(tr("Альбомы"), tr("Плейлисты"), tr("История")).forEachIndexed { shelf, title ->
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(title, style = MaterialTheme.typography.titleSmall, maxLines = 1, modifier = Modifier.weight(1f))
+                    Surface(shape = CircleShape, color = PanelColors.container, contentColor = PanelColors.content) {
+                        Text(tr("Все"), style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp))
+                    }
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    repeat(3) { index ->
+                        Box(
+                            modifier = Modifier
+                                .weight(1f)
+                                .aspectRatio(1f)
+                                .clip(RoundedCornerShape(14.dp))
+                                .background(demoHue(shelf * 3 + index))
+                        )
+                    }
+                }
+            }
+        }
+    }
 }
 
 @Composable
@@ -794,6 +939,236 @@ private fun DoneStep(onNext: () -> Unit) {
             }
         }
     )
+}
+
+// ----------------------------------------------------------------------------- After signing in
+
+/** A service the setup offers to connect: its name, what it brings, and the way to sign in. */
+@androidx.compose.runtime.Immutable
+internal class SetupService(
+    val title: String,
+    val icon: ImageVector,
+    val about: String,
+    val connected: Boolean,
+    val onConnect: (() -> Unit)?
+)
+
+/**
+ * One service's carousel as the setup offers it: what it can open on ([options], a choice's key and
+ * its name), and which it opens on now. [note] is said under them.
+ */
+@androidx.compose.runtime.Immutable
+internal class HeroChoices(
+    val service: String,
+    val title: String,
+    val icon: ImageVector,
+    val options: List<Pair<String, String>>,
+    val picked: String,
+    val note: String? = null
+)
+
+private enum class SetupStep { Services, Home }
+
+/**
+ * Once signed in to SoundCloud: the other services, each a tap from its sign-in, and then what each
+ * service's home opens on — the shelf in its big carousel, «Моя форма» or another. Asked for again
+ * from the settings ([homeOnly]), the choice of the carousels alone.
+ */
+@Composable
+internal fun HomeSetupOverlay(
+    services: List<SetupService>,
+    heroes: List<HeroChoices>,
+    onPick: (service: String, choice: String) -> Unit,
+    onFinish: () -> Unit,
+    homeOnly: Boolean = false
+) {
+    val steps = if (homeOnly) listOf(SetupStep.Home) else SetupStep.entries
+    var step by rememberSaveable { mutableIntStateOf(0) }
+    val last = steps.lastIndex
+    BackHandler { if (step > 0) step-- else onFinish() }
+    OverlayFrame(current = step, count = steps.size, onSkip = if (step < last) onFinish else null) {
+        AnimatedContent(
+            targetState = step,
+            transitionSpec = {
+                val forward = targetState > initialState
+                (slideInHorizontally(tween(320)) { w -> if (forward) w / 4 else -w / 4 } + fadeIn(tween(320))) togetherWith
+                    (slideOutHorizontally(tween(220)) { w -> if (forward) -w / 4 else w / 4 } + fadeOut(tween(180)))
+            },
+            label = "setupStep",
+            modifier = Modifier.fillMaxSize()
+        ) { shown ->
+            val next = { if (shown < last) step = shown + 1 else onFinish() }
+            when (steps[shown]) {
+                SetupStep.Services -> ServicesStep(services = services, onNext = next)
+                SetupStep.Home -> HeroesStep(heroes = heroes, onPick = onPick, onNext = next)
+            }
+        }
+    }
+}
+
+@Composable
+private fun ServicesStep(services: List<SetupService>, onNext: () -> Unit) {
+    StepLayout(
+        kicker = tr("Сервисы"),
+        title = tr("Что ещё подключить?"),
+        text = tr("SoundCloud уже здесь. Яндекс Музыку и YouTube Music можно подключить сейчас — или потом, в настройках."),
+        button = tr("Дальше"),
+        onNext = onNext,
+        demoAlignment = Alignment.BottomCenter,
+        demo = {
+            Column(
+                modifier = Modifier.fillMaxWidth().widthIn(max = 480.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                services.forEach { ServiceCard(it) }
+            }
+        }
+    )
+}
+
+/** A service on a panel: its mark, its name and what it brings, and "Подключить" — or a tick. */
+@Composable
+private fun ServiceCard(service: SetupService) {
+    val colors = MaterialTheme.colorScheme
+    val haptic = LocalHapticFeedback.current
+    Surface(
+        shape = RoundedCornerShape(24.dp),
+        color = PanelColors.container,
+        contentColor = PanelColors.content,
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Row(
+            modifier = Modifier.padding(start = 14.dp, end = 12.dp, top = 12.dp, bottom = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(14.dp)
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(44.dp)
+                    .clip(CircleShape)
+                    .background(PanelColors.accent.copy(alpha = 0.16f)),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(service.icon, contentDescription = null, tint = PanelColors.accent, modifier = Modifier.size(24.dp))
+            }
+            Column(modifier = Modifier.weight(1f)) {
+                Text(service.title, style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(
+                    text = if (service.connected) tr("Подключено") else service.about,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = colors.onSurfaceVariant,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+            AnimatedContent(
+                targetState = service.connected,
+                transitionSpec = { scaleIn() togetherWith scaleOut() },
+                label = "serviceConnected"
+            ) { connected ->
+                if (connected) {
+                    Icon(
+                        Icons.Rounded.CheckCircle,
+                        contentDescription = tr("Подключено"),
+                        tint = colors.primary,
+                        modifier = Modifier.padding(horizontal = 10.dp).size(28.dp)
+                    )
+                } else {
+                    FilledTonalButton(
+                        onClick = {
+                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                            service.onConnect?.invoke()
+                        },
+                        modifier = Modifier.heightIn(min = 44.dp)
+                    ) {
+                        Text(tr("Подключить"))
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun HeroesStep(heroes: List<HeroChoices>, onPick: (String, String) -> Unit, onNext: () -> Unit) {
+    StepLayout(
+        kicker = tr("Главная"),
+        title = tr("Что открывать первым"),
+        text = tr("У каждого сервиса на главной большая карусель. Выбери, что в ней будет, — остальное останется разделами под ней."),
+        button = tr("Готово"),
+        onNext = onNext,
+        demoAlignment = Alignment.BottomCenter,
+        demo = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .widthIn(max = 480.dp)
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(18.dp)
+            ) {
+                heroes.forEach { hero -> HeroPicker(hero = hero, onPick = onPick) }
+            }
+        }
+    )
+}
+
+/** A service's name, and what its carousel can open on as pills: the one it opens on lit. */
+@OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
+@Composable
+private fun HeroPicker(hero: HeroChoices, onPick: (String, String) -> Unit) {
+    val haptic = LocalHapticFeedback.current
+    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Icon(hero.icon, contentDescription = null, tint = PanelColors.accent, modifier = Modifier.size(18.dp))
+            Text(hero.title, style = MaterialTheme.typography.titleMedium)
+        }
+        androidx.compose.foundation.layout.FlowRow(
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            hero.options.forEach { (key, label) ->
+                ChoicePill(
+                    label = label,
+                    selected = key == hero.picked,
+                    onClick = {
+                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                        onPick(hero.service, key)
+                    }
+                )
+            }
+        }
+        hero.note?.let { note ->
+            Text(note, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+    }
+}
+
+@Composable
+private fun ChoicePill(label: String, selected: Boolean, onClick: () -> Unit) {
+    val colors = MaterialTheme.colorScheme
+    val fill by animateColorAsState(if (selected) colors.primary else colors.onSurface.copy(alpha = 0.08f), tween(250), label = "pillFill")
+    val content by animateColorAsState(if (selected) colors.onPrimary else colors.onSurface, tween(250), label = "pillContent")
+    Surface(
+        onClick = onClick,
+        shape = CircleShape,
+        color = fill,
+        contentColor = content,
+        modifier = Modifier
+            .heightIn(min = 44.dp)
+            .widthIn(max = 320.dp)
+            .semantics { this.selected = selected }
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            AnimatedVisibility(visible = selected) {
+                Icon(Icons.Rounded.Check, contentDescription = null, modifier = Modifier.size(18.dp))
+            }
+            Text(label, style = MaterialTheme.typography.labelLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------- Small screens
@@ -862,7 +1237,11 @@ private fun Modifier.pulledAway(pull: Animatable<Float, *>, progress: () -> Floa
         alpha = 1f - ((pulled - CollapseFadeFrom) / (1f - CollapseFadeFrom)).coerceIn(0f, 1f)
     }
 
-/** Home as the small screens show it: a section's title and the cover in front of its carousel. */
+/**
+ * Home as the small screens show it, as it is now: the service over the section's name, the cover
+ * in front of its carousel, its name by the cover's edge with "Все" beside it, and the next shelf
+ * looking in at the foot.
+ */
 @Composable
 private fun HomeMock() {
     val colors = MaterialTheme.colorScheme
@@ -872,8 +1251,14 @@ private fun HomeMock() {
             .padding(horizontal = 14.dp, vertical = 16.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        Text(tr("Моя музыка"), style = MaterialTheme.typography.titleLarge, maxLines = 1)
-        Spacer(modifier = Modifier.height(16.dp))
+        Text(
+            text = tr("Моя музыка").uppercase(),
+            style = MaterialTheme.typography.labelSmall,
+            color = colors.onSurfaceVariant,
+            maxLines = 1
+        )
+        Text(tr("На устройстве"), style = MaterialTheme.typography.titleLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        Spacer(modifier = Modifier.height(14.dp))
         Box(
             modifier = Modifier
                 .fillMaxWidth(0.74f)
@@ -881,8 +1266,31 @@ private fun HomeMock() {
                 .clip(RoundedCornerShape(22.dp))
                 .background(Brush.linearGradient(listOf(lerp(colors.tertiary, Color.White, 0.2f), lerp(colors.primary, Color.Black, 0.3f))))
         )
-        Spacer(modifier = Modifier.height(10.dp))
-        Text(tr("Скачанное"), style = MaterialTheme.typography.titleSmall, maxLines = 1)
+        Row(
+            modifier = Modifier.fillMaxWidth(0.74f).padding(top = 8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = tr("Скачанное"),
+                style = MaterialTheme.typography.titleSmall,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f)
+            )
+            Surface(shape = CircleShape, color = PanelColors.container, contentColor = PanelColors.content) {
+                Text(tr("Все"), style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp))
+            }
+        }
+        Spacer(modifier = Modifier.weight(1f))
+        // The next shelf, quieter, looking in under the hero.
+        Text(
+            text = tr("Плейлисты"),
+            style = MaterialTheme.typography.titleSmall,
+            maxLines = 1,
+            modifier = Modifier
+                .fillMaxWidth()
+                .graphicsLayer { alpha = 0.6f }
+        )
     }
 }
 
@@ -1149,6 +1557,8 @@ private fun StepLayout(
     button: String,
     onNext: () -> Unit,
     tasks: List<Pair<String, Boolean>> = emptyList(),
+    // Where the demo stands in its room: in the middle, or down by the button, under the thumb.
+    demoAlignment: Alignment = Alignment.Center,
     demo: @Composable BoxScope.() -> Unit
 ) {
     val words: @Composable ColumnScope.() -> Unit = {
@@ -1210,7 +1620,7 @@ private fun StepLayout(
             }
             Box(
                 modifier = Modifier.weight(1f).fillMaxHeight(),
-                contentAlignment = Alignment.Center,
+                contentAlignment = demoAlignment,
                 content = demo
             )
         }
@@ -1226,7 +1636,7 @@ private fun StepLayout(
                     .fillMaxWidth()
                     .weight(1f)
                     .padding(vertical = 16.dp),
-                contentAlignment = Alignment.Center,
+                contentAlignment = demoAlignment,
                 content = demo
             )
             checklist()

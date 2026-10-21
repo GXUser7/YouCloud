@@ -1026,8 +1026,7 @@ class MusicViewModel(
                     )
 
                     playlistList.add(0, applyCustomYandexPlaylistArtwork(likedPlaylist))
-                    val hidden = settingsRepository.hiddenYandexPlaylists.value
-                    _yandexPlaylists.value = playlistList.filterNot { hidden.contains(it.id.toString()) }
+                    _yandexPlaylists.value = playlistList
                 }
             } catch (e: Exception) {
                 Log.e("MusicViewModel", "Failed to load Yandex playlists", e)
@@ -1035,14 +1034,6 @@ class MusicViewModel(
                 _yandexPlaylistsLoading.value = false
             }
         }
-    }
-
-    /** Yandex playlists belong to the account, so they're hidden locally rather than deleted. */
-    fun hideYandexPlaylist(id: Long) {
-        settingsRepository.setYandexPlaylistHidden(id.toString(), true)
-        _yandexPlaylists.value = _yandexPlaylists.value.filterNot { it.id == id }
-        _selectedYandexPlaylist.value = null
-        _screen.value = AppScreen.HOME
     }
 
     fun selectYandexPlaylist(playlist: SoundCloudPlaylist) {
@@ -3833,6 +3824,19 @@ class MusicViewModel(
             deletePlaylist(existing.id)
             return
         }
+        saveAlbum(album, artistName)
+    }
+
+    /**
+     * Downloads an album whole, saving it to the library first when it isn't there: the files
+     * belong to a playlist, so "Скачать" no longer waits for the album to be liked.
+     */
+    fun downloadAlbum(album: SoundCloudPlaylist, artistName: String?) {
+        val saved = playlistsRepository.findBySource(album.sourceKey()) ?: saveAlbum(album, artistName)
+        downloadPlaylist(saved.id)
+    }
+
+    private fun saveAlbum(album: SoundCloudPlaylist, artistName: String?): Playlist =
         playlistsRepository.createFromSource(
             sourceKey = album.sourceKey(),
             name = album.title ?: tr("Альбом"),
@@ -3840,7 +3844,35 @@ class MusicViewModel(
             artworkUrl = ArtworkUrls.highRes(album.displayArtworkUrl),
             tracks = album.knownTracks.filterNot { it.title.isNullOrBlank() }.map { it.toFavoriteTrack() }
         )
+
+    /**
+     * A mix kept in the library as it is today, or let go of again: SoundCloud makes its mixes
+     * anew, so the copy is today's tracks under the mix's name, and downloads as an album does.
+     */
+    fun toggleMixSave(mix: SoundCloudMix, title: String, tracks: List<SoundCloudTrack>) {
+        val existing = playlistsRepository.findBySource(mix.sourceKey())
+        if (existing != null) {
+            deletePlaylist(existing.id)
+            return
+        }
+        saveMix(mix, title, tracks)
     }
+
+    /** Downloads a mix whole, keeping today's in the library first when it isn't there. */
+    fun downloadMix(mix: SoundCloudMix, title: String, tracks: List<SoundCloudTrack>) {
+        val saved = playlistsRepository.findBySource(mix.sourceKey()) ?: saveMix(mix, title, tracks)
+        downloadPlaylist(saved.id)
+    }
+
+    private fun saveMix(mix: SoundCloudMix, title: String, tracks: List<SoundCloudTrack>): Playlist =
+        playlistsRepository.createFromSource(
+            sourceKey = mix.sourceKey(),
+            name = title,
+            // Which day's it is, where an album names its artist.
+            artist = "SoundCloud · " + java.time.LocalDate.now().format(java.time.format.DateTimeFormatter.ofPattern("dd.MM")),
+            artworkUrl = ArtworkUrls.highRes(mix.artworkUrl) ?: mix.artworkUrl,
+            tracks = tracks.filterNot { it.title.isNullOrBlank() }.map { it.toFavoriteTrack() }
+        )
 
     /** Brings a liked album's saved track list up to date once its full list has loaded. */
     private fun syncLikedAlbum(album: SoundCloudPlaylist) {

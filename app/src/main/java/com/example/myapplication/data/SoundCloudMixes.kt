@@ -20,6 +20,8 @@ data class SoundCloudMixPlaylist(
     val id: String?,
     val urn: String?,
     val permalink: String?,
+    // Its page on soundcloud.com: what sharing the mix shares.
+    @SerializedName("permalink_url") val permalinkUrl: String? = null,
     val title: String?,
     val description: String?,
     @SerializedName("short_description") val shortDescription: String?,
@@ -35,7 +37,8 @@ data class SoundCloudMixPlaylist(
             title = title?.takeIf { it.isNotBlank() } ?: "Mix",
             description = shortDescription?.takeIf { it.isNotBlank() } ?: description,
             artworkUrl = calculatedArtworkUrl ?: artworkUrl,
-            trackIds = tracks.map { it.id }
+            trackIds = tracks.map { it.id },
+            url = permalinkUrl?.takeIf { it.startsWith("https://") }
         )
     }
 }
@@ -52,8 +55,15 @@ data class SoundCloudMix(
     val title: String,
     val description: String?,
     val artworkUrl: String?,
-    val trackIds: List<Long>
+    val trackIds: List<Long>,
+    val url: String? = null
 )
+
+/**
+ * A mix's key in the library as it is on [day]: SoundCloud makes its mixes anew, so a mix kept
+ * is that day's tracks, and the next day's is another one to keep.
+ */
+fun SoundCloudMix.sourceKey(day: java.time.LocalDate = java.time.LocalDate.now()): String = "soundcloud:mix:$id:$day"
 
 data class MixSection(
     val title: String,

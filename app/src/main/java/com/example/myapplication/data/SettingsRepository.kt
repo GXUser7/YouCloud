@@ -54,22 +54,6 @@ class SettingsRepository(
     private val _yandexUid = MutableStateFlow(preferences.getLong(KEY_YANDEX_UID, 0L))
     val yandexUid = _yandexUid.asStateFlow()
 
-    // Yandex playlists can't be deleted from here — they belong to the account — so hiding is
-    // local: the ids listed here are filtered out of the library carousel.
-    val hiddenYandexPlaylists = MutableStateFlow(
-        preferences.getStringSet(KEY_HIDDEN_YANDEX_PLAYLISTS, emptySet()).orEmpty()
-    )
-
-    fun setYandexPlaylistHidden(id: String, hidden: Boolean) {
-        val updated = if (hidden) {
-            hiddenYandexPlaylists.value + id
-        } else {
-            hiddenYandexPlaylists.value - id
-        }
-        hiddenYandexPlaylists.value = updated
-        preferences.edit().putStringSet(KEY_HIDDEN_YANDEX_PLAYLISTS, updated).apply()
-    }
-
     // YouTube Music: the site's session after signing in through the login page.
     private val _ytMusicAccount = MutableStateFlow(
         preferences.getString(KEY_YTM_ACCOUNT, null)?.takeIf { preferences.contains(KEY_YTM_COOKIE) }
@@ -135,15 +119,6 @@ class SettingsRepository(
     fun setBackgroundMotion(enabled: Boolean) {
         backgroundMotion.value = enabled
         preferences.edit().putBoolean(KEY_BACKGROUND_MOTION, enabled).apply()
-    }
-
-    // Home's first shelf lower down, a gap over it under the service's name: for whoever reached
-    // the old home's covers, in the middle of the screen, better than the top of it.
-    val homeTopGap = MutableStateFlow(preferences.getBoolean(KEY_HOME_TOP_GAP, false))
-
-    fun setHomeTopGap(enabled: Boolean) {
-        homeTopGap.value = enabled
-        preferences.edit().putBoolean(KEY_HOME_TOP_GAP, enabled).apply()
     }
 
     // The full-screen player takes its palette from the cover instead of the wallpaper. Only the
@@ -214,6 +189,32 @@ class SettingsRepository(
     fun setYtArtistShowAll(enabled: Boolean) {
         ytArtistShowAll.value = enabled
         preferences.edit().putBoolean(KEY_YT_ARTIST_SHOW_ALL, enabled).apply()
+    }
+
+    // Whether the setup after signing in has been through — the other services to connect, and
+    // what each service's home opens on: once, before the gestures.
+    val homeSetupDone = MutableStateFlow(preferences.getBoolean(KEY_HOME_SETUP_DONE, false))
+
+    fun setHomeSetupDone(done: Boolean) {
+        homeSetupDone.value = done
+        preferences.edit().putBoolean(KEY_HOME_SETUP_DONE, done).apply()
+    }
+
+    // The choice of what home opens on, asked for again from the settings: that step alone. Not
+    // kept: a restart closes it.
+    val homeChoicesOpen = MutableStateFlow(false)
+
+    // What each service's home has in its big carousel, by service: a shelf's key, or "row:" and
+    // the title of one of the service's own rows. A service missing, what it puts first itself.
+    val homeHeroes = MutableStateFlow(
+        HOME_HERO_SERVICES.mapNotNull { service ->
+            preferences.getString(KEY_HOME_HERO_PREFIX + service, null)?.let { service to it }
+        }.toMap()
+    )
+
+    fun setHomeHero(service: String, choice: String) {
+        homeHeroes.value = homeHeroes.value + (service to choice)
+        preferences.edit().putString(KEY_HOME_HERO_PREFIX + service, choice).apply()
     }
 
     // Whether the gestures have been shown: the first time the app opens they are, once.
@@ -489,7 +490,6 @@ class SettingsRepository(
         const val KEY_EQ_ENABLED = "equalizer_enabled"
         const val KEY_EQ_PRESET = "equalizer_preset"
         const val KEY_HOME_SELECTED_TAB = "home_selected_tab"
-        const val KEY_HIDDEN_YANDEX_PLAYLISTS = "hidden_yandex_playlists"
         const val KEY_PENDING_SOUNDCLOUD_LIKES = "pending_soundcloud_likes"
         const val KEY_YTM_COOKIE = "ytmusic_cookie"
         const val KEY_YTM_VISITOR = "ytmusic_visitor_data"
@@ -497,7 +497,6 @@ class SettingsRepository(
         const val KEY_YTM_ACCOUNT = "ytmusic_account"
         const val KEY_SHOW_DEBUG_PERCENTAGE = "show_debug_percentage"
         const val KEY_BACKGROUND_MOTION = "background_motion"
-        const val KEY_HOME_TOP_GAP = "home_top_gap"
         const val KEY_PLAYER_VIDEOS = "player_videos"
         const val KEY_VIDEO_YOUTUBE = "video_youtube"
         const val KEY_VIDEO_YANDEX = "video_yandex"
@@ -511,6 +510,10 @@ class SettingsRepository(
         const val KEY_OPEN_PLAYER_ON_TAP = "open_player_on_tap"
         const val KEY_SMOOTH_MOTION = "smooth_motion"
         const val KEY_ONBOARDING_DONE = "onboarding_done"
+        const val KEY_HOME_SETUP_DONE = "home_setup_done"
+        const val KEY_HOME_HERO_PREFIX = "home_hero_"
+        // Home's services as the carousels' choices are kept by.
+        val HOME_HERO_SERVICES = listOf("SoundCloud", "Yandex", "YouTube", "Downloads")
         const val KEY_CONTENTS_TAUGHT = "contents_taught"
         const val KEY_THEME_MODE = "theme_mode"
         const val KEY_YT_WEB_SEARCH = "yt_web_search"

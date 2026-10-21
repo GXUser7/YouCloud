@@ -72,9 +72,9 @@
       <button class="liked-art" onclick={() => go('set/' + liked.id)} aria-label={liked.title}>
         <LikedArt ids={liked.tracks} seed={liked.id} color={liked.color} />
       </button>
-      <div class="liked-info">
+      <div class="liked-info by-play">
         <span class="overline">{tr('Любимое')}</span>
-        <span class="liked-title ellipsis">{liked.title}</span>
+        <span class="liked-title">{liked.title}</span>
         <span class="muted count">{tracksCount(liked.tracks.length)}</span>
       </div>
       <div class="liked-play">
@@ -242,11 +242,23 @@
     min-width: 0;
     padding: 0 6px 4px;
   }
+  /* Kept clear of the play button in the corner: the name ran on under it. */
+  .by-play {
+    padding-right: 66px;
+  }
+  /* Two lines before it gives up: "Понравившаяся музыка" is longer than the tile is wide. */
   .liked-title {
     font-family: var(--font-display);
     font-weight: 650;
     font-size: 22px;
     letter-spacing: -0.02em;
+    line-height: 1.15;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+    overflow-wrap: anywhere;
   }
   .count {
     font-size: 13px;
