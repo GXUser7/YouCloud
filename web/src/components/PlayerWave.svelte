@@ -218,11 +218,13 @@
   /** Where the cover is, as shares of the picture: the shape grows from under it. */
   type Spot = { x: number; y: number; r: number }
 
-  function spot(): Spot {
+  /** Narrow, with the lyrics or the queue in the cover's place: left of the middle. */
+  const NO_COVER: Spot = { x: 0.3, y: 0.52, r: 0.22 }
+
+  function spot(): Spot | null {
     const box = canvas.getBoundingClientRect()
     const art = around?.getBoundingClientRect()
-    // Narrow, with the lyrics or the queue in its place, there is no cover: left of the middle.
-    if (!art?.width || !box.width) return { x: 0.3, y: 0.52, r: 0.22 }
+    if (!art?.width || !box.width) return null
     return { x: (art.left + art.width / 2 - box.left) / box.width, y: (art.top + art.height / 2 - box.top) / box.height, r: art.width / 2 / box.height }
   }
 
@@ -236,7 +238,12 @@
 
     let colors = palette()
     let shown: Colors | null = colors && { ...colors }
-    let at = spot()
+    // Where the shape stands: it follows the cover, and takes its place at once the first time it
+    // finds it (the cover may come a moment after the wave).
+    const found = spot()
+    let at: Spot = found ?? { ...NO_COVER }
+    let placed = !!found
+    let gliding = false
     const rings: Ring[] = []
     const slow = new Float32Array(BANDS)
     let wasKick = false
@@ -257,15 +264,29 @@
     const frame = (now: number) => {
       raf = requestAnimationFrame(frame)
       const still = calm.matches
-      if (now - drawn < (still ? 500 : player.playing ? 33 : 66)) return
+      // Every frame while the shape glides after the cover, which moves at the screen's rate.
+      if (now - drawn < (still ? 500 : gliding ? 0 : player.playing ? 33 : 66)) return
       const dt = last ? Math.min(0.1, (now - last) / 1000) : 0
       last = drawn = now
-      // The palette and the cover's place, a few times a second: they change with the track and
-      // the layout, not with every frame.
+      // The palette a few times a second: it changes with the track, not with every frame.
       if (now - lookedAt > 250) {
         lookedAt = now
         colors = palette() ?? colors
-        at = spot()
+      }
+      // The cover's place every frame, for the shape: it glides when the lyrics or the queue come
+      // or go, and read a few times a second it moved the shape in jumps. The shape eases after
+      // it, so even a frame late it moves smoothly.
+      gliding = false
+      if (app.waveLook === 'shape') {
+        const to = spot()
+        if (to && !placed) {
+          at = to
+          placed = true
+        }
+        const target = to ?? NO_COVER
+        const k = still ? 1 : 1 - Math.exp(-dt / 0.08)
+        at = { x: at.x + (target.x - at.x) * k, y: at.y + (target.y - at.y) * k, r: at.r + (target.r - at.r) * k }
+        gliding = Math.abs(target.x - at.x) + Math.abs(target.y - at.y) + Math.abs(target.r - at.r) > 0.001
       }
       if (!colors) return
       shown ??= { ...colors }
