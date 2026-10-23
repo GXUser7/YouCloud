@@ -2947,21 +2947,29 @@ private fun StageHero(shelf: HomeShelf, size: Dp, onOpen: () -> Unit) {
  * Among the shelves it flings as any list does. A fling up that began down among them stops at
  * their top, under the bar — a hard swipe from the bottom threw the feed all the way back to the
  * hero; from their top, the next swipe up goes on to it. Landing is a light tick under the finger.
+ *
+ * The last of the way, onto the hero or the shelves' top, isn't scrolled (see [glide]).
  */
 private class HeroMagnet(
     private val listState: androidx.compose.foundation.lazy.LazyListState,
     private val decay: androidx.compose.animation.core.DecayAnimationSpec<Float>,
+    private val scope: kotlinx.coroutines.CoroutineScope,
     private val shelvesAt: () -> Float,
     // How far into the hero's page the feed was as the finger came down; past it, MAX_VALUE.
     private val downAt: () -> Float,
     // Down this little from the shelves' top still counts as at it.
     private val topSlop: Float,
     private val minFling: Float,
+    // This near its place the feed has landed, to the eye: the tick is felt then.
+    private val landed: Float,
     private val onLanded: () -> Unit
 ) : androidx.compose.foundation.gestures.FlingBehavior {
     // How far into the hero's page the feed is; null once the page has gone by.
     private fun position(): Float? =
         if (listState.firstVisibleItemIndex == 0) listState.firstVisibleItemScrollOffset.toFloat() else null
+
+    // The feed on its way to its place (see glide), while it is.
+    private var gliding: kotlinx.coroutines.Job? = null
 
     override suspend fun androidx.compose.foundation.gestures.ScrollScope.performFling(initialVelocity: Float): Float {
         val start = position()
@@ -2982,7 +2990,7 @@ private class HeroMagnet(
             val at = position() ?: return velocity
             if (at >= shelvesAt()) return velocity
             // Up from among the shelves: they stop at their top. Up from their top: on to the hero.
-            if (fromShelves) settle(at, shelvesAt(), 0f) else settle(at, 0f, velocity)
+            if (fromShelves) glide(at, shelvesAt(), 0f) else glide(at, 0f, velocity)
             return 0f
         }
         // The end of a short feed is as far as the shelves can come.
@@ -2995,24 +3003,41 @@ private class HeroMagnet(
             start > shelves / 2f -> shelves
             else -> 0f
         }
-        settle(start, target, initialVelocity)
+        glide(start, target, initialVelocity)
         return 0f
     }
 
-    private suspend fun androidx.compose.foundation.gestures.ScrollScope.settle(from: Float, to: Float, velocity: Float) {
+    /**
+     * The feed from [from] onto [to], its place set frame by frame rather than scrolled, the fling
+     * over at once. A scroll in progress takes every touch on the feed straight away, whichever way
+     * it goes — to catch a fling — and a swipe sideways to another service while the feed settled
+     * moved the feed instead. Set this way the feed counts as still: a swipe sideways goes to the
+     * services, and one up or down takes the feed, the settle giving way to it.
+     */
+    private fun glide(from: Float, to: Float, velocity: Float) {
+        gliding?.cancel()
         if (kotlin.math.abs(to - from) < 1f) return
-        var last = from
-        androidx.compose.animation.core.animate(
-            initialValue = from,
-            targetValue = to,
-            initialVelocity = velocity,
-            // Onto the hero without bouncing off the top; onto the shelves with a little give.
-            animationSpec = spring(dampingRatio = if (to == 0f) 1f else 0.82f, stiffness = 420f)
-        ) { value, _ ->
-            scrollBy(value - last)
-            last = value
+        gliding = scope.launch {
+            // Felt as the feed comes to its place, not once the spring has died away under a
+            // pixel: that came a good while after the feed looked still.
+            var ticked = false
+            androidx.compose.animation.core.animate(
+                initialValue = from,
+                targetValue = to,
+                initialVelocity = velocity,
+                // Onto the hero without bouncing off the top; onto the shelves with a little give.
+                animationSpec = spring(dampingRatio = if (to == 0f) 1f else 0.82f, stiffness = 420f)
+            ) { value, _ ->
+                // A finger has the feed, or something else scrolls it: the settle gives way.
+                if (listState.isScrollInProgress) throw kotlinx.coroutines.CancellationException("The feed is scrolled")
+                listState.requestScrollToItem(0, value.roundToInt().coerceAtLeast(0))
+                if (!ticked && kotlin.math.abs(to - value) < landed) {
+                    ticked = true
+                    onLanded()
+                }
+            }
+            if (!ticked) onLanded()
         }
-        onLanded()
     }
 }
 
@@ -3027,10 +3052,12 @@ private fun rememberHeroMagnet(
     val density = LocalDensity.current
     val minFling = with(density) { HeroMagnetFling.toPx() }
     val topSlop = with(density) { 24.dp.toPx() }
+    val landed = with(density) { 8.dp.toPx() }
     val currentShelvesAt by rememberUpdatedState(shelvesAt)
     val currentDownAt by rememberUpdatedState(downAt)
-    return remember(listState, decay, minFling, topSlop, haptic) {
-        HeroMagnet(listState, decay, { currentShelvesAt() }, { currentDownAt() }, topSlop, minFling) {
+    val scope = rememberCoroutineScope()
+    return remember(listState, decay, scope, minFling, topSlop, landed, haptic) {
+        HeroMagnet(listState, decay, scope, { currentShelvesAt() }, { currentDownAt() }, topSlop, minFling, landed) {
             haptic.performHapticFeedback(HapticFeedbackType.SegmentTick)
         }
     }
