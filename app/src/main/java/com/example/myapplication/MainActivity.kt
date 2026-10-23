@@ -35,8 +35,14 @@ class MainActivity : ComponentActivity() {
     // A shortcut's, the quick settings tile's or the widget's action, until the screen has taken it.
     private val incomingAction = MutableStateFlow<String?>(null)
 
+    @OptIn(androidx.compose.ui.ExperimentalComposeUiApi::class)
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // Compose hands the screen to the system's content capture (Android System Intelligence):
+        // while a list scrolled it walked every node on screen ten times a second, 4 to 10 ms of
+        // the main thread each time — a frame dropped every tenth of a second. Nothing of the
+        // app's uses it; TalkBack and autofill go their own ways.
+        androidx.compose.ui.contentcapture.ContentCaptureManager.isEnabled = false
         com.example.myapplication.ui.Appearance.keepLanguageOfEarlierVersion(this)
         // The language the app's screens are in, for the rest of it too (see i18n.tr): changed from
         // Android's own settings while the app ran in the background, the process kept the old one.

@@ -27,6 +27,7 @@ import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.core.snap
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.fadeIn
 import androidx.compose.ui.graphics.graphicsLayer
@@ -630,17 +631,13 @@ fun MusicScreen(viewModel: MusicViewModel) {
         }
     }
 
-    // What glass shows: the moving backdrop, and the screens over it (for the mini player, which
-    // floats over them all).
-    // The backdrop is blurred already: glass over it alone is a wash of colour.
-    val backdropFrost = rememberFrostSource(soft = true)
+    // What glass shows: the screens over the backdrop (for the mini player, which floats over them
+    // all). The backdrop itself is under the window, and glass opens down to it (see frosted).
     val screensFrost = rememberFrostSource()
     Box(modifier = Modifier.fillMaxSize()) {
         // The full player is opaque, and so is the sign-in screen; nothing behind them needs a
         // frame, or the accelerometer.
-        Box(modifier = Modifier.fillMaxSize().drawWithContent { if (!playerCovers) drawContent() }.frostSource(backdropFrost)) {
-            ExpressiveBackground(motionEnabled = backgroundMotion, animated = selectedTrack == null && !isLoggedOut)
-        }
+        ExpressiveBackground(motionEnabled = backgroundMotion, animated = selectedTrack == null && !isLoggedOut && !playerCovers)
 
         yandexLoginUrl?.let { url ->
             YandexLoginDialog(
@@ -703,7 +700,7 @@ fun MusicScreen(viewModel: MusicViewModel) {
             SoundCloudLoginScreen(viewModel = viewModel)
         } else androidx.compose.runtime.CompositionLocalProvider(
             LocalAlbumLibrary provides albumLibrary,
-            LocalFrostSources provides listOf(backdropFrost),
+            LocalFrostSources provides emptyList(),
             LocalNowPlaying provides NowPlaying(isPlaying, playingFrom, currentTrackId),
             LocalTogether provides togetherLabel(togetherState)?.let { label -> TogetherBadge(label) { showTogether = true } }
         ) {
@@ -894,16 +891,19 @@ fun MusicScreen(viewModel: MusicViewModel) {
                         // Pulled off onto the page under it: that page is on screen already.
                         (EnterTransition.None togetherWith androidx.compose.animation.ExitTransition.None) using null
                     } else {
-                        ((fadeIn(tween(240)) + scaleIn(initialScale = 0.97f, animationSpec = tween(240))) togetherWith
-                            (fadeOut(tween(160)) + scaleOut(targetScale = 1.02f, animationSpec = tween(160)))) using null
+                        // Faded on what they draw (see glassFade).
+                        (scaleIn(initialScale = 0.97f, animationSpec = tween(240)) togetherWith
+                            scaleOut(targetScale = 1.02f, animationSpec = tween(160))) using null
                     }
                 },
                 contentKey = { it }
             ) { screen ->
+                // Pulled off onto the page under it, that page is on screen already: no fade.
+                val fade = glassFade(enter = if (pagePulled) snap() else tween(240), exit = if (pagePulled) snap() else tween(160))
                 // Home is under the pages, not one of them.
                 if (screen != null) Box(
                     // A touch on a page stops there: none reaches home under it.
-                    modifier = Modifier.fillMaxSize().pointerInput(Unit) { }
+                    modifier = Modifier.fillMaxSize().then(fade).pointerInput(Unit) { }
                 ) {
                 when (screen) {
                     AppScreen.HOME, AppScreen.MIX_DETAIL -> Unit
@@ -1353,9 +1353,11 @@ fun MusicScreen(viewModel: MusicViewModel) {
             androidx.compose.runtime.CompositionLocalProvider(LocalCovered provides pagesCovered) {
             AnimatedVisibility(
                 visibleState = mixShown,
-                enter = slideInVertically(initialOffsetY = { it }) + fadeIn(),
-                exit = slideOutVertically(targetOffsetY = { it }) + fadeOut()
+                // Faded on what it draws (see glassFade), as fadeIn and fadeOut would.
+                enter = slideInVertically(initialOffsetY = { it }),
+                exit = slideOutVertically(targetOffsetY = { it })
             ) {
+                Box(modifier = Modifier.fillMaxSize().then(glassFade(PageFadeSpring, PageFadeSpring))) {
                 selectedMix?.let { mix ->
                     MixDetailScreen(
                         mix = mix,
@@ -1383,6 +1385,7 @@ fun MusicScreen(viewModel: MusicViewModel) {
                             viewModel.toggleFavorite(track)
                         }
                     )
+                }
                 }
             }
             }
@@ -1444,7 +1447,7 @@ fun MusicScreen(viewModel: MusicViewModel) {
                     .padding(start = 16.dp, top = 16.dp, end = 16.dp, bottom = 16.dp + miniPlayerLift)
             ) {
                 androidx.compose.runtime.CompositionLocalProvider(
-                    LocalFrostSources provides listOf(backdropFrost, screensFrost),
+                    LocalFrostSources provides listOf(screensFrost),
                     LocalGlass provides true
                 ) {
                 PlayerBar(
@@ -2385,13 +2388,15 @@ private fun HomeScreen(
         AnimatedContent(
             targetState = openedShelf,
             transitionSpec = {
-                (fadeIn(tween(240)) + slideInVertically(tween(320)) { it / 30 }) togetherWith fadeOut(tween(160))
+                // Faded on what it draws (see glassFade).
+                slideInVertically(tween(320)) { it / 30 } togetherWith androidx.compose.animation.ExitTransition.KeepUntilTransitionsFinished
             },
             contentKey = { it?.second?.key },
             label = "shelfPage",
             modifier = Modifier.fillMaxSize()
         ) { shown ->
-            if (shown != null) {
+            val fade = glassFade(enter = tween(240), exit = tween(160))
+            if (shown != null) Box(modifier = Modifier.fillMaxSize().then(fade)) {
                 androidx.compose.runtime.CompositionLocalProvider(LocalPagePulled provides { pagePulled = it }) {
                     ShelfPage(
                         service = shown.first,
@@ -4102,6 +4107,9 @@ private val KeepSidewaysSwipe = object : NestedScrollConnection {
     override suspend fun onPostFling(consumed: androidx.compose.ui.unit.Velocity, available: androidx.compose.ui.unit.Velocity) =
         androidx.compose.ui.unit.Velocity(available.x, 0f)
 }
+
+// How fadeIn and fadeOut go by default, for a page faded on what it draws (see glassFade).
+private val PageFadeSpring = spring<Float>(stiffness = Spring.StiffnessMediumLow)
 
 // How a page of services settles: soft, a touch of give, no wobble.
 private val ServicePageSpring = spring<Float>(dampingRatio = 0.86f, stiffness = 320f)
@@ -8875,8 +8883,11 @@ internal fun rememberLoopClock(running: Boolean = true): androidx.compose.runtim
             if (hidden) return@collectLatest
             var start = 0L
             var shown = -1L
+            var last = 0L
             while (true) {
+                sleepToSlot(last, MotionPace.slotNanos(lively = true))
                 withFrameNanos { now ->
+                    last = now
                     if (start == 0L) start = now - clock.longValue * 1_000_000L
                     // As often as MotionPace says, on the frames the backdrop and every other clock
                     // move on (see frameSlot).
@@ -8908,8 +8919,11 @@ internal fun rememberPlaybackTick(running: Boolean): androidx.compose.runtime.Lo
         snapshotFlow { covered() }.collectLatest { hidden ->
             if (hidden) return@collectLatest
             var shown = -1L
+            var last = 0L
             while (true) {
+                sleepToSlot(last, MotionPace.slotNanos(lively = false))
                 withFrameNanos { now ->
+                    last = now
                     val slot = frameSlot(now, MotionPace.slotNanos(lively = false))
                     if (slot != shown) {
                         shown = slot
@@ -13514,13 +13528,15 @@ private fun ArtistDetailScreen(
         }
         albums.AnimatedContent(
             transitionSpec = {
-                ((fadeIn(tween(240)) + scaleIn(initialScale = 0.97f, animationSpec = tween(240))) togetherWith
-                    (fadeOut(tween(160)) + scaleOut(targetScale = 1.02f, animationSpec = tween(160)))) using null
+                // Faded on what they draw (see glassFade).
+                (scaleIn(initialScale = 0.97f, animationSpec = tween(240)) togetherWith
+                    scaleOut(targetScale = 1.02f, animationSpec = tween(160))) using null
             },
             // The same album filled in as its tracks arrive is the same page, not a new one.
             contentKey = { it?.id }
         ) { album ->
-            if (album != null) {
+            val fade = glassFade(enter = tween(240), exit = tween(160))
+            if (album != null) Box(modifier = Modifier.fillMaxSize().then(fade)) {
                 // Its pull shows the artist's page under it, not home: told here, not to the screen.
                 androidx.compose.runtime.CompositionLocalProvider(LocalPagePulled provides { albumPulled = it }) {
                     Box(modifier = Modifier.fillMaxSize().pointerInput(Unit) { }) {

@@ -1,5 +1,10 @@
 package com.example.myapplication.ui
 
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.FiniteAnimationSpec
+import androidx.compose.animation.EnterExitState
+import androidx.compose.animation.AnimatedVisibilityScope
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.runtime.Composable
@@ -15,6 +20,7 @@ import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.BlurEffect
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.luminance
@@ -28,14 +34,10 @@ import androidx.compose.ui.graphics.layer.GraphicsLayer
 import androidx.compose.ui.graphics.layer.drawLayer
 import androidx.compose.ui.graphics.rememberGraphicsLayer
 import androidx.compose.ui.graphics.drawscope.ContentDrawScope
-import androidx.compose.ui.layout.LayoutCoordinates
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.node.DrawModifierNode
-import androidx.compose.ui.node.GlobalPositionAwareModifierNode
 import androidx.compose.ui.node.ModifierNodeElement
-import androidx.compose.ui.node.TraversableNode
-import androidx.compose.ui.node.findNearestAncestor
 import androidx.compose.ui.node.invalidateDraw
 import androidx.compose.ui.platform.InspectorInfo
 import androidx.compose.ui.unit.Dp
@@ -44,36 +46,27 @@ import androidx.compose.ui.unit.dp
 import kotlin.math.ceil
 
 /*
- * Frosted glass. Compose can blur what a box draws, not what lies behind it; so what lies behind
- * is recorded as it is drawn — the app's moving backdrop, a screen's scrolling list — and a
- * frosted box draws that record again, the part under itself, blurred, under a wash of colour.
+ * Frosted glass. The moving backdrop is under the window (see ExpressiveBackground): glass opens
+ * the window down to it and lays a wash of colour over it — blurred already, it needs no blur of
+ * its own. What lies over the backdrop, a screen's scrolling list, Compose cannot blur from behind
+ * a box; so it is recorded as it is drawn, and a frosted box draws that record again, the part
+ * under itself, blurred, under the wash.
  *
  * A box must never draw a record it is itself part of: that is a layer drawing itself. So a
  * screen hands its glass the records of what is behind it and not around it — see
  * [LocalFrostSources].
  */
 
-/**
- * Something glass shows through: a layer the content is recorded into, and where it lies. [soft]:
- * blurred already (the backdrop's shapes are), so glass over it alone needs no blur of its own —
- * only a wash of colour, which looks the same and costs nothing on every frame of the backdrop.
- */
+/** Something glass shows through: a layer the content is recorded into, and where it lies. */
 @Stable
-class FrostSource internal constructor(internal val layer: GraphicsLayer, internal val soft: Boolean) {
+class FrostSource internal constructor(internal val layer: GraphicsLayer) {
     internal var origin by mutableStateOf(Offset.Zero)
 }
 
 @Composable
-fun rememberFrostSource(soft: Boolean = false): FrostSource {
+fun rememberFrostSource(): FrostSource {
     val layer = rememberGraphicsLayer()
-    return remember(layer) {
-        // A soft source — the backdrop — is drawn again by every piece of glass over it, on every
-        // frame: kept as one picture, redrawn only when it changes, rather than its ground and its
-        // two blurred layers each time over. It is opaque, so it looks just the same. On a phone
-        // of a few years ago this halved the frames that stuttered while search scrolled.
-        if (soft) layer.compositingStrategy = CompositingStrategy.Offscreen
-        FrostSource(layer, soft)
-    }
+    return remember(layer) { FrostSource(layer) }
 }
 
 /** What glass here shows through, back to front. Never a record the glass is inside of. */
@@ -108,15 +101,15 @@ fun Modifier.frosted(
 ): Modifier {
     val sources = LocalFrostSources.current
     // Blurring is only worth it over something sharp: a list scrolling under a bar, a screen
-    // under the mini player. Over the backdrop alone (blurred already) the glass draws it as it
-    // is under a wash of colour — which still hides whatever else passes behind, a list under a
-    // bar, as glass does.
+    // under the mini player. Over the backdrop alone (blurred already) the glass opens the window
+    // down to it under a wash of colour — which still hides whatever else passes behind, a list
+    // under a bar, as glass does.
     // Light glass catches the light as a faint shadow at its edge; a light rim on it was invisible.
     val rimColor = if (isLightTheme()) Color.Black.copy(alpha = 0.07f) else Color.White.copy(alpha = 0.07f)
-    if (sources.all { it.soft }) {
+    if (sources.isEmpty()) {
         return this
             .clip(shape)
-            .then(SoftFrostElement(sources, tint))
+            .then(BackdropGlassElement(tint))
             .then(if (rim) Modifier.border(1.dp, rimColor, shape) else Modifier)
     }
     val here = remember { FrostOrigin() }
@@ -133,6 +126,9 @@ fun Modifier.frosted(
                 ceil(size.height / shrink).toInt().coerceAtLeast(1)
             )
             onDrawBehind {
+                // Down to the backdrop under the window first, as glass over it alone does (see
+                // BackdropGlassNode): what is blurred here is what lies over the backdrop.
+                drawRect(Color.Black, blendMode = BlendMode.DstOut)
                 if (sources.isNotEmpty()) {
                     val at = here.value
                     glass.record(small) {
@@ -150,79 +146,53 @@ fun Modifier.frosted(
         .then(if (rim) Modifier.border(1.dp, rimColor, shape) else Modifier)
 }
 
-/**
- * Glass over soft sources only: the part of them under the box, under [tint]. Where the box is
- * kept in the node, not in state: a list of glass rows scrolling wrote every row's position into
- * state on every frame, when all it needed was the row redrawn.
- */
-private data class SoftFrostElement(val sources: List<FrostSource>, val tint: Color) :
-    ModifierNodeElement<SoftFrostNode>() {
-    override fun create() = SoftFrostNode(sources, tint)
+/** Glass over the backdrop alone: the window opened down to it, under [tint]. */
+private data class BackdropGlassElement(val tint: Color) : ModifierNodeElement<BackdropGlassNode>() {
+    override fun create() = BackdropGlassNode(tint)
 
-    override fun update(node: SoftFrostNode) {
-        node.sources = sources
+    override fun update(node: BackdropGlassNode) {
         node.tint = tint
         node.invalidateDraw()
     }
 
     override fun InspectorInfo.inspectableProperties() {
-        name = "softFrost"
+        name = "backdropGlass"
     }
 }
 
-private class SoftFrostNode(var sources: List<FrostSource>, var tint: Color) :
-    Modifier.Node(), DrawModifierNode, GlobalPositionAwareModifierNode {
-    private var at = Offset.Zero
-
-    override fun onGloballyPositioned(coordinates: LayoutCoordinates) {
-        // On a page being pulled away the glass keeps what it showed (see holdFrost).
-        if ((findNearestAncestor(HoldFrostKey) as? HoldFrostNode)?.held?.invoke() == true) return
-        val position = coordinates.positionInRoot()
-        if (position != at) {
-            at = position
-            invalidateDraw()
-        }
-    }
-
+private class BackdropGlassNode(var tint: Color) : Modifier.Node(), DrawModifierNode {
     override fun ContentDrawScope.draw() {
-        for (source in sources) {
-            translate(source.origin.x - at.x, source.origin.y - at.y) { drawLayer(source.layer) }
-        }
+        // The backdrop stands under the window (see ExpressiveBackground): the glass opens the
+        // window down to it, which hides what passes behind just as the backdrop painted here did —
+        // as much of it as the glass is there: half of it, on a page faded half in (see glassFade).
+        drawRect(Color.Black, blendMode = BlendMode.DstOut)
         drawRect(tint)
         drawContent()
     }
-}
-
-/**
- * Over a page that moves as a whole while [held] says so — pulled off its place: the glass on it
- * keeps the part of the backdrop it showed instead of drawing it again on every frame of the move,
- * so the page goes on as the picture it already is. Under the pages' wash of colour the backdrop
- * moving along with them a little can't be told; the page redrawn all over each frame could.
- */
-internal fun Modifier.holdFrost(held: () -> Boolean): Modifier = this then HoldFrostElement(held)
-
-private object HoldFrostKey
-
-private data class HoldFrostElement(val held: () -> Boolean) : ModifierNodeElement<HoldFrostNode>() {
-    override fun create() = HoldFrostNode(held)
-
-    override fun update(node: HoldFrostNode) {
-        node.held = held
-    }
-
-    override fun InspectorInfo.inspectableProperties() {
-        name = "holdFrost"
-    }
-}
-
-private class HoldFrostNode(var held: () -> Boolean) : Modifier.Node(), TraversableNode {
-    override val traverseKey: Any get() = HoldFrostKey
 }
 
 // Where a glass box is, read only while drawing: moving it redraws the glass, not the screen.
 @Stable
 private class FrostOrigin {
     var value by mutableStateOf(Offset.Zero)
+}
+
+/**
+ * A page faded in and out as fadeIn and fadeOut do, [enter] and [exit] long, but on what it draws
+ * rather than as a picture of it: its glass then takes away as much of what is under the page as
+ * the page is there, as the backdrop painted on it once did. Faded as a picture, the glass opened
+ * that picture alone, and home showed through a page coming in, then went at once as it settled.
+ */
+@Composable
+fun AnimatedVisibilityScope.glassFade(enter: FiniteAnimationSpec<Float>, exit: FiniteAnimationSpec<Float>): Modifier {
+    val shown = transition.animateFloat(
+        transitionSpec = { if (targetState == EnterExitState.Visible) enter else exit },
+        label = "glassFade"
+    ) { state -> if (state == EnterExitState.Visible) 1f else 0f }
+    return Modifier.graphicsLayer {
+        alpha = shown.value
+        compositingStrategy = androidx.compose.ui.graphics.CompositingStrategy.ModulateAlpha
+    }
 }
 
 /** The glass version of a solid fill of [color], or the fill itself where there's no glass. */

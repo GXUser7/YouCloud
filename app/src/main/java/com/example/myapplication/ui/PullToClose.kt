@@ -173,6 +173,4 @@ internal fun Modifier.pullToClose(onClose: () -> Unit): Modifier {
             }
             alpha = 1f - ((pulled - CollapseFadeFrom) / (1f - CollapseFadeFrom)).coerceIn(0f, 1f)
         }
-        // Moved as a whole, it is moved as the picture it is: its glass isn't drawn again for it.
-        .holdFrost { pull.value > 0f }
 }

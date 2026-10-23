@@ -352,6 +352,8 @@ internal fun WaveShape(
             var last = 0L
             var shown = -1L
             while (true) {
+                // Only turning, it sleeps to its next frame; spun or playing, it is drawn on every one.
+                sleepToSlot(last, MotionPace.slotNanos(lively = playing || kotlin.math.abs(spin) > 0.05f))
                 androidx.compose.runtime.withFrameNanos { now ->
                     val dt = if (last == 0L) 0f else ((now - last) / 1_000_000_000f).coerceAtMost(0.05f)
                     last = now
