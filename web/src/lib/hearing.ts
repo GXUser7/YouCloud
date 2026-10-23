@@ -3,8 +3,9 @@
 //
 // The playing <audio> is captured (captureStream), not routed through Web Audio: routed, a stream
 // from another origin that doesn't allow it (CORS) would go silent for the listener too, while a
-// capture of it is only refused. SoundCloud's are asked for in CORS and heard, as is whatever
-// plays through hls.js; a Yandex link or YouTube's from yt-dlp may not be. Where nothing can be heard
+// capture of it is only refused. SoundCloud's and Yandex's streams are asked for in CORS and heard,
+// as is whatever plays through hls.js; YouTube's are where the extension or Masaki let the page
+// read them (media.svelte.ts, readable). Where nothing can be heard
 // — that refusal, a browser without the capture (Firefox's own mutes the element, Safari has
 // none), a stand-in track with no sound — the wave breathes on its own while the music plays.
 

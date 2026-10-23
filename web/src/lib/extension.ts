@@ -221,6 +221,13 @@ const MEDIA_VERSION = { masaki: [0, 8, 0], extension: [0, 6, 1] }
 /** Whether the extension (or Masaki) fetches a broadcast's pieces, as a YouTube broadcast plays only so. */
 export const mediaRelay = () => !!version && !older(version, host === 'masaki' ? MEDIA_VERSION.masaki : MEDIA_VERSION.extension)
 
+/** The oldest that let the page read YouTube's sound, not only play it (CORS on googlevideo, which
+ *  YouTube doesn't give): Masaki's bridge 0.10, the extension 0.8. */
+const READ_VERSION = { masaki: [0, 10, 0], extension: [0, 8, 0] }
+
+/** Whether the full player's wave may hear YouTube: the extension (or Masaki) lets the page read its sound. */
+export const youtubeReadable = () => !!version && !older(version, host === 'masaki' ? READ_VERSION.masaki : READ_VERSION.extension)
+
 /** Whether something beside the site finds YouTube's sound with yt-dlp: Masaki itself, or the helper. */
 export async function hostStreams(): Promise<boolean> {
   if (host === 'masaki') return !!version && !older(version, HOST_STREAM_VERSION)

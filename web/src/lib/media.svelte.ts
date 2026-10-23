@@ -4,6 +4,7 @@
 // Worker like the API does. Which way works is found out once a visit: a cheap probe, and any
 // cover or stream that fails directly flips the switch for the rest.
 
+import { youtubeReadable } from './extension'
 import { viaWorker } from './net'
 
 const CDN = /(^|\.)(sndcdn\.com|soundcloud\.cloud)$/
@@ -26,16 +27,45 @@ export function reach(url: string | null | undefined): string | null {
   return media.viaWorker && isCdn(url) ? viaWorker(url) : url
 }
 
+/** Whose sound [hostname] serves, for asking it in CORS: SoundCloud's CDNs, Yandex's storage, YouTube's. */
+function soundOf(hostname: string): 'sc' | 'ya' | 'yt' | null {
+  if (CDN.test(hostname)) return 'sc'
+  if (/\.storage\.yandex\.net$/.test(hostname)) return 'ya'
+  if (/(^|\.)googlevideo\.com$/.test(hostname)) return 'yt'
+  return null
+}
+
+/** Services whose sound was refused when asked in CORS: played without asking for the rest of the visit. */
+const unreadable = new Set<string>()
+
 /**
  * Whether the page may read [url]'s sound, not only play it — the full player's wave listens to
- * it. The Worker is the site's own; SoundCloud's CDNs allow it (hls.js reads their playlists and
- * pieces so anyway, and Chrome now plays their HLS itself). Other services' links are played
- * without asking: one that doesn't allow it wouldn't play at all if asked.
+ * it. Asked so, a stream that doesn't allow it wouldn't play at all, so only where it is allowed:
+ * the Worker is the site's own; SoundCloud's CDNs and Yandex's storage answer anyone (hls.js reads
+ * SoundCloud's playlists and pieces so anyway, and Chrome now plays their HLS itself); YouTube
+ * answers no one, and the extension or Masaki add it to the answer.
  */
 export function readable(url: string): boolean {
   try {
     const u = new URL(url, location.href)
-    return u.origin === location.origin || CDN.test(u.hostname)
+    if (u.origin === location.origin) return true
+    const sound = soundOf(u.hostname)
+    if (!sound || unreadable.has(sound)) return false
+    return sound !== 'yt' || youtubeReadable()
+  } catch {
+    return false
+  }
+}
+
+/** [url]'s sound, asked in CORS, wouldn't play: true when it was asked so, and won't be again — the
+ *  caller tries once more without. */
+export function readingRefused(url: string | null | undefined): boolean {
+  if (!url || !readable(reach(url))) return false
+  try {
+    const sound = soundOf(new URL(reach(url)).hostname)
+    if (!sound) return false
+    unreadable.add(sound)
+    return true
   } catch {
     return false
   }

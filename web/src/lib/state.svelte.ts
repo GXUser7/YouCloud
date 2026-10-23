@@ -15,7 +15,7 @@ import { putTrack, serviceName, track as trackOf, type Service, type Track } fro
 import { favorites, setFavorite } from './favorites.svelte'
 import { BridgeLoader } from './hlsBridge'
 import * as live from './live'
-import { directFailed, reach, readable } from './media.svelte'
+import { directFailed, reach, readable, readingRefused } from './media.svelte'
 import { WAVE_MODES, WAVE_MOODS } from './mock'
 import * as yandex from './services/yandex'
 import { reason, toast } from './toast.svelte'
@@ -286,11 +286,12 @@ async function loadCurrent(autoplay: boolean, startAt = 0, retry = 0) {
 
 /**
  * A stream that won't play is asked for once more another way before the listener hears of it:
- * SoundCloud's through the Worker when its CDN is blocked here, YouTube's from another client
- * (a link one client hands out can be refused when fetched).
+ * SoundCloud's through the Worker when its CDN is blocked here, without CORS when it was asked in
+ * CORS (for the full player's wave), YouTube's from another client (a link one client hands out
+ * can be refused when fetched).
  */
 function recover(t: Track, e: unknown) {
-  if (attempt < 3 && (directFailed(streamUrl) || live.streamFailed(t))) {
+  if (attempt < 4 && (directFailed(streamUrl) || readingRefused(streamUrl) || live.streamFailed(t))) {
     loadCurrent(wantPlay || !audio.paused, audio.currentTime || player.position, attempt + 1)
     return
   }
@@ -398,7 +399,7 @@ function prepare(t: Track): Ready {
     // Refused before it plays, it is let go, and the way that failed isn't taken when it comes:
     // SoundCloud's through the Worker, YouTube's from another client.
     const refused = () => {
-      if (!directFailed(r.url)) live.streamFailed(t)
+      if (!directFailed(r.url) && !readingRefused(r.url)) live.streamFailed(t)
       letGo(r)
     }
     r.hls = attach(el, s, 0, (e) => (el === audio ? loaded === t.id && recover(t, e) : refused()))

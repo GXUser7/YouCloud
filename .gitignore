@@ -28,3 +28,5 @@ Thumbs.db
 
 # Local screenshots and temporary exports
 /Screenshots/
+.claude/launch.json
+.github/workflows/build-apk.yml

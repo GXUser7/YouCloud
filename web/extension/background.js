@@ -5,7 +5,8 @@
 // this browser — its cookie, or, signed out, the token its own requests carry once the listener
 // signs in on the tab it opens — and renews it when it expires; and Yandex's token from the Yandex
 // ID login it opens. With YouCloud Helper installed (web/helper), it hands that program YouTube's
-// sound to find with yt-dlp and what plays, for the listener's status in Discord.
+// sound to find with yt-dlp and what plays, for the listener's status in Discord. And it lets the
+// site read YouTube's sound as it plays, for the full player's wave (READ_MEDIA).
 
 const api = globalThis.browser ?? globalThis.chrome
 
@@ -24,6 +25,20 @@ const PROFILES = [
 const MEDIA = ['googlevideo.com']
 const ALLOWED = PROFILES.flatMap((p) => p.domains)
 const SITE_TABS = ['https://youcloud.inkerror67.workers.dev/*', 'http://localhost:5190/*']
+/** The same pages, as a rule names where a request comes from. */
+const SITE_DOMAINS = ['youcloud.inkerror67.workers.dev', 'localhost']
+
+/**
+ * YouTube's sound in the site's own <audio>, asked in CORS so the full player's wave can hear it:
+ * googlevideo answers that only to YouTube, so the answer is let read by the site. Nothing else
+ * changes — the request, and what the site's page may reach.
+ */
+const READ_MEDIA = {
+  id: 100,
+  priority: 1,
+  action: { type: 'modifyHeaders', responseHeaders: [{ header: 'access-control-allow-origin', operation: 'set', value: '*' }] },
+  condition: { requestDomains: MEDIA, initiatorDomains: SITE_DOMAINS, resourceTypes: ['media'] },
+}
 const NOT_IN_A_TAB = -1
 const MARK = 'ycr'
 
@@ -41,17 +56,20 @@ const headerOps = (headers) =>
   )
 
 // Header rules for the extension's own requests only (not in any tab): the pages the listener
-// browses keep their headers.
+// browses keep their headers. And the one for the site's <audio> playing YouTube (READ_MEDIA).
 const ready = (async () => {
   const existing = await api.declarativeNetRequest.getSessionRules()
   await api.declarativeNetRequest.updateSessionRules({
     removeRuleIds: existing.map((r) => r.id),
-    addRules: PROFILES.map((p, i) => ({
-      id: i + 1,
-      priority: 1,
-      action: { type: 'modifyHeaders', requestHeaders: headerOps(p.headers) },
-      condition: { requestDomains: p.domains, tabIds: [NOT_IN_A_TAB] },
-    })),
+    addRules: [
+      ...PROFILES.map((p, i) => ({
+        id: i + 1,
+        priority: 1,
+        action: { type: 'modifyHeaders', requestHeaders: headerOps(p.headers) },
+        condition: { requestDomains: p.domains, tabIds: [NOT_IN_A_TAB] },
+      })),
+      READ_MEDIA,
+    ],
   })
 })()
 
