@@ -484,6 +484,12 @@ fun MusicScreen(viewModel: MusicViewModel) {
     // A page opened from another page (the friends from the profile): pulled down, it uncovers
     // that page rather than home.
     val pageUnder by remember { derivedStateOf { viewModel.pageUnder(pages.targetState) } }
+    // The page being pulled off, as the pull began, and whether what it uncovers is home. Read
+    // from the page pulled, not from where the screens are going: the friends closed onto the
+    // profile under them, the pull is still on for a frame or two after, and read from the profile
+    // — with no page under it — home showed over it a moment, whole, then faded away under it.
+    var pulledPage by remember { mutableStateOf<AppScreen?>(null) }
+    val homeUnderPull by remember { derivedStateOf { pagePulled && viewModel.pageUnder(pulledPage) == null } }
     val mixShown = remember { MutableTransitionState(false) }
     // It stays under the player opened from it, as any screen does: hidden while the player was
     // up, it went away with its list and came back in from the top of it, and pulling the player
@@ -504,9 +510,9 @@ fun MusicScreen(viewModel: MusicViewModel) {
     // is what the pull uncovers.
     val homeShown = remember { Animatable(if (screen == AppScreen.HOME || screen == AppScreen.MIX_DETAIL) 1f else 0f) }
     LaunchedEffect(homeShown) {
-        snapshotFlow { Triple(pages.targetState == null, pagePulled, pageUnder != null) }.collectLatest { (noPage, pulled, underPage) ->
+        snapshotFlow { (pages.targetState == null) to homeUnderPull }.collectLatest { (noPage, uncovered) ->
             when {
-                pulled && !underPage -> homeShown.snapTo(1f)
+                uncovered -> homeShown.snapTo(1f)
                 noPage -> homeShown.animateTo(1f, tween(240))
                 else -> homeShown.animateTo(0f, tween(160))
             }
@@ -515,7 +521,7 @@ fun MusicScreen(viewModel: MusicViewModel) {
     // Gone from under a page, or under a mix that has come up over it, home isn't drawn at all.
     val homeHidden by remember {
         derivedStateOf {
-            (!pagePulled || pageUnder != null) && (homeShown.value == 0f || (mixShown.isIdle && mixShown.currentState))
+            !homeUnderPull && (homeShown.value == 0f || (mixShown.isIdle && mixShown.currentState))
         }
     }
     // What is covered, for what moves by itself there (see LocalCovered): read as it is needed,
@@ -714,7 +720,10 @@ fun MusicScreen(viewModel: MusicViewModel) {
             // are glass. (Not the full player, which draws its own backdrop.)
             androidx.compose.runtime.CompositionLocalProvider(
                 LocalGlass provides true,
-                LocalPagePulled provides { pagePulled = it }
+                LocalPagePulled provides { pulled ->
+                    if (pulled && !pagePulled) pulledPage = pages.targetState
+                    pagePulled = pulled
+                }
             ) {
             // Home at the bottom, always there: a page over it pulled down shows it under the page
             // at once, as the player shows what it was opened from, and coming back finds it as it
@@ -722,7 +731,7 @@ fun MusicScreen(viewModel: MusicViewModel) {
             // move by itself (see LocalCovered).
             // Under a page pulled off it, whole at once: on the frame the pull starts, not the next
             // (homeShown snaps to it a frame later), its glass blurring the backdrop with it.
-            UnderPages(hidden = { homeHidden }, shown = { if (pagePulled && pageUnder == null) 1f else homeShown.value }) {
+            UnderPages(hidden = { homeHidden }, shown = { if (homeUnderPull) 1f else homeShown.value }) {
                 androidx.compose.runtime.CompositionLocalProvider(LocalCovered provides homeCovered) {
                         HomeScreen(
                             mixSection = mixSection,

@@ -407,10 +407,14 @@ private class FrostOrigin {
  */
 @Composable
 fun AnimatedVisibilityScope.glassFade(enter: FiniteAnimationSpec<Float>, exit: FiniteAnimationSpec<Float>): Modifier {
+    // Snapped in, a page is there from its first frame. Faded from nothing in no time, it was
+    // nothing for that frame: the profile under friends pulled off it went, the profile taking its
+    // place wasn't there yet, and the backdrop alone showed a moment.
+    val instant = enter is androidx.compose.animation.core.SnapSpec<*>
     val shown = transition.animateFloat(
         transitionSpec = { if (targetState == EnterExitState.Visible) enter else exit },
         label = "glassFade"
-    ) { state -> if (state == EnterExitState.Visible) 1f else 0f }
+    ) { state -> if (state == EnterExitState.Visible || (instant && state == EnterExitState.PreEnter)) 1f else 0f }
     val amount = remember(shown) { { shown.value } }
     return Modifier
         .graphicsLayer {
