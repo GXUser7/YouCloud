@@ -40,13 +40,19 @@
 
 {#if size === 'big'}
   <div class="big">
-    {@render form(220)}
-    <div class="big-text">
-      <span class="overline">{tr('Яндекс Музыка')}</span>
-      <h2 class="display">{tr('Моя волна')}</h2>
-      <p class="muted now">{player.wave && t ? `${t.title} — ${artistNames(t)}` : starting ? tr('Волна подбирает треки…') : tr('Подстраивается под «Нравится» и пропуски')}</p>
-      <ButtonGroup options={WAVE.moods.map((m) => ({ value: m.seed, label: m.title }))} value={app.waveMood} allowNone size="s" onchange={(v) => tuneWave('mood', v)} />
-      <ButtonGroup options={WAVE.modes.map((m) => ({ value: m.seed, label: m.title }))} value={app.waveMode} allowNone size="s" onchange={(v) => tuneWave('mode', v)} />
+    <div class="big-in">
+      {@render form(220)}
+      <div class="big-text">
+        <span class="overline">{tr('Яндекс Музыка')}</span>
+        <h2 class="display">{tr('Моя волна')}</h2>
+        <p class="muted now">{player.wave && t ? `${t.title} — ${artistNames(t)}` : starting ? tr('Волна подбирает треки…') : tr('Подстраивается под «Нравится» и пропуски')}</p>
+      </div>
+      <div class="chips moods">
+        <ButtonGroup options={WAVE.moods.map((m) => ({ value: m.seed, label: m.title }))} value={app.waveMood} allowNone size="s" onchange={(v) => tuneWave('mood', v)} />
+      </div>
+      <div class="chips modes">
+        <ButtonGroup options={WAVE.modes.map((m) => ({ value: m.seed, label: m.title }))} value={app.waveMode} allowNone size="s" onchange={(v) => tuneWave('mode', v)} />
+      </div>
     </div>
   </div>
 {:else if size === 'card'}
@@ -127,14 +133,41 @@
     }
   }
 
+  /* Sized by its tile, not the window: the tile's width differs with the layout, the side panel
+     and the browser around the site. Wide, the shape on the left and everything beside it;
+     narrower, a smaller shape; narrow, the shape beside the title and the moods and modes under
+     both, across the tile. --k scales the shape and its glyph. */
   .big {
     height: 100%;
-    display: flex;
-    align-items: center;
-    gap: 32px;
+    container: wave / inline-size;
+  }
+  .big-in {
+    --k: 1;
+    height: 100%;
+    box-sizing: border-box;
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    grid-template-areas:
+      'form text'
+      'form moods'
+      'form modes';
+    align-content: center;
+    align-items: start;
+    column-gap: 32px;
+    row-gap: 10px;
     padding: 28px 32px;
   }
+  .big-in .form {
+    grid-area: form;
+    align-self: center;
+    width: calc(220px * var(--k));
+    height: calc(220px * var(--k));
+  }
+  .big-in .glyph {
+    scale: var(--k);
+  }
   .big-text {
+    grid-area: text;
     min-width: 0;
     display: flex;
     flex-direction: column;
@@ -142,11 +175,46 @@
     gap: 10px;
   }
   .big-text h2 {
-    font-size: clamp(32px, 3.4vw, 52px);
+    font-size: clamp(28px, 7.4cqi, 52px);
   }
   .now {
     margin-bottom: 8px;
     max-width: 40ch;
+  }
+  .moods {
+    grid-area: moods;
+  }
+  .modes {
+    grid-area: modes;
+  }
+  /* A group a little too wide for the tile scrolls rather than spilling past its edge. */
+  .chips {
+    min-width: 0;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+  @container wave (max-width: 700px) {
+    .big-in {
+      --k: 0.7;
+      column-gap: 24px;
+    }
+  }
+  @container wave (max-width: 560px) {
+    .big-in {
+      --k: 0.46;
+      grid-template-areas:
+        'form text'
+        'moods moods'
+        'modes modes';
+      column-gap: 18px;
+      padding: 24px;
+    }
+    .now {
+      margin-bottom: 0;
+    }
+    .moods {
+      margin-top: 8px;
+    }
   }
 
   .card {

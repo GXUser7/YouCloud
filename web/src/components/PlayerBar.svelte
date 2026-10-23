@@ -115,6 +115,9 @@
     padding: 8px 12px 8px 8px;
     border-radius: 32px;
     box-shadow: 0 -10px 40px -26px color-mix(in oklab, #000 60%, transparent);
+    /* What fits is decided by the bar's own width, not the window's: in Masaki and beside the
+       side panel the page is narrower than the window. */
+    container: bar / inline-size;
   }
 
   /* ---- What plays ---- */
@@ -323,28 +326,47 @@
     display: flex;
   }
 
-  /* Narrower, things step aside for the progress in this order: the times, shuffle and repeat,
-     and only then the volume, which the listener keeps at hand. */
-  @media (max-width: 1240px) {
-    .time,
-    .live-mark .label {
-      display: none;
-    }
-  }
   /* The bar on top keeps a slimmer margin here too. */
   @media (max-width: 1100px) {
     .bar {
       width: calc(100% - 40px);
     }
   }
-  @media (max-width: 980px) {
+  /* Narrower, things step aside for the progress in this order: the times, shuffle and repeat
+     (PlayerControls), and only then the volume, which the listener keeps at hand. Then what plays
+     and the progress give up some width; narrowest, the bar is what plays and back, play,
+     forward — the panels and the progress are a tap on the cover away, in the full player. */
+  @container bar (max-width: 1160px) {
+    .time,
+    .live-mark .label {
+      display: none;
+    }
+  }
+  @container bar (max-width: 980px) {
     .now {
       flex-basis: 240px;
     }
   }
-  @media (max-width: 820px) {
+  @container bar (max-width: 900px) {
     .vol {
       display: none;
+    }
+  }
+  @container bar (max-width: 740px) {
+    .now {
+      min-width: 132px;
+    }
+    .progress {
+      min-width: 90px;
+    }
+  }
+  @container bar (max-width: 600px) {
+    .progress,
+    .side {
+      display: none;
+    }
+    .now {
+      flex: 1 1 auto;
     }
   }
 </style>

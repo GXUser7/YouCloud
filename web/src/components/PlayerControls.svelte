@@ -78,9 +78,15 @@
 </div>
 
 <style>
-  /* In the bar, narrow: shuffle and repeat step aside for the progress. */
-  @media (max-width: 980px) {
+  /* In the bar (PlayerBar's container), narrow: shuffle and repeat step aside for the progress;
+     narrowest, the like too, for back, play and forward. */
+  @container bar (max-width: 960px) {
     .controls:not(.xl) .opt {
+      display: none;
+    }
+  }
+  @container bar (max-width: 420px) {
+    .controls:not(.xl) .like {
       display: none;
     }
   }

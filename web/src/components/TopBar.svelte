@@ -406,12 +406,32 @@
       gap: 10px;
     }
   }
-  @media (max-width: 640px) {
+  @media (max-width: 760px) {
     .service.on .label {
       display: none;
     }
     .service.on {
       padding: 0 11px;
+    }
+  }
+  /* Narrowest — beside a browser's panel, on a phone: the likes and friends wait in the profile's
+     menu, the lens leaves its width to the field, and away from home the way back stands for the
+     name. */
+  @media (max-width: 680px) {
+    .topbar {
+      padding: 0 12px 10px;
+    }
+    .end > .icon-btn,
+    .lens,
+    .start:has(> .icon-btn) .brand {
+      display: none;
+    }
+  }
+  @media (max-width: 400px) {
+    .service,
+    .service.on {
+      min-width: 40px;
+      padding: 0 9px;
     }
   }
 </style>
