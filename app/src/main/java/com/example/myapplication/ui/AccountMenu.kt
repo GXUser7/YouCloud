@@ -441,6 +441,8 @@ private fun AccountMenuPill(
                 translationY = (1f - shown) * 24.dp.toPx()
                 transformOrigin = TransformOrigin(1f, 1f)
             }
+            // The backdrop blurred under its glass as much as the pill is there.
+            .glassShown(appear)
             .height(ItemHeight)
             .widthIn(max = 300.dp)
             .then(if (accent) Modifier else Modifier.glassOr(CircleShape, container)),

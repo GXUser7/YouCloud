@@ -33,23 +33,41 @@ import androidx.compose.ui.graphics.layer.GraphicsLayer
 import androidx.compose.ui.graphics.layer.drawLayer
 import androidx.compose.ui.graphics.rememberGraphicsLayer
 import androidx.compose.ui.graphics.drawscope.ContentDrawScope
+import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.geometry.toRect
+import androidx.compose.ui.graphics.addOutline
+import androidx.compose.ui.graphics.asAndroidPath
+import androidx.compose.ui.graphics.setFrom
+import androidx.compose.ui.layout.LayoutCoordinates
+import androidx.compose.ui.layout.boundsInRoot
+import androidx.compose.ui.layout.findRootCoordinates
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.node.DrawModifierNode
+import androidx.compose.ui.node.GlobalPositionAwareModifierNode
 import androidx.compose.ui.node.ModifierNodeElement
+import androidx.compose.ui.node.ObserverModifierNode
+import androidx.compose.ui.node.TraversableNode
 import androidx.compose.ui.node.invalidateDraw
+import androidx.compose.ui.node.observeReads
+import androidx.compose.ui.node.requireDensity
+import androidx.compose.ui.node.requireLayoutDirection
+import androidx.compose.ui.node.requireView
+import androidx.compose.ui.node.traverseAncestors
 import androidx.compose.ui.platform.InspectorInfo
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.toSize
 import kotlin.math.ceil
 
 /*
  * Frosted glass. The moving backdrop is under the window (see ExpressiveBackground): glass opens
- * the window down to it and lays a wash of colour over it — blurred already, it needs no blur of
- * its own. What lies over the backdrop, a screen's scrolling list, Compose cannot blur from behind
- * a box; so it is recorded as it is drawn, and a frosted box draws that record again, the part
- * under itself, blurred, under the wash.
+ * the window down to it and lays a wash of colour over it, and the backdrop, told where the glass
+ * is, draws its shapes there blurred, as glass blurs them (see BackdropGlass) — on its own surface,
+ * so that the window still draws nothing while they move. What lies over the backdrop, a screen's
+ * scrolling list, Compose cannot blur from behind a box; so it is recorded as it is drawn, and a
+ * frosted box draws that record again, the part under itself, blurred, under the wash.
  *
  * A box must never draw a record it is itself part of: that is a layer drawing itself. So a
  * screen hands its glass the records of what is behind it and not around it — see
@@ -100,18 +118,20 @@ fun Modifier.frosted(
     blur: Dp = FrostBlur
 ): Modifier {
     val sources = LocalFrostSources.current
-    // Blurring is only worth it over something sharp: a list scrolling under a bar, a screen
-    // under the mini player. Over the backdrop alone (blurred already) the glass opens the window
-    // down to it under a wash of colour — which still hides whatever else passes behind, a list
-    // under a bar, as glass does.
+    // Over the backdrop alone the glass opens the window down to it under a wash of colour, and
+    // the backdrop blurs itself there (see BackdropBlurNode) — which still hides whatever else
+    // passes behind, a list under a bar, as glass does. Blurring here is for what is over the
+    // backdrop: a list scrolling under a bar, a screen under the mini player.
     if (sources.isEmpty()) {
         return this
+            .then(BackdropBlurElement(shape))
             .clip(shape)
             .then(BackdropGlassElement(tint))
     }
     val here = remember { FrostOrigin() }
     return this
         .onGloballyPositioned { here.value = it.positionInRoot() }
+        .then(BackdropBlurElement(shape))
         .clip(shape)
         .drawWithCache {
             val glass = obtainGraphicsLayer()
@@ -124,7 +144,8 @@ fun Modifier.frosted(
             )
             onDrawBehind {
                 // Down to the backdrop under the window first, as glass over it alone does (see
-                // BackdropGlassNode): what is blurred here is what lies over the backdrop.
+                // BackdropGlassNode): what is blurred here is what lies over the backdrop, which
+                // blurs itself.
                 drawRect(Color.Black, blendMode = BlendMode.DstOut)
                 if (sources.isNotEmpty()) {
                     val at = here.value
@@ -167,6 +188,142 @@ private class BackdropGlassNode(var tint: Color) : Modifier.Node(), DrawModifier
     }
 }
 
+/**
+ * Glass telling the backdrop where it is (see [BackdropGlass]), for the backdrop to draw its
+ * shapes under it blurred. Told again as the glass moves — scrolled, slid, scaled — changes its
+ * shape, or fades (see [glassShown]); and only then: a pane at rest costs nothing.
+ */
+private data class BackdropBlurElement(val shape: Shape) : ModifierNodeElement<BackdropBlurNode>() {
+    override fun create() = BackdropBlurNode(shape)
+
+    override fun update(node: BackdropBlurNode) {
+        node.shape = shape
+        node.tell()
+    }
+
+    override fun InspectorInfo.inspectableProperties() {
+        name = "backdropBlur"
+    }
+}
+
+private class BackdropBlurNode(var shape: Shape) : Modifier.Node(), GlobalPositionAwareModifierNode, ObserverModifierNode {
+    private var coordinates: LayoutCoordinates? = null
+    private var shown = 1f
+    private val matrix = androidx.compose.ui.graphics.Matrix()
+    private val location = IntArray(2)
+    // What the backdrop was told last: told again only when some of it changes.
+    private var toldShape: Shape? = null
+    private var toldSize = IntSize.Zero
+    private var toldBounds = Rect.Zero
+    private var toldVisible = Rect.Zero
+    private var toldShown = -1f
+    private var toldX = 0
+    private var toldY = 0
+
+    override fun onAttach() = readShown()
+
+    override fun onDetach() {
+        coordinates = null
+        toldShown = -1f
+        BackdropGlass.remove(this)
+    }
+
+    override fun onGloballyPositioned(coordinates: LayoutCoordinates) {
+        this.coordinates = coordinates
+        tell()
+    }
+
+    override fun onObservedReadsChanged() {
+        readShown()
+        tell()
+    }
+
+    private fun readShown() = observeReads {
+        var amount = 1f
+        traverseAncestors(GlassShownKey) { node ->
+            amount *= (node as GlassShownNode).amount().coerceIn(0f, 1f)
+            true
+        }
+        shown = amount
+    }
+
+    fun tell() {
+        val coordinates = coordinates?.takeIf { isAttached && it.isAttached } ?: return
+        if (shown <= 0f) {
+            if (toldShown > 0f) BackdropGlass.remove(this)
+            toldShown = 0f
+            return
+        }
+        matrix.reset()
+        coordinates.findRootCoordinates().transformFrom(coordinates, matrix)
+        val size = coordinates.size
+        val bounds = matrix.map(size.toSize().toRect())
+        // Cut by whatever clips around it: a list scrolled under its edge.
+        val visible = coordinates.boundsInRoot()
+        val view = requireView()
+        view.getLocationInWindow(location)
+        if (shape == toldShape && size == toldSize && bounds == toldBounds && visible == toldVisible &&
+            shown == toldShown && location[0] == toldX && location[1] == toldY
+        ) return
+        toldShape = shape
+        toldSize = size
+        toldBounds = bounds
+        toldVisible = visible
+        toldShown = shown
+        toldX = location[0]
+        toldY = location[1]
+        val outline = shape.createOutline(size.toSize(), requireLayoutDirection(), requireDensity())
+        val path = androidx.compose.ui.graphics.Path().apply { addOutline(outline) }.asAndroidPath()
+        path.transform(
+            android.graphics.Matrix().apply {
+                setFrom(matrix)
+                postTranslate(location[0].toFloat(), location[1].toFloat())
+            }
+        )
+        BackdropGlass.put(
+            this,
+            BackdropGlass.Pane(
+                window = view.rootView,
+                outline = path,
+                visible = android.graphics.RectF(
+                    visible.left + location[0], visible.top + location[1],
+                    visible.right + location[0], visible.bottom + location[1]
+                ),
+                alpha = shown,
+                rect = outline is androidx.compose.ui.graphics.Outline.Rectangle
+            )
+        )
+    }
+}
+
+/**
+ * How much of the glass in this box is there, for the backdrop to blur under it as much: a page
+ * fading in, home fading out under it. Glass inside several is there as much as all of them make.
+ */
+fun Modifier.glassShown(amount: () -> Float): Modifier = this then GlassShownElement(amount)
+
+private class GlassShownElement(val amount: () -> Float) : ModifierNodeElement<GlassShownNode>() {
+    override fun create() = GlassShownNode(amount)
+
+    override fun update(node: GlassShownNode) {
+        node.amount = amount
+    }
+
+    override fun equals(other: Any?) = other is GlassShownElement && other.amount === amount
+
+    override fun hashCode() = amount.hashCode()
+
+    override fun InspectorInfo.inspectableProperties() {
+        name = "glassShown"
+    }
+}
+
+private class GlassShownNode(var amount: () -> Float) : Modifier.Node(), TraversableNode {
+    override val traverseKey: Any get() = GlassShownKey
+}
+
+private object GlassShownKey
+
 // Where a glass box is, read only while drawing: moving it redraws the glass, not the screen.
 @Stable
 private class FrostOrigin {
@@ -185,10 +342,28 @@ fun AnimatedVisibilityScope.glassFade(enter: FiniteAnimationSpec<Float>, exit: F
         transitionSpec = { if (targetState == EnterExitState.Visible) enter else exit },
         label = "glassFade"
     ) { state -> if (state == EnterExitState.Visible) 1f else 0f }
-    return Modifier.graphicsLayer {
-        alpha = shown.value
-        compositingStrategy = androidx.compose.ui.graphics.CompositingStrategy.ModulateAlpha
-    }
+    val amount = remember(shown) { { shown.value } }
+    return Modifier
+        .graphicsLayer {
+            alpha = shown.value
+            compositingStrategy = androidx.compose.ui.graphics.CompositingStrategy.ModulateAlpha
+        }
+        // The backdrop blurred under its glass as much too, rather than all at once.
+        .glassShown(amount)
+}
+
+/**
+ * For glass coming and going with fadeIn() and fadeOut() at their usual pace: the backdrop blurred
+ * under it as much as it is there, rather than all at once.
+ */
+@Composable
+fun AnimatedVisibilityScope.glassFading(): Modifier {
+    val shown = transition.animateFloat(
+        transitionSpec = { androidx.compose.animation.core.spring(stiffness = androidx.compose.animation.core.Spring.StiffnessMediumLow) },
+        label = "glassFading"
+    ) { state -> if (state == EnterExitState.Visible) 1f else 0f }
+    val amount = remember(shown) { { shown.value } }
+    return Modifier.glassShown(amount)
 }
 
 /** The glass version of a solid fill of [color], or the fill itself where there's no glass. */

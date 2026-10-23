@@ -1462,6 +1462,8 @@ fun MusicScreen(viewModel: MusicViewModel) {
                     LocalFrostSources provides listOf(screensFrost),
                     LocalGlass provides true
                 ) {
+                // Its glass faded on the backdrop as it fades in and out.
+                Box(modifier = glassFading()) {
                 PlayerBar(
                     title = currentTrackTitle.orEmpty(),
                     artist = currentPlayingTrack?.user?.username.orEmpty(),
@@ -1490,6 +1492,7 @@ fun MusicScreen(viewModel: MusicViewModel) {
                     onSwipe = viewModel::skipToNeighbourTrack,
                     canSwipe = viewModel::hasNeighbourTrack
                 )
+                }
                 }
             }
 
@@ -1805,6 +1808,8 @@ private fun UnderPages(hidden: () -> Boolean, shown: () -> Float = { 1f }, conte
                 scaleX = scale
                 scaleY = scale
             }
+            // Its glass fades on the backdrop with it, and isn't there at all while it is hidden.
+            .glassShown { if (hidden()) 0f else shown() }
             .then(if (hidden()) Modifier.clearAndSetSemantics { } else Modifier)
     ) {
         content()

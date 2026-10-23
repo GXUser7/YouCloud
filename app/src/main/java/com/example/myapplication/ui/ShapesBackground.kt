@@ -115,6 +115,69 @@ internal object BackdropShake {
     private const val MAX_PENDING = 8f
 }
 
+/**
+ * The panes of glass on the screen, as the backdrop blurs under them. Glass only opens the window
+ * down to the backdrop (see frosted); the shapes it shows there, blurred as glass blurs what is
+ * behind it, the backdrop draws itself, on its own surface, so that the window still has no frame
+ * to draw while they move. Told by the panes on the main thread (see BackdropBlurNode), read on
+ * the backdrop's.
+ */
+internal object BackdropGlass {
+    /**
+     * A pane: its [outline] on the window, the part of it [visible] (a list's edge clips it), how
+     * much of it is there ([alpha]: a page fading in), and whether it is a plain [rect] — a page,
+     * under which there is nothing sharp of the backdrop left. [window] is the window it is in: a
+     * dialog's glass stands over its own window, not over the backdrop.
+     */
+    class Pane(
+        val window: android.view.View,
+        val outline: android.graphics.Path,
+        val visible: android.graphics.RectF,
+        val alpha: Float,
+        val rect: Boolean
+    )
+
+    private val panes = LinkedHashMap<Any, Pane>()
+    private var listener: Runnable? = null
+
+    // The panes tell one by one as the screen is laid out; the backdrop hears of them once, when
+    // the frame is done and has gone to the RenderThread. Told of the first alone, it drew the
+    // others where they had been, and its drawing them again in the same frame HWUI dropped.
+    private val main = android.os.Handler(android.os.Looper.getMainLooper())
+    private var told = false
+    private val tell = Runnable {
+        told = false
+        synchronized(this) { listener }?.run()
+    }
+
+    fun put(owner: Any, pane: Pane) {
+        synchronized(this) { panes[owner] = pane }
+        changed()
+    }
+
+    fun remove(owner: Any) {
+        val removed = synchronized(this) { panes.remove(owner) != null }
+        if (removed) changed()
+    }
+
+    /** The panes there are now, into [into], back to front. */
+    fun panes(into: MutableList<Pane>) = synchronized(this) {
+        into.clear()
+        into.addAll(panes.values)
+    }
+
+    fun watch(listener: Runnable) = synchronized(this) { this.listener = listener }
+
+    fun unwatch(listener: Runnable) = synchronized(this) { if (this.listener === listener) this.listener = null }
+
+    // On the main thread, as the panes are.
+    private fun changed() {
+        if (told) return
+        told = true
+        main.postAtFrontOfQueue(tell)
+    }
+}
+
 /** Positions and velocities of the shapes, integrated once per frame. */
 private class BackdropMotion(count: Int) {
     val x = FloatArray(count)
@@ -271,7 +334,8 @@ private class TiltSensor : SensorEventListener {
  * drawn from a thread of its own. Drawn in the window, each of its frames — thirty a second while
  * it only drifted — drew the whole screen again over it, every cover, line and pane of glass, for
  * shapes that had moved under a pixel; the window's frames are now the screens' own, and the
- * backdrop's draw it alone. Glass over it opens the window down to it (see [frosted]).
+ * backdrop's draw it alone. Glass over it opens the window down to it (see [frosted]), and the
+ * backdrop draws itself blurred there (see [BackdropGlass]).
  */
 @Composable
 internal fun ExpressiveBackground(motionEnabled: Boolean, animated: Boolean = true) {
@@ -314,6 +378,10 @@ private fun backdropPalette(): BackdropPalette {
  * render nodes and drawn by HWUI as the window's are — the main thread has no part in them. The
  * shapes are drawn as they were in the window: the far ones four times smaller and blurred, the
  * near ones twice, both stretched back over the ground.
+ *
+ * Under glass (see [BackdropGlass]) the scene is drawn once more, eight times smaller and blurred
+ * as glass blurs, cut to each pane. A pane that moves is drawn there again at once, out of turn and
+ * from the layers as they are: only the cut changes, not the shapes.
  */
 private class BackdropView(context: Context) : SurfaceView(context), SurfaceHolder.Callback {
     private val density = context.resources.displayMetrics.density
@@ -334,6 +402,17 @@ private class BackdropView(context: Context) : SurfaceView(context), SurfaceHold
     private val root = RenderNode("backdrop")
     private val farNode = RenderNode("backdropFar")
     private val nearNode = RenderNode("backdropNear")
+    private val glassNode = RenderNode("backdropGlass")
+    private val paneNodes = ArrayList<RenderNode>()
+    private val panes = ArrayList<BackdropGlass.Pane>()
+    private val shown = ArrayList<BackdropGlass.Pane>()
+    private val screen = android.graphics.RectF()
+    // The frame of the scene the shapes are at, and the one each layer was recorded at: a layer
+    // left out for a while (the sharp ones under a page) is recorded afresh as it comes back.
+    private var scene = 0L
+    private var farAt = -1L
+    private var nearAt = -1L
+    private var glassAt = -1L
     private var choreographer: Choreographer? = null
     private var surface: Surface? = null
     private var width = 0
@@ -349,6 +428,51 @@ private class BackdropView(context: Context) : SurfaceView(context), SurfaceHold
     private var last = 0L
     private var drawn = -1L
 
+    // From the main thread: the window the backdrop is under, and where in it.
+    @Volatile
+    private var window: android.view.View? = null
+    @Volatile
+    private var originX = 0
+    @Volatile
+    private var originY = 0
+    private val location = IntArray(2)
+
+    // The frame the choreographer gave last, and the one before.
+    private var vsync = 0L
+    private var vsyncBefore = 0L
+    // The shapes have moved on to a slot not drawn yet; HWUI dropped a frame, to be drawn again.
+    private var sceneDue = false
+    private var redrawDue = false
+    // A frame callback, or a wake for one, is on its way.
+    private var chained = false
+    // Glass counts as moving until then.
+    private var glassUntil = 0L
+
+    /*
+     * Glass that moves is drawn on the frame it moves on, once its place is told: a few
+     * milliseconds into the frame, as the window's frame goes to the RenderThread (see
+     * BackdropGlass). HWUI draws a surface once per frame and drops a second frame asked for in
+     * the same one, so while glass moves the backdrop draws nothing at the frame's start — the
+     * shapes' next step goes with the glass, or, told nothing by three quarters of the frame, is
+     * drawn then (see late).
+     */
+    private val glassPending = java.util.concurrent.atomic.AtomicBoolean(false)
+    private val glassMoved = Runnable {
+        glassPending.set(false)
+        if (released) return@Runnable
+        val now = System.nanoTime()
+        val moving = now < glassUntil
+        glassUntil = now + GLASS_QUIET_NANOS
+        handler.removeCallbacks(late)
+        // Every frame watched from here on, for its time (see frame).
+        if (!moving || !chained) frameNow()
+        draw(if (vsync > 0L) vsync else now)
+    }
+    private val glassChanged = Runnable {
+        if (glassPending.compareAndSet(false, true)) handler.postAtFrontOfQueue(glassMoved)
+    }
+    private val late = Runnable { if (!released && (sceneDue || redrawDue)) draw(if (vsync > 0L) vsync else System.nanoTime()) }
+
     init {
         holder.addCallback(this)
         // The ground covers it all: nothing under the surface shows through it.
@@ -356,6 +480,23 @@ private class BackdropView(context: Context) : SurfaceView(context), SurfaceHold
         renderer.setContentRoot(root)
         renderer.setOpaque(true)
         handler.post { choreographer = Choreographer.getInstance() }
+        BackdropGlass.watch(glassChanged)
+    }
+
+    override fun onAttachedToWindow() {
+        super.onAttachedToWindow()
+        window = rootView
+        glassChanged.run()
+    }
+
+    override fun onLayout(changed: Boolean, left: Int, top: Int, right: Int, bottom: Int) {
+        super.onLayout(changed, left, top, right, bottom)
+        getLocationInWindow(location)
+        if (location[0] != originX || location[1] != originY) {
+            originX = location[0]
+            originY = location[1]
+            glassChanged.run()
+        }
     }
 
     /** What the screen says, from the main thread. */
@@ -366,6 +507,7 @@ private class BackdropView(context: Context) : SurfaceView(context), SurfaceHold
                 this.palette = palette
                 farPaints = BackdropPaints(shapes, far, palette)
                 nearPaints = BackdropPaints(shapes, near, palette)
+                sceneDue = true
                 draw(System.nanoTime())
             }
             this.motionEnabled = motionEnabled
@@ -375,6 +517,7 @@ private class BackdropView(context: Context) : SurfaceView(context), SurfaceHold
     }
 
     fun release() {
+        BackdropGlass.unwatch(glassChanged)
         handler.post {
             released = true
             animated = false
@@ -397,6 +540,8 @@ private class BackdropView(context: Context) : SurfaceView(context), SurfaceHold
             // Its size settled: the nodes are laid out again for it on the next frame.
             farNode.setPosition(0, 0, 0, 0)
             nearNode.setPosition(0, 0, 0, 0)
+            glassNode.setPosition(0, 0, 0, 0)
+            sceneDue = true
             draw(System.nanoTime())
             update()
         }
@@ -420,11 +565,13 @@ private class BackdropView(context: Context) : SurfaceView(context), SurfaceHold
         if (run && !looping) {
             looping = true
             last = 0L
-            choreographer?.postFrameCallback(frame)
+            frameNow()
         } else if (!run && looping) {
             looping = false
+            chained = false
             choreographer?.removeFrameCallback(frame)
             handler.removeCallbacks(wake)
+            handler.removeCallbacks(late)
         }
         val listen = run && motionEnabled && accelerometer != null
         if (listen && !listening) {
@@ -437,23 +584,48 @@ private class BackdropView(context: Context) : SurfaceView(context), SurfaceHold
         }
     }
 
-    private val wake: Runnable = Runnable { if (looping) choreographer?.postFrameCallback(frame) }
+    private val wake: Runnable = Runnable { choreographer?.postFrameCallback(frame) }
+
+    /** The next frame of the screen asked for now, rather than at the next slot. */
+    private fun frameNow() {
+        handler.removeCallbacks(wake)
+        choreographer?.removeFrameCallback(frame)
+        choreographer?.postFrameCallback(frame)
+        chained = true
+    }
 
     private val frame: Choreographer.FrameCallback = object : Choreographer.FrameCallback {
         override fun doFrame(now: Long) {
-            if (!looping) return
-            val dt = if (last == 0L) 0f else ((now - last) / 1_000_000_000f).coerceAtMost(0.05f)
-            last = now
-            motion.step(dt, shapes, tilt, shiftPx)
-            // As often as MotionPace says, on the frames all else that moves by itself is drawn
-            // on (see frameSlot).
-            val slotNanos = MotionPace.slotNanos(lively = motion.lively)
-            val slot = frameSlot(now, slotNanos)
-            if (slot != drawn) {
-                drawn = slot
-                draw(now)
+            chained = false
+            vsyncBefore = vsync
+            vsync = now
+            var slotNanos = 0L
+            if (looping) {
+                val dt = if (last == 0L) 0f else ((now - last) / 1_000_000_000f).coerceAtMost(0.05f)
+                last = now
+                motion.step(dt, shapes, tilt, shiftPx)
+                // As often as MotionPace says, on the frames all else that moves by itself is drawn
+                // on (see frameSlot).
+                slotNanos = MotionPace.slotNanos(lively = motion.lively)
+                val slot = frameSlot(now, slotNanos)
+                if (slot != drawn) {
+                    drawn = slot
+                    sceneDue = true
+                }
             }
+            if (now < glassUntil) {
+                // Glass is moving: drawn with it as it tells where it is now, or late in the frame.
+                val wait = ((now - vsyncBefore).coerceIn(MIN_FRAME_NANOS, MAX_FRAME_NANOS) * 3 / 4) / 1_000_000L
+                handler.removeCallbacks(late)
+                handler.postDelayed(late, wait)
+                choreographer?.postFrameCallback(this)
+                chained = true
+                return
+            }
+            if (sceneDue || redrawDue) draw(now)
+            if (!looping) return
             // Tilted or shaken, on the next frame; drifting, it sleeps to its next slot.
+            chained = true
             if (slotNanos <= 0L) {
                 choreographer?.postFrameCallback(this)
             } else {
@@ -464,20 +636,70 @@ private class BackdropView(context: Context) : SurfaceView(context), SurfaceHold
         }
     }
 
+    /**
+     * A frame: the shapes where they are now if they have moved on to a slot since the last
+     * ([sceneDue]), else only the glass over them cut again.
+     */
     private fun draw(vsyncNanos: Long) {
         val palette = palette ?: return
         val far = farPaints ?: return
         val near = nearPaints ?: return
         if (surface == null || width <= 0 || height <= 0) return
-        record(farNode, this.far, far, FAR_SHRINK, FAR_BLUR.value)
-        record(nearNode, this.near, near, NEAR_SHRINK, NEAR_BLUR.value)
+        if (sceneDue) scene++
+        sceneDue = false
+        val ox = originX
+        val oy = originY
+        glassOver(ox, oy)
+        // A page all there over the whole screen: nothing sharp shows anywhere, only the scene as
+        // the glass blurs it.
+        val whole = shown.any { it.rect && it.alpha >= 1f && it.visible.contains(screen) }
+        if (!whole) {
+            if (farAt != scene) record(farNode, this.far, far, FAR_SHRINK, FAR_BLUR.value).also { farAt = scene }
+            if (nearAt != scene) record(nearNode, this.near, near, NEAR_SHRINK, NEAR_BLUR.value).also { nearAt = scene }
+        }
+        if (shown.isNotEmpty() && glassAt != scene) recordGlass(palette, far, near).also { glassAt = scene }
         val canvas = root.beginRecording(width, height)
-        canvas.drawColor(palette.ground.toArgb())
-        canvas.drawRenderNode(farNode)
-        canvas.drawRenderNode(nearNode)
+        if (whole) {
+            canvas.drawRenderNode(glassNode)
+        } else {
+            canvas.drawColor(palette.ground.toArgb())
+            canvas.drawRenderNode(farNode)
+            canvas.drawRenderNode(nearNode)
+            shown.forEachIndexed { index, pane -> canvas.drawRenderNode(pane(index, pane, ox, oy)) }
+        }
         root.endRecording()
         root.setPosition(0, 0, width, height)
-        renderer.createRenderRequest().setVsyncTime(vsyncNanos).syncAndDraw()
+        val result = renderer.createRenderRequest().setVsyncTime(vsyncNanos).syncAndDraw()
+        // Dropped as a second frame in one: what was recorded is drawn on the next.
+        redrawDue = result and HardwareRenderer.SYNC_FRAME_DROPPED != 0
+        if (redrawDue && !chained) frameNow()
+    }
+
+    /**
+     * Into [shown], the panes of glass over the backdrop: in its window, on the screen, there at
+     * all — and not inside a page at least as much there as they are, which blurs that part already
+     * (a card on the settings page).
+     */
+    private fun glassOver(ox: Int, oy: Int) {
+        BackdropGlass.panes(panes)
+        screen.set(ox.toFloat(), oy.toFloat(), (ox + width).toFloat(), (oy + height).toFloat())
+        val window = window
+        shown.clear()
+        for (pane in panes) {
+            if (pane.window === window && pane.alpha > 0f && android.graphics.RectF.intersects(pane.visible, screen)) shown += pane
+        }
+        if (shown.size < 2) return
+        val inside = BooleanArray(shown.size) { index ->
+            val pane = shown[index]
+            shown.indices.any { other ->
+                val page = shown[other]
+                // Of two pages over each other, the one under stays.
+                other != index && page.rect && page.alpha >= pane.alpha && page.visible.contains(pane.visible) &&
+                    !(pane.rect && pane.alpha >= page.alpha && pane.visible.contains(page.visible) && index < other)
+            }
+        }
+        var index = 0
+        shown.removeAll { inside[index++] }
     }
 
     /**
@@ -486,6 +708,23 @@ private class BackdropView(context: Context) : SurfaceView(context), SurfaceHold
      * backdrop cost.
      */
     private fun record(node: RenderNode, indices: List<Int>, paints: BackdropPaints, shrink: Int, blurDp: Float) {
+        val canvas = beginLayer(node, shrink, blurDp, android.graphics.Shader.TileMode.DECAL)
+        drawBackdropShapes(canvas, shapes, indices, motion, paints, width.toFloat(), height.toFloat(), density)
+        node.endRecording()
+    }
+
+    /** The whole scene as glass shows it: the ground and every shape, blurred as [frosted] blurs. */
+    private fun recordGlass(palette: BackdropPalette, far: BackdropPaints, near: BackdropPaints) {
+        // Clamped at the screen's edges, where the ground goes on: not faded out into nothing.
+        val canvas = beginLayer(glassNode, GLASS_SHRINK, FrostBlur.value, android.graphics.Shader.TileMode.CLAMP)
+        canvas.drawColor(palette.ground.toArgb())
+        drawBackdropShapes(canvas, shapes, this.far, motion, far, width.toFloat(), height.toFloat(), density)
+        drawBackdropShapes(canvas, shapes, this.near, motion, near, width.toFloat(), height.toFloat(), density)
+        glassNode.endRecording()
+    }
+
+    /** [node] recording, laid out [shrink] times smaller than the screen and stretched back over it. */
+    private fun beginLayer(node: RenderNode, shrink: Int, blurDp: Float, edges: android.graphics.Shader.TileMode): android.graphics.RecordingCanvas {
         val small = (width + shrink - 1) / shrink
         val tall = (height + shrink - 1) / shrink
         if (node.width != small || node.height != tall) {
@@ -495,12 +734,37 @@ private class BackdropView(context: Context) : SurfaceView(context), SurfaceHold
             node.setScaleX(shrink.toFloat())
             node.setScaleY(shrink.toFloat())
             val radius = blurDp * density / shrink
-            node.setRenderEffect(android.graphics.RenderEffect.createBlurEffect(radius, radius, android.graphics.Shader.TileMode.DECAL))
+            node.setRenderEffect(android.graphics.RenderEffect.createBlurEffect(radius, radius, edges))
         }
         val canvas = node.beginRecording(small, tall)
         canvas.scale(1f / shrink, 1f / shrink)
-        drawBackdropShapes(canvas, shapes, indices, motion, paints, width.toFloat(), height.toFloat(), density)
+        return canvas
+    }
+
+    /**
+     * The [index]th pane of glass on the backdrop: the blurred scene cut to its outline, as much as
+     * it is there. The backdrop's own place in the window is at [ox], [oy].
+     */
+    private fun pane(index: Int, pane: BackdropGlass.Pane, ox: Int, oy: Int): RenderNode {
+        if (index == paneNodes.size) {
+            // Its alpha on the one thing it draws, without a picture of it to fade.
+            paneNodes += RenderNode("backdropPane").apply { setHasOverlappingRendering(false) }
+        }
+        val node = paneNodes[index]
+        val left = (kotlin.math.floor(pane.visible.left).toInt() - ox).coerceIn(0, width)
+        val top = (kotlin.math.floor(pane.visible.top).toInt() - oy).coerceIn(0, height)
+        val right = (kotlin.math.ceil(pane.visible.right).toInt() - ox).coerceIn(left, width)
+        val bottom = (kotlin.math.ceil(pane.visible.bottom).toInt() - oy).coerceIn(top, height)
+        node.setPosition(left, top, right, bottom)
+        node.setAlpha(pane.alpha)
+        val canvas = node.beginRecording(right - left, bottom - top)
+        // The outline is on the window, the scene on the backdrop.
+        canvas.translate(-(left + ox).toFloat(), -(top + oy).toFloat())
+        canvas.clipPath(pane.outline)
+        canvas.translate(ox.toFloat(), oy.toFloat())
+        canvas.drawRenderNode(glassNode)
         node.endRecording()
+        return node
     }
 }
 
@@ -708,6 +972,8 @@ private val FAR_BLUR = 8.dp
 private val NEAR_BLUR = 3.dp
 private const val FAR_SHRINK = 4
 private const val NEAR_SHRINK = 2
+// As small as frosted makes what it blurs: under glass the scene is all blur.
+private const val GLASS_SHRINK = 8
 
 /**
  * Which frame of a grid of [slotNanos] the frame at [frameNanos] falls in. What moves by itself —
@@ -736,6 +1002,12 @@ internal suspend fun sleepToSlot(lastNanos: Long, slotNanos: Long) {
 
 // Woken this much ahead of a slot's first frame, for the frame not to be missed.
 private const val SLOT_WAKE_EARLY_NANOS = 6_000_000L
+
+// Glass still counts as moving this long after it last told so: every frame is watched meanwhile.
+private const val GLASS_QUIET_NANOS = 120_000_000L
+// A frame of the screen, from 120 Hz to 60, for when part of one is waited.
+private const val MIN_FRAME_NANOS = 8_000_000L
+private const val MAX_FRAME_NANOS = 17_000_000L
 
 // Sixty a second; and thirty, on every other of the same frames.
 internal const val SLOT_FAST_NANOS = 16_666_666L
