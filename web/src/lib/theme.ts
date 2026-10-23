@@ -78,6 +78,8 @@ export function applyTheme(seed: string, dark: boolean) {
   const root = document.documentElement
   const apply = () => {
     for (const [name, value] of Object.entries(schemeColors(seed, dark))) root.style.setProperty(name, value)
+    // The colour itself, for what wants the cover's own rather than a tone of it: the player's wave.
+    root.style.setProperty('--seed', seed)
     root.dataset.theme = dark ? 'dark' : 'light'
     root.style.colorScheme = dark ? 'dark' : 'light'
   }

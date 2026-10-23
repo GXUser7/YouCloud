@@ -2,7 +2,7 @@
   // The full player, over everything: the cover large, the Expressive slider and big controls,
   // and the lyrics or the queue beside them — or neither, for the cover and the controls alone,
   // centred. Lyrics and «Далее» are toggles: pressed again, the column goes. Narrow, the column
-  // takes the cover's place instead.
+  // takes the cover's place instead. Behind it all, «Волна в плеере» when it is on.
   import { flushSync } from 'svelte'
   import { fly } from 'svelte/transition'
   import { tr } from '../lib/i18n.svelte'
@@ -13,6 +13,7 @@
   import Icon from './Icon.svelte'
   import Lyrics from './Lyrics.svelte'
   import PlayerControls from './PlayerControls.svelte'
+  import PlayerWave from './PlayerWave.svelte'
   import ServiceGlyph from './ServiceGlyph.svelte'
   import Slider from './Slider.svelte'
   import TrackMenu from './TrackMenu.svelte'
@@ -98,6 +99,7 @@
 <svelte:window onkeydown={(e) => e.key === 'Escape' && close()} />
 
 <div class="np" role="dialog" aria-label={tr('Сейчас играет')}>
+  {#if app.playerWave}<PlayerWave around={artEl} />{/if}
 
   <header>
     <button class="icon-btn l glassy" onclick={close} aria-label={tr('Свернуть')}><Icon name="keyboard_arrow_down" size={30} /></button>

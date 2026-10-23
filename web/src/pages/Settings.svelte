@@ -9,7 +9,7 @@
   import { accounts } from '../lib/accounts.svelte'
   import { connect, connectSoundCloud, disconnect, refreshYouTube } from '../lib/login'
   import { diagnose } from '../lib/services/youtube'
-  import { app, remember, type ThemeMode } from '../lib/state.svelte'
+  import { app, remember, WAVE_LOOKS, type ThemeMode } from '../lib/state.svelte'
   import { reason, toast } from '../lib/toast.svelte'
   import Avatar from '../components/Avatar.svelte'
   import ButtonGroup from '../components/ButtonGroup.svelte'
@@ -256,6 +256,47 @@
         }}
       />
     </div>
+    {/if}
+    <div class="toggle">
+      <div>
+        <span class="t-name">{tr('Волна в плеере')}</span>
+        <span class="muted t-sub">{tr('За обложкой в полноэкранном плеере — матовая волна её цвета, она движется под музыку')}</span>
+      </div>
+      <Switch
+        checked={app.playerWave}
+        label={tr('Волна в плеере')}
+        onchange={(v) => {
+          app.playerWave = v
+          remember('playerWave', v)
+        }}
+      />
+    </div>
+    {#if app.playerWave}
+      <p class="overline label">{tr('Вид волны')}</p>
+      <ButtonGroup
+        options={[...WAVE_LOOKS]}
+        value={app.waveLook}
+        stretch
+        onchange={(v) => {
+          if (!v) return
+          app.waveLook = v
+          remember('waveLook', v)
+        }}
+      />
+      <div class="toggle">
+        <div>
+          <span class="t-name">{tr('Под музыку')}</span>
+          <span class="muted t-sub">{tr('Бас поднимает волну, верхи дают рябь. Выключено — она просто медленно течёт')}</span>
+        </div>
+        <Switch
+          checked={app.waveHears}
+          label={tr('Под музыку')}
+          onchange={(v) => {
+            app.waveHears = v
+            remember('waveHears', v)
+          }}
+        />
+      </div>
     {/if}
   </section>
 

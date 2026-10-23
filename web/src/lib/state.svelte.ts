@@ -15,7 +15,7 @@ import { putTrack, serviceName, track as trackOf, type Service, type Track } fro
 import { favorites, setFavorite } from './favorites.svelte'
 import { BridgeLoader } from './hlsBridge'
 import * as live from './live'
-import { directFailed, reach } from './media.svelte'
+import { directFailed, reach, readable } from './media.svelte'
 import { WAVE_MODES, WAVE_MOODS } from './mock'
 import * as yandex from './services/yandex'
 import { reason, toast } from './toast.svelte'
@@ -49,6 +49,15 @@ export function remember(key: string, value: unknown) {
   }
 }
 
+/** How «Волна в плеере» looks behind the full player (components/PlayerWave.svelte). */
+export const WAVE_LOOKS = [
+  { value: 'dunes', label: tr('Дюны') },
+  { value: 'shape', label: tr('Форма') },
+  { value: 'tide', label: tr('Прилив') },
+  { value: 'silk', label: tr('Шёлк') },
+] as const
+export type WaveLook = (typeof WAVE_LOOKS)[number]['value']
+
 export const app = $state({
   route: parseHash(),
   service: stored<Service>('service', 'sc'),
@@ -59,6 +68,11 @@ export const app = $state({
   theme: stored<ThemeMode>('theme', 'dark'),
   coverColors: stored('coverColors', true),
   liveBackdrop: stored('liveBackdrop', true),
+  // Behind the full player, a matte wave in the cover's colours; moving to the sound, or only
+  // flowing, as [waveHears] says.
+  playerWave: stored('playerWave', true),
+  waveLook: stored<WaveLook>('waveLook', 'dunes'),
+  waveHears: stored('waveHears', true),
   query: '',
   waveMood: stored<string | null>('waveMood', null),
   waveMode: stored<string | null>('waveMode', null),
@@ -123,6 +137,9 @@ export const player = $state({
 export const currentTrack = (): Track | undefined => (player.queue.length ? trackOf(player.queue[player.index]) : undefined)
 
 let audio = sound()
+/** The <audio> playing now (one made ready ahead takes over when its track comes): what the full
+ *  player's wave listens to. */
+export const playingSound = (): HTMLAudioElement => audio
 let hls: Hls | null = null
 let loaded: string | null = null
 let silent = false
@@ -208,7 +225,10 @@ function attach(el: HTMLAudioElement, s: live.Stream, startAt: number, fatal: (e
     h.attachMedia(el)
     return h
   }
-  el.src = reach(s.url)
+  const url = reach(s.url)
+  // Asked for in CORS where that is allowed, so the full player's wave may hear it (lib/hearing.ts).
+  el.crossOrigin = readable(url) ? 'anonymous' : null
+  el.src = url
   if (startAt) el.currentTime = startAt
   return null
 }

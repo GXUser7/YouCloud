@@ -308,6 +308,16 @@ export const EN: Record<string, string> = {
   'Сайт перекрашивается под трек, который играет': 'The site takes the colours of the playing track',
   'Живой фон': 'Live background',
   'Фигуры позади медленно плывут и тянутся за мышью': 'Shapes behind drift slowly and follow the mouse',
+  'Волна в плеере': 'Wave in the player',
+  'За обложкой в полноэкранном плеере — матовая волна её цвета, она движется под музыку':
+    'Behind the cover in the full player: a matte wave in its colour, moving to the music',
+  'Вид волны': 'Wave look',
+  'Дюны': 'Dunes',
+  'Форма': 'Shape',
+  'Прилив': 'Tide',
+  'Шёлк': 'Silk',
+  'Под музыку': 'To the music',
+  'Бас поднимает волну, верхи дают рябь. Выключено — она просто медленно течёт': 'The bass lifts the wave, the highs ripple it. Off, it just flows slowly',
   'Связь с сервисами': 'Connection to services',
   'Сайт ходит в сервисы через Worker на Cloudflare. Проверка ищет «muse» в каждом и показывает первый трек.':
     'The site reaches the services through a Cloudflare Worker. The check searches each for “muse” and shows the first track.',

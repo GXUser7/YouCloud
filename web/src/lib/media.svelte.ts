@@ -26,6 +26,21 @@ export function reach(url: string | null | undefined): string | null {
   return media.viaWorker && isCdn(url) ? viaWorker(url) : url
 }
 
+/**
+ * Whether the page may read [url]'s sound, not only play it — the full player's wave listens to
+ * it. The Worker is the site's own; SoundCloud's CDNs allow it (hls.js reads their playlists and
+ * pieces so anyway, and Chrome now plays their HLS itself). Other services' links are played
+ * without asking: one that doesn't allow it wouldn't play at all if asked.
+ */
+export function readable(url: string): boolean {
+  try {
+    const u = new URL(url, location.href)
+    return u.origin === location.origin || CDN.test(u.hostname)
+  } catch {
+    return false
+  }
+}
+
 /** A direct cover or stream failed: when it was SoundCloud's CDN, everything goes through the Worker
  *  from now on. True when that changed anything, so the caller can try once more. */
 export function directFailed(url: string | null | undefined): boolean {
