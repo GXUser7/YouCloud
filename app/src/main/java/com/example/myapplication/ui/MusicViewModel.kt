@@ -36,6 +36,7 @@ import com.example.myapplication.data.FavoriteTrack
 import com.example.myapplication.data.FavoritesRepository
 import com.example.myapplication.data.OfflineMusicStore
 import com.example.myapplication.data.MixSection
+import com.example.myapplication.data.MoreSection
 import com.example.myapplication.data.SettingsRepository
 import com.example.myapplication.data.SoundCloudApi
 import com.example.myapplication.data.SoundCloudMix
@@ -512,6 +513,10 @@ class MusicViewModel(
     private val _trendingSection = MutableStateFlow<MixSection?>(null)
     val trendingSection = _trendingSection.asStateFlow()
 
+    // SoundCloud's other home rows: curated playlists, artists to watch, the charts.
+    private val _moreSections = MutableStateFlow<List<MoreSection>>(emptyList())
+    val moreSections = _moreSections.asStateFlow()
+
     private val _mixesLoading = MutableStateFlow(false)
     val mixesLoading = _mixesLoading.asStateFlow()
 
@@ -818,6 +823,7 @@ class MusicViewModel(
                         _mixSection.value = null
                         _stationSection.value = null
                         _trendingSection.value = null
+                        _moreSections.value = emptyList()
                     } else {
                         loadMixes()
                     }
@@ -1144,6 +1150,7 @@ class MusicViewModel(
             _mixSection.value = null
             _stationSection.value = null
             _trendingSection.value = null
+            _moreSections.value = emptyList()
             return
         }
         if (settingsRepository.clientId.value.isBlank()) {
@@ -1163,6 +1170,7 @@ class MusicViewModel(
                         _mixSection.value = sections.moods
                         _stationSection.value = sections.stations
                         _trendingSection.value = sections.trending
+                        _moreSections.value = sections.more
                         _mixesLoading.value = false // Done with initial load
                     }
             } catch (e: Exception) {
@@ -1180,6 +1188,7 @@ class MusicViewModel(
         _mixSection.value = null
         _stationSection.value = null
         _trendingSection.value = null
+        _moreSections.value = emptyList()
         loadMixes()
     }
 
@@ -3634,6 +3643,7 @@ class MusicViewModel(
             _mixSection.value = null
             _stationSection.value = null
             _trendingSection.value = null
+            _moreSections.value = emptyList()
         }
     }
 

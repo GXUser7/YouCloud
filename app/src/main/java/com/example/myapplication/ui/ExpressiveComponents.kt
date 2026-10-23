@@ -54,6 +54,7 @@ import androidx.compose.runtime.Stable
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
+import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -701,6 +702,35 @@ internal data class CarouselAlbum(
 )
 
 /**
+ * [fling] that takes a light flick for no fling at all: a row of pages, or a carousel, lets go where
+ * the finger left it and settles by position — on the page it was on unless dragged past half of
+ * it. A light brush of the thumb used to turn the page. A swipe meant to go on, faster than
+ * [minVelocity], flings as [fling] does, past several pages if hard.
+ */
+internal class DeliberateFling(
+    private val fling: androidx.compose.foundation.gestures.TargetedFlingBehavior,
+    private val minVelocity: Float
+) : androidx.compose.foundation.gestures.TargetedFlingBehavior {
+    override suspend fun androidx.compose.foundation.gestures.ScrollScope.performFling(
+        initialVelocity: Float,
+        onRemainingDistanceUpdated: (Float) -> Unit
+    ): Float = with(fling) {
+        performFling(if (kotlin.math.abs(initialVelocity) < minVelocity) 0f else initialVelocity, onRemainingDistanceUpdated)
+    }
+}
+
+// Slower than this, a swipe on a row of pages or a carousel is let go of, not flung.
+internal val DeliberateFlingVelocity = 1000.dp
+
+@Composable
+internal fun rememberDeliberateFling(
+    fling: androidx.compose.foundation.gestures.TargetedFlingBehavior
+): androidx.compose.foundation.gestures.TargetedFlingBehavior {
+    val minVelocity = with(androidx.compose.ui.platform.LocalDensity.current) { DeliberateFlingVelocity.toPx() }
+    return remember(fling, minVelocity) { DeliberateFling(fling, minVelocity) }
+}
+
+/**
  * Material 3's multi-browse carousel: one large cover and smaller ones shrinking toward the
  * edge. The caption under it follows whichever album is in front.
  */
@@ -717,9 +747,15 @@ internal fun AlbumCarousel(
             state = state,
             preferredItemWidth = 220.dp,
             itemSpacing = 8.dp,
+            // A hard swipe goes on past several covers and settles on one, rather than the default
+            // that moves one cover a swipe whatever the swipe was, a magnet under the finger.
+            flingBehavior = rememberDeliberateFling(androidx.compose.material3.carousel.CarouselDefaults.multiBrowseFlingBehavior(state)),
             modifier = Modifier
                 .fillMaxWidth()
                 .height(height)
+                // What the carousel doesn't use of a swipe, flung past its last cover, isn't passed
+                // on to search's pages of services around it: it turned the page to another service.
+                .nestedScroll(KeepSidewaysSwipe)
         ) { index ->
             val album = albums[index]
             Box(

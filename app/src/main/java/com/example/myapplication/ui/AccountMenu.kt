@@ -202,7 +202,7 @@ internal fun accountMenuItems(
 }
 
 /**
- * The menu's button, in place of the profile's: one's avatar ([ProfileGlyph]) while the menu is
+ * The menu's button, in place of the profile's: three dots ([MenuGlyph]) while the menu is
  * shut, a close mark on the accent once it is open, the rounded square turning round between the
  * two, as the FAB menu's button does. [fill]: its glass's tone, the search button's.
  */
@@ -222,7 +222,7 @@ internal fun AccountMenuButton(
     )
     val shape = RoundedCornerShape(androidx.compose.ui.unit.lerp(20.dp, 32.dp, openness.coerceIn(0f, 1f)))
     val currentItems by rememberUpdatedState(items)
-    val description = tr("Профиль и друзья")
+    val description = tr("Меню: друзья, профиль, настройки")
     Surface(
         modifier = modifier
             .size(64.dp)
@@ -251,7 +251,7 @@ internal fun AccountMenuButton(
                     scaleY = scale
                 }
             ) {
-                ProfileGlyph()
+                MenuGlyph()
             }
             Icon(
                 imageVector = Icons.Rounded.Close,
@@ -430,6 +430,11 @@ private fun AccountMenuPill(
             .graphicsLayer {
                 val shown = appear()
                 alpha = shown.coerceIn(0f, 1f)
+                // Faded on what it draws, not as a picture of it: its glass opens the window down
+                // to the backdrop (see Frost.kt), which in a picture of its own it can't. The spring
+                // going past 1 and back took the pill in and out of such a picture on every swing,
+                // its glass flickering between the two (see glassFade).
+                compositingStrategy = androidx.compose.ui.graphics.CompositingStrategy.ModulateAlpha
                 val scale = (0.6f + 0.4f * shown) * (1f + 0.06f * lift)
                 scaleX = scale
                 scaleY = scale

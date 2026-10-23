@@ -1,6 +1,7 @@
 package com.example.myapplication.data
 
 import android.content.Context
+import android.util.Log
 import com.google.gson.Gson
 import com.google.gson.reflect.TypeToken
 import kotlinx.coroutines.flow.Flow
@@ -15,8 +16,9 @@ class SoundCloudMixesRepository(
     private val gson = Gson()
 
     fun fetchHomeSectionsFlow(clientId: String): Flow<HomeSections> = flow {
-        // v2: the cache used to be a pair of sections, before trending joined them.
-        val cacheKey = "home_sections_v2"
+        // v3: the rows past the first three joined them; a v2 cache read as v3 has none, not an
+        // empty list (Gson goes round the constructor).
+        val cacheKey = "home_sections_v3"
         val cachedJson = prefs.getString(cacheKey, null)
 
         var cachedData: HomeSections? = null
@@ -65,7 +67,7 @@ class SoundCloudMixesRepository(
     private suspend fun fetchHomeSectionsNetwork(clientId: String): HomeSections {
         val response = service.getMixedSelections(
             clientId = clientId,
-            // Trending sits fourth in the list; ten leaves room if SoundCloud reorders it.
+            // As the site asks: ten rows, which is every row SoundCloud has for a listener.
             limit = 10,
             offset = 0,
             linkedPartitioning = 1,
@@ -92,14 +94,38 @@ class SoundCloudMixesRepository(
 
         // Each genre is a system playlist carrying its chart as track stubs, the same shape as a
         // mix, so it opens through [loadMixTracks] like one.
-        val trendingSection = response.collection
-            .firstOrNull { it.trackingFeatureName == "trending-by-genre-playlists" }
-            ?.let { selection ->
-                val genres = selection.items?.collection?.mapNotNull(SoundCloudMixPlaylist::toMix).orEmpty()
-                if (genres.isNotEmpty()) MixSection(selection.title?.takeIf { it.isNotBlank() } ?: "Trending by genre", genres) else null
-            }
+        val trendingSelection = response.collection.firstOrNull { it.trackingFeatureName == "trending-by-genre-playlists" }
+        val trendingSection = trendingSelection?.let { selection ->
+            val genres = selection.items?.collection?.mapNotNull(SoundCloudMixPlaylist::toMix).orEmpty()
+            if (genres.isNotEmpty()) MixSection(selection.title?.takeIf { it.isNotBlank() } ?: "Trending by genre", genres) else null
+        }
 
-        return HomeSections(moods = moodsSection, stations = stationsSection, trending = trendingSection)
+        // The rest as SoundCloud has them: its own playlists as mixes, the others as sets; a row
+        // with neither (artists alone) left out. A row in a shape not met before is left out too,
+        // never the whole home with it.
+        val placed = setOf(moodsSelection, stationsSelection, trendingSelection)
+        val more = response.collection
+            .filter { it !in placed }
+            .mapIndexedNotNull { index, selection ->
+                runCatching {
+                    val items = selection.items?.collection.orEmpty()
+                    val mixes = items.filter { it.kind == "system-playlist" }.mapNotNull(SoundCloudMixPlaylist::toMix)
+                    val playlists = items.mapNotNull(SoundCloudMixPlaylist::toPlaylist)
+                    if (mixes.isEmpty() && playlists.isEmpty()) {
+                        null
+                    } else {
+                        MoreSection(
+                            key = selection.trackingFeatureName?.takeIf { it.isNotBlank() } ?: "row-$index",
+                            title = selection.title?.takeIf { it.isNotBlank() } ?: "SoundCloud",
+                            mixes = mixes,
+                            playlists = playlists
+                        )
+                    }
+                }.onFailure { Log.w("SoundCloudMixes", "Row ${selection.trackingFeatureName} left out", it) }.getOrNull()
+            }
+            .distinctBy { it.key }
+
+        return HomeSections(moods = moodsSection, stations = stationsSection, trending = trendingSection, more = more)
     }
 
     suspend fun loadMixTracks(mix: SoundCloudMix, clientId: String): List<SoundCloudTrack> {

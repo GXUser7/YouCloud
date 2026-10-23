@@ -6,7 +6,6 @@ import androidx.compose.animation.core.FiniteAnimationSpec
 import androidx.compose.animation.EnterExitState
 import androidx.compose.animation.AnimatedVisibilityScope
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.Stable
 import androidx.compose.runtime.getValue
@@ -90,27 +89,25 @@ fun Modifier.frostSource(source: FrostSource): Modifier = this
  * Frosted glass cut to [shape]: whatever [LocalFrostSources] holds behind it, blurred, under
  * [tint]. The blur is made a few times smaller and stretched back, which a blurred picture
  * doesn't show and which keeps a screenful of glass cheap on every frame of the backdrop.
+ *
+ * No rim along the edge: a hairline of light round every pill and panel made the glass look drawn
+ * on rather than matte; the tint alone sets it off the backdrop.
  */
 @Composable
 fun Modifier.frosted(
     shape: Shape = RectangleShape,
     tint: Color,
-    blur: Dp = FrostBlur,
-    // A hairline of light along the edge, as glass catches it.
-    rim: Boolean = true
+    blur: Dp = FrostBlur
 ): Modifier {
     val sources = LocalFrostSources.current
     // Blurring is only worth it over something sharp: a list scrolling under a bar, a screen
     // under the mini player. Over the backdrop alone (blurred already) the glass opens the window
     // down to it under a wash of colour — which still hides whatever else passes behind, a list
     // under a bar, as glass does.
-    // Light glass catches the light as a faint shadow at its edge; a light rim on it was invisible.
-    val rimColor = if (isLightTheme()) Color.Black.copy(alpha = 0.07f) else Color.White.copy(alpha = 0.07f)
     if (sources.isEmpty()) {
         return this
             .clip(shape)
             .then(BackdropGlassElement(tint))
-            .then(if (rim) Modifier.border(1.dp, rimColor, shape) else Modifier)
     }
     val here = remember { FrostOrigin() }
     return this
@@ -143,7 +140,6 @@ fun Modifier.frosted(
                 drawRect(tint)
             }
         }
-        .then(if (rim) Modifier.border(1.dp, rimColor, shape) else Modifier)
 }
 
 /** Glass over the backdrop alone: the window opened down to it, under [tint]. */
@@ -223,7 +219,7 @@ fun glassFill(color: Color): Color = if (LocalGlass.current) Color.Transparent e
  */
 @Composable
 fun Modifier.pageGlass(color: Color): Modifier =
-    if (LocalGlass.current) frosted(RectangleShape, color.copy(alpha = lightened(PageGlassAlpha)), rim = false) else background(color)
+    if (LocalGlass.current) frosted(RectangleShape, color.copy(alpha = lightened(PageGlassAlpha))) else background(color)
 
 internal val FrostBlur = 28.dp
 internal const val PageGlassAlpha = 0.68f

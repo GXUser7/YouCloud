@@ -196,40 +196,26 @@ internal fun PersonAvatarWithBadge(person: Person, avatarUrl: String?, size: Dp,
 }
 
 /**
- * Home's button for the profile: one's avatar once signed in, with a dot while friend requests
- * wait; a figure before.
+ * Home's button for the menu of friends, the profile and the settings: three large dots one over
+ * another, with an accent dot while friend requests wait. The avatar stood here, a whole button of
+ * photo as heavy as the bar of services; the menu says what is in it.
  */
 @Composable
-internal fun ProfileGlyph() {
+internal fun MenuGlyph() {
     val context = LocalContext.current
     val social = remember { Social.get(context) }
     val session by social.session.collectAsState()
-    val me by social.me.collectAsState()
     val friends by social.friends.collectAsState()
     // Once a start, for the dot: the friends screen asks again on its own.
     LaunchedEffect(session?.userId) { if (session != null) social.reloadFriends() }
-    val profile = me
-    if (session == null || profile == null) {
-        Icon(Icons.Rounded.Person, contentDescription = tr("Профиль"), modifier = Modifier.size(28.dp))
-        return
-    }
-    val waiting = friends.orEmpty().any { it.relationKind == Relation.INCOMING }
-    val description = tr("Профиль")
-    Box(modifier = Modifier.size(44.dp).semantics { contentDescription = description }) {
-        PersonAvatar(
-            name = profile.name?.takeIf { it.isNotBlank() } ?: profile.nick,
-            color = profile.color,
-            imageUrl = social.avatarUrl(profile.id, profile.avatarV),
-            size = 44.dp
-        )
+    val waiting = session != null && friends.orEmpty().any { it.relationKind == Relation.INCOMING }
+    Box(modifier = Modifier.size(32.dp), contentAlignment = Alignment.Center) {
+        Icon(ServiceIcons.Menu, contentDescription = null, tint = PanelColors.content, modifier = Modifier.size(26.dp))
         if (waiting) {
             Box(
                 modifier = Modifier
                     .align(Alignment.TopEnd)
-                    .size(14.dp)
-                    .clip(CircleShape)
-                    .background(MaterialTheme.colorScheme.background)
-                    .padding(3.dp)
+                    .size(12.dp)
                     .clip(CircleShape)
                     .background(PanelColors.accent)
             )

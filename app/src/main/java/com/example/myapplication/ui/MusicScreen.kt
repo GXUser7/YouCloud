@@ -298,6 +298,7 @@ import androidx.media3.common.Player
 import com.example.myapplication.data.DownloadState
 import com.example.myapplication.data.FavoriteTrack
 import com.example.myapplication.data.MixSection
+import com.example.myapplication.data.MoreSection
 import com.example.myapplication.data.SoundCloudMix
 import com.example.myapplication.data.SharedLinks
 import com.example.myapplication.data.SoundCloudTrack
@@ -415,6 +416,9 @@ import androidx.compose.material.icons.filled.Radio
 @Composable
 fun MusicScreen(viewModel: MusicViewModel) {
     val haptic = LocalHapticFeedback.current
+    // How far search's dock (the field, the services) has gone down out of the way of the results,
+    // 0 to 1: the mini player standing on it goes down with it (see SearchDockHide).
+    val searchDockHidden = remember { Animatable(0f) }
     val isLoggedOut by viewModel.isLoggedOut.collectAsState(initial = false)
     val tracks by viewModel.tracks.collectAsState()
     val searchQuery by viewModel.searchQuery.collectAsState()
@@ -440,6 +444,7 @@ fun MusicScreen(viewModel: MusicViewModel) {
     val mixSection by viewModel.mixSection.collectAsState()
     val stationSection by viewModel.stationSection.collectAsState()
     val trendingSection by viewModel.trendingSection.collectAsState()
+    val moreSections by viewModel.moreSections.collectAsState()
     val lyrics by viewModel.lyrics.collectAsState()
     val ytHome by viewModel.ytHome.collectAsState()
     val ytHomeLoading by viewModel.ytHomeLoading.collectAsState()
@@ -721,6 +726,7 @@ fun MusicScreen(viewModel: MusicViewModel) {
                             mixSection = mixSection,
                             stationSection = stationSection,
                             trendingSection = trendingSection,
+                            moreSections = moreSections,
                             ytShelves = ytHome,
                             ytConnected = ytMusicAccount != null,
                             yandexConnected = hasYandexToken,
@@ -982,6 +988,7 @@ fun MusicScreen(viewModel: MusicViewModel) {
                         // Picking for the profile's showcase: a tap on what it wants puts it there.
                         val showcasePick by viewModel.showcasePick.collectAsState()
                         SearchScreen(
+                            dockHidden = searchDockHidden,
                             title = showcasePick?.pickTitle ?: tr("Поиск"),
                             query = searchQuery,
                             tracks = tracks,
@@ -1445,6 +1452,11 @@ fun MusicScreen(viewModel: MusicViewModel) {
                         }
                     )
                     .padding(start = 16.dp, top = 16.dp, end = 16.dp, bottom = 16.dp + miniPlayerLift)
+                    // Search's dock gone down out of the way: the mini player down to the foot, in
+                    // its place. Placed, not composed, frame by frame.
+                    .offset {
+                        IntOffset(0, if (searchTabsShown && !sideways) (miniPlayerLift.toPx() * searchDockHidden.value).roundToInt() else 0)
+                    }
             ) {
                 androidx.compose.runtime.CompositionLocalProvider(
                     LocalFrostSources provides listOf(screensFrost),
@@ -1949,6 +1961,8 @@ private fun HomeScreen(
     mixSection: MixSection?,
     stationSection: MixSection?,
     trendingSection: MixSection?,
+    // SoundCloud's other rows, each a shelf after the first three.
+    moreSections: List<MoreSection>,
     ytShelves: List<YtShelf>,
     ytConnected: Boolean,
     yandexConnected: Boolean,
@@ -2037,7 +2051,7 @@ private fun HomeScreen(
     // The shelves, each worked out again only when what it shows changes: never as a frame goes by,
     // nor as playing starts or stops — the covers that stand for what plays light up by themselves
     // (see LocalNowPlaying).
-    val soundCloudFeed = remember(mixes, stations, trending, hasOauthToken, mixesError, mixesLoading, loadingMixId, scLead) {
+    val soundCloudFeed = remember(mixes, stations, trending, moreSections, hasOauthToken, mixesError, mixesLoading, loadingMixId, scLead) {
         val leadKind = when (scLead) {
             "stations" -> HomeCategory.Stations
             "trending" -> HomeCategory.Trending
@@ -2092,7 +2106,36 @@ private fun HomeScreen(
                     note = note(stations, tr("Станции пока не загрузились."), null), loading = mixesLoading && stations.isEmpty()),
                 HomeShelf("trending", HomeCategory.Trending.title, kind("trending", ShelfKind.Genres), items(trending, HomeCategory.Trending),
                     note = note(trending, tr("Тренды пока не загрузились."), null), loading = mixesLoading && trending.isEmpty())
-            ).stageFirst()
+            ).stageFirst() + moreSections.map { section ->
+                // SoundCloud's own playlists open as mixes do, the ones people put together as sets.
+                HomeShelf(
+                    key = "sc-${section.key}",
+                    title = soundCloudRowTitle(section),
+                    kind = ShelfKind.Squares,
+                    items = section.mixes.map { mix ->
+                        HeroItem(
+                            key = mix.id,
+                            title = localizedMixTitle(mix.title),
+                            subtitle = mix.description?.takeIf { it.isNotBlank() },
+                            artworkUrl = artworkUrlForSize(mix.artworkUrl, 210.dp),
+                            source = "mix-${mix.id}",
+                            isLoading = loadingMixId == mix.id,
+                            onClick = { onOpenMix(mix) }
+                        )
+                    } + section.playlists.map { set ->
+                        HeroItem(
+                            key = "sc-set-${set.id}",
+                            title = set.title ?: tr("Без названия"),
+                            subtitle = set.user?.username,
+                            artworkUrl = artworkUrlForSize(set.artworkUrl, 210.dp),
+                            // Most sets have no cover of their own: its mark, not a blank square.
+                            icon = Icons.AutoMirrored.Filled.QueueMusic,
+                            source = "set-${set.id}",
+                            onClick = { onOpenYtSet(set) }
+                        )
+                    }
+                )
+            }
         }
     }
     val yandexFeed = remember(yandexPlaylists, yandexShelves, yaLead) {
@@ -2534,7 +2577,24 @@ private class ShelfMetrics(width: Dp, height: Dp) {
     val genreWidth: Dp = ((width - ShelfEdge - ShelfGap) / 2.3f).coerceIn(150.dp, 260.dp)
     val genreHeight: Dp = genreWidth * 0.5f
     val wave: Dp = minOf(width * 0.64f, height * 0.42f).coerceIn(220.dp, 360.dp)
+    // A page of two collections (see ShelfBlocks): short of the width by the next page's covers
+    // looking in. Sideways the two covers keep to the height, for a shelf's name to show over them.
+    val blockPage: Dp = (width - ShelfEdge - ShelfGap - BlockPeek).coerceIn(240.dp, 460.dp)
+    val blockCover: Dp = minOf(blockPage * 0.37f, (height - 120.dp) / 2.6f).coerceIn(84.dp, 160.dp)
+    // Room after the last page, for it to come to the start as every other does: without it the
+    // row stopped with the last page at the far edge, its names cut off there and a sliver of the
+    // page before it at the near one.
+    val blockEnd: Dp = (width - ShelfEdge - blockPage).coerceAtLeast(ShelfEdge)
 }
+
+// How much of the next page of a shelf of collections looks in at the edge.
+private val BlockPeek = 32.dp
+
+// Between the two collections of a page.
+private val BlockGap = 12.dp
+
+// How many of a shelf's dots show at once: a window of them goes along a longer row.
+private const val MaxShelfDots = 5
 
 private val LocalShelfMetrics = staticCompositionLocalOf { ShelfMetrics(400.dp, 860.dp) }
 
@@ -2609,7 +2669,10 @@ private fun ServiceFeed(
     SizedShelves(modifier = modifier) {
         val pageHeight = maxHeight - top - 8.dp
         val viewportPx = with(density) { maxHeight.roundToPx() }
-        val paddingPx = with(density) { (top + 8.dp + bottom + FeedBottomRoom).roundToPx() }
+        // Sideways nothing floats over the feed's foot — the toolbar and the mini player stand in
+        // the pane beside it — so it needn't keep clear of them.
+        val footRoom = if (header) FeedBottomRoom else 24.dp
+        val paddingPx = with(density) { (top + 8.dp + bottom + footRoom).roundToPx() }
         LazyColumn(
             state = listState,
             modifier = Modifier
@@ -2630,7 +2693,7 @@ private fun ServiceFeed(
                         Modifier
                     }
                 ),
-            contentPadding = PaddingValues(top = top + 8.dp, bottom = bottom + FeedBottomRoom),
+            contentPadding = PaddingValues(top = top + 8.dp, bottom = bottom + footRoom),
             flingBehavior = if (heroPage) magnet else plainFling
         ) {
             if (heroPage) {
@@ -3063,50 +3126,39 @@ private fun rememberHeroMagnet(
     }
 }
 
-/** The service over its feed: its mark in an Expressive cookie, its name, and its own line. */
+/**
+ * The service over its feed, as the bar over the shelves names it upright: its name, and its own
+ * line under it. Its mark in a cookie beside it went: the toolbar under the thumb shows it already.
+ */
 @Composable
 private fun FeedHeader(service: HomeService, line: String) {
-    Row(
+    Column(
         modifier = Modifier
             .fillMaxWidth()
             .padding(start = ShelfEdge, top = 8.dp, end = ShelfEdge)
-            .semantics(mergeDescendants = true) {},
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(16.dp)
+            .semantics(mergeDescendants = true) {}
     ) {
-        Box(
-            modifier = Modifier
-                .size(56.dp)
-                .clip(PolygonShape(androidx.compose.material3.MaterialShapes.Cookie9Sided))
-                .background(PanelColors.accent),
-            contentAlignment = Alignment.Center
-        ) {
-            service.icon?.let { icon ->
-                Icon(imageVector = icon(), contentDescription = null, tint = PanelColors.onAccent, modifier = Modifier.size(28.dp))
-            }
-        }
-        Column(modifier = Modifier.weight(1f)) {
-            Text(
-                text = service.title,
-                style = MaterialTheme.typography.displaySmall.copy(fontSize = 27.sp, lineHeight = 33.sp),
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
-            Text(
-                text = line,
-                style = MaterialTheme.typography.bodyLarge,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
-        }
+        Text(
+            text = service.title,
+            style = MaterialTheme.typography.displaySmall.copy(fontSize = 28.sp, lineHeight = 34.sp),
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
+        Text(
+            text = line,
+            style = MaterialTheme.typography.bodyLarge,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.padding(top = 4.dp)
+        )
     }
 }
 
 /**
  * A shelf's name and, when there is more than it shows, the way to all of it: the name itself, and
- * "Все · 50" at the end of the line — one pill of glass with how many it holds, where the number
- * and the arrow used to stand apart.
+ * how many it holds with an arrow at the end of the line. A shelf of pages has its dots before it
+ * ([pages]).
  */
 @Composable
 private fun ShelfHeader(
@@ -3114,6 +3166,7 @@ private fun ShelfHeader(
     count: Int?,
     live: Boolean = false,
     onOpen: (() -> Unit)? = null,
+    position: ShelfPosition? = null,
     action: (@Composable () -> Unit)? = null
 ) {
     Row(
@@ -3141,41 +3194,106 @@ private fun ShelfHeader(
                 modifier = Modifier.weight(1f, fill = false)
             )
         }
+        if (position != null) ShelfDots(position)
         action?.invoke()
         if (onOpen != null) ShelfAllButton(title = title, count = count, onClick = onOpen)
     }
 }
 
-/** "Все · 50": a shelf whole, a tap away, with how many it holds. */
+/**
+ * "50 ›": a shelf whole, a tap away, with how many it holds — in the accent, with nothing around it.
+ * A pill of glass with "Все · 50" stood at the end of every shelf, one more thing alike on each.
+ */
 @Composable
 private fun ShelfAllButton(title: String, count: Int?, onClick: () -> Unit) {
-    val glass = LocalGlass.current
-    Surface(
-        onClick = onClick,
+    Row(
         modifier = Modifier
-            .height(36.dp)
-            .glassOr(CircleShape, PanelColors.container)
-            .semantics { contentDescription = tr("Весь раздел «%s»", title) },
-        shape = CircleShape,
-        color = if (glass) Color.Transparent else PanelColors.container,
-        contentColor = PanelColors.content
+            .heightIn(min = 48.dp)
+            .clip(CircleShape)
+            .clickable(onClick = onClick)
+            .semantics(mergeDescendants = true) { contentDescription = tr("Весь раздел «%s»", title) }
+            .padding(start = 10.dp, end = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(1.dp)
     ) {
-        Row(
-            modifier = Modifier.padding(start = 14.dp, end = 8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(2.dp)
-        ) {
-            Text(
-                text = if (count != null && count > 0) tr("Все · %s", count) else tr("Все"),
-                style = MaterialTheme.typography.labelLarge,
-                maxLines = 1
-            )
-            Icon(
-                imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
-                contentDescription = null,
-                tint = PanelColors.accent,
-                modifier = Modifier.size(18.dp)
-            )
+        Text(
+            text = if (count != null && count > 0) count.toString() else tr("Все"),
+            style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold),
+            color = PanelColors.accent,
+            maxLines = 1
+        )
+        Icon(
+            imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
+            contentDescription = null,
+            tint = PanelColors.accent,
+            modifier = Modifier.size(22.dp)
+        )
+    }
+}
+
+/**
+ * Where a shelf's row is: how many stops it has — pages, columns, frames — and which is in view,
+ * worked out as it scrolls but changing only as another stop comes in.
+ */
+@androidx.compose.runtime.Stable
+private class ShelfPosition(val count: Int, val current: androidx.compose.runtime.State<Int>)
+
+@Composable
+private fun rememberShelfPosition(state: androidx.compose.foundation.pager.PagerState): ShelfPosition =
+    remember(state) {
+        // Its last page can't come to the start of the row: at the end of the row, the last is shown.
+        ShelfPosition(state.pageCount, derivedStateOf { if (!state.canScrollForward) state.pageCount - 1 else state.currentPage })
+    }
+
+@Composable
+private fun rememberShelfPosition(state: androidx.compose.foundation.lazy.LazyListState, count: Int): ShelfPosition =
+    remember(state, count) {
+        ShelfPosition(count, derivedStateOf { if (!state.canScrollForward) count - 1 else state.firstVisibleItemIndex })
+    }
+
+@Composable
+private fun rememberShelfPosition(state: androidx.compose.foundation.lazy.grid.LazyGridState, items: Int, rows: Int): ShelfPosition {
+    val columns = (items + rows - 1) / rows
+    return remember(state, columns, rows) {
+        ShelfPosition(columns, derivedStateOf { if (!state.canScrollForward) columns - 1 else state.firstVisibleItemIndex / rows })
+    }
+}
+
+/**
+ * Where a shelf is, by its name: a dot a stop, the one in view long. Five at most show: past that
+ * they are a window going along with the row, its end dots smaller while there is more beyond them.
+ */
+@Composable
+private fun ShelfDots(position: ShelfPosition) {
+    val count = position.count
+    if (count < 2) return
+    val current = position.current.value.coerceIn(0, count - 1)
+    val shown = minOf(count, MaxShelfDots)
+    val start = (current - shown / 2).coerceIn(0, count - shown)
+    Row(
+        modifier = Modifier.padding(end = 4.dp).clearAndSetSemantics { },
+        horizontalArrangement = Arrangement.spacedBy(5.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        for (index in start until start + shown) {
+            androidx.compose.runtime.key(index) {
+                val on = index == current
+                val more = (index == start && start > 0) || (index == start + shown - 1 && start + shown < count)
+                val width by animateDpAsState(
+                    targetValue = when {
+                        on -> 18.dp
+                        more -> 4.dp
+                        else -> 6.dp
+                    },
+                    animationSpec = spring(dampingRatio = 0.6f, stiffness = Spring.StiffnessMediumLow),
+                    label = "shelfDot"
+                )
+                Box(
+                    modifier = Modifier
+                        .size(width = width, height = if (more && !on) 4.dp else 6.dp)
+                        .background(if (on) PanelColors.accent else PanelColors.content.copy(alpha = 0.25f), CircleShape)
+                )
+            }
         }
     }
 }
@@ -3184,23 +3302,39 @@ private fun ShelfAllButton(title: String, count: Int?, onClick: () -> Unit) {
 @Composable
 private fun ShelfView(shelf: HomeShelf, onOpen: () -> Unit) {
     val metrics = LocalShelfMetrics.current
+    // Collections as pages of two (see ShelfBlocks); the stage's too, where it isn't the hero.
+    val blocks = shelf.kind == ShelfKind.Stage || shelf.kind == ShelfKind.Squares || shelf.kind == ShelfKind.Circles
+    val shown = shelf.note == null && shelf.items.isNotEmpty()
+    val pages = if (blocks && shown) rememberPagerState { (shelf.items.size + 1) / 2 } else null
+    // Every row's place by its name, whatever it is a row of: pages, columns of songs or genres,
+    // frames of broadcasts.
+    val rowState = rememberLazyListState()
+    val gridState = rememberLazyGridState()
+    val position = when {
+        !shown -> null
+        pages != null -> rememberShelfPosition(pages)
+        shelf.kind == ShelfKind.Tracks -> rememberShelfPosition(gridState, shelf.items.size, rows = 3)
+        shelf.kind == ShelfKind.Genres -> rememberShelfPosition(gridState, shelf.items.size, rows = 2)
+        else -> rememberShelfPosition(rowState, shelf.items.size)
+    }
     Column(modifier = Modifier.fillMaxWidth().padding(top = ShelfTop, bottom = ShelfBottom)) {
         ShelfHeader(
             title = shelf.title,
             count = shelf.count.takeIf { shelf.note == null },
             live = shelf.live,
-            onOpen = if (shelf.openable) onOpen else null
+            onOpen = if (shelf.openable) onOpen else null,
+            position = position
         )
         when {
             shelf.note != null -> ShelfNoteView(shelf.note)
             shelf.items.isEmpty() -> ShelfLoading(shelf.kind)
+            pages != null -> ShelfBlocks(shelf.items, pages, round = shelf.kind == ShelfKind.Circles)
             else -> when (shelf.kind) {
-                ShelfKind.Stage -> Box(modifier = Modifier.padding(top = 8.dp)) { HomeHeroCarousel(items = shelf.items, cover = metrics.stage) }
-                ShelfKind.Squares -> ShelfRow(shelf.items) { ShelfSquare(it) }
-                ShelfKind.Circles -> ShelfRow(shelf.items) { ShelfCircle(it) }
-                ShelfKind.Live -> ShelfRow(shelf.items) { ShelfLive(it) }
-                ShelfKind.Tracks -> ShelfGrid(shelf.items, rows = 3, rowHeight = ShelfTrackHeight, gap = 2.dp, column = metrics.trackRow) { ShelfTrack(it, Modifier.width(metrics.trackRow)) }
-                ShelfKind.Genres -> ShelfGrid(shelf.items, rows = 2, rowHeight = metrics.genreHeight, gap = ShelfGap) { ShelfGenre(it, Modifier.width(metrics.genreWidth)) }
+                ShelfKind.Stage, ShelfKind.Squares -> ShelfRow(shelf.items, rowState) { ShelfSquare(it) }
+                ShelfKind.Circles -> ShelfRow(shelf.items, rowState) { ShelfCircle(it) }
+                ShelfKind.Live -> ShelfRow(shelf.items, rowState) { ShelfLive(it) }
+                ShelfKind.Tracks -> ShelfGrid(shelf.items, gridState, rows = 3, rowHeight = ShelfTrackHeight, gap = 2.dp, column = metrics.trackRow) { ShelfTrack(it, Modifier.width(metrics.trackRow)) }
+                ShelfKind.Genres -> ShelfGrid(shelf.items, gridState, rows = 2, rowHeight = metrics.genreHeight, gap = ShelfGap) { ShelfGenre(it, Modifier.width(metrics.genreWidth)) }
             }
         }
     }
@@ -3208,8 +3342,13 @@ private fun ShelfView(shelf: HomeShelf, onOpen: () -> Unit) {
 
 /** A shelf's items in a sideways row. What the row has no use for of a swipe stays with it. */
 @Composable
-private fun ShelfRow(items: List<HeroItem>, item: @Composable (HeroItem) -> Unit) {
+private fun ShelfRow(
+    items: List<HeroItem>,
+    state: androidx.compose.foundation.lazy.LazyListState = rememberLazyListState(),
+    item: @Composable (HeroItem) -> Unit
+) {
     LazyRow(
+        state = state,
         modifier = Modifier
             .fillMaxWidth()
             .nestedScroll(KeepSidewaysSwipe),
@@ -3220,10 +3359,99 @@ private fun ShelfRow(items: List<HeroItem>, item: @Composable (HeroItem) -> Unit
     }
 }
 
+/**
+ * Collections as pages of two going sideways: each a large cover with its name beside it, as a row
+ * of songs has its own, and a tap opens it. A swipe brings the next two in, their covers looking in
+ * at the edge meanwhile; a hard one goes on past several. Every card is as tall as its cover, so a
+ * name in one line or in two moves nothing under it — in a row of covers the shelf grew as a
+ * two-line name scrolled in, and the shelves under it jumped.
+ */
+@Composable
+private fun ShelfBlocks(items: List<HeroItem>, state: androidx.compose.foundation.pager.PagerState, round: Boolean) {
+    val metrics = LocalShelfMetrics.current
+    HorizontalPager(
+        state = state,
+        pageSize = androidx.compose.foundation.pager.PageSize.Fixed(metrics.blockPage),
+        contentPadding = PaddingValues(start = ShelfEdge, end = metrics.blockEnd),
+        pageSpacing = ShelfGap,
+        // The count and the list can change apart (a row refreshed): a page past the end has no
+        // cover's key to give, only its place.
+        key = { items.getOrNull(it * 2)?.key ?: it },
+        flingBehavior = rememberDeliberateFling(
+            androidx.compose.foundation.pager.PagerDefaults.flingBehavior(
+                state = state,
+                pagerSnapDistance = androidx.compose.foundation.pager.PagerSnapDistance.atMost(BlockFlingPages)
+            )
+        ),
+        verticalAlignment = Alignment.Top,
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = 8.dp, bottom = 4.dp)
+            // A shelf of one is a page of one: no room kept for a second.
+            .height(if (items.size > 1) metrics.blockCover * 2 + BlockGap else metrics.blockCover)
+            .nestedScroll(KeepSidewaysSwipe)
+    ) { page ->
+        Column(verticalArrangement = Arrangement.spacedBy(BlockGap)) {
+            items.getOrNull(page * 2)?.let { ShelfBlock(it, round) }
+            items.getOrNull(page * 2 + 1)?.let { ShelfBlock(it, round) }
+        }
+    }
+}
+
+// As many pages as a hard swipe on a shelf of collections may go past.
+private const val BlockFlingPages = 6
+
+/** A collection as a card of a page: the cover, and its name and what it is beside it. */
+@Composable
+private fun ShelfBlock(item: HeroItem, round: Boolean) {
+    val haptic = LocalHapticFeedback.current
+    val interaction = remember { MutableInteractionSource() }
+    val cover = LocalShelfMetrics.current.blockCover
+    val playing = item.isPlaying || LocalNowPlaying.current.lights(item.source, item.trackId)
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(cover)
+            .clickable(interactionSource = interaction, indication = null) {
+                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                item.onClick()
+            },
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(14.dp)
+    ) {
+        ShelfCover(
+            item = item,
+            size = cover,
+            modifier = Modifier
+                .size(cover)
+                .pressMorph(interaction, corner = if (round) cover * 0.32f else 26.dp, pressedCorner = cover / 2)
+        )
+        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+            Text(
+                text = item.title,
+                style = MaterialTheme.typography.titleMedium.copy(fontSize = 19.sp, lineHeight = 23.sp, fontWeight = FontWeight.SemiBold),
+                color = if (playing) PanelColors.accent else MaterialTheme.colorScheme.onSurface,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis
+            )
+            if (!item.subtitle.isNullOrBlank()) {
+                Text(
+                    text = item.subtitle,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+        }
+    }
+}
+
 /** A shelf's items in [rows] going sideways, column by column: songs three to a column, genres two. */
 @Composable
 private fun ShelfGrid(
     items: List<HeroItem>,
+    state: androidx.compose.foundation.lazy.grid.LazyGridState,
     rows: Int,
     rowHeight: Dp,
     gap: Dp,
@@ -3232,7 +3460,6 @@ private fun ShelfGrid(
     column: Dp? = null,
     item: @Composable (HeroItem) -> Unit
 ) {
-    val state = rememberLazyGridState()
     BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
         val end = if (column != null) (maxWidth - ShelfEdge - column).coerceAtLeast(ShelfEdge) else ShelfEdge
         androidx.compose.foundation.lazy.grid.LazyHorizontalGrid(
@@ -3246,9 +3473,20 @@ private fun ShelfGrid(
             horizontalArrangement = Arrangement.spacedBy(ShelfGap),
             verticalArrangement = Arrangement.spacedBy(gap),
             flingBehavior = if (column != null) {
-                androidx.compose.foundation.gestures.snapping.rememberSnapFlingBehavior(
-                    lazyGridState = state,
-                    snapPosition = androidx.compose.foundation.gestures.snapping.SnapPosition.Start
+                // A light brush doesn't move on a column of songs (see DeliberateFling). Snapping as
+                // rememberSnapFlingBehavior does, built here for the kind of fling it wraps.
+                val decay = androidx.compose.animation.rememberSplineBasedDecay<Float>()
+                rememberDeliberateFling(
+                    remember(state, decay) {
+                        androidx.compose.foundation.gestures.snapping.snapFlingBehavior(
+                            snapLayoutInfoProvider = androidx.compose.foundation.gestures.snapping.SnapLayoutInfoProvider(
+                                state,
+                                androidx.compose.foundation.gestures.snapping.SnapPosition.Start
+                            ),
+                            decayAnimationSpec = decay,
+                            snapAnimationSpec = spring(stiffness = Spring.StiffnessMediumLow)
+                        )
+                    }
                 )
             } else {
                 androidx.compose.foundation.gestures.ScrollableDefaults.flingBehavior()
@@ -3528,6 +3766,21 @@ private fun ShelfLoading(kind: ShelfKind) {
         return
     }
     val placeholder = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.06f)
+    if (kind == ShelfKind.Squares || kind == ShelfKind.Circles) {
+        // As tall as the page of two it stands for: the shelves under it don't move when it comes.
+        Column(
+            modifier = Modifier.fillMaxWidth().padding(start = ShelfEdge, top = 8.dp, end = ShelfEdge, bottom = 4.dp),
+            verticalArrangement = Arrangement.spacedBy(BlockGap)
+        ) {
+            repeat(2) {
+                Row(horizontalArrangement = Arrangement.spacedBy(14.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Box(modifier = Modifier.size(metrics.blockCover).background(placeholder, RoundedCornerShape(26.dp)))
+                    Box(modifier = Modifier.size(width = metrics.blockCover, height = 18.dp).background(placeholder, CircleShape))
+                }
+            }
+        }
+        return
+    }
     Row(
         modifier = Modifier.fillMaxWidth().padding(start = ShelfEdge, top = 8.dp, end = ShelfEdge, bottom = 4.dp),
         horizontalArrangement = Arrangement.spacedBy(ShelfGap)
@@ -3717,11 +3970,13 @@ private fun HomeToolbar(
                 .glassOr(RoundedCornerShape(20.dp), searchFill),
             shape = RoundedCornerShape(20.dp),
             color = if (glass) Color.Transparent else searchFill,
-            contentColor = PanelColors.accent,
+            contentColor = PanelColors.content,
             shadowElevation = if (glass) 0.dp else 6.dp
         ) {
             Box(contentAlignment = Alignment.Center) {
-                Icon(Icons.Default.Search, contentDescription = tr("Поиск"), modifier = Modifier.size(28.dp))
+                // As large and as heavy as the services' marks beside it (see GlobeSearchPainter).
+                val globe = remember { GlobeSearchPainter() }
+                Icon(globe, contentDescription = tr("Поиск"), modifier = Modifier.size(26.dp))
             }
         }
         Spacer(modifier = Modifier.width(8.dp))
@@ -3883,7 +4138,15 @@ private fun PagedTrackList(
             modifier = Modifier
                 .fillMaxWidth()
                 .height(rowHeight * perPage + rowGap * (perPage - 1)),
-            pageSpacing = 8.dp
+            pageSpacing = 8.dp,
+            // A hard swipe goes on past a few pages instead of one a swipe, however hard; a light
+            // one moves nothing (see DeliberateFling).
+            flingBehavior = rememberDeliberateFling(
+                androidx.compose.foundation.pager.PagerDefaults.flingBehavior(
+                    state = pagerState,
+                    pagerSnapDistance = androidx.compose.foundation.pager.PagerSnapDistance.atMost(3)
+                )
+            )
         ) { page ->
             Column(
                 modifier = Modifier.fillMaxWidth(),
@@ -4127,7 +4390,7 @@ private data class HeroItem(
  * narrow from the full cover to that strip as the page moves out.
  */
 // Swallows what a sideways scroller leaves over of a swipe, so nothing sideways around it moves.
-private val KeepSidewaysSwipe = object : NestedScrollConnection {
+internal val KeepSidewaysSwipe = object : NestedScrollConnection {
     override fun onPostScroll(consumed: Offset, available: Offset, source: NestedScrollSource): Offset =
         Offset(available.x, 0f)
 
@@ -4173,6 +4436,14 @@ private fun HomeHeroCarousel(
                 // The count and the list can change apart (a row refreshed): a page past the end
                 // has no cover's key to give, only its place.
                 key = { items.getOrNull(it)?.key ?: it },
+                // A hard swipe goes on past several covers, as a flung list would, and settles on one;
+                // a light one moves nothing (see DeliberateFling).
+                flingBehavior = rememberDeliberateFling(
+                    androidx.compose.foundation.pager.PagerDefaults.flingBehavior(
+                        state = pagerState,
+                        pagerSnapDistance = androidx.compose.foundation.pager.PagerSnapDistance.atMost(BlockFlingPages)
+                    )
+                ),
                 modifier = Modifier
                     .fillMaxSize()
                     // What the carousel doesn't use of a swipe, at its first or last cover, isn't
@@ -5974,8 +6245,11 @@ private fun SettingsSwitchRow(
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun SearchScreen(
+    // How far the dock has gone down out of the way, shared with the mini player over it.
+    dockHidden: Animatable<Float, androidx.compose.animation.core.AnimationVector1D>,
     // "Поиск"; or, picking for the profile's showcase, what is being picked.
     title: String,
     query: String,
@@ -6102,6 +6376,37 @@ private fun SearchScreen(
     // Sideways the results have the left to themselves; the bar, the field, the services and the
     // mini player are in a pane on the right, under the thumb.
     val landscape = isLandscape()
+    // Scrolled down the results, the dock goes down out of the way; a good stretch back up brings it
+    // back. Not sideways, where it has a pane of its own, nor while the keyboard is up for typing.
+    val imeVisible = WindowInsets.isImeVisible
+    // The keyboard put away — by back, by the app going to the background — takes the field's
+    // focus with it, and its ring. Kept, the field had the keyboard up again every time the app
+    // came back to the front, a track from search long playing.
+    val focusManager = androidx.compose.ui.platform.LocalFocusManager.current
+    var hadKeyboard by remember { mutableStateOf(false) }
+    LaunchedEffect(imeVisible) {
+        if (imeVisible) {
+            hadKeyboard = true
+        } else if (hadKeyboard) {
+            hadKeyboard = false
+            focusManager.clearFocus()
+        }
+    }
+    // Gone to the background, the screen sees no more frames and the keyboard going away goes
+    // unnoticed: the focus goes as the app does.
+    val lifecycle = androidx.lifecycle.compose.LocalLifecycleOwner.current.lifecycle
+    androidx.compose.runtime.DisposableEffect(lifecycle) {
+        val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
+            if (event == androidx.lifecycle.Lifecycle.Event.ON_STOP) focusManager.clearFocus(force = true)
+        }
+        lifecycle.addObserver(observer)
+        onDispose { lifecycle.removeObserver(observer) }
+    }
+    val dockHide = rememberSearchDockHide(dockHidden)
+    val dockMayHide = !landscape && !imeVisible
+    androidx.compose.runtime.SideEffect { dockHide.enabled = dockMayHide }
+    LaunchedEffect(Unit) { dockHidden.snapTo(0f) }
+    LaunchedEffect(dockMayHide) { if (!dockMayHide) dockHide.show() }
     // Room at the bottom of each list for what floats over its end: the tabs, the mini player.
     val bottomRoom = if (landscape) {
         24.dp + WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
@@ -6135,6 +6440,8 @@ private fun SearchScreen(
                     // Above the keyboard: without it the last result sits under it with no way
                     // to scroll to it.
                     .imePadding()
+                    // Which way the results are scrolled, for the dock to go or come back.
+                    .nestedScroll(dockHide)
                     // The results, recorded for the tabs floating over their end.
                     .frostSource(results),
                 key = { sources[it] },
@@ -6207,6 +6514,10 @@ private fun SearchScreen(
                             Modifier
                         }
                     )
+                    // Gone down out of the way, as far as it stands over the foot, and faded:
+                    // placed and drawn so, frame by frame, nothing composed again.
+                    .offset { IntOffset(0, (searchDockHeight(tabsShown).toPx() + 24.dp.toPx()).times(dockHidden.value).roundToInt()) }
+                    .graphicsLayer { alpha = 1f - dockHidden.value }
                     .padding(horizontal = 16.dp, vertical = 12.dp),
                 verticalArrangement = Arrangement.spacedBy(SearchDockGap)
             ) {
@@ -6232,6 +6543,66 @@ private fun SearchScreen(
             }
         }
     }
+    }
+}
+
+/**
+ * Search's dock taken out of the way of the results and brought back. Scrolled down a little, the
+ * field and the services go down and fade, the mini player alone left at the foot. A flick back up
+ * in passing doesn't bring them back, a good stretch up does — or the top of the list. [hidden]
+ * goes 0 to 1 on a spring, and is read only as the dock and the mini player are placed and drawn.
+ */
+private class SearchDockHide(
+    private val hidden: Animatable<Float, androidx.compose.animation.core.AnimationVector1D>,
+    private val scope: kotlinx.coroutines.CoroutineScope,
+    private val hideAfter: Float,
+    private val showAfter: Float
+) : NestedScrollConnection {
+    var enabled = true
+    private var down = 0f
+    private var up = 0f
+    private var target = 0f
+
+    fun show() = go(0f)
+
+    private fun go(to: Float) {
+        down = 0f
+        up = 0f
+        if (target == to) return
+        target = to
+        scope.launch { hidden.animateTo(to, spring(dampingRatio = 1f, stiffness = 420f)) }
+    }
+
+    override fun onPostScroll(consumed: Offset, available: Offset, source: NestedScrollSource): Offset {
+        when {
+            !enabled -> Unit
+            // Pulled on at the top, or a fling up come to the top: all of it in view again.
+            available.y > 0f -> go(0f)
+            consumed.y < 0f -> {
+                up = 0f
+                down -= consumed.y
+                if (down > hideAfter) go(1f)
+            }
+            consumed.y > 0f -> {
+                down = 0f
+                up += consumed.y
+                if (up > showAfter) go(0f)
+            }
+        }
+        return Offset.Zero
+    }
+}
+
+// Down this far, the dock goes; back up this far, it comes back.
+private val SearchDockHideAfter = 48.dp
+private val SearchDockShowAfter = 220.dp
+
+@Composable
+private fun rememberSearchDockHide(hidden: Animatable<Float, androidx.compose.animation.core.AnimationVector1D>): SearchDockHide {
+    val scope = rememberCoroutineScope()
+    val density = LocalDensity.current
+    return remember(hidden, scope, density) {
+        with(density) { SearchDockHide(hidden, scope, SearchDockHideAfter.toPx(), SearchDockShowAfter.toPx()) }
     }
 }
 
@@ -7373,6 +7744,8 @@ private fun SearchField(
         colors = OutlinedTextFieldDefaults.colors(
             focusedContainerColor = if (glass) Color.Transparent else fill,
             unfocusedContainerColor = if (glass) Color.Transparent else fill,
+            // Ringed while it has the keyboard: the one outline left on glass, there to say where the
+            // typing goes.
             focusedBorderColor = MaterialTheme.colorScheme.primary,
             unfocusedBorderColor = Color.Transparent
         )
@@ -7551,6 +7924,20 @@ private fun localizedSectionTitle(raw: String?): String = when {
     else -> raw
 }
 
+/** One of SoundCloud's other home rows by its name in the app's language, where it has one. */
+private fun soundCloudRowTitle(section: MoreSection): String = when (section.key) {
+    "personalized-tracks" -> tr("Больше того, что нравится")
+    "recently-played" -> tr("Недавно слушали")
+    "made-for-you" -> tr("Для тебя")
+    "personalized-albums" -> tr("Альбомы для тебя")
+    "daily-drops" -> tr("Свежее каждый день")
+    "personalised-curated-global" -> tr("Подборки SoundCloud")
+    "buzzing" -> tr("Артисты, за которыми стоит следить")
+    "charts-top" -> tr("Чарты")
+    "charts-trending" -> tr("В тренде")
+    else -> section.title
+}
+
 private val YourMixPattern = Regex("""^Your Mix\s*(\d+)$""", RegexOption.IGNORE_CASE)
 
 private fun localizedGenre(raw: String): String = when (raw.trim().lowercase()) {
@@ -7559,7 +7946,12 @@ private fun localizedGenre(raw: String): String = when (raw.trim().lowercase()) 
 }
 
 private fun localizedMixTitle(raw: String): String =
-    YourMixPattern.find(raw.trim())?.let { tr("Твой микс %s", it.groupValues[1]) } ?: raw
+    YourMixPattern.find(raw.trim())?.let { tr("Твой микс %s", it.groupValues[1]) }
+        // A track's station, in «Больше того, что нравится».
+        ?: raw.trim().takeIf { it.startsWith(RELATED_PREFIX, ignoreCase = true) }?.let { tr("Похоже на %s", it.substring(RELATED_PREFIX.length).trim()) }
+        ?: raw
+
+private const val RELATED_PREFIX = "Related tracks:"
 
 /**
  * An editorial mix tile: the artwork *is* the card.
@@ -8179,7 +8571,7 @@ private fun CollapsingTopBar(
                     .graphicsLayer { alpha = barShown }
                     .then(
                         if (barShown > 0f) {
-                            Modifier.frosted(tint = MaterialTheme.colorScheme.background.copy(alpha = PageGlassAlpha), rim = false)
+                            Modifier.frosted(tint = MaterialTheme.colorScheme.background.copy(alpha = PageGlassAlpha))
                         } else {
                             Modifier
                         }

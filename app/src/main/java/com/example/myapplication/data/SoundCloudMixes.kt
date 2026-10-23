@@ -27,8 +27,28 @@ data class SoundCloudMixPlaylist(
     @SerializedName("short_description") val shortDescription: String?,
     @SerializedName("artwork_url") val artworkUrl: String?,
     @SerializedName("calculated_artwork_url") val calculatedArtworkUrl: String?,
-    val tracks: List<SoundCloudMixTrackStub> = emptyList()
+    // Null when the JSON has none, as a playlist of somebody's often hasn't: Gson goes round the
+    // default.
+    val tracks: List<SoundCloudMixTrackStub>? = null,
+    // "system-playlist" for a mix, a station or a chart; "playlist" for one somebody put together.
+    val kind: String? = null,
+    val user: SoundCloudUser? = null,
+    @SerializedName("track_count") val trackCount: Int? = null
 ) {
+    /** A playlist somebody put together, as a set to open; null for SoundCloud's own. */
+    fun toPlaylist(): SoundCloudPlaylist? {
+        if (kind != "playlist") return null
+        val numeric = id?.toLongOrNull() ?: return null
+        return SoundCloudPlaylist(
+            id = numeric,
+            title = title,
+            trackCount = trackCount ?: tracks.orEmpty().size,
+            artworkUrl = artworkUrl ?: calculatedArtworkUrl,
+            permalinkUrl = permalinkUrl,
+            user = user
+        )
+    }
+
     fun toMix(): SoundCloudMix? {
         val resolvedId = id ?: urn ?: permalink ?: return null
         return SoundCloudMix(
@@ -37,7 +57,7 @@ data class SoundCloudMixPlaylist(
             title = title?.takeIf { it.isNotBlank() } ?: "Mix",
             description = shortDescription?.takeIf { it.isNotBlank() } ?: description,
             artworkUrl = calculatedArtworkUrl ?: artworkUrl,
-            trackIds = tracks.map { it.id },
+            trackIds = tracks.orEmpty().map { it.id },
             url = permalinkUrl?.takeIf { it.startsWith("https://") }
         )
     }
@@ -70,15 +90,29 @@ data class MixSection(
     val mixes: List<SoundCloudMix>
 )
 
+/**
+ * Another of SoundCloud's home rows, past the three home has a place of its own for: curated
+ * playlists, artists to watch, the charts, what SoundCloud adds next. Its own mixes open as mixes,
+ * the playlists people put together as sets. [key] is SoundCloud's name for the row.
+ */
+data class MoreSection(
+    val key: String,
+    val title: String,
+    val mixes: List<SoundCloudMix> = emptyList(),
+    val playlists: List<SoundCloudPlaylist> = emptyList()
+)
+
 /** What home shows from SoundCloud's `mixed-selections`. */
 data class HomeSections(
     val moods: MixSection? = null,
     val stations: MixSection? = null,
     // "Trending by genre": a chart per genre, opened like a mix.
-    val trending: MixSection? = null
+    val trending: MixSection? = null,
+    // Every other row, in SoundCloud's order.
+    val more: List<MoreSection> = emptyList()
 ) {
-    val isEmpty get() = moods == null && stations == null && trending == null
-    val mixIds get() = listOfNotNull(moods, stations, trending).flatMap { it.mixes }.map { it.id }.toSet()
+    val isEmpty get() = moods == null && stations == null && trending == null && more.isEmpty()
+    val mixIds get() = (listOfNotNull(moods, stations, trending).flatMap { it.mixes } + more.flatMap { it.mixes }).map { it.id }.toSet()
 }
 
 data class SoundCloudSystemPlaylist(
