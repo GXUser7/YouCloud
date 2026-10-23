@@ -702,32 +702,54 @@ internal data class CarouselAlbum(
 )
 
 /**
- * [fling] that takes a light flick for no fling at all: a row of pages, or a carousel, lets go where
- * the finger left it and settles by position — on the page it was on unless dragged past half of
- * it. A light brush of the thumb used to turn the page. A swipe meant to go on, faster than
- * [minVelocity], flings as [fling] does, past several pages if hard.
+ * [fling] in three steps, by how hard the swipe was. A light flick, slower than [minVelocity], is
+ * no fling at all: a row of pages, or a carousel, lets go where the finger left it and settles by
+ * position — on the page it was on unless dragged past half of it. A swipe up to a hard one, slower
+ * than [manyVelocity], turns one page, however fast it was: an ordinary swipe went on past two or
+ * three. Only a hard swipe flings as [fling] does, past several.
  */
 internal class DeliberateFling(
     private val fling: androidx.compose.foundation.gestures.TargetedFlingBehavior,
-    private val minVelocity: Float
+    private val minVelocity: Float,
+    private val manyVelocity: Float,
+    // What a swipe of one page is handed on as: over what [fling] takes for a fling at all, with
+    // too little left to decay past the next page.
+    private val onePageVelocity: Float
 ) : androidx.compose.foundation.gestures.TargetedFlingBehavior {
     override suspend fun androidx.compose.foundation.gestures.ScrollScope.performFling(
         initialVelocity: Float,
         onRemainingDistanceUpdated: (Float) -> Unit
     ): Float = with(fling) {
-        performFling(if (kotlin.math.abs(initialVelocity) < minVelocity) 0f else initialVelocity, onRemainingDistanceUpdated)
+        val speed = kotlin.math.abs(initialVelocity)
+        val velocity = when {
+            speed < minVelocity -> 0f
+            speed < manyVelocity -> kotlin.math.sign(initialVelocity) * onePageVelocity
+            else -> initialVelocity
+        }
+        performFling(velocity, onRemainingDistanceUpdated)
     }
 }
 
 // Slower than this, a swipe on a row of pages or a carousel is let go of, not flung.
 internal val DeliberateFlingVelocity = 1000.dp
 
+// Slower than this, it turns one page; faster, it may go on past several.
+internal val ManyPagesFlingVelocity = 3500.dp
+
+// A swipe of one page handed on as this: over the 400 dp/s a pager and a snapping row take for a
+// fling, and decaying well short of a page.
+private val OnePageFlingVelocity = 700.dp
+
 @Composable
 internal fun rememberDeliberateFling(
     fling: androidx.compose.foundation.gestures.TargetedFlingBehavior
 ): androidx.compose.foundation.gestures.TargetedFlingBehavior {
-    val minVelocity = with(androidx.compose.ui.platform.LocalDensity.current) { DeliberateFlingVelocity.toPx() }
-    return remember(fling, minVelocity) { DeliberateFling(fling, minVelocity) }
+    val density = androidx.compose.ui.platform.LocalDensity.current
+    return remember(fling, density) {
+        with(density) {
+            DeliberateFling(fling, DeliberateFlingVelocity.toPx(), ManyPagesFlingVelocity.toPx(), OnePageFlingVelocity.toPx())
+        }
+    }
 }
 
 /**
