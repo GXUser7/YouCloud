@@ -720,7 +720,9 @@ fun MusicScreen(viewModel: MusicViewModel) {
             // at once, as the player shows what it was opened from, and coming back finds it as it
             // was left. Covered by a page that has settled it isn't drawn, nor does anything on it
             // move by itself (see LocalCovered).
-            UnderPages(hidden = { homeHidden }, shown = { homeShown.value }) {
+            // Under a page pulled off it, whole at once: on the frame the pull starts, not the next
+            // (homeShown snaps to it a frame later), its glass blurring the backdrop with it.
+            UnderPages(hidden = { homeHidden }, shown = { if (pagePulled && pageUnder == null) 1f else homeShown.value }) {
                 androidx.compose.runtime.CompositionLocalProvider(LocalCovered provides homeCovered) {
                         HomeScreen(
                             mixSection = mixSection,

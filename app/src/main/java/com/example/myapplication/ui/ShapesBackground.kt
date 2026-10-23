@@ -408,7 +408,8 @@ private class BackdropView(context: Context) : SurfaceView(context), SurfaceHold
     private val shown = ArrayList<BackdropGlass.Pane>()
     private val screen = android.graphics.RectF()
     // The frame of the scene the shapes are at, and the one each layer was recorded at: a layer
-    // left out for a while (the sharp ones under a page) is recorded afresh as it comes back.
+    // left out for a while (the glass one, with no glass on the screen) is recorded afresh as it
+    // comes back.
     private var scene = 0L
     private var farAt = -1L
     private var nearAt = -1L
@@ -653,14 +654,20 @@ private class BackdropView(context: Context) : SurfaceView(context), SurfaceHold
         // A page all there over the whole screen: nothing sharp shows anywhere, only the scene as
         // the glass blurs it.
         val whole = shown.any { it.rect && it.alpha >= 1f && it.visible.contains(screen) }
-        if (!whole) {
-            if (farAt != scene) record(farNode, this.far, far, FAR_SHRINK, FAR_BLUR.value).also { farAt = scene }
-            if (nearAt != scene) record(nearNode, this.near, near, NEAR_SHRINK, NEAR_BLUR.value).also { nearAt = scene }
-        }
+        if (farAt != scene) record(farNode, this.far, far, FAR_SHRINK, FAR_BLUR.value).also { farAt = scene }
+        if (nearAt != scene) record(nearNode, this.near, near, NEAR_SHRINK, NEAR_BLUR.value).also { nearAt = scene }
         if (shown.isNotEmpty() && glassAt != scene) recordGlass(palette, far, near).also { glassAt = scene }
         val canvas = root.beginRecording(width, height)
         if (whole) {
             canvas.drawRenderNode(glassNode)
+            // The sharp layers kept drawn, though none of them shows: a page pulled off finds them
+            // ready. Left out, they were drawn afresh on the pull's first frame, which came late,
+            // the page moved over the backdrop still blurred whole.
+            canvas.save()
+            canvas.clipRect(0, 0, 1, 1)
+            canvas.drawRenderNode(farNode)
+            canvas.drawRenderNode(nearNode)
+            canvas.restore()
         } else {
             canvas.drawColor(palette.ground.toArgb())
             canvas.drawRenderNode(farNode)

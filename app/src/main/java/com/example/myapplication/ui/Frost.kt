@@ -51,6 +51,7 @@ import androidx.compose.ui.node.TraversableNode
 import androidx.compose.ui.node.invalidateDraw
 import androidx.compose.ui.node.observeReads
 import androidx.compose.ui.node.requireDensity
+import androidx.compose.ui.node.requireLayoutCoordinates
 import androidx.compose.ui.node.requireLayoutDirection
 import androidx.compose.ui.node.requireView
 import androidx.compose.ui.node.traverseAncestors
@@ -209,7 +210,11 @@ private data class BackdropBlurElement(val shape: Shape) : ModifierNodeElement<B
 private class BackdropBlurNode(var shape: Shape) : Modifier.Node(), GlobalPositionAwareModifierNode, ObserverModifierNode {
     private var coordinates: LayoutCoordinates? = null
     private var shown = 1f
+    // A clip round the glass from a box it is in (see glassClip), and that box.
+    private var clip: GlassClipNode? = null
+    private var clipShape: Shape? = null
     private val matrix = androidx.compose.ui.graphics.Matrix()
+    private val clipMatrix = androidx.compose.ui.graphics.Matrix()
     private val location = IntArray(2)
     // What the backdrop was told last: told again only when some of it changes.
     private var toldShape: Shape? = null
@@ -217,6 +222,8 @@ private class BackdropBlurNode(var shape: Shape) : Modifier.Node(), GlobalPositi
     private var toldBounds = Rect.Zero
     private var toldVisible = Rect.Zero
     private var toldShown = -1f
+    private var toldClip: Shape? = null
+    private var toldClipBounds = Rect.Zero
     private var toldX = 0
     private var toldY = 0
 
@@ -245,6 +252,16 @@ private class BackdropBlurNode(var shape: Shape) : Modifier.Node(), GlobalPositi
             true
         }
         shown = amount
+        // The nearest box that clips the glass now.
+        var clipping: GlassClipNode? = null
+        var clipped: Shape? = null
+        traverseAncestors(GlassClipKey) { node ->
+            clipped = (node as GlassClipNode).shape()
+            if (clipped != null) clipping = node
+            clipped == null
+        }
+        clip = clipping
+        clipShape = clipped
     }
 
     fun tell() {
@@ -262,24 +279,33 @@ private class BackdropBlurNode(var shape: Shape) : Modifier.Node(), GlobalPositi
         val visible = coordinates.boundsInRoot()
         val view = requireView()
         view.getLocationInWindow(location)
+        val clipShape = clipShape
+        val clipCoordinates = clip?.takeIf { clipShape != null && it.isAttached }?.coordinates()
+        var clipBounds = Rect.Zero
+        if (clipCoordinates != null) {
+            clipMatrix.reset()
+            coordinates.findRootCoordinates().transformFrom(clipCoordinates, clipMatrix)
+            clipBounds = clipMatrix.map(clipCoordinates.size.toSize().toRect())
+        }
         if (shape == toldShape && size == toldSize && bounds == toldBounds && visible == toldVisible &&
-            shown == toldShown && location[0] == toldX && location[1] == toldY
+            shown == toldShown && clipShape == toldClip && clipBounds == toldClipBounds &&
+            location[0] == toldX && location[1] == toldY
         ) return
         toldShape = shape
         toldSize = size
         toldBounds = bounds
         toldVisible = visible
         toldShown = shown
+        toldClip = clipShape
+        toldClipBounds = clipBounds
         toldX = location[0]
         toldY = location[1]
         val outline = shape.createOutline(size.toSize(), requireLayoutDirection(), requireDensity())
-        val path = androidx.compose.ui.graphics.Path().apply { addOutline(outline) }.asAndroidPath()
-        path.transform(
-            android.graphics.Matrix().apply {
-                setFrom(matrix)
-                postTranslate(location[0].toFloat(), location[1].toFloat())
-            }
-        )
+        val path = onWindow(outline, matrix)
+        if (clipShape != null && clipCoordinates != null) {
+            val around = clipShape.createOutline(clipCoordinates.size.toSize(), requireLayoutDirection(), requireDensity())
+            path.op(onWindow(around, clipMatrix), android.graphics.Path.Op.INTERSECT)
+        }
         BackdropGlass.put(
             this,
             BackdropGlass.Pane(
@@ -290,11 +316,54 @@ private class BackdropBlurNode(var shape: Shape) : Modifier.Node(), GlobalPositi
                     visible.right + location[0], visible.bottom + location[1]
                 ),
                 alpha = shown,
-                rect = outline is androidx.compose.ui.graphics.Outline.Rectangle
+                rect = outline is androidx.compose.ui.graphics.Outline.Rectangle && clipShape == null
             )
         )
     }
+
+    /** [outline], in the coordinates [toRoot] takes to the root, on the window. */
+    private fun onWindow(outline: androidx.compose.ui.graphics.Outline, toRoot: androidx.compose.ui.graphics.Matrix): android.graphics.Path {
+        val path = androidx.compose.ui.graphics.Path().apply { addOutline(outline) }.asAndroidPath()
+        path.transform(
+            android.graphics.Matrix().apply {
+                setFrom(toRoot)
+                postTranslate(location[0].toFloat(), location[1].toFloat())
+            }
+        )
+        return path
+    }
 }
+
+/**
+ * A clip round the glass in this box other than the glass's own shape, for the backdrop to blur
+ * inside it only: a page pulled away, its corners rounded by the layer it moves in. [shape] null
+ * while nothing is clipped. Placed after the layer that clips, to be where the clip is.
+ */
+fun Modifier.glassClip(shape: () -> Shape?): Modifier = this then GlassClipElement(shape)
+
+private class GlassClipElement(val shape: () -> Shape?) : ModifierNodeElement<GlassClipNode>() {
+    override fun create() = GlassClipNode(shape)
+
+    override fun update(node: GlassClipNode) {
+        node.shape = shape
+    }
+
+    override fun equals(other: Any?) = other is GlassClipElement && other.shape === shape
+
+    override fun hashCode() = shape.hashCode()
+
+    override fun InspectorInfo.inspectableProperties() {
+        name = "glassClip"
+    }
+}
+
+private class GlassClipNode(var shape: () -> Shape?) : Modifier.Node(), TraversableNode {
+    override val traverseKey: Any get() = GlassClipKey
+
+    fun coordinates(): LayoutCoordinates? = if (isAttached) requireLayoutCoordinates() else null
+}
+
+private object GlassClipKey
 
 /**
  * How much of the glass in this box is there, for the backdrop to blur under it as much: a page

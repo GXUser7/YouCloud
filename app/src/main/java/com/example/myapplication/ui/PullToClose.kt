@@ -71,6 +71,10 @@ internal fun Modifier.pullToClose(onClose: () -> Unit): Modifier {
         if (closing) return 0f
         val before = pull.value
         val after = (before + dy).coerceAtLeast(0f)
+        // Told at once as it leaves its place, not a frame later through the flow above: what is
+        // under the page is there on the very frame the page first moves. A frame without it
+        // showed the bare backdrop where the page had been, sharp, between two blurred ones.
+        if (before <= 0f && after > 0f) reportPulled(true)
         // Undispatched: moved in this very frame, not the next, or it trails the finger.
         scope.launch(start = CoroutineStart.UNDISPATCHED) { pull.snapTo(after) }
         return after - before
@@ -167,10 +171,18 @@ internal fun Modifier.pullToClose(onClose: () -> Unit): Modifier {
             scaleY = scale
             transformOrigin = TransformOrigin(0.5f, 0f)
             if (pulled > 0f) {
-                // Rounded almost as soon as it moves, as a card lifted off the screen.
+                // Rounded almost as soon as it moves, as a card lifted off the screen (and so is
+                // the backdrop's blur under it: see glassClip below).
                 shape = RoundedCornerShape(PulledCorner * (pulled / 0.15f).coerceAtMost(1f))
                 clip = true
             }
-            alpha = 1f - ((pulled - CollapseFadeFrom) / (1f - CollapseFadeFrom)).coerceIn(0f, 1f)
+            alpha = pulledAlpha(pulled)
         }
+        // Its glass as the backdrop blurs under it: inside the corners rounded here, and fading as
+        // the page does (see BackdropGlass).
+        .glassClip { progress().takeIf { it > 0f }?.let { RoundedCornerShape(PulledCorner * (it / 0.15f).coerceAtMost(1f)) } }
+        .glassShown { pulledAlpha(progress()) }
 }
+
+/** How much of a page pulled [pulled] of the way off is there: all of it until it is nearly gone. */
+private fun pulledAlpha(pulled: Float): Float = 1f - ((pulled - CollapseFadeFrom) / (1f - CollapseFadeFrom)).coerceIn(0f, 1f)
