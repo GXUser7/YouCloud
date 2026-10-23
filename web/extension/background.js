@@ -3,9 +3,9 @@
 // Cloudflare's away. It reaches only the hosts in the manifest, and answers only YouCloud's pages
 // (the content script runs nowhere else). It also signs the site in: SoundCloud's session from
 // this browser — its cookie, or, signed out, the token its own requests carry once the listener
-// signs in on the tab it opens — and Yandex's token from the Yandex ID login it opens. With YouCloud
-// Helper installed (web/helper), it hands that program YouTube's sound to find with yt-dlp and what
-// plays, for the listener's status in Discord.
+// signs in on the tab it opens — and renews it when it expires; and Yandex's token from the Yandex
+// ID login it opens. With YouCloud Helper installed (web/helper), it hands that program YouTube's
+// sound to find with yt-dlp and what plays, for the listener's status in Discord.
 
 const api = globalThis.browser ?? globalThis.chrome
 
@@ -355,11 +355,13 @@ api.tabs.onRemoved.addListener(() => {
 })
 
 /** The site's other asks: who is signed in where, and a Yandex login. */
-async function call(name) {
+async function call(name, args) {
   if (name === 'helper') return helperHello()
   if (name === 'sc-token') {
-    const cookie = await api.cookies.get({ url: 'https://soundcloud.com/', name: 'oauth_token' })
-    return { value: cookie?.value ? decodeURIComponent(cookie.value) : null }
+    return { value: await soundCloudCookie() }
+  }
+  if (name === 'sc-renew') {
+    return { value: await renewSoundCloud(String(args?.stale ?? '')) }
   }
   if (name === 'sc-login') {
     const tab = await api.tabs.create({ url: SOUNDCLOUD_LOGIN })
@@ -411,8 +413,71 @@ async function caughtSoundCloudToken(token) {
 
 function watchSoundCloud(details) {
   const auth = details.requestHeaders?.find((h) => h.name.toLowerCase() === 'authorization')?.value
-  if (auth?.startsWith('OAuth ')) caughtSoundCloudToken(auth.slice('OAuth '.length).trim())
+  if (!auth?.startsWith('OAuth ')) return
+  const token = auth.slice('OAuth '.length).trim()
+  caughtSoundCloudToken(token)
+  renewedSoundCloud(token)
 }
+
+async function soundCloudCookie() {
+  const cookie = await api.cookies.get({ url: 'https://soundcloud.com/', name: 'oauth_token' })
+  return cookie?.value ? decodeURIComponent(cookie.value) : null
+}
+
+const SOUNDCLOUD_SITE = 'https://soundcloud.com/discover'
+const RENEW_TIMEOUT_MS = 25_000
+let renewal = null
+let renewWaiter = null
+
+/**
+ * SoundCloud's session renewed, as the app renews it (SoundCloudSessionRefresher). The token the
+ * site signed in with is soundcloud.com's own and expires, and soundcloud.com renews it itself for
+ * as long as its session in this browser lives. So a token other than the [stale] one is looked
+ * for where soundcloud.com keeps it: its cookie, and, when that is the stale one too, soundcloud.com
+ * opened in a background tab, muted — it renews the session, the token its own requests carry (or
+ * the cookie it sets) is taken, and the tab is closed. Null: signed out there too. The site
+ * checks the token before it keeps it.
+ */
+function renewSoundCloud(stale) {
+  renewal ??= (async () => {
+    const cookie = await soundCloudCookie()
+    if (cookie && cookie !== stale) return cookie
+    return new Promise((resolve) => {
+      let tabId = null
+      const waiter = {
+        stale,
+        done: (token) => {
+          if (renewWaiter !== waiter) return
+          renewWaiter = null
+          clearTimeout(timer)
+          if (tabId != null) api.tabs.remove(tabId).catch(() => {})
+          resolve(token)
+        },
+      }
+      renewWaiter = waiter
+      const timer = setTimeout(() => waiter.done(null), RENEW_TIMEOUT_MS)
+      api.tabs.create({ url: SOUNDCLOUD_SITE, active: false }).then(
+        (tab) => {
+          tabId = tab.id
+          if (renewWaiter !== waiter) api.tabs.remove(tab.id).catch(() => {})
+          else api.tabs.update(tab.id, { muted: true }).catch(() => {})
+        },
+        () => waiter.done(null),
+      )
+    })
+  })().finally(() => (renewal = null))
+  return renewal
+}
+
+function renewedSoundCloud(token) {
+  if (renewWaiter && token && token !== renewWaiter.stale) renewWaiter.done(token)
+}
+
+api.cookies.onChanged.addListener(({ cookie, removed }) => {
+  if (removed || !renewWaiter || cookie.name !== 'oauth_token') return
+  if (!/(^|\.)soundcloud\.com$/.test(cookie.domain.replace(/^\./, ''))) return
+  renewedSoundCloud(decodeURIComponent(cookie.value))
+})
 
 try {
   api.webRequest.onBeforeSendHeaders.addListener(watchSoundCloud, { urls: ['https://api-v2.soundcloud.com/*'] }, ['requestHeaders', 'extraHeaders'])
@@ -428,7 +493,7 @@ api.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true
   }
   if (message?.type === 'yc-call') {
-    call(message.name)
+    call(message.name, message.args)
       .then(sendResponse)
       .catch((e) => sendResponse({ error: String(e?.message ?? e) }))
     return true

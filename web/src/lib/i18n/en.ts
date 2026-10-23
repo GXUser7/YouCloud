@@ -411,6 +411,7 @@ export const EN: Record<string, string> = {
   'Яндекс Музыка': 'Yandex Music',
   'Яндекс': 'Yandex',
   'SoundCloud не отдал client_id': "SoundCloud didn't give a client_id",
+  'Сессия SoundCloud истекла: войди заново в Настройках': 'Your SoundCloud session has expired: sign in again in Settings',
   'Твои миксы': 'Your mixes',
   'Свежее каждый день': 'Fresh every day',
   'Станции': 'Stations',

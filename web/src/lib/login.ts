@@ -90,7 +90,22 @@ export async function refreshYouTube() {
   accounts.ytName = accounts.yt ? await youtube.accountName().catch(() => null) : null
 }
 refreshYouTube()
-addEventListener('focus', () => refreshYouTube())
+
+// As the app does coming back to the foreground: a lapsed SoundCloud session is renewed before a
+// tap depends on it, checked at most every 15 minutes.
+const SC_CHECK_INTERVAL_MS = 15 * 60_000
+let scCheckedAt = 0
+function checkSoundCloud() {
+  if (!accounts.sc || Date.now() - scCheckedAt < SC_CHECK_INTERVAL_MS) return
+  scCheckedAt = Date.now()
+  soundcloud.checkSession().catch(() => {})
+}
+checkSoundCloud()
+
+addEventListener('focus', () => {
+  refreshYouTube()
+  checkSoundCloud()
+})
 // Masaki says when Google's sign-in lands, without waiting for the tab to be focused again.
 onHostEvent((e) => e.event === 'session' && e.service === 'yt' && refreshYouTube())
 

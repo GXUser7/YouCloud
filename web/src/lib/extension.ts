@@ -150,8 +150,13 @@ function explain(error: string): string {
   return tr('расширение: %s', error)
 }
 
-/** One of the extension's own asks: 'sc-token' (SoundCloud's session cookie), 'sc-login', 'ya-login'. */
-export async function extensionCall<T = unknown>(name: 'sc-token' | 'sc-login' | 'ya-login' | 'yt-account' | 'yt-login' | 'yt-cookies' | 'helper', timeoutMs = 10_000): Promise<T> {
+/** One of the extension's own asks: 'sc-token' (SoundCloud's session cookie), 'sc-renew' (a token
+ *  other than [args].stale, soundcloud.com's session renewed), 'sc-login', 'ya-login'. */
+export async function extensionCall<T = unknown>(
+  name: 'sc-token' | 'sc-renew' | 'sc-login' | 'ya-login' | 'yt-account' | 'yt-login' | 'yt-cookies' | 'helper',
+  timeoutMs = 10_000,
+  args?: Record<string, string>,
+): Promise<T> {
   const v = await extension()
   if (!v) throw new Error(tr('Нужно расширение YouCloud'))
   if (older(v, SIGN_IN_VERSION)) {
@@ -168,7 +173,7 @@ export async function extensionCall<T = unknown>(name: 'sc-token' | 'sc-login' |
       if (answer.error) reject(new Error(explain(answer.error)))
       else resolve(answer.value as T)
     })
-    post({ kind: 'call', id, name })
+    post({ kind: 'call', id, name, args })
   })
 }
 

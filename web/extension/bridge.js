@@ -24,7 +24,7 @@ window.addEventListener('message', (event) => {
       data.kind === 'fetch'
         ? { type: 'yc-fetch', ...data.request }
         : data.kind === 'call'
-          ? { type: 'yc-call', name: data.name }
+          ? { type: 'yc-call', name: data.name, args: data.args }
           : { type: 'yc-yt-stream', videoId: String(data.videoId ?? ''), fresh: !!data.fresh, live: !!data.live }
     // After the extension is reloaded this page's copy of it is cut off: say so rather than go quiet.
     try {

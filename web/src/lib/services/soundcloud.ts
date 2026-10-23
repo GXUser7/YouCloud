@@ -3,7 +3,8 @@
 // Answers become catalog items (lib/catalog.ts); pages only ever see those.
 
 import { tr } from '../i18n.svelte'
-import { scToken } from '../accounts.svelte'
+import { accounts, scToken, setSoundCloud } from '../accounts.svelte'
+import { extension, extensionCall } from '../extension'
 import {
   colorFor,
   compact,
@@ -28,6 +29,11 @@ const CLIENT_ID_KEY = 'yc.sc.clientId'
 
 let clientIdCache: string | null = null
 let scraping: Promise<string> | null = null
+let scrapedAt = 0
+
+// Every request in flight fails at once when the id rotates, or when the token expires; an id
+// scraped a moment ago is as fresh as another scrape would give.
+const MIN_SCRAPE_INTERVAL_MS = 15_000
 
 function storedClientId(): string | null {
   try {
@@ -82,6 +88,7 @@ async function isUsable(id: string): Promise<boolean> {
 }
 
 export async function clientId(fresh = false): Promise<string> {
+  if (fresh && clientIdCache && Date.now() - scrapedAt < MIN_SCRAPE_INTERVAL_MS) fresh = false
   if (!fresh) {
     clientIdCache ??= storedClientId()
     if (clientIdCache) return clientIdCache
@@ -89,6 +96,7 @@ export async function clientId(fresh = false): Promise<string> {
   scraping ??= scrapeClientId()
     .then((id) => {
       clientIdCache = id
+      scrapedAt = Date.now()
       try {
         localStorage.setItem(CLIENT_ID_KEY, id)
       } catch {
@@ -111,33 +119,106 @@ function apiUrl(path: string, params: Params, id: string): string {
   return url.href
 }
 
+/** SoundCloud refused [e] with one of [statuses], and not as DataDome does: no new id or token lifts that. */
+const refused = (e: unknown, ...statuses: number[]): e is HttpError =>
+  e instanceof HttpError && statuses.includes(e.status) && !e.body.includes('captcha') && !e.body.includes('datadome')
+
 /**
- * A call on api-v2 with the client_id put on and the listener's token when there is one. A
- * rotated id fails with 401/403; it is scraped afresh and the call sent once more. A DataDome
- * block is a 403 too, but no new id lifts it.
+ * A call on api-v2 with the client_id put on and the listener's token when there is one, healed as
+ * the app's SoundCloudApi heals it. A rotated id fails with 401/403: a fresh one is scraped and the
+ * call sent once more. An expired token fails with 401: the session is renewed (renewSession) and
+ * the call sent again with the new token, so whatever waited on it carries on. A [token] given
+ * outright is being checked, not used, and is never renewed.
  */
-async function scCall(method: string, path: string, params: Params = {}, token = scToken()): Promise<Response> {
-  const send = async (id: string) => {
+async function scCall(method: string, path: string, params: Params = {}, token?: string): Promise<Response> {
+  const own = token === undefined
+  const send = async (id: string, auth: string | undefined) => {
     const response = await request(apiUrl(path, params, id), {
       method,
-      headers: token ? { authorization: `OAuth ${token}` } : {},
+      headers: auth ? { authorization: `OAuth ${auth}` } : {},
     })
     if (!response.ok) throw new HttpError(response.status, await response.text().catch(() => ''), apiUrl(path, {}, ''))
     return response
   }
+  const id = await clientId()
+  const used = own ? scToken() : token
   try {
-    return await send(await clientId())
+    return await send(id, used)
   } catch (e) {
-    const blocked = e instanceof HttpError && (e.body.includes('captcha') || e.body.includes('datadome'))
-    if (e instanceof HttpError && (e.status === 401 || e.status === 403) && !blocked) {
-      return send(await clientId(true))
+    if (!refused(e, 401, 403)) throw e
+    let failure: HttpError = e
+    const fresh = await clientId(true).catch(() => id)
+    if (fresh !== id) {
+      try {
+        return await send(fresh, own ? scToken() : token)
+      } catch (again) {
+        if (!refused(again, 401)) throw again
+        failure = again
+      }
     }
-    throw e
+    if (!own || !used || failure.status !== 401) throw failure
+    // Another call may have renewed it while this one was out.
+    if (scToken() === used && !(await renewSession(used))) throw new Error(tr('Сессия SoundCloud истекла: войди заново в Настройках'))
+    return send(await clientId(), scToken())
   }
 }
 
 async function scGet<T = any>(path: string, params: Params = {}, token?: string): Promise<T> {
-  return (await scCall('GET', path, params, token ?? scToken())).json()
+  return (await scCall('GET', path, params, token)).json()
+}
+
+// ---------------------------------------------------------------------------------- session
+
+// A dead session isn't brought back by trying again at once, and every call in flight would
+// otherwise start its own renewal.
+const RENEW_COOLDOWN_MS = 60_000
+let renewing: Promise<boolean> | null = null
+let renewFailedAt = 0
+
+/**
+ * Renews an expired session in place, as the app's SoundCloudSessionRefresher does. The token the
+ * site signed in with is soundcloud.com's own, and it expires; soundcloud.com renews it silently
+ * for as long as its session in this browser lives. So the extension or Masaki looks where the
+ * site keeps the current one: its oauth_token cookie, then soundcloud.com loaded out of sight,
+ * which renews the session and hands over the token its own requests carry. False: signed out
+ * there too, and only signing in again helps. Callers share one renewal.
+ */
+function renewSession(stale: string): Promise<boolean> {
+  if (Date.now() - renewFailedAt < RENEW_COOLDOWN_MS) return Promise.resolve(false)
+  renewing ??= (async () => {
+    const token = await sessionToken(stale)
+    if (!token) return false
+    const me = await scGet<ScUser>('me', {}, token)
+    if (!accounts.sc) return false
+    if (accounts.sc.token !== stale) return true
+    myIdCache = me.id
+    setSoundCloud({ token, id: me.id, name: me.username, avatar: art(me.avatar_url, 't200x200') })
+    return true
+  })()
+    .catch(() => false)
+    .then((ok) => {
+      if (!ok) renewFailedAt = Date.now()
+      return ok
+    })
+    .finally(() => (renewing = null))
+  return renewing
+}
+
+/** This browser's soundcloud.com session as a token other than [stale], from the extension or Masaki. */
+async function sessionToken(stale: string): Promise<string | null> {
+  if (!(await extension())) return null
+  try {
+    return await extensionCall<string | null>('sc-renew', 40_000, { stale })
+  } catch {
+    // An extension or Masaki from before 'sc-renew' can read soundcloud.com's cookie, no more.
+    const cookie = await extensionCall<string | null>('sc-token').catch(() => null)
+    return cookie && cookie !== stale ? cookie : null
+  }
+}
+
+/** Asks who the listener is, so a lapsed session is renewed before a tap depends on it. */
+export async function checkSession(): Promise<void> {
+  if (scToken()) await scGet('me')
 }
 
 // ---------------------------------------------------------------------------------- shapes
