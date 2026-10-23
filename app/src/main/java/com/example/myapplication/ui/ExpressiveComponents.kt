@@ -775,9 +775,9 @@ internal fun AlbumCarousel(
             modifier = Modifier
                 .fillMaxWidth()
                 .height(height)
-                // What the carousel doesn't use of a swipe, flung past its last cover, isn't passed
-                // on to search's pages of services around it: it turned the page to another service.
-                .nestedScroll(KeepSidewaysSwipe)
+                // Dragged on past its first or last cover, search's pages of services move; a fling
+                // running out there doesn't turn them (see SidewaysEdge).
+                .nestedScroll(rememberSidewaysEdge())
         ) { index ->
             val album = albums[index]
             Box(

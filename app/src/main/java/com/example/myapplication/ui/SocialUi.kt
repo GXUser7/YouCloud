@@ -3,6 +3,12 @@
 package com.example.myapplication.ui
 
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.ui.input.pointer.pointerInput
+import kotlinx.coroutines.launch
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.animation.core.animateDecay
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -243,6 +249,8 @@ internal fun SocialPage(
     overlay: @Composable androidx.compose.foundation.layout.BoxScope.() -> Unit = {},
     content: LazyListScope.() -> Unit
 ) {
+    // The profile's pages go sideways inside the list: it glides without taking their swipes.
+    val glide = rememberGlideFling(listState)
     Box(
         modifier = modifier
             .fillMaxSize()
@@ -253,8 +261,9 @@ internal fun SocialPage(
             Row(modifier = Modifier.fillMaxSize()) {
                 LazyColumn(
                     state = listState,
-                    modifier = Modifier.weight(1f).fillMaxHeight().sidewaysList(),
+                    modifier = Modifier.weight(1f).fillMaxHeight().sidewaysList().stopsGlide(glide),
                     contentPadding = sidewaysListPadding(),
+                    flingBehavior = glide,
                     content = content
                 )
                 SidePane(title, overlay)
@@ -263,8 +272,10 @@ internal fun SocialPage(
         }
         LazyColumn(
             state = listState,
+            flingBehavior = glide,
             modifier = Modifier
                 .fillMaxSize()
+                .stopsGlide(glide)
                 .statusBarsPadding(),
             contentPadding = PaddingValues(start = 16.dp, top = 28.dp, end = 16.dp, bottom = bottomPadding)
         ) {
@@ -278,6 +289,57 @@ internal fun SocialPage(
             content()
         }
         overlay()
+    }
+}
+
+/**
+ * A list's fling that leaves what goes sideways in it free to take a swipe while the list still
+ * glides. A list flinging as lists do counts as scrolling, and a scroll in progress takes every
+ * touch on the list at once — to stop it — whichever way the finger then goes: a swipe sideways to
+ * the profile's other page, made while the list was still gliding, moved nothing. Here the glide
+ * moves the list without counting as scrolling, as home's magnet settles (see HeroMagnet); the
+ * first touch on the list, or a drag taking it, stops it.
+ */
+internal class GlideFling(
+    private val state: LazyListState,
+    private val decay: androidx.compose.animation.core.DecayAnimationSpec<Float>,
+    private val scope: kotlinx.coroutines.CoroutineScope
+) : androidx.compose.foundation.gestures.FlingBehavior {
+    private var gliding: kotlinx.coroutines.Job? = null
+
+    fun stop() {
+        gliding?.cancel()
+    }
+
+    override suspend fun androidx.compose.foundation.gestures.ScrollScope.performFling(initialVelocity: Float): Float {
+        gliding?.cancel()
+        if (kotlin.math.abs(initialVelocity) < 1f) return 0f
+        gliding = scope.launch {
+            var last = 0f
+            androidx.compose.animation.core.AnimationState(initialValue = 0f, initialVelocity = initialVelocity).animateDecay(decay) {
+                val delta = value - last
+                last = value
+                val used = state.dispatchRawDelta(delta)
+                // At an end of the list, or a finger has it: the glide is over.
+                if (kotlin.math.abs(delta - used) > 0.5f || state.isScrollInProgress) cancelAnimation()
+            }
+        }
+        return 0f
+    }
+}
+
+@Composable
+internal fun rememberGlideFling(state: LazyListState): GlideFling {
+    val decay = androidx.compose.animation.rememberSplineBasedDecay<Float>()
+    val scope = rememberCoroutineScope()
+    return remember(state, decay, scope) { GlideFling(state, decay, scope) }
+}
+
+/** The list's glide stopped by any touch on it, as a fling is: a tap holds it where it is. */
+internal fun Modifier.stopsGlide(glide: GlideFling): Modifier = pointerInput(glide) {
+    awaitEachGesture {
+        awaitFirstDown(requireUnconsumed = false, pass = androidx.compose.ui.input.pointer.PointerEventPass.Initial)
+        glide.stop()
     }
 }
 

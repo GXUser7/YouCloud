@@ -3345,7 +3345,7 @@ private fun ShelfView(shelf: HomeShelf, onOpen: () -> Unit) {
     }
 }
 
-/** A shelf's items in a sideways row. What the row has no use for of a swipe stays with it. */
+/** A shelf's items in a sideways row; dragged on past its end, the services move (see SidewaysEdge). */
 @Composable
 private fun ShelfRow(
     items: List<HeroItem>,
@@ -3356,7 +3356,7 @@ private fun ShelfRow(
         state = state,
         modifier = Modifier
             .fillMaxWidth()
-            .nestedScroll(KeepSidewaysSwipe),
+            .nestedScroll(rememberSidewaysEdge()),
         contentPadding = PaddingValues(start = ShelfEdge, top = 8.dp, end = ShelfEdge, bottom = 4.dp),
         horizontalArrangement = Arrangement.spacedBy(ShelfGap)
     ) {
@@ -3394,7 +3394,7 @@ private fun ShelfBlocks(items: List<HeroItem>, state: androidx.compose.foundatio
             .padding(top = 8.dp, bottom = 4.dp)
             // A shelf of one is a page of one: no room kept for a second.
             .height(if (items.size > 1) metrics.blockCover * 2 + BlockGap else metrics.blockCover)
-            .nestedScroll(KeepSidewaysSwipe)
+            .nestedScroll(rememberSidewaysEdge())
     ) { page ->
         Column(verticalArrangement = Arrangement.spacedBy(BlockGap)) {
             items.getOrNull(page * 2)?.let { ShelfBlock(it, round) }
@@ -3473,7 +3473,7 @@ private fun ShelfGrid(
             modifier = Modifier
                 .fillMaxWidth()
                 .height(rowHeight * rows + gap * (rows - 1) + 12.dp)
-                .nestedScroll(KeepSidewaysSwipe),
+                .nestedScroll(rememberSidewaysEdge()),
             contentPadding = PaddingValues(start = ShelfEdge, top = 8.dp, end = end, bottom = 4.dp),
             horizontalArrangement = Arrangement.spacedBy(ShelfGap),
             verticalArrangement = Arrangement.spacedBy(gap),
@@ -4394,14 +4394,36 @@ private data class HeroItem(
  * starts exactly [HeroStrip] plus the margin from the screen edge, and the mask only has to
  * narrow from the full cover to that strip as the page moves out.
  */
-// Swallows what a sideways scroller leaves over of a swipe, so nothing sideways around it moves.
-internal val KeepSidewaysSwipe = object : NestedScrollConnection {
-    override fun onPostScroll(consumed: Offset, available: Offset, source: NestedScrollSource): Offset =
-        Offset(available.x, 0f)
+/**
+ * Between a sideways row (a shelf, a carousel) and the pages of services around it. A finger
+ * dragging on past the row's first or last page moves the services, and let go, flings them on to
+ * the next service as a swipe on them would. A fling running out at the row's end goes no
+ * further: a hard swipe through a shelf turned the service too.
+ */
+internal class SidewaysEdge : NestedScrollConnection {
+    // This touch has moved the services past the row's end.
+    private var handedOn = false
 
-    override suspend fun onPostFling(consumed: androidx.compose.ui.unit.Velocity, available: androidx.compose.ui.unit.Velocity) =
-        androidx.compose.ui.unit.Velocity(available.x, 0f)
+    override fun onPostScroll(consumed: Offset, available: Offset, source: NestedScrollSource): Offset {
+        if (source == NestedScrollSource.UserInput) {
+            if (available.x != 0f) handedOn = true
+            return Offset.Zero
+        }
+        return Offset(available.x, 0f)
+    }
+
+    override suspend fun onPostFling(
+        consumed: androidx.compose.ui.unit.Velocity,
+        available: androidx.compose.ui.unit.Velocity
+    ): androidx.compose.ui.unit.Velocity {
+        val handed = handedOn
+        handedOn = false
+        return if (handed) androidx.compose.ui.unit.Velocity.Zero else androidx.compose.ui.unit.Velocity(available.x, 0f)
+    }
 }
+
+@Composable
+internal fun rememberSidewaysEdge(): SidewaysEdge = remember { SidewaysEdge() }
 
 // How fadeIn and fadeOut go by default, for a page faded on what it draws (see glassFade).
 private val PageFadeSpring = spring<Float>(stiffness = Spring.StiffnessMediumLow)
@@ -4451,9 +4473,9 @@ private fun HomeHeroCarousel(
                 ),
                 modifier = Modifier
                     .fillMaxSize()
-                    // What the carousel doesn't use of a swipe, at its first or last cover, isn't
-                    // passed on to the pages of services around it.
-                    .nestedScroll(KeepSidewaysSwipe)
+                    // Dragged on past its first or last cover, the services around it move; a fling
+                    // running out there doesn't turn them (see SidewaysEdge).
+                    .nestedScroll(rememberSidewaysEdge())
             ) { page ->
                 val item = items.getOrNull(page) ?: return@HorizontalPager
                 // Signed distance from the focused slot: positive to the right.
@@ -4892,16 +4914,23 @@ private fun SettingsScreen(
     val hasYandexToken = yandexToken.isNotEmpty()
     val context = LocalContext.current
 
+    // A pane of glass as every page over home is: pulled down, it closes, with no back button.
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .pullToClose(onBack)
+            .pageGlass(MaterialTheme.colorScheme.background)
+    ) {
     LazyColumn(
         modifier = Modifier
             .fillMaxSize()
             .statusBarsPadding()
             .readableSideways(),
-        contentPadding = PaddingValues(start = 16.dp, top = 12.dp, end = 16.dp, bottom = 120.dp),
+        contentPadding = PaddingValues(start = 16.dp, top = 0.dp, end = 16.dp, bottom = 120.dp),
         verticalArrangement = Arrangement.spacedBy(18.dp)
     ) {
         item {
-            TopBar(title = tr("Настройки"), onBack = onBack)
+            PageTitle(tr("Настройки"))
         }
 
         // Listening together: in settings too, for a guest with nothing playing yet.
@@ -6042,6 +6071,7 @@ private fun SettingsScreen(
             }
         }
     }
+    }
 }
 
 /** Which [com.example.myapplication.data.GlowStyle] the glow of [title] has: a small two-way pill, under the glow's switch. */
@@ -6419,9 +6449,15 @@ private fun SearchScreen(
         dockedPageRoom(tabs = tabsShown, player = playerShown)
     }
 
-    // Search stands on the moving backdrop: its fields, rows and tabs are glass.
+    // Search stands on the moving backdrop: its fields, rows and tabs are glass, and the page is a
+    // pane of glass as every page over home is — pulled down, it closes, with no back button.
     androidx.compose.runtime.CompositionLocalProvider(LocalGlass provides true) {
-    Box(modifier = Modifier.fillMaxSize()) {
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .pullToClose(onBack)
+            .pageGlass(MaterialTheme.colorScheme.background)
+    ) {
         Row(modifier = Modifier.fillMaxSize()) {
         Column(
             modifier = Modifier
@@ -6430,11 +6466,9 @@ private fun SearchScreen(
                 .statusBarsPadding()
                 .then(if (landscape) Modifier.windowInsetsPadding(WindowInsets.displayCutout.only(WindowInsetsSides.Start)) else Modifier)
         ) {
-            // top = 0: the bar has to start at the same y as the home bar, or entering search
-            // shifts the title and back button downward and the transition reads as a jump.
             if (!landscape) {
                 Box(modifier = Modifier.padding(horizontal = 16.dp)) {
-                    TopBar(title = title, onBack = onBack)
+                    PageTitle(title)
                 }
             }
             HorizontalPager(
@@ -6497,7 +6531,7 @@ private fun SearchScreen(
                     .windowInsetsPadding(WindowInsets.displayCutout.only(WindowInsetsSides.End))
                     .padding(horizontal = 16.dp)
             ) {
-                TopBar(title = title, onBack = onBack)
+                PageTitle(title)
             }
         }
         }
@@ -7754,6 +7788,22 @@ private fun SearchField(
             focusedBorderColor = MaterialTheme.colorScheme.primary,
             unfocusedBorderColor = Color.Transparent
         )
+    )
+}
+
+/**
+ * A page's name at its top, large, as the account's pages have theirs: nothing to tap beside it —
+ * the page closes pulled down or by the system's back, as every page over home does (see
+ * pullToClose). A back button stood here, up out of the thumb's reach.
+ */
+@Composable
+private fun PageTitle(text: String) {
+    Text(
+        text = text,
+        style = MaterialTheme.typography.displaySmall,
+        maxLines = 1,
+        overflow = TextOverflow.Ellipsis,
+        modifier = Modifier.padding(start = 4.dp, top = 24.dp, bottom = 12.dp)
     )
 }
 
