@@ -888,13 +888,120 @@ fun MusicScreen(viewModel: MusicViewModel) {
                     else -> Unit
                 }
             }
+            // Search: as a page, and under an artist opened from it being pulled off (see pageUnder).
+            val searchPage: @Composable () -> Unit = {
+                val searchSource by viewModel.searchSource.collectAsState()
+                val ytSearch by viewModel.ytSearch.collectAsState()
+                // SoundCloud always; the others once connected in settings.
+                val searchSources = buildList {
+                    add(SearchSource.SOUNDCLOUD)
+                    if (hasYandexToken) add(SearchSource.YANDEX)
+                    if (ytMusicAccount != null) add(SearchSource.YOUTUBE)
+                }
+                val yandexSearchQuery by viewModel.yandexSearchQuery.collectAsState()
+                val yandexTracks by viewModel.yandexTracks.collectAsState()
+                val yandexLoading by viewModel.yandexLoading.collectAsState()
+                val yandexError by viewModel.yandexError.collectAsState()
+                val yandexHasMore by viewModel.yandexHasMore.collectAsState()
+                val yandexLoadingMore by viewModel.yandexLoadingMore.collectAsState()
+                val searchAlbums by viewModel.searchAlbums.collectAsState()
+                val searchPlaylists by viewModel.searchPlaylists.collectAsState()
+                val searchArtists by viewModel.searchArtists.collectAsState()
+                val yandexSearchAlbums by viewModel.yandexSearchAlbums.collectAsState()
+                val yandexSearchPlaylists by viewModel.yandexSearchPlaylists.collectAsState()
+                val yandexSearchArtists by viewModel.yandexSearchArtists.collectAsState()
+                val searchHasMore by viewModel.searchHasMore.collectAsState()
+                val searchLoadingMore by viewModel.searchLoadingMore.collectAsState()
+                val searchPlaylistLoading by viewModel.searchPlaylistLoading.collectAsState()
+                val searchPlaylistError by viewModel.searchPlaylistError.collectAsState()
+                // Picking for the profile's showcase: a tap on what it wants puts it there.
+                val showcasePick by viewModel.showcasePick.collectAsState()
+                SearchScreen(
+                    dockHidden = searchDockHidden,
+                    title = showcasePick?.pickTitle ?: tr("Поиск"),
+                    query = searchQuery,
+                    tracks = tracks,
+                    favorites = favorites,
+                    currentTrackId = currentTrackId,
+                    downloadProgress = downloadProgress,
+                    isPlaying = isPlaying,
+                    isLoading = isLoading,
+                    errorMessage = errorMessage,
+                    onBack = {
+                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                        viewModel.closeSearch()
+                    },
+                    onQueryChange = viewModel::onSearchQueryChange,
+                    onPlayTrack = { track ->
+                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                        if (showcasePick == ShowcaseSlot.TRACK) viewModel.chooseShowcaseTrack(track) else viewModel.playQueuedTrack(track)
+                    },
+                    onFavoriteClick = { track ->
+                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                        viewModel.toggleFavorite(track)
+                    },
+                    source = searchSource,
+                    sources = searchSources,
+                    onSearchSourceChanged = viewModel::setSearchSource,
+                    yandexQuery = yandexSearchQuery,
+                    yandexTracks = yandexTracks,
+                    yandexLoading = yandexLoading,
+                    yandexError = yandexError,
+                    onYandexQueryChange = viewModel::onYandexSearchQueryChange,
+                    ytSearch = ytSearch,
+                    onYtQueryChange = viewModel::onYtSearchQueryChange,
+                    albums = searchAlbums,
+                    playlists = searchPlaylists,
+                    artists = searchArtists,
+                    yandexAlbums = yandexSearchAlbums,
+                    yandexPlaylists = yandexSearchPlaylists,
+                    yandexArtists = yandexSearchArtists,
+                    onOpenArtist = { artist ->
+                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                        if (showcasePick == ShowcaseSlot.ARTIST) viewModel.chooseShowcaseArtist(artist) else viewModel.openArtistFromSearch(artist)
+                    },
+                    hasMore = when (searchSource) {
+                        SearchSource.SOUNDCLOUD -> searchHasMore
+                        SearchSource.YANDEX -> yandexHasMore
+                        SearchSource.YOUTUBE -> ytSearch.page?.continuation != null
+                    },
+                    isLoadingMore = when (searchSource) {
+                        SearchSource.SOUNDCLOUD -> searchLoadingMore
+                        SearchSource.YANDEX -> yandexLoadingMore
+                        SearchSource.YOUTUBE -> ytSearch.loadingMore
+                    },
+                    onLoadMore = {
+                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                        when (searchSource) {
+                            SearchSource.SOUNDCLOUD -> viewModel.loadMoreSearchTracks()
+                            SearchSource.YANDEX -> viewModel.loadMoreYandexSearchTracks()
+                            SearchSource.YOUTUBE -> viewModel.loadMoreYtSearchTracks()
+                        }
+                    },
+                    openedPlaylist = searchOpenedPlaylist,
+                    isPlaylistLoading = searchPlaylistLoading,
+                    playlistError = searchPlaylistError,
+                    onOpenPlaylist = { playlist ->
+                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                        if (showcasePick == ShowcaseSlot.ALBUM) viewModel.chooseShowcaseSet(playlist) else viewModel.openSearchPlaylist(playlist)
+                    },
+                    onClosePlaylist = {
+                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                        viewModel.closeSearchPlaylist()
+                    },
+                    onPlayPlaylistTrack = { track, queue ->
+                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                        viewModel.playQueuedTrack(track, queue, source = searchOpenedPlaylist?.let { "set-${it.id}" })
+                    }
+                )
+            }
             androidx.compose.runtime.CompositionLocalProvider(LocalCovered provides pagesCovered) {
             // What a page pulled off another page uncovers: that page, there as the pull begins, so
             // that it is what shows under the pull and what stays once the page has gone. It tells
             // nobody it is pulled: it isn't.
             pageUnder?.let { under ->
                 if (pagePulled) androidx.compose.runtime.CompositionLocalProvider(LocalPagePulled provides {}) {
-                    Box(modifier = Modifier.fillMaxSize()) { accountPage(under) }
+                    Box(modifier = Modifier.fillMaxSize()) { if (under == AppScreen.SEARCH) searchPage() else accountPage(under) }
                 }
             }
             pages.AnimatedContent(
@@ -971,112 +1078,7 @@ fun MusicScreen(viewModel: MusicViewModel) {
                         }
                     )
 
-                    AppScreen.SEARCH -> {
-                        val searchSource by viewModel.searchSource.collectAsState()
-                        val ytSearch by viewModel.ytSearch.collectAsState()
-                        // SoundCloud always; the others once connected in settings.
-                        val searchSources = buildList {
-                            add(SearchSource.SOUNDCLOUD)
-                            if (hasYandexToken) add(SearchSource.YANDEX)
-                            if (ytMusicAccount != null) add(SearchSource.YOUTUBE)
-                        }
-                        val yandexSearchQuery by viewModel.yandexSearchQuery.collectAsState()
-                        val yandexTracks by viewModel.yandexTracks.collectAsState()
-                        val yandexLoading by viewModel.yandexLoading.collectAsState()
-                        val yandexError by viewModel.yandexError.collectAsState()
-                        val yandexHasMore by viewModel.yandexHasMore.collectAsState()
-                        val yandexLoadingMore by viewModel.yandexLoadingMore.collectAsState()
-                        val searchAlbums by viewModel.searchAlbums.collectAsState()
-                        val searchPlaylists by viewModel.searchPlaylists.collectAsState()
-                        val searchArtists by viewModel.searchArtists.collectAsState()
-                        val yandexSearchAlbums by viewModel.yandexSearchAlbums.collectAsState()
-                        val yandexSearchPlaylists by viewModel.yandexSearchPlaylists.collectAsState()
-                        val yandexSearchArtists by viewModel.yandexSearchArtists.collectAsState()
-                        val searchHasMore by viewModel.searchHasMore.collectAsState()
-                        val searchLoadingMore by viewModel.searchLoadingMore.collectAsState()
-                        val searchPlaylistLoading by viewModel.searchPlaylistLoading.collectAsState()
-                        val searchPlaylistError by viewModel.searchPlaylistError.collectAsState()
-                        // Picking for the profile's showcase: a tap on what it wants puts it there.
-                        val showcasePick by viewModel.showcasePick.collectAsState()
-                        SearchScreen(
-                            dockHidden = searchDockHidden,
-                            title = showcasePick?.pickTitle ?: tr("Поиск"),
-                            query = searchQuery,
-                            tracks = tracks,
-                            favorites = favorites,
-                            currentTrackId = currentTrackId,
-                            downloadProgress = downloadProgress,
-                            isPlaying = isPlaying,
-                            isLoading = isLoading,
-                            errorMessage = errorMessage,
-                            onBack = {
-                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                viewModel.closeSearch()
-                            },
-                            onQueryChange = viewModel::onSearchQueryChange,
-                            onPlayTrack = { track ->
-                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                if (showcasePick == ShowcaseSlot.TRACK) viewModel.chooseShowcaseTrack(track) else viewModel.playQueuedTrack(track)
-                            },
-                            onFavoriteClick = { track ->
-                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                viewModel.toggleFavorite(track)
-                            },
-                            source = searchSource,
-                            sources = searchSources,
-                            onSearchSourceChanged = viewModel::setSearchSource,
-                            yandexQuery = yandexSearchQuery,
-                            yandexTracks = yandexTracks,
-                            yandexLoading = yandexLoading,
-                            yandexError = yandexError,
-                            onYandexQueryChange = viewModel::onYandexSearchQueryChange,
-                            ytSearch = ytSearch,
-                            onYtQueryChange = viewModel::onYtSearchQueryChange,
-                            albums = searchAlbums,
-                            playlists = searchPlaylists,
-                            artists = searchArtists,
-                            yandexAlbums = yandexSearchAlbums,
-                            yandexPlaylists = yandexSearchPlaylists,
-                            yandexArtists = yandexSearchArtists,
-                            onOpenArtist = { artist ->
-                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                if (showcasePick == ShowcaseSlot.ARTIST) viewModel.chooseShowcaseArtist(artist) else viewModel.openArtistFromSearch(artist)
-                            },
-                            hasMore = when (searchSource) {
-                                SearchSource.SOUNDCLOUD -> searchHasMore
-                                SearchSource.YANDEX -> yandexHasMore
-                                SearchSource.YOUTUBE -> ytSearch.page?.continuation != null
-                            },
-                            isLoadingMore = when (searchSource) {
-                                SearchSource.SOUNDCLOUD -> searchLoadingMore
-                                SearchSource.YANDEX -> yandexLoadingMore
-                                SearchSource.YOUTUBE -> ytSearch.loadingMore
-                            },
-                            onLoadMore = {
-                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                when (searchSource) {
-                                    SearchSource.SOUNDCLOUD -> viewModel.loadMoreSearchTracks()
-                                    SearchSource.YANDEX -> viewModel.loadMoreYandexSearchTracks()
-                                    SearchSource.YOUTUBE -> viewModel.loadMoreYtSearchTracks()
-                                }
-                            },
-                            openedPlaylist = searchOpenedPlaylist,
-                            isPlaylistLoading = searchPlaylistLoading,
-                            playlistError = searchPlaylistError,
-                            onOpenPlaylist = { playlist ->
-                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                if (showcasePick == ShowcaseSlot.ALBUM) viewModel.chooseShowcaseSet(playlist) else viewModel.openSearchPlaylist(playlist)
-                            },
-                            onClosePlaylist = {
-                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                viewModel.closeSearchPlaylist()
-                            },
-                            onPlayPlaylistTrack = { track, queue ->
-                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                viewModel.playQueuedTrack(track, queue, source = searchOpenedPlaylist?.let { "set-${it.id}" })
-                            }
-                        )
-                    }
+                    AppScreen.SEARCH -> searchPage()
 
                     AppScreen.DOWNLOADS -> DownloadsScreen(
                         tracks = downloadedTracks,
@@ -6352,23 +6354,12 @@ private fun SearchScreen(
         if (isFieldShown) focusRequester.requestFocus()
     }
 
-    if (openedPlaylist != null) {
-        SetDetailContent(
-            playlist = openedPlaylist,
-            subtitle = openedPlaylist.user?.username.orEmpty(),
-            isLoading = isPlaylistLoading,
-            error = playlistError,
-            favorites = favorites,
-            currentTrackId = currentTrackId,
-            isPlaying = isPlaying,
-            downloadProgress = downloadProgress,
-            onBack = onClosePlaylist,
-            onPlayTrack = { track -> onPlayPlaylistTrack(track, openedPlaylist.tracks) },
-            onFavoriteClick = onFavoriteClick,
-            onArtistClick = onOpenArtist
-        )
-        return
-    }
+    // An album or a playlist opened from the results stands over them, and pulled down uncovers
+    // them, not home: in their place it showed home under the pull, then search came in afresh.
+    // Covered, the results aren't drawn; pulled, they are there under the finger.
+    var setPulled by remember { mutableStateOf(false) }
+    LaunchedEffect(openedPlaylist == null) { if (openedPlaylist == null) setPulled = false }
+    val resultsShown = { openedPlaylist == null || setPulled }
 
     // A service signed out of meanwhile hands search back to SoundCloud.
     val activeSource = if (source in sources) source else SearchSource.SOUNDCLOUD
@@ -6470,6 +6461,10 @@ private fun SearchScreen(
     Box(
         modifier = Modifier
             .fillMaxSize()
+            .drawWithContent { if (resultsShown()) drawContent() }
+            // Its glass not blurred on the backdrop while it isn't drawn (see glassShown).
+            .glassShown { if (resultsShown()) 1f else 0f }
+            .then(if (openedPlaylist != null) Modifier.clearAndSetSemantics { } else Modifier)
             .pullToClose(onBack)
             .pageGlass(MaterialTheme.colorScheme.background)
     ) {
@@ -6597,6 +6592,28 @@ private fun SearchScreen(
             }
         }
     }
+    if (openedPlaylist != null) {
+        // A touch on it stops there: none reaches the results under it. Its pull is its own, told
+        // here rather than to the screens: what it uncovers is search, not home.
+        Box(modifier = Modifier.fillMaxSize().pointerInput(Unit) { }) {
+            androidx.compose.runtime.CompositionLocalProvider(LocalPagePulled provides { setPulled = it }) {
+                SetDetailContent(
+                    playlist = openedPlaylist,
+                    subtitle = openedPlaylist.user?.username.orEmpty(),
+                    isLoading = isPlaylistLoading,
+                    error = playlistError,
+                    favorites = favorites,
+                    currentTrackId = currentTrackId,
+                    isPlaying = isPlaying,
+                    downloadProgress = downloadProgress,
+                    onBack = onClosePlaylist,
+                    onPlayTrack = { track -> onPlayPlaylistTrack(track, openedPlaylist.tracks) },
+                    onFavoriteClick = onFavoriteClick,
+                    onArtistClick = onOpenArtist
+                )
+            }
+        }
+    }
     }
 }
 
@@ -6718,10 +6735,19 @@ private fun SearchResultsList(
     }
     // Shelves go edge to edge as home's do; the rest keeps to a margin of its own.
     val margin = Modifier.padding(horizontal = 16.dp)
-    SizedShelves(modifier = modifier.fillMaxSize()) {
+    // Sized from the screen's width rather than measured: the results' height follows the keyboard
+    // frame by frame as it comes up, and measured (see SizedShelves), the page was composed anew on
+    // every one of those frames.
+    val configuration = LocalConfiguration.current
+    val sideways = isLandscape()
+    val metrics = remember(configuration.screenWidthDp, configuration.screenHeightDp, sideways) {
+        val width = configuration.screenWidthDp.dp - if (sideways) LandscapePaneWidth else 0.dp
+        ShelfMetrics(width, configuration.screenHeightDp.dp)
+    }
+    androidx.compose.runtime.CompositionLocalProvider(LocalShelfMetrics provides metrics) {
     LazyColumn(
         state = listState,
-        modifier = Modifier.fillMaxSize(),
+        modifier = modifier.fillMaxSize(),
         contentPadding = PaddingValues(bottom = bottomRoom)
     ) {
         if (results.loading) {

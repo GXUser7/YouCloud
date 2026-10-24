@@ -2290,8 +2290,12 @@ class MusicViewModel(
     }
 
     fun openSearch() {
+        searchFromProfile = false
         _screen.value = AppScreen.SEARCH
     }
+
+    // Search opened from the profile, to pick for its showcase: pulled down, it uncovers the profile.
+    private var searchFromProfile = false
 
     fun closeSearch() {
         // Left while picking for the profile's showcase: back to the profile, nothing picked.
@@ -2310,6 +2314,7 @@ class MusicViewModel(
 
     fun pickShowcase(slot: ShowcaseSlot) {
         _showcasePick.value = slot
+        searchFromProfile = true
         _screen.value = AppScreen.SEARCH
     }
 
@@ -2397,9 +2402,10 @@ class MusicViewModel(
         _screen.value = AppScreen.SETTINGS
     }
 
+    // Kept as it was once closed, as are where the other pages came from: the screens' change of
+    // page reads it a frame after, to know the page was pulled off onto the one under it.
     fun closeSettings() {
         _screen.value = if (settingsFromProfile) AppScreen.PROFILE else AppScreen.HOME
-        settingsFromProfile = false
     }
 
     fun openProfile() {
@@ -2446,6 +2452,12 @@ class MusicViewModel(
     fun pageUnder(screen: AppScreen?): AppScreen? = when (screen) {
         AppScreen.FRIENDS -> friendsFrom.takeIf { it == AppScreen.PROFILE }
         AppScreen.PERSON -> personFrom.takeIf { it == AppScreen.FRIENDS || it == AppScreen.PROFILE }
+        // An artist opened from search's results is pulled off onto them, not onto home: home
+        // showed under the pull, and search came in over it afresh once the artist had gone.
+        AppScreen.ARTIST_DETAIL -> AppScreen.SEARCH.takeIf { returnToSearchFromArtist }
+        // Settings opened from the profile; search, picking for the profile's showcase.
+        AppScreen.SETTINGS -> AppScreen.PROFILE.takeIf { settingsFromProfile }
+        AppScreen.SEARCH -> AppScreen.PROFILE.takeIf { searchFromProfile }
         else -> null
     }
 
@@ -2656,6 +2668,8 @@ class MusicViewModel(
     private var ytArtistJob: Job? = null
 
     private fun openYouTubeArtist(channelId: String, name: String?, avatarUrl: String?) {
+        // Not from search unless search says so after (see openArtistFromSearch).
+        returnToSearchFromArtist = false
         lastArtistOpen = { openYouTubeArtist(channelId, name, avatarUrl) }
         _selectedTrack.value = null
         _selectedMix.value = null
@@ -2747,8 +2761,8 @@ class MusicViewModel(
         _currentArtistPlaylists.value = emptyList()
         _selectedArtistPlaylist.value = null
         resetArtistExtras()
+        // Kept as it was: the screens read it a frame after (see closeSettings).
         _screen.value = if (returnToSearchFromArtist) AppScreen.SEARCH else AppScreen.HOME
-        returnToSearchFromArtist = false
     }
 
     // What a YouTube artist page's subscribe and unsubscribe buttons send.
