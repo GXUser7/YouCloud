@@ -720,6 +720,8 @@ fun MusicScreen(viewModel: MusicViewModel) {
             // are glass. (Not the full player, which draws its own backdrop.)
             androidx.compose.runtime.CompositionLocalProvider(
                 LocalGlass provides true,
+                // Lists past their ends move rather than stretch: see GlassOverscroll.
+                androidx.compose.foundation.LocalOverscrollFactory provides GlassOverscrollFactory,
                 LocalPagePulled provides { pulled ->
                     if (pulled && !pagePulled) pulledPage = pages.targetState
                     pagePulled = pulled
