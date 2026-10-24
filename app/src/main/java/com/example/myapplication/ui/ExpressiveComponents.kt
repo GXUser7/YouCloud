@@ -7,6 +7,7 @@ import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateTo
+import androidx.compose.runtime.setValue
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
@@ -601,6 +602,10 @@ internal data class CarouselAlbum(
  * A row of items rather than pages turns by [pageDistance], its width, then settles as [fling]
  * snaps: its items' own steps were a single portrait or frame a swipe.
  *
+ * [ShelfSwipe.free] picked in settings, the old way instead: up to a hard swipe, slower than
+ * [ManyPagesFlingVelocity], one page; a hard one flung as [fling] flings, no faster than
+ * [MaxRowFlingVelocity] — a few pages on, not the whole row.
+ *
  * At the row's end, with nowhere to go the way the swipe went, none of this: the swipe is left
  * whole for what is around the row — home's or search's pages of services, which a drag past the
  * end has already moved (see SidewaysEdge). Tamed here first, it reached them as next to nothing,
@@ -613,7 +618,10 @@ internal class DeliberateFling(
     // What a swipe of one page is handed on as: over what [fling] takes for a fling at all, with
     // too little left to decay past the next page.
     private val onePageVelocity: Float,
-    private val pageDistance: (() -> Float)? = null
+    private val pageDistance: (() -> Float)? = null,
+    private val free: Boolean = false,
+    private val manyVelocity: Float = Float.POSITIVE_INFINITY,
+    private val maxVelocity: Float = Float.POSITIVE_INFINITY
 ) : androidx.compose.foundation.gestures.TargetedFlingBehavior {
     override suspend fun androidx.compose.foundation.gestures.ScrollScope.performFling(
         initialVelocity: Float,
@@ -621,7 +629,12 @@ internal class DeliberateFling(
     ): Float = with(fling) {
         val onward = if (initialVelocity > 0f) state.canScrollForward else state.canScrollBackward
         if (initialVelocity != 0f && !onward) return initialVelocity
-        if (kotlin.math.abs(initialVelocity) < minVelocity) return performFling(0f, onRemainingDistanceUpdated)
+        val speed = kotlin.math.abs(initialVelocity)
+        if (speed < minVelocity) return performFling(0f, onRemainingDistanceUpdated)
+        if (free) {
+            val velocity = if (speed < manyVelocity) onePageVelocity else speed.coerceAtMost(maxVelocity)
+            return performFling(kotlin.math.sign(initialVelocity) * velocity, onRemainingDistanceUpdated)
+        }
         val distance = pageDistance
         if (distance == null) return performFling(kotlin.math.sign(initialVelocity) * onePageVelocity, onRemainingDistanceUpdated)
         // Its width on, from the finger's speed, then onto an item's start.
@@ -645,6 +658,20 @@ internal val DeliberateFlingVelocity = 350.dp
 // fling, and decaying well short of a page.
 private val OnePageFlingVelocity = 600.dp
 
+// Swiped freely (see ShelfSwipe): slower than this, one page; faster, flung on past several.
+private val ManyPagesFlingVelocity = 2500.dp
+
+// Swiped freely, the most a row is flung with: a few pages on, not the whole row.
+private val MaxRowFlingVelocity = 5000.dp
+
+/** How shelves and carousels turn, as picked in settings: freely, or one page a swipe. */
+internal object ShelfSwipe {
+    var free by androidx.compose.runtime.mutableStateOf(false)
+
+    /** As many pages as one swipe may turn a row of pages. */
+    val pages: Int get() = if (free) 6 else 1
+}
+
 @Composable
 internal fun rememberDeliberateFling(
     fling: androidx.compose.foundation.gestures.TargetedFlingBehavior,
@@ -654,9 +681,13 @@ internal fun rememberDeliberateFling(
     pageDistance: (() -> Float)? = null
 ): androidx.compose.foundation.gestures.TargetedFlingBehavior {
     val density = androidx.compose.ui.platform.LocalDensity.current
-    return remember(fling, state, density) {
+    val free = ShelfSwipe.free
+    return remember(fling, state, density, free) {
         with(density) {
-            DeliberateFling(fling, state, DeliberateFlingVelocity.toPx(), OnePageFlingVelocity.toPx(), pageDistance)
+            DeliberateFling(
+                fling, state, DeliberateFlingVelocity.toPx(), OnePageFlingVelocity.toPx(), pageDistance,
+                free = free, manyVelocity = ManyPagesFlingVelocity.toPx(), maxVelocity = MaxRowFlingVelocity.toPx()
+            )
         }
     }
 }
@@ -848,6 +879,8 @@ private val GoogleSquarePattern = Regex("=s\\d{2,4}(?=[-&]|$)")
  */
 internal fun artworkUrlForSize(url: String?, size: Dp): String? {
     if (url == null) return null
+    // A download's cover is on the phone: shown from there, whatever list the track is in.
+    com.example.myapplication.data.ArtworkUrls.local(url)?.let { return it }
     if (url.contains("avatars.yandex.net") || url.contains("music-content")) {
         // Yandex encodes the dimensions in the path itself, so the SoundCloud "large" swap
         // never matched and every Yandex cover stayed at the 200x200 the mapper asked for.

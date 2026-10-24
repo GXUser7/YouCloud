@@ -251,6 +251,15 @@ class SettingsRepository(
         preferences.edit().putBoolean(KEY_YT_WEB_SEARCH, enabled).apply()
     }
 
+    // Shelves and carousels flung freely: a hard swipe goes on past several pages. Off, one page a
+    // swipe however hard (see DeliberateFling).
+    val freeShelfSwipe = MutableStateFlow(preferences.getBoolean(KEY_FREE_SHELF_SWIPE, false))
+
+    fun setFreeShelfSwipe(enabled: Boolean) {
+        freeShelfSwipe.value = enabled
+        preferences.edit().putBoolean(KEY_FREE_SHELF_SWIPE, enabled).apply()
+    }
+
     // What moves by itself drawn on every frame of a 120 Hz screen while it moves; off, sixty a
     // second (and thirty while only drifting), lighter on a weak phone. See MotionPace.
     val smoothMotion = MutableStateFlow(preferences.getBoolean(KEY_SMOOTH_MOTION, true))
@@ -517,6 +526,7 @@ class SettingsRepository(
         const val KEY_CONTENTS_TAUGHT = "contents_taught"
         const val KEY_THEME_MODE = "theme_mode"
         const val KEY_YT_WEB_SEARCH = "yt_web_search"
+        const val KEY_FREE_SHELF_SWIPE = "free_shelf_swipe"
         const val KEY_YT_ARTIST_SHOW_ALL = "yt_artist_show_all"
         const val KEY_COVER_GLOW_STYLE = "cover_glow_style"
         const val KEY_VIDEO_DOWNLOAD = "video_download"

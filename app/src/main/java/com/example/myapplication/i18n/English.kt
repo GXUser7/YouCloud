@@ -403,6 +403,8 @@ internal object English {
         put("Ошибка поиска: %s", "Search failed: %s")
         put("Поиск не прошёл", "Search didn't go through")
         put("Загрузка затянулась.", "This is taking a while.")
+        put("Свободная прокрутка полок", "Free shelf scrolling")
+        put("Сильный свайп по полке пролистывает сразу несколько страниц. Выключите — один свайп, одна страница", "A hard swipe on a shelf turns several pages at once. Off: one swipe, one page")
         put("Не удалось выполнить запрос к YouTube Music.", "Couldn't reach YouTube Music.")
         put("Без рабочего ключа не будут работать поиск и воспроизведение.", "Without a working key, search and playback won't work.")
         put("Мне нравится", "Liked")

@@ -844,6 +844,18 @@ class MusicViewModel(
             }
         }
         viewModelScope.launch {
+            // Downloads' covers on the phone, for wherever their tracks show (see ArtworkUrls.local).
+            favorites.collect { list ->
+                ArtworkUrls.setLocal(
+                    list.mapNotNull { fav ->
+                        val remote = fav.artworkUrl?.takeUnless { it.startsWith("file://") } ?: return@mapNotNull null
+                        val file = fav.localArtworkPath ?: return@mapNotNull null
+                        remote to "file://$file"
+                    }.toMap()
+                )
+            }
+        }
+        viewModelScope.launch {
             favorites.collectLatest { list ->
                 val newMap = mutableMapOf<Long, Int>()
                 withContext(Dispatchers.IO) {

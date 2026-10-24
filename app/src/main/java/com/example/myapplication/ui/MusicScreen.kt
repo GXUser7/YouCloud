@@ -14,6 +14,7 @@ import androidx.compose.animation.core.animateDecay
 import androidx.compose.material.icons.rounded.LibraryAdd
 import androidx.compose.material.icons.rounded.AccountCircle
 import androidx.compose.material.icons.rounded.Key
+import androidx.compose.material.icons.rounded.Swipe
 import androidx.compose.material.icons.rounded.HourglassTop
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Settings
@@ -541,6 +542,8 @@ fun MusicScreen(viewModel: MusicViewModel) {
     val smoothMotion by viewModel.settingsRepo.smoothMotion.collectAsState()
     // Read by the loops on every frame, not composed: see MotionPace.
     androidx.compose.runtime.SideEffect { MotionPace.smooth = smoothMotion }
+    val freeShelfSwipe by viewModel.settingsRepo.freeShelfSwipe.collectAsState()
+    androidx.compose.runtime.SideEffect { ShelfSwipe.free = freeShelfSwipe }
     val playerCoverColors by viewModel.settingsRepo.playerCoverColors.collectAsState()
     val videoGlow by viewModel.settingsRepo.videoGlow.collectAsState()
     val videoGlowStyle by viewModel.settingsRepo.videoGlowStyle.collectAsState()
@@ -3479,7 +3482,7 @@ private fun ShelfBlocks(items: List<HeroItem>, state: androidx.compose.foundatio
         flingBehavior = rememberDeliberateFling(
             androidx.compose.foundation.pager.PagerDefaults.flingBehavior(
                 state = state,
-                pagerSnapDistance = androidx.compose.foundation.pager.PagerSnapDistance.atMost(BlockFlingPages)
+                pagerSnapDistance = androidx.compose.foundation.pager.PagerSnapDistance.atMost(ShelfSwipe.pages)
             ),
             state
         ),
@@ -3516,7 +3519,7 @@ private fun ShelfGenrePages(items: List<HeroItem>, state: androidx.compose.found
         flingBehavior = rememberDeliberateFling(
             androidx.compose.foundation.pager.PagerDefaults.flingBehavior(
                 state = state,
-                pagerSnapDistance = androidx.compose.foundation.pager.PagerSnapDistance.atMost(BlockFlingPages)
+                pagerSnapDistance = androidx.compose.foundation.pager.PagerSnapDistance.atMost(ShelfSwipe.pages)
             ),
             state
         ),
@@ -3540,8 +3543,6 @@ private fun ShelfGenrePages(items: List<HeroItem>, state: androidx.compose.found
     }
 }
 
-// One page a swipe, however hard (see DeliberateFling).
-private const val BlockFlingPages = 1
 
 /** A collection as a card of a page: the cover, and its name and what it is beside it. */
 @Composable
@@ -4270,7 +4271,7 @@ private fun PagedTrackList(
             flingBehavior = rememberDeliberateFling(
                 androidx.compose.foundation.pager.PagerDefaults.flingBehavior(
                     state = pagerState,
-                    pagerSnapDistance = androidx.compose.foundation.pager.PagerSnapDistance.atMost(BlockFlingPages)
+                    pagerSnapDistance = androidx.compose.foundation.pager.PagerSnapDistance.atMost(ShelfSwipe.pages)
                 ),
                 pagerState
             )
@@ -4645,7 +4646,7 @@ private fun HomeHeroCarousel(
                 flingBehavior = rememberDeliberateFling(
                     androidx.compose.foundation.pager.PagerDefaults.flingBehavior(
                         state = pagerState,
-                        pagerSnapDistance = androidx.compose.foundation.pager.PagerSnapDistance.atMost(BlockFlingPages)
+                        pagerSnapDistance = androidx.compose.foundation.pager.PagerSnapDistance.atMost(ShelfSwipe.pages)
                     ),
                     pagerState
                 ),
@@ -5169,6 +5170,7 @@ private fun SettingsScreen(
             val playerCoverColors by settingsRepository.playerCoverColors.collectAsState()
             val openPlayerOnTap by settingsRepository.openPlayerOnTap.collectAsState()
             val smoothMotion by settingsRepository.smoothMotion.collectAsState()
+            val freeShelfSwipe by settingsRepository.freeShelfSwipe.collectAsState()
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text(
                     text = tr("ОФОРМЛЕНИЕ"),
@@ -5244,6 +5246,17 @@ private fun SettingsScreen(
                             subtitle = tr("Фон, «Моя форма» и индикаторы двигаются с частотой экрана. Выключите — 60 кадров в секунду, экономнее для батареи"),
                             checked = smoothMotion,
                             onCheckedChange = settingsRepository::setSmoothMotion
+                        )
+                        HorizontalDivider(
+                            color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.25f),
+                            modifier = Modifier.padding(horizontal = 18.dp)
+                        )
+                        SettingsSwitchRow(
+                            icon = Icons.Rounded.Swipe,
+                            title = tr("Свободная прокрутка полок"),
+                            subtitle = tr("Сильный свайп по полке пролистывает сразу несколько страниц. Выключите — один свайп, одна страница"),
+                            checked = freeShelfSwipe,
+                            onCheckedChange = settingsRepository::setFreeShelfSwipe
                         )
                         HorizontalDivider(
                             color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.25f),
