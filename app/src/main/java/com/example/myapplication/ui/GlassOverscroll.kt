@@ -78,8 +78,12 @@ private class GlassOverscroll : OverscrollEffect {
 
     override suspend fun applyToFling(velocity: Velocity, performFling: suspend (Velocity) -> Velocity) {
         if (pulled != 0f) {
-            // Let go past its end: back in place, the finger's speed carried into the spring.
-            settle(velocity.y)
+            // Let go past its end: back in place, the finger's speed carried into the spring. Let
+            // go moving on past it, the fling is offered round the list first: a page pulled down
+            // to close by a finger that caught the list springing back at its top closes on it —
+            // kept from it, the page went back up unless dragged most of the way.
+            val onward = velocity.y != 0f && sign(velocity.y) == sign(pulled)
+            settle(if (onward) performFling(velocity).y else velocity.y)
             return
         }
         // A fling run into its end goes on a little past it and comes back. Not one that has run

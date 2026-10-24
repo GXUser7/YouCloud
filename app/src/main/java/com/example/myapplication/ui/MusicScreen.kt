@@ -12,6 +12,12 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.gestures.animateScrollBy
 import androidx.compose.animation.core.animateDecay
 import androidx.compose.material.icons.rounded.LibraryAdd
+import androidx.compose.material.icons.rounded.AccountCircle
+import androidx.compose.material.icons.rounded.Key
+import androidx.compose.material.icons.rounded.HourglassTop
+import androidx.compose.material.icons.rounded.Refresh
+import androidx.compose.material.icons.rounded.Settings
+import androidx.compose.material.icons.automirrored.rounded.Login
 import androidx.compose.material.icons.rounded.MoreHoriz
 import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.RemoveCircleOutline
@@ -757,7 +763,8 @@ fun MusicScreen(viewModel: MusicViewModel) {
                                 haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                                 viewModel.openYtMusicLogin()
                             },
-                            onReloadYt = viewModel::loadYtHome,
+                            onReloadYt = { viewModel.loadYtHome(again = true) },
+                            onReloadYandex = viewModel::loadYandexPlaylists,
                             mixesLoading = mixesLoading,
                             loadingMixId = loadingMixId,
                             hasOauthToken = oauthToken.isNotBlank(),
@@ -843,7 +850,10 @@ fun MusicScreen(viewModel: MusicViewModel) {
             val accountPage: @Composable (AppScreen) -> Unit = { page ->
                 when (page) {
                     AppScreen.PROFILE -> ProfileScreen(
-                        onClose = viewModel::closeProfile,
+                        onClose = {
+                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                            viewModel.closeProfile()
+                        },
                         onOpenSettings = {
                             haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                             viewModel.openSettings()
@@ -870,7 +880,10 @@ fun MusicScreen(viewModel: MusicViewModel) {
                         onPlayLink = viewModel::openSharedText
                     )
                     AppScreen.FRIENDS -> FriendsScreen(
-                        onClose = viewModel::closeFriends,
+                        onClose = {
+                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                            viewModel.closeFriends()
+                        },
                         onOpenPerson = { id ->
                             haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                             viewModel.openPerson(id)
@@ -882,7 +895,10 @@ fun MusicScreen(viewModel: MusicViewModel) {
                         personId?.let { id ->
                             PersonScreen(
                                 id = id,
-                                onClose = viewModel::closePerson,
+                                onClose = {
+                                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                    viewModel.closePerson()
+                                },
                                 onPlayLink = viewModel::openSharedText
                             )
                         }
@@ -1129,7 +1145,10 @@ fun MusicScreen(viewModel: MusicViewModel) {
                             stopLikesSync = viewModel::stopLikesSync,
                             resetSoundCloudLikesSyncStatus = viewModel::resetSoundCloudLikesSyncStatus,
                             resetYandexLikesSyncStatus = viewModel::resetYandexLikesSyncStatus,
-                            onBack = viewModel::closeSettings,
+                            onBack = {
+                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                viewModel.closeSettings()
+                            },
                             onRelogin = {
                                 haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                                 viewModel.logout()
@@ -1243,6 +1262,7 @@ fun MusicScreen(viewModel: MusicViewModel) {
                                 subtitle = set.user?.username.orEmpty(),
                                 isLoading = ytSetLoading,
                                 error = ytSetError,
+                                onRetry = { viewModel.openYtSet(set) },
                                 favorites = favorites,
                                 currentTrackId = currentTrackId,
                                 isPlaying = isPlaying,
@@ -1842,7 +1862,14 @@ private enum class ShelfKind { Stage, Squares, Tracks, Circles, Live, Genres }
 
 /** A note in a shelf's place — not signed in, not loaded, failed — and what can be done about it. */
 @androidx.compose.runtime.Immutable
-private class ShelfNote(val text: String, val action: String? = null, val onAction: () -> Unit = {})
+private class ShelfNote(
+    val text: String,
+    val action: String? = null,
+    val onAction: () -> Unit = {},
+    // Its mark, where the text alone doesn't say (see TroubleNote), and its button's.
+    val mark: ImageVector? = null,
+    val actionIcon: ImageVector = Icons.Rounded.Refresh
+)
 
 /**
  * A shelf of home's feed: a section of a service as a row of what is in it, or a note in its place
@@ -1856,6 +1883,9 @@ private class HomeShelf(
     items: List<HeroItem>,
     val note: ShelfNote? = null,
     val loading: Boolean = false,
+    // Tries again while it is still loading, past [SlowLoadMs]: a request hanging on a bad network
+    // kept only the spinner on screen, a minute, with nothing to do about it.
+    val onRetry: (() -> Unit)? = null,
     // Something in it is on air now, as YouTube's broadcasts are.
     val live: Boolean = false,
     // How many it holds, when one of its items only makes another (a new playlist).
@@ -1992,6 +2022,7 @@ private fun HomeScreen(
     onPlayYtTrack: (SoundCloudTrack, List<SoundCloudTrack>) -> Unit,
     onYtLogin: () -> Unit,
     onReloadYt: () -> Unit,
+    onReloadYandex: () -> Unit,
     mixesLoading: Boolean,
     loadingMixId: String?,
     hasOauthToken: Boolean,
@@ -2114,7 +2145,10 @@ private fun HomeScreen(
                     title = HomeCategory.Mixes.title,
                     kind = ShelfKind.Stage,
                     items = emptyList(),
-                    note = ShelfNote(tr("Добавь OAuth-токен в настройках, чтобы увидеть персональные миксы."), tr("Открыть настройки"), onOpenSettings)
+                    note = ShelfNote(
+                        tr("Добавь OAuth-токен в настройках, чтобы увидеть персональные миксы."), tr("Открыть настройки"), onOpenSettings,
+                        mark = Icons.Rounded.Key, actionIcon = Icons.Rounded.Settings
+                    )
                 )
             )
         } else {
@@ -2177,7 +2211,7 @@ private fun HomeScreen(
                         onClick = { onOpenYandexPlaylist(playlist) }
                     )
                 },
-                note = if (yandexPlaylists.isEmpty()) ShelfNote(tr("Плейлисты Яндекс Музыки пока не загрузились.")) else null
+                note = if (yandexPlaylists.isEmpty()) ShelfNote(tr("Плейлисты Яндекс Музыки пока не загрузились."), tr("Обновить"), onReloadYandex) else null
             )
         ) + yandexShelves.mapIndexed { index, shelf ->
             // Each row of Yandex Music's home a shelf of its own, as YouTube Music's are.
@@ -2199,7 +2233,8 @@ private fun HomeScreen(
                         ytLoading -> null
                         else -> ShelfNote(tr("Подборки YouTube Music пока не загрузились."), tr("Обновить"), onReloadYt)
                     },
-                    loading = ytLoading
+                    loading = ytLoading,
+                    onRetry = onReloadYt
                 )
             )
         } else {
@@ -2468,6 +2503,7 @@ private fun HomeScreen(
                         service = shown.first,
                         shelf = shown.second,
                         onClose = {
+                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                             // Pulled away, the feed is in full view already: it isn't dimmed again
                             // only to come back.
                             if (pagePulled) scope.launch { pageShown.snapTo(0f) }
@@ -3012,7 +3048,36 @@ private fun StageHero(shelf: HomeShelf, size: Dp, onOpen: () -> Unit) {
         shelf.items.isEmpty() -> Box(
             modifier = Modifier.fillMaxWidth().height(size + HeroCaptionHeight),
             contentAlignment = Alignment.Center
-        ) { AppLoadingIndicator(modifier = Modifier.size(80.dp)) }
+        ) {
+            AppLoadingIndicator(modifier = Modifier.size(80.dp))
+            // Loading on and on: the way to try again, under the spinner.
+            val retry = shelf.onRetry
+            if (retry != null) {
+                var slow by remember { mutableStateOf(false) }
+                var tries by remember { mutableIntStateOf(0) }
+                LaunchedEffect(tries) {
+                    kotlinx.coroutines.delay(SlowLoadMs)
+                    slow = true
+                }
+                androidx.compose.animation.AnimatedVisibility(
+                    visible = slow,
+                    modifier = Modifier.align(Alignment.BottomCenter),
+                    enter = androidx.compose.animation.fadeIn(tween(300)),
+                    exit = androidx.compose.animation.fadeOut(tween(150))
+                ) {
+                    TroubleNote(
+                        text = tr("Загрузка затянулась."),
+                        modifier = Modifier.padding(horizontal = ShelfEdge),
+                        icon = Icons.Rounded.HourglassTop,
+                        onAction = {
+                            slow = false
+                            tries++
+                            retry()
+                        }
+                    )
+                }
+            }
+        }
         // A carousel of its own for each shelf: another one picked for the hero is another pager,
         // not the last one's pages counted over the new one's covers.
         else -> androidx.compose.runtime.key(shelf.key) {
@@ -3386,7 +3451,8 @@ private fun ShelfRow(
             .fillMaxWidth()
             .nestedScroll(rememberSidewaysEdge()),
         contentPadding = PaddingValues(start = ShelfEdge, top = 8.dp, end = ShelfEdge, bottom = 4.dp),
-        horizontalArrangement = Arrangement.spacedBy(ShelfGap)
+        horizontalArrangement = Arrangement.spacedBy(ShelfGap),
+        flingBehavior = rememberDeliberateSnapFling(state)
     ) {
         items(items, key = { it.key }, contentType = { "item" }) { item(it) }
     }
@@ -3548,26 +3614,8 @@ private fun ShelfGrid(
             contentPadding = PaddingValues(start = ShelfEdge, top = 8.dp, end = end, bottom = 4.dp),
             horizontalArrangement = Arrangement.spacedBy(ShelfGap),
             verticalArrangement = Arrangement.spacedBy(gap),
-            flingBehavior = if (column != null) {
-                // A light brush doesn't move on a column of songs (see DeliberateFling). Snapping as
-                // rememberSnapFlingBehavior does, built here for the kind of fling it wraps.
-                val decay = androidx.compose.animation.rememberSplineBasedDecay<Float>()
-                rememberDeliberateFling(
-                    remember(state, decay) {
-                        androidx.compose.foundation.gestures.snapping.snapFlingBehavior(
-                            snapLayoutInfoProvider = androidx.compose.foundation.gestures.snapping.SnapLayoutInfoProvider(
-                                state,
-                                androidx.compose.foundation.gestures.snapping.SnapPosition.Start
-                            ),
-                            decayAnimationSpec = decay,
-                            snapAnimationSpec = spring(stiffness = Spring.StiffnessMediumLow)
-                        )
-                    },
-                    state
-                )
-            } else {
-                androidx.compose.foundation.gestures.ScrollableDefaults.flingBehavior()
-            }
+            // A light brush doesn't move a column of songs, a hard swipe a few on (see DeliberateFling).
+            flingBehavior = rememberDeliberateSnapFling(state)
         ) {
             items(items.size, key = { items[it].key }, contentType = { "item" }) { index -> item(items[index]) }
         }
@@ -3868,18 +3916,20 @@ private fun ShelfLoading(kind: ShelfKind) {
     }
 }
 
-/** A shelf's note: what is wrong, and the button that does something about it. */
+// How long a shelf loads before it offers to try again (see HomeShelf.onRetry).
+private const val SlowLoadMs = 10_000L
+
+/** A shelf's note: what is wrong, and the button that does something about it (see TroubleNote). */
 @Composable
 private fun ShelfNoteView(note: ShelfNote) {
-    Column(
-        modifier = Modifier.fillMaxWidth().padding(start = ShelfEdge, top = 8.dp, end = ShelfEdge, bottom = 8.dp),
-        verticalArrangement = Arrangement.spacedBy(14.dp)
-    ) {
-        Text(text = note.text, style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        note.action?.let { action ->
-            Button(onClick = note.onAction, modifier = Modifier.heightIn(min = 48.dp)) { Text(action) }
-        }
-    }
+    TroubleNote(
+        text = note.text,
+        modifier = Modifier.padding(start = ShelfEdge, top = 8.dp, end = ShelfEdge, bottom = 8.dp),
+        icon = note.mark ?: troubleIcon(note.text),
+        action = note.action,
+        actionIcon = note.actionIcon,
+        onAction = note.onAction.takeIf { note.action != null }
+    )
 }
 
 /**
@@ -6651,6 +6701,7 @@ private fun SearchScreen(
                     onOpenArtist = onOpenArtist,
                     onOpenPlaylist = onOpenPlaylist,
                     onLoadMore = onLoadMore,
+                    onRetry = { search(pageSource, resultsOf(pageSource).query) },
                     modifier = Modifier.graphicsLayer {
                         // The page going sinks back a little, the one coming rises from it.
                         val away = ((sourcePager.currentPage - page) + sourcePager.currentPageOffsetFraction)
@@ -6735,6 +6786,7 @@ private fun SearchScreen(
                     subtitle = openedPlaylist.user?.username.orEmpty(),
                     isLoading = isPlaylistLoading,
                     error = playlistError,
+                    onRetry = { onOpenPlaylist(openedPlaylist) },
                     favorites = favorites,
                     currentTrackId = currentTrackId,
                     isPlaying = isPlaying,
@@ -6847,6 +6899,7 @@ private fun SearchResultsList(
     onOpenArtist: (SoundCloudUser) -> Unit,
     onOpenPlaylist: (SoundCloudPlaylist) -> Unit,
     onLoadMore: () -> Unit,
+    onRetry: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     val topResult = remember(results.query, results.albums, results.playlists) {
@@ -6893,8 +6946,17 @@ private fun SearchResultsList(
         }
 
         if (results.error != null) {
+            // With nothing found over it, down by the search field: under the thumb, as the
+            // field is. Over results found before, at their top.
+            val alone = results.tracks.isEmpty() && results.albums.isEmpty() &&
+                results.playlists.isEmpty() && results.artists.isEmpty()
             item(key = "search-error") {
-                Box(modifier = margin.padding(top = 16.dp)) { MessageCard(results.error) }
+                Box(
+                    modifier = (if (alone) Modifier.fillParentMaxHeight() else Modifier).then(margin).padding(top = 16.dp, bottom = 8.dp),
+                    contentAlignment = Alignment.BottomCenter
+                ) {
+                    TroubleNote(text = results.error, title = tr("Поиск не прошёл"), onAction = onRetry)
+                }
             }
         }
 
@@ -7325,7 +7387,8 @@ private fun ArtistRow(
         state = state,
         modifier = if (edge > 0.dp) Modifier.fillMaxWidth().nestedScroll(rememberSidewaysEdge()) else Modifier,
         contentPadding = PaddingValues(horizontal = edge),
-        horizontalArrangement = Arrangement.spacedBy(12.dp)
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+        flingBehavior = rememberDeliberateSnapFling(state)
     ) {
         items(artists, key = { "artist-" + (it.permalinkUrl ?: it.id.toString()) }) { artist ->
             Column(
@@ -8162,10 +8225,7 @@ private fun MixesSection(
         // Removed LinearProgressIndicator to prevent layout jumping
 
         if (errorMessage != null && mixSection == null) {
-            MessageCard(errorMessage)
-            Button(onClick = onReload) {
-                Text(tr("Повторить"))
-            }
+            TroubleNote(text = errorMessage, onAction = onReload)
         }
 
         if (mixSection == null && isLoading) {
@@ -12828,18 +12888,7 @@ private fun EmptyState(text: String) {
 
 @Composable
 private fun MessageCard(message: String) {
-    Surface(
-        color = MaterialTheme.colorScheme.errorContainer,
-        shape = MaterialTheme.shapes.extraLarge,
-        modifier = Modifier.fillMaxWidth()
-    ) {
-        Text(
-            text = message,
-            modifier = Modifier.padding(16.dp),
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onErrorContainer
-        )
-    }
+    TroubleNote(text = message)
 }
 
 /**
@@ -13039,160 +13088,39 @@ private fun formatDuration(milliseconds: Long): String {
 
 @Composable
 private fun ClientIdWarningCard(onOpenSettings: () -> Unit) {
-    val haptic = LocalHapticFeedback.current
-    ElevatedCard(
-        onClick = {
-            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-            onOpenSettings()
-        },
-        modifier = Modifier.fillMaxWidth(),
-        shape = MaterialTheme.shapes.extraLarge,
-        colors = CardDefaults.elevatedCardColors(
-            containerColor = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.85f),
-            contentColor = MaterialTheme.colorScheme.onErrorContainer
-        )
-    ) {
-        Row(
-            modifier = Modifier.padding(16.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(16.dp)
-        ) {
-            Icon(
-                imageVector = Icons.Default.Settings,
-                contentDescription = null,
-                modifier = Modifier.size(32.dp),
-                tint = MaterialTheme.colorScheme.error
-            )
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = tr("Не указан SoundCloud client_id"),
-                    style = MaterialTheme.typography.titleMedium
-                )
-                Spacer(modifier = Modifier.height(4.dp))
-                Text(
-                    text = tr("Нажмите, чтобы открыть настройки и ввести рабочий ключ, иначе поиск и воспроизведение работать не будут."),
-                    style = MaterialTheme.typography.bodyMedium
-                )
-            }
-        }
-    }
+    TroubleNote(
+        title = tr("Не указан SoundCloud client_id"),
+        text = tr("Без рабочего ключа не будут работать поиск и воспроизведение."),
+        icon = Icons.Rounded.Key,
+        action = tr("Открыть настройки"),
+        actionIcon = Icons.Rounded.Settings,
+        onAction = onOpenSettings
+    )
 }
 
 @Composable
 private fun ReloginRequiredCard(onRelogin: () -> Unit) {
-    ElevatedCard(
-        modifier = Modifier.fillMaxWidth(),
-        shape = MaterialTheme.shapes.extraLarge,
-        colors = CardDefaults.elevatedCardColors(
-            containerColor = MaterialTheme.colorScheme.errorContainer,
-            contentColor = MaterialTheme.colorScheme.onErrorContainer
-        )
-    ) {
-        Column(
-            modifier = Modifier.padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
-        ) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(14.dp)
-            ) {
-                Icon(
-                    imageVector = Icons.Default.Warning,
-                    contentDescription = null,
-                    modifier = Modifier.size(28.dp)
-                )
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = tr("Сессия SoundCloud истекла"),
-                        style = MaterialTheme.typography.titleMedium
-                    )
-                    Text(
-                        text = tr("Обновить её автоматически не вышло — войдите в аккаунт заново."),
-                        style = MaterialTheme.typography.bodyMedium
-                    )
-                }
-            }
-            Button(
-                onClick = onRelogin,
-                modifier = Modifier.align(Alignment.End),
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = MaterialTheme.colorScheme.error,
-                    contentColor = MaterialTheme.colorScheme.onError
-                )
-            ) {
-                Text(tr("Войти заново"))
-            }
-        }
-    }
+    TroubleNote(
+        title = tr("Сессия SoundCloud истекла"),
+        text = tr("Обновить её автоматически не вышло — войдите в аккаунт заново."),
+        icon = Icons.Rounded.AccountCircle,
+        action = tr("Войти заново"),
+        actionIcon = Icons.AutoMirrored.Rounded.Login,
+        onAction = onRelogin
+    )
 }
 
 @Composable
 private fun ClientIdExpiredWarningCard(onOpenSettings: () -> Unit, onAutoRefresh: () -> Unit) {
-    val haptic = LocalHapticFeedback.current
-    ElevatedCard(
-        modifier = Modifier.fillMaxWidth(),
-        shape = MaterialTheme.shapes.extraLarge,
-        colors = CardDefaults.elevatedCardColors(
-            containerColor = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.85f),
-            contentColor = MaterialTheme.colorScheme.onErrorContainer
-        )
-    ) {
-        Column(
-            modifier = Modifier.padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
-        ) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(16.dp)
-            ) {
-                Icon(
-                    imageVector = Icons.Default.Warning,
-                    contentDescription = null,
-                    modifier = Modifier.size(32.dp),
-                    tint = MaterialTheme.colorScheme.error
-                )
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = tr("SoundCloud client_id устарел"),
-                        style = MaterialTheme.typography.titleMedium
-                    )
-                    Spacer(modifier = Modifier.height(4.dp))
-                    Text(
-                        text = tr("Текущий ключ SoundCloud больше недействителен. Попробуйте обновить его автоматически или укажите рабочий вручную."),
-                        style = MaterialTheme.typography.bodyMedium
-                    )
-                }
-            }
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.End,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                TextButton(
-                    onClick = {
-                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                        onOpenSettings()
-                    }
-                ) {
-                    Text(tr("Настройки"), color = MaterialTheme.colorScheme.error)
-                }
-                Spacer(modifier = Modifier.width(8.dp))
-                Button(
-                    onClick = {
-                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                        onAutoRefresh()
-                    },
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = MaterialTheme.colorScheme.error,
-                        contentColor = MaterialTheme.colorScheme.onError
-                    ),
-                    shape = MaterialTheme.shapes.medium
-                ) {
-                    Text(tr("Обновить автоматически"))
-                }
-            }
-        }
-    }
+    TroubleNote(
+        title = tr("SoundCloud client_id устарел"),
+        text = tr("Текущий ключ SoundCloud больше недействителен. Попробуйте обновить его автоматически или укажите рабочий вручную."),
+        icon = Icons.Rounded.Key,
+        action = tr("Обновить"),
+        onAction = onAutoRefresh,
+        other = tr("Настройки"),
+        onOther = onOpenSettings
+    )
 }
 
 @Composable
@@ -14358,19 +14286,7 @@ private fun ArtistPage(
                 item(key = "artist-loading") { LoadingBlock() }
             } else if (error != null) {
                 item(key = "artist-error") {
-                    Column(
-                        modifier = Modifier.padding(16.dp),
-                        verticalArrangement = Arrangement.spacedBy(12.dp)
-                    ) {
-                        MessageCard(error)
-                        if (onRetry != null) {
-                            FilledTonalButton(onClick = onRetry, shape = MaterialTheme.shapes.medium) {
-                                Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(20.dp))
-                                Spacer(modifier = Modifier.width(8.dp))
-                                Text(tr("Повторить"))
-                            }
-                        }
-                    }
+                    TroubleNote(text = error, modifier = Modifier.padding(16.dp), onAction = onRetry)
                 }
             } else {
                 if (tracks.isNotEmpty()) {
@@ -14564,9 +14480,12 @@ private fun VideoTileRow(
     val wide = tracks.firstOrNull()?.artworkUrl?.contains("/vi/") == true
     val width = if (wide) 216.dp else 148.dp
     val shape = RoundedCornerShape(20.dp)
+    val state = rememberLazyListState()
     LazyRow(
+        state = state,
         contentPadding = PaddingValues(horizontal = 16.dp),
-        horizontalArrangement = Arrangement.spacedBy(12.dp)
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+        flingBehavior = rememberDeliberateSnapFling(state)
     ) {
         items(tracks, key = { it.id }) { track ->
             Column(
@@ -14624,6 +14543,8 @@ private fun SetDetailContent(
     onPlayTrack: (SoundCloudTrack) -> Unit,
     onFavoriteClick: (SoundCloudTrack) -> Unit,
     error: String? = null,
+    // Tries the tracks again after they failed to come.
+    onRetry: (() -> Unit)? = null,
     artistName: String? = null,
     // Its artists' chips open their pages; null, a plain name (the artist's own page opened it).
     onArtistClick: ((SoundCloudUser) -> Unit)? = null
@@ -14727,7 +14648,7 @@ private fun SetDetailContent(
 
                 if (error != null) {
                     item(key = "set-error") {
-                        Box(modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) { MessageCard(error) }
+                        TroubleNote(text = error, modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp), onAction = onRetry)
                     }
                 }
 

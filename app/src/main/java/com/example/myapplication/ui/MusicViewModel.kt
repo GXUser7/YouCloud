@@ -194,6 +194,9 @@ class MusicViewModel(
     val ytHomeLoading = _ytHomeLoading.asStateFlow()
 
     private val _ytHomeError = MutableStateFlow<String?>(null)
+    private var ytHomeJob: Job? = null
+    // Which load of it is the last: one dropped for a new one doesn't say, as it ends, that loading is over.
+    private var ytHomeLoads = 0
     val ytHomeError = _ytHomeError.asStateFlow()
 
     private val _ytLoginOpen = MutableStateFlow(false)
@@ -308,7 +311,7 @@ class MusicViewModel(
                 _ytSearch.value = _ytSearch.value.copy(
                     page = null,
                     loading = false,
-                    error = tr("Ошибка поиска: %s", readableMessage(e))
+                    error = ytMessage(e)
                 )
             }
         }
@@ -697,6 +700,7 @@ class MusicViewModel(
             }
         }
         loadYtHome()
+        watchNetwork()
         viewModelScope.launch {
             // The first value is the empty start, which must not overwrite the saved queue
             // before it has been restored.
@@ -1733,12 +1737,15 @@ class MusicViewModel(
         _ytHomeError.value = null
     }
 
-    fun loadYtHome() {
-        if (settingsRepository.ytMusicAuth() == null || _ytHomeLoading.value) return
+    /** YouTube Music's home; [again], a load still under way is dropped for a new one. */
+    fun loadYtHome(again: Boolean = false) {
+        if (settingsRepository.ytMusicAuth() == null || (_ytHomeLoading.value && !again)) return
+        ytHomeJob?.cancel()
         // yt-dlp plays these tracks; unpacking it and fetching the current release takes a while
         // the first time, better spent now than on the first track.
         YtDlp.warmUp(context, settingsRepository.ytMusicAuth())
-        viewModelScope.launch {
+        val load = ++ytHomeLoads
+        ytHomeJob = viewModelScope.launch {
             _ytHomeLoading.value = true
             _ytHomeError.value = null
             try {
@@ -1750,10 +1757,10 @@ class MusicViewModel(
                 _ytHomeError.value = if (e is com.example.myapplication.data.YtMusicException && e.code == 401) {
                     tr("YouTube Music не принял вход. Войдите заново в настройках.")
                 } else {
-                    readableMessage(e)
+                    ytMessage(e)
                 }
             } finally {
-                _ytHomeLoading.value = false
+                if (load == ytHomeLoads) _ytHomeLoading.value = false
             }
         }
     }
@@ -3663,6 +3670,7 @@ class MusicViewModel(
 
     override fun onCleared() {
         super.onCleared()
+        runCatching { context.getSystemService(android.net.ConnectivityManager::class.java)?.unregisterNetworkCallback(networkBack) }
         favoritesRepository.listener = null
         favoritesLive?.close()
         together.leave()
@@ -3682,6 +3690,39 @@ class MusicViewModel(
             track.policy != "PREVIEW" &&
             track.media?.transcodings?.isNotEmpty() == true
     }
+    // The network come back: what failed to come for want of it — home's rows of a service, said
+    // as not loaded — comes now, without a tap on its note. Only what failed or never came; what is
+    // there or on its way is left. Lazy: it is registered from init, above where it is declared.
+    private val networkBack by lazy {
+        object : android.net.ConnectivityManager.NetworkCallback() {
+            override fun onAvailable(network: android.net.Network) {
+                viewModelScope.launch { reloadMissingHome() }
+            }
+        }
+    }
+
+    private fun watchNetwork() {
+        runCatching {
+            context.getSystemService(android.net.ConnectivityManager::class.java)?.registerDefaultNetworkCallback(networkBack)
+        }.onFailure { Log.w("MusicViewModel", "No network callback", it) }
+    }
+
+    private fun reloadMissingHome() {
+        if (settingsRepository.ytMusicAuth() != null && !_ytHomeLoading.value && _ytHome.value.isEmpty()) loadYtHome()
+        if (settingsRepository.oauthTokenValue().isNotBlank() && !_mixesLoading.value &&
+            _mixSection.value == null && _stationSection.value == null && _trendingSection.value == null
+        ) {
+            loadMixes()
+        }
+        if (settingsRepository.yandexTokenValue().isNotBlank() && !_yandexPlaylistsLoading.value && _yandexPlaylists.value.isEmpty()) {
+            loadYandexPlaylists()
+        }
+    }
+
+    /** What went wrong with YouTube Music, said as [readableMessage] says it of the others. */
+    private fun ytMessage(error: Exception): String =
+        if (error is IOException) readableMessage(error) else tr("Не удалось выполнить запрос к YouTube Music.")
+
     // Pure formatter with no side effects (#26)
     private fun readableMessage(error: Exception, isYandex: Boolean = false): String {
         return when (error) {
@@ -4600,7 +4641,7 @@ class MusicViewModel(
                 throw e
             } catch (e: Exception) {
                 Log.e("MusicViewModel", "Failed to search Yandex tracks", e)
-                _yandexError.value = tr("Ошибка поиска: %s", readableMessage(e))
+                _yandexError.value = readableMessage(e)
             } finally {
                 _yandexLoading.value = false
             }
@@ -4625,7 +4666,7 @@ class MusicViewModel(
                 throw e
             } catch (e: Exception) {
                 Log.e("MusicViewModel", "Failed to load more Yandex tracks", e)
-                _yandexError.value = tr("Ошибка поиска: %s", readableMessage(e))
+                _yandexError.value = readableMessage(e)
             } finally {
                 _yandexLoadingMore.value = false
             }
