@@ -628,14 +628,14 @@ internal class DeliberateFling(
 }
 
 // Slower than this, a swipe on a row of pages or a carousel is let go of, not flung.
-internal val DeliberateFlingVelocity = 1000.dp
+internal val DeliberateFlingVelocity = 600.dp
 
 // Slower than this, it turns one page; faster, it may go on past several.
 internal val ManyPagesFlingVelocity = 3500.dp
 
 // A swipe of one page handed on as this: over the 400 dp/s a pager and a snapping row take for a
 // fling, and decaying well short of a page.
-private val OnePageFlingVelocity = 700.dp
+private val OnePageFlingVelocity = 600.dp
 
 @Composable
 internal fun rememberDeliberateFling(

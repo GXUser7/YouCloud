@@ -2363,6 +2363,8 @@ private fun HomeScreen(
         androidx.compose.runtime.CompositionLocalProvider(LocalCovered provides feedCovered) {
         HorizontalPager(
             state = servicePager,
+            // A swipe off a shelf's end turns the services at its own speed (see the connection).
+            pageNestedScrollConnection = rememberServicePageConnection(servicePager),
             modifier = Modifier
                 .fillMaxSize()
                 .settlesPages(servicePager)
@@ -4445,6 +4447,29 @@ internal class SidewaysEdge : NestedScrollConnection {
 internal fun rememberSidewaysEdge(): SidewaysEdge = remember { SidewaysEdge() }
 
 /**
+ * What stands between the pages of services and what is in them: Compose's own, but for one
+ * thing. Compose's takes whatever is left of a fling sideways inside a page — to keep a row's fling
+ * from turning the pages — so a swipe off a shelf's end (see SidewaysEdge) reached the services as
+ * no speed at all, and turned them only dragged past a third of the screen. The rows keep what is
+ * left of their own flings themselves; what they hand on is meant for the services.
+ */
+@Composable
+internal fun rememberServicePageConnection(state: androidx.compose.foundation.pager.PagerState): NestedScrollConnection {
+    val compose = androidx.compose.foundation.pager.PagerDefaults.pageNestedScrollConnection(
+        state,
+        androidx.compose.foundation.gestures.Orientation.Horizontal
+    )
+    return remember(compose) {
+        object : NestedScrollConnection by compose {
+            override suspend fun onPostFling(
+                consumed: androidx.compose.ui.unit.Velocity,
+                available: androidx.compose.ui.unit.Velocity
+            ): androidx.compose.ui.unit.Velocity = androidx.compose.ui.unit.Velocity.Zero
+        }
+    }
+}
+
+/**
  * Pages of services left between two of them — no finger on them, nothing moving them — come to
  * rest on the nearer one. A row dragged past its end moves the services (see SidewaysEdge), and let
  * go slowly, the pager, moved for it rather than by a swipe of its own, had no fling to settle it:
@@ -6522,6 +6547,8 @@ private fun SearchScreen(
             }
             HorizontalPager(
                 state = sourcePager,
+                // A swipe off a carousel's end turns the services at its own speed.
+                pageNestedScrollConnection = rememberServicePageConnection(sourcePager),
                 modifier = Modifier
                     .fillMaxWidth()
                     .weight(1f)
