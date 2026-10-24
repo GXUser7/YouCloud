@@ -6,6 +6,7 @@ import com.example.myapplication.i18n.tr
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animateTo
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
@@ -591,12 +592,14 @@ internal data class CarouselAlbum(
 )
 
 /**
- * [fling] in three steps, by how hard the swipe was. A light flick, slower than [minVelocity], is
- * no fling at all: a row of pages, or a carousel, lets go where the finger left it and settles by
- * position — on the page it was on unless dragged past half of it. A swipe up to a hard one, slower
- * than [manyVelocity], turns one page, however fast it was: an ordinary swipe went on past two or
- * three. Only a hard swipe flings as [fling] does, past several — and never faster than
- * [maxVelocity]: flung as hard as a finger can, a row ran on past a dozen.
+ * [fling] a page at a time. A light flick, slower than [minVelocity], is no fling at all: a row of
+ * pages, or a carousel, lets go where the finger left it and settles by position — on the page it
+ * was on unless dragged past half of it. Any swipe faster turns one page, however hard: a hard one
+ * flung on freely went past a dozen, and where it stopped had to be looked for. Further is a few
+ * swipes, each taking up the turn under way, or the shelf opened whole.
+ *
+ * A row of items rather than pages turns by [pageDistance], its width, then settles as [fling]
+ * snaps: its items' own steps were a single portrait or frame a swipe.
  *
  * At the row's end, with nowhere to go the way the swipe went, none of this: the swipe is left
  * whole for what is around the row — home's or search's pages of services, which a drag past the
@@ -607,11 +610,10 @@ internal class DeliberateFling(
     private val fling: androidx.compose.foundation.gestures.TargetedFlingBehavior,
     private val state: androidx.compose.foundation.gestures.ScrollableState,
     private val minVelocity: Float,
-    private val manyVelocity: Float,
-    private val maxVelocity: Float,
     // What a swipe of one page is handed on as: over what [fling] takes for a fling at all, with
     // too little left to decay past the next page.
-    private val onePageVelocity: Float
+    private val onePageVelocity: Float,
+    private val pageDistance: (() -> Float)? = null
 ) : androidx.compose.foundation.gestures.TargetedFlingBehavior {
     override suspend fun androidx.compose.foundation.gestures.ScrollScope.performFling(
         initialVelocity: Float,
@@ -619,25 +621,25 @@ internal class DeliberateFling(
     ): Float = with(fling) {
         val onward = if (initialVelocity > 0f) state.canScrollForward else state.canScrollBackward
         if (initialVelocity != 0f && !onward) return initialVelocity
-        val speed = kotlin.math.abs(initialVelocity)
-        val velocity = when {
-            speed < minVelocity -> 0f
-            speed < manyVelocity -> kotlin.math.sign(initialVelocity) * onePageVelocity
-            else -> kotlin.math.sign(initialVelocity) * speed.coerceAtMost(maxVelocity)
-        }
-        performFling(velocity, onRemainingDistanceUpdated)
+        if (kotlin.math.abs(initialVelocity) < minVelocity) return performFling(0f, onRemainingDistanceUpdated)
+        val distance = pageDistance
+        if (distance == null) return performFling(kotlin.math.sign(initialVelocity) * onePageVelocity, onRemainingDistanceUpdated)
+        // Its width on, from the finger's speed, then onto an item's start.
+        var moved = 0f
+        androidx.compose.animation.core.AnimationState(0f, initialVelocity)
+            .animateTo(kotlin.math.sign(initialVelocity) * distance(), spring(stiffness = Spring.StiffnessMediumLow)) {
+                val step = value - moved
+                val taken = scrollBy(step)
+                moved += taken
+                if (kotlin.math.abs(step - taken) > 0.5f) cancelAnimation()
+            }
+        performFling(0f, onRemainingDistanceUpdated)
     }
 }
 
 // Slower than this, a swipe on a row of pages or a carousel is let go of, not flung. At 600 dp/s
 // an ordinary swipe was too often taken for none.
 internal val DeliberateFlingVelocity = 350.dp
-
-// Slower than this, it turns one page; faster, it may go on past several.
-internal val ManyPagesFlingVelocity = 2500.dp
-
-// The most a swipe on such a row is flung with: a few pages on, not the whole row.
-private val MaxRowFlingVelocity = 5000.dp
 
 // A swipe of one page handed on as this: over the 400 dp/s a pager and a snapping row take for a
 // fling, and decaying well short of a page.
@@ -647,22 +649,21 @@ private val OnePageFlingVelocity = 600.dp
 internal fun rememberDeliberateFling(
     fling: androidx.compose.foundation.gestures.TargetedFlingBehavior,
     // The row [fling] moves, for whether it can go on the way a swipe goes.
-    state: androidx.compose.foundation.gestures.ScrollableState
+    state: androidx.compose.foundation.gestures.ScrollableState,
+    // A row of items: how far one swipe turns it (see DeliberateFling).
+    pageDistance: (() -> Float)? = null
 ): androidx.compose.foundation.gestures.TargetedFlingBehavior {
     val density = androidx.compose.ui.platform.LocalDensity.current
     return remember(fling, state, density) {
         with(density) {
-            DeliberateFling(
-                fling, state, DeliberateFlingVelocity.toPx(), ManyPagesFlingVelocity.toPx(),
-                MaxRowFlingVelocity.toPx(), OnePageFlingVelocity.toPx()
-            )
+            DeliberateFling(fling, state, DeliberateFlingVelocity.toPx(), OnePageFlingVelocity.toPx(), pageDistance)
         }
     }
 }
 
 /**
  * A sideways row of items — not pages — turned as the rows of pages are (see DeliberateFling):
- * snapping to an item's start, a light brush moving nothing, a hard swipe a few on. Let to fling
+ * its width a swipe, onto an item's start, a light brush moving nothing. Let to fling
  * freely, these rows went on as far as any swipe took them while every shelf around them turned
  * by pages.
  */
@@ -681,10 +682,12 @@ internal fun rememberDeliberateSnapFling(
             snapAnimationSpec = spring(stiffness = Spring.StiffnessMediumLow)
         )
     }
-    return rememberDeliberateFling(snap, state)
+    return rememberDeliberateFling(snap, state) {
+        state.layoutInfo.let { (it.viewportSize.width - it.beforeContentPadding - it.afterContentPadding).toFloat() }
+    }
 }
 
-/** [rememberDeliberateSnapFling] for a grid going sideways: its columns snap as a row's items do. */
+/** [rememberDeliberateSnapFling] for a grid going sideways: a column of songs a swipe. */
 @Composable
 internal fun rememberDeliberateSnapFling(
     state: androidx.compose.foundation.lazy.grid.LazyGridState

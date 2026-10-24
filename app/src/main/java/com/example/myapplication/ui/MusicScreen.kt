@@ -3461,7 +3461,7 @@ private fun ShelfRow(
 /**
  * Collections as pages of two going sideways: each a large cover with its name beside it, as a row
  * of songs has its own, and a tap opens it. A swipe brings the next two in, their covers looking in
- * at the edge meanwhile; a hard one goes on past several. Every card is as tall as its cover, so a
+ * at the edge meanwhile; a hard one no further. Every card is as tall as its cover, so a
  * name in one line or in two moves nothing under it — in a row of covers the shelf grew as a
  * two-line name scrolled in, and the shelves under it jumped.
  */
@@ -3540,8 +3540,8 @@ private fun ShelfGenrePages(items: List<HeroItem>, state: androidx.compose.found
     }
 }
 
-// As many pages as a hard swipe on a shelf of collections may go past.
-private const val BlockFlingPages = 6
+// One page a swipe, however hard (see DeliberateFling).
+private const val BlockFlingPages = 1
 
 /** A collection as a card of a page: the cover, and its name and what it is beside it. */
 @Composable
@@ -4266,12 +4266,11 @@ private fun PagedTrackList(
                 .fillMaxWidth()
                 .height(rowHeight * perPage + rowGap * (perPage - 1)),
             pageSpacing = 8.dp,
-            // A hard swipe goes on past a few pages instead of one a swipe, however hard; a light
-            // one moves nothing (see DeliberateFling).
+            // One page a swipe, however hard; a light one moves nothing (see DeliberateFling).
             flingBehavior = rememberDeliberateFling(
                 androidx.compose.foundation.pager.PagerDefaults.flingBehavior(
                     state = pagerState,
-                    pagerSnapDistance = androidx.compose.foundation.pager.PagerSnapDistance.atMost(3)
+                    pagerSnapDistance = androidx.compose.foundation.pager.PagerSnapDistance.atMost(BlockFlingPages)
                 ),
                 pagerState
             )
@@ -4642,8 +4641,7 @@ private fun HomeHeroCarousel(
                 // The count and the list can change apart (a row refreshed): a page past the end
                 // has no cover's key to give, only its place.
                 key = { items.getOrNull(it)?.key ?: it },
-                // A hard swipe goes on past several covers, as a flung list would, and settles on one;
-                // a light one moves nothing (see DeliberateFling).
+                // One cover a swipe, however hard; a light one moves nothing (see DeliberateFling).
                 flingBehavior = rememberDeliberateFling(
                     androidx.compose.foundation.pager.PagerDefaults.flingBehavior(
                         state = pagerState,
