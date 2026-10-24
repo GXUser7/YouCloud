@@ -1,7 +1,8 @@
 package com.example.myapplication.ui
 
+import androidx.compose.animation.core.AnimationState
 import androidx.compose.animation.core.Spring
-import androidx.compose.animation.core.animate
+import androidx.compose.animation.core.animateTo
 import androidx.compose.animation.core.spring
 import androidx.compose.foundation.OverscrollEffect
 import androidx.compose.foundation.OverscrollFactory
@@ -50,11 +51,17 @@ private class GlassOverscroll : OverscrollEffect {
     // and less of that the further it is pulled (see stretched). Down the screen only.
     private var pulled by mutableStateOf(0f)
     private var settling by mutableStateOf(false)
+    // A finger came down on the list while it sprang back: the spring gives way to it.
+    private var interrupted = false
 
+    // Only while a finger holds it past its end. Springing back it isn't "in progress": a list in
+    // progress takes every touch on it at once, and a swipe sideways — to a carousel's next cover,
+    // the profile's other page — made while it sprang back moved nothing.
     override val isInProgress: Boolean
-        get() = pulled != 0f || settling
+        get() = pulled != 0f && !settling
 
     override fun applyToScroll(delta: Offset, source: NestedScrollSource, performScroll: (Offset) -> Offset): Offset {
+        if (settling && source == NestedScrollSource.UserInput) interrupted = true
         // A drag back first takes the content in to its place, then moves the list.
         val relaxed = relaxed(pulled, delta.y)
         if (relaxed != 0f) pulled += relaxed
@@ -75,17 +82,22 @@ private class GlassOverscroll : OverscrollEffect {
             settle(velocity.y)
             return
         }
-        // A fling run into its end goes on a little past it and comes back.
+        // A fling run into its end goes on a little past it and comes back. Not one that has run
+        // out by itself: what it hands back is a last breath of speed, not nothing, and taken for
+        // the end it set the list springing after every fling, in the middle of it.
         val left = performFling(velocity)
-        if (left.y != 0f) settle(left.y)
+        if (abs(left.y) > MIN_OVERSHOOT_VELOCITY) settle(left.y)
     }
 
     private suspend fun settle(velocity: Float) {
         settling = true
+        interrupted = false
         try {
-            animate(pulled, 0f, velocity, SettleSpring) { value, _ -> pulled = value }
+            AnimationState(initialValue = pulled, initialVelocity = velocity)
+                .animateTo(0f, SettleSpring) { if (interrupted) cancelAnimation() else pulled = value }
         } finally {
             settling = false
+            interrupted = false
         }
     }
 
@@ -114,6 +126,9 @@ private fun stretched(pulled: Float, extent: Float): Float {
     if (pulled == 0f || extent <= 0f) return 0f
     return sign(pulled) * (1f - 1f / (abs(pulled) * RUBBER / extent + 1f)) * extent
 }
+
+// Faster than this, in pixels a second, what a fling hands back is a fling run into an end.
+private const val MIN_OVERSHOOT_VELOCITY = 400f
 
 // The rubber band iOS lists are pulled with.
 private const val RUBBER = 0.55f

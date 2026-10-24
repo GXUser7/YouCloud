@@ -2717,7 +2717,10 @@ private fun ServiceFeed(
                     }
                 ),
             contentPadding = PaddingValues(top = top + 8.dp, bottom = bottom + footRoom),
-            flingBehavior = if (heroPage) magnet else plainFling
+            flingBehavior = if (heroPage) magnet else plainFling,
+            // No band past its ends: nothing on it is glass to flicker as it stretched, and the
+            // magnet setting its place took a drag landing meanwhile for one past its end.
+            overscrollEffect = null
         ) {
             if (heroPage) {
                 item(key = "hero", contentType = "hero") {
@@ -3327,8 +3330,15 @@ private fun ShelfView(shelf: HomeShelf, onOpen: () -> Unit) {
     val metrics = LocalShelfMetrics.current
     // Collections as pages of two (see ShelfBlocks); the stage's too, where it isn't the hero.
     val blocks = shelf.kind == ShelfKind.Stage || shelf.kind == ShelfKind.Squares || shelf.kind == ShelfKind.Circles
+    // The genres' charts as pages of four (see ShelfGenrePages).
+    val genres = shelf.kind == ShelfKind.Genres
     val shown = shelf.note == null && shelf.items.isNotEmpty()
-    val pages = if (blocks && shown) rememberPagerState { (shelf.items.size + 1) / 2 } else null
+    val pages = when {
+        !shown -> null
+        blocks -> rememberPagerState { (shelf.items.size + 1) / 2 }
+        genres -> rememberPagerState { (shelf.items.size + 3) / 4 }
+        else -> null
+    }
     // Every row's place by its name, whatever it is a row of: pages, columns of songs or genres,
     // frames of broadcasts.
     val rowState = rememberLazyListState()
@@ -3337,7 +3347,6 @@ private fun ShelfView(shelf: HomeShelf, onOpen: () -> Unit) {
         !shown -> null
         pages != null -> rememberShelfPosition(pages)
         shelf.kind == ShelfKind.Tracks -> rememberShelfPosition(gridState, shelf.items.size, rows = 3)
-        shelf.kind == ShelfKind.Genres -> rememberShelfPosition(gridState, shelf.items.size, rows = 2)
         else -> rememberShelfPosition(rowState, shelf.items.size)
     }
     Column(modifier = Modifier.fillMaxWidth().padding(top = ShelfTop, bottom = ShelfBottom)) {
@@ -3351,6 +3360,7 @@ private fun ShelfView(shelf: HomeShelf, onOpen: () -> Unit) {
         when {
             shelf.note != null -> ShelfNoteView(shelf.note)
             shelf.items.isEmpty() -> ShelfLoading(shelf.kind)
+            pages != null && genres -> ShelfGenrePages(shelf.items, pages)
             pages != null -> ShelfBlocks(shelf.items, pages, round = shelf.kind == ShelfKind.Circles)
             else -> when (shelf.kind) {
                 ShelfKind.Stage, ShelfKind.Squares -> ShelfRow(shelf.items, rowState) { ShelfSquare(it) }
@@ -3418,6 +3428,48 @@ private fun ShelfBlocks(items: List<HeroItem>, state: androidx.compose.foundatio
         Column(verticalArrangement = Arrangement.spacedBy(BlockGap)) {
             items.getOrNull(page * 2)?.let { ShelfBlock(it, round) }
             items.getOrNull(page * 2 + 1)?.let { ShelfBlock(it, round) }
+        }
+    }
+}
+
+/**
+ * The genres' charts as pages of four, two over two, going sideways as the collections' pages do
+ * (see ShelfBlocks): the same swipes turn them and the next page's tiles look in at the edge. A row
+ * of tiles scrolling freely, they were the one shelf a swipe didn't turn by pages.
+ */
+@Composable
+private fun ShelfGenrePages(items: List<HeroItem>, state: androidx.compose.foundation.pager.PagerState) {
+    val metrics = LocalShelfMetrics.current
+    val tile = (metrics.blockPage - ShelfGap) / 2
+    HorizontalPager(
+        state = state,
+        pageSize = androidx.compose.foundation.pager.PageSize.Fixed(metrics.blockPage),
+        contentPadding = PaddingValues(start = ShelfEdge, end = metrics.blockEnd),
+        pageSpacing = ShelfGap,
+        key = { items.getOrNull(it * 4)?.key ?: it },
+        flingBehavior = rememberDeliberateFling(
+            androidx.compose.foundation.pager.PagerDefaults.flingBehavior(
+                state = state,
+                pagerSnapDistance = androidx.compose.foundation.pager.PagerSnapDistance.atMost(BlockFlingPages)
+            ),
+            state
+        ),
+        verticalAlignment = Alignment.Top,
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = 8.dp, bottom = 4.dp)
+            // Two or fewer: one line of them, no room kept for a second.
+            .height(if (items.size > 2) metrics.genreHeight * 2 + ShelfGap else metrics.genreHeight)
+            .nestedScroll(rememberSidewaysEdge())
+    ) { page ->
+        Column(verticalArrangement = Arrangement.spacedBy(ShelfGap)) {
+            for (line in 0 until 2) {
+                Row(horizontalArrangement = Arrangement.spacedBy(ShelfGap)) {
+                    for (place in 0 until 2) {
+                        items.getOrNull(page * 4 + line * 2 + place)?.let { ShelfGenre(it, Modifier.width(tile)) }
+                    }
+                }
+            }
         }
     }
 }
