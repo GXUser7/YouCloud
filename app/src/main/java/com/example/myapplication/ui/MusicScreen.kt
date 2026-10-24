@@ -2365,6 +2365,7 @@ private fun HomeScreen(
             state = servicePager,
             modifier = Modifier
                 .fillMaxSize()
+                .settlesPages(servicePager)
                 .drawWithContent { if (!feedHidden) drawContent() }
                 .graphicsLayer {
                     val under = if (pagePulled) 0f else pageShown.value
@@ -4443,6 +4444,39 @@ internal class SidewaysEdge : NestedScrollConnection {
 @Composable
 internal fun rememberSidewaysEdge(): SidewaysEdge = remember { SidewaysEdge() }
 
+/**
+ * Pages of services left between two of them — no finger on them, nothing moving them — come to
+ * rest on the nearer one. A row dragged past its end moves the services (see SidewaysEdge), and let
+ * go slowly, the pager, moved for it rather than by a swipe of its own, had no fling to settle it:
+ * it stayed where the finger had left it, halfway between two services.
+ */
+@Composable
+internal fun Modifier.settlesPages(state: androidx.compose.foundation.pager.PagerState): Modifier {
+    var touched by remember { mutableStateOf(false) }
+    LaunchedEffect(state) {
+        snapshotFlow { !touched && !state.isScrollInProgress && state.currentPageOffsetFraction.absoluteValue > 0.001f }
+            .collectLatest { stray ->
+                if (!stray) return@collectLatest
+                // A couple of frames for a fling of the pager's own to begin, as it does let go.
+                withFrameNanos { }
+                withFrameNanos { }
+                if (!touched && !state.isScrollInProgress) {
+                    state.animateScrollToPage(state.currentPage, animationSpec = ServicePageSpring)
+                }
+            }
+    }
+    return pointerInput(state) {
+        awaitEachGesture {
+            awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+            touched = true
+            do {
+                val event = awaitPointerEvent(PointerEventPass.Initial)
+            } while (event.changes.any { it.pressed })
+            touched = false
+        }
+    }
+}
+
 // How fadeIn and fadeOut go by default, for a page faded on what it draws (see glassFade).
 private val PageFadeSpring = spring<Float>(stiffness = Spring.StiffnessMediumLow)
 
@@ -6350,11 +6384,6 @@ private fun SearchScreen(
     // Hoisted, one per service, so that coming back from an album lands where the list was left.
     val listStates = remember { SearchSource.entries.associateWith { androidx.compose.foundation.lazy.LazyListState() } }
     val isFieldShown by rememberUpdatedState(openedPlaylist == null)
-    LaunchedEffect(Unit) {
-        kotlinx.coroutines.delay(100)
-        // The field isn't composed while an album is open, and focusing a detached requester throws.
-        if (isFieldShown) focusRequester.requestFocus()
-    }
 
     // An album or a playlist opened from the results stands over them, and pulled down uncovers
     // them, not home: in their place it showed home under the pull, then search came in afresh.
@@ -6390,6 +6419,14 @@ private fun SearchScreen(
         SearchSource.YOUTUBE -> onYtQueryChange(text)
     }
     val activeQuery = resultsOf(activeSource).query
+    // The keyboard comes up by itself only for a search not yet typed: opened on results — coming
+    // back from an artist, or under one being pulled off — it came up over them for nothing.
+    val typingFirst by rememberUpdatedState(activeQuery.isBlank())
+    LaunchedEffect(Unit) {
+        kotlinx.coroutines.delay(100)
+        // The field isn't composed while an album is open, and focusing a detached requester throws.
+        if (isFieldShown && typingFirst) focusRequester.requestFocus()
+    }
     val favoritesMap = remember(favorites) { favorites.associateBy { it.id } }
 
     // The services side by side, a page each; the one come to rest is the one searched.
@@ -6488,6 +6525,7 @@ private fun SearchScreen(
                 modifier = Modifier
                     .fillMaxWidth()
                     .weight(1f)
+                    .settlesPages(sourcePager)
                     // Above the keyboard: without it the last result sits under it with no way
                     // to scroll to it.
                     .imePadding()
@@ -6504,6 +6542,20 @@ private fun SearchScreen(
                 )
             ) { page ->
                 val pageSource = sources[page]
+                // The service shown is composed at once; those beside it, there to be swiped to, once
+                // search has come in — or as a swipe toward them begins. Composed together, search
+                // came in on one frame of 35 ms; a couple of frames later, their own long frame fell
+                // in the middle of its coming in.
+                var composed by remember { mutableStateOf(page == sourcePager.currentPage) }
+                if (!composed) {
+                    LaunchedEffect(Unit) {
+                        kotlinx.coroutines.withTimeoutOrNull(NeighbourServiceDelayMs) {
+                            snapshotFlow { sourcePager.isScrollInProgress }.first { it }
+                        }
+                        composed = true
+                    }
+                    return@HorizontalPager
+                }
                 SearchResultsList(
                     source = pageSource,
                     results = resultsOf(pageSource),
@@ -6618,6 +6670,9 @@ private fun SearchScreen(
     }
     }
 }
+
+// How long after search comes in the services beside the one shown are composed.
+private const val NeighbourServiceDelayMs = 450L
 
 /**
  * Search's dock taken out of the way of the results and brought back. Scrolled down a little, the
