@@ -18,8 +18,6 @@ import androidx.compose.ui.node.DelegatableNode
 import androidx.compose.ui.node.LayoutModifierNode
 import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.Velocity
-import kotlinx.coroutines.coroutineScope
-import kotlinx.coroutines.launch
 import kotlin.math.abs
 import kotlin.math.sign
 
@@ -41,50 +39,51 @@ internal object GlassOverscrollFactory : OverscrollFactory {
     override fun hashCode(): Int = System.identityHashCode(this)
 }
 
+/**
+ * Up and down only. Sideways — home's and search's pages of services, a shelf, a carousel — there
+ * is nothing to stretch, and a band there sprang: a pager hands back what it doesn't use of a
+ * fling's speed once it has snapped, and taken for a fling run into an end, every turn of a page
+ * went on past it and came back. Dragged past a row's end, the services around it move instead.
+ */
 private class GlassOverscroll : OverscrollEffect {
     // How far past its end the content is pulled, in the finger's pixels; on screen it goes less
-    // and less of that the further it is pulled (see stretched).
-    private var pulled by mutableStateOf(Offset.Zero)
+    // and less of that the further it is pulled (see stretched). Down the screen only.
+    private var pulled by mutableStateOf(0f)
     private var settling by mutableStateOf(false)
 
     override val isInProgress: Boolean
-        get() = pulled != Offset.Zero || settling
+        get() = pulled != 0f || settling
 
     override fun applyToScroll(delta: Offset, source: NestedScrollSource, performScroll: (Offset) -> Offset): Offset {
         // A drag back first takes the content in to its place, then moves the list.
-        val relaxed = Offset(relaxed(pulled.x, delta.x), relaxed(pulled.y, delta.y))
-        if (relaxed != Offset.Zero) pulled += relaxed
-        val left = delta - relaxed
+        val relaxed = relaxed(pulled, delta.y)
+        if (relaxed != 0f) pulled += relaxed
+        val left = delta - Offset(0f, relaxed)
         val scrolled = performScroll(left)
-        val over = left - scrolled
+        val over = (left - scrolled).y
         // Only a finger pulls the content past its end; a fling running into it is applyToFling's.
-        if (source == NestedScrollSource.UserInput && over != Offset.Zero) {
+        if (source == NestedScrollSource.UserInput && over != 0f) {
             pulled += over
-            return delta
+            return Offset(scrolled.x, delta.y)
         }
-        return relaxed + scrolled
+        return Offset(scrolled.x, relaxed + scrolled.y)
     }
 
     override suspend fun applyToFling(velocity: Velocity, performFling: suspend (Velocity) -> Velocity) {
-        if (pulled != Offset.Zero) {
+        if (pulled != 0f) {
             // Let go past its end: back in place, the finger's speed carried into the spring.
-            settle(velocity)
+            settle(velocity.y)
             return
         }
         // A fling run into its end goes on a little past it and comes back.
         val left = performFling(velocity)
-        if (left != Velocity.Zero) settle(left)
+        if (left.y != 0f) settle(left.y)
     }
 
-    private suspend fun settle(velocity: Velocity) = coroutineScope {
+    private suspend fun settle(velocity: Float) {
         settling = true
         try {
-            launch {
-                animate(pulled.x, 0f, velocity.x, SettleSpring) { value, _ -> pulled = pulled.copy(x = value) }
-            }
-            launch {
-                animate(pulled.y, 0f, velocity.y, SettleSpring) { value, _ -> pulled = pulled.copy(y = value) }
-            }.join()
+            animate(pulled, 0f, velocity, SettleSpring) { value, _ -> pulled = value }
         } finally {
             settling = false
         }
@@ -96,8 +95,7 @@ private class GlassOverscroll : OverscrollEffect {
             return layout(placeable.width, placeable.height) {
                 // Read in the layer, not the layout: the content moves without being laid out again.
                 placeable.placeWithLayer(0, 0) {
-                    translationX = stretched(pulled.x, size.width)
-                    translationY = stretched(pulled.y, size.height)
+                    translationY = stretched(pulled, size.height)
                 }
             }
         }
