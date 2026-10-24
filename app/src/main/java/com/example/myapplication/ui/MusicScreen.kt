@@ -3397,7 +3397,8 @@ private fun ShelfBlocks(items: List<HeroItem>, state: androidx.compose.foundatio
             androidx.compose.foundation.pager.PagerDefaults.flingBehavior(
                 state = state,
                 pagerSnapDistance = androidx.compose.foundation.pager.PagerSnapDistance.atMost(BlockFlingPages)
-            )
+            ),
+            state
         ),
         verticalAlignment = Alignment.Top,
         modifier = Modifier
@@ -3502,7 +3503,8 @@ private fun ShelfGrid(
                             decayAnimationSpec = decay,
                             snapAnimationSpec = spring(stiffness = Spring.StiffnessMediumLow)
                         )
-                    }
+                    },
+                    state
                 )
             } else {
                 androidx.compose.foundation.gestures.ScrollableDefaults.flingBehavior()
@@ -4161,7 +4163,8 @@ private fun PagedTrackList(
                 androidx.compose.foundation.pager.PagerDefaults.flingBehavior(
                     state = pagerState,
                     pagerSnapDistance = androidx.compose.foundation.pager.PagerSnapDistance.atMost(3)
-                )
+                ),
+                pagerState
             )
         ) { page ->
             Column(
@@ -4480,7 +4483,8 @@ private fun HomeHeroCarousel(
                     androidx.compose.foundation.pager.PagerDefaults.flingBehavior(
                         state = pagerState,
                         pagerSnapDistance = androidx.compose.foundation.pager.PagerSnapDistance.atMost(BlockFlingPages)
-                    )
+                    ),
+                    pagerState
                 ),
                 modifier = Modifier
                     .fillMaxSize()
@@ -6667,7 +6671,12 @@ private class SearchResults(
     val artists: List<SoundCloudUser>
 )
 
-/** A page of search: one service's best result, artists, albums, playlists and tracks. */
+/**
+ * A page of search: one service's best result, artists, albums, playlists and tracks, laid out as
+ * home's shelves are — each under its name with its place by it, the playlists as pages of two
+ * collections, the best result a collection larger than the rest. The albums keep their carousel;
+ * the tracks stay a list, the one that goes on loading as it is scrolled, each with its heart.
+ */
 @Composable
 private fun SearchResultsList(
     source: SearchSource,
@@ -6690,104 +6699,94 @@ private fun SearchResultsList(
     val topResult = remember(results.query, results.albums, results.playlists) {
         pickTopResult(results.query, results.albums, results.playlists)
     }
+    // The playlists as home's collections are, worked out again only when they change.
+    val playlistItems = remember(results.playlists) {
+        results.playlists.map { playlist ->
+            HeroItem(
+                key = "search-set-${playlist.id}",
+                title = playlist.title ?: tr("Без названия"),
+                subtitle = listOfNotNull(
+                    playlist.user?.username,
+                    playlist.trackCount.takeIf { it > 0 }?.let { plural(it, tr("трек"), tr("трека"), tr("треков")) }
+                ).joinToString(" · ").ifEmpty { setCaption(playlist) },
+                artworkUrl = playlist.displayArtworkUrl,
+                icon = Icons.AutoMirrored.Filled.QueueMusic,
+                source = "set-${playlist.id}",
+                onClick = { onOpenPlaylist(playlist) }
+            )
+        }
+    }
+    // Shelves go edge to edge as home's do; the rest keeps to a margin of its own.
+    val margin = Modifier.padding(horizontal = 16.dp)
+    SizedShelves(modifier = modifier.fillMaxSize()) {
     LazyColumn(
         state = listState,
-        modifier = modifier.fillMaxSize(),
-        // Rows of a group sit flush, so spacing between blocks is set per item instead.
-        contentPadding = PaddingValues(start = 16.dp, top = 0.dp, end = 16.dp, bottom = bottomRoom)
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(bottom = bottomRoom)
     ) {
         if (results.loading) {
             item(key = "search-loading") {
-                LoadingBlock(modifier = Modifier.padding(top = 16.dp), height = 120.dp)
+                LoadingBlock(modifier = margin.padding(top = 16.dp), height = 120.dp)
             }
         }
 
         if (results.error != null) {
             item(key = "search-error") {
-                Box(modifier = Modifier.padding(top = 16.dp)) { MessageCard(results.error) }
+                Box(modifier = margin.padding(top = 16.dp)) { MessageCard(results.error) }
             }
         }
 
         if (topResult != null) {
             item(key = "search-top-result") {
-                Column(modifier = Modifier.padding(top = 24.dp)) {
-                    Kicker(text = tr("Лучший результат"))
-                    Spacer(modifier = Modifier.height(10.dp))
-                    TopResultCard(
-                        kicker = setCaption(topResult),
-                        title = topResult.title ?: tr("Без названия"),
-                        // YouTube Music doesn't say how many tracks a set has until it is opened.
-                        subtitle = listOfNotNull(
-                            topResult.user?.username,
-                            topResult.trackCount.takeIf { it > 0 }?.let { plural(it, tr("трек"), tr("трека"), tr("треков")) }
-                        ).joinToString(" · "),
-                        artworkUrl = topResult.displayArtworkUrl,
-                        onClick = { onOpenPlaylist(topResult) }
+                SearchBest(set = topResult, onOpen = { onOpenPlaylist(topResult) })
+            }
+        }
+
+        if (results.artists.isNotEmpty()) {
+            item(key = "search-artists") {
+                val row = rememberLazyListState()
+                Column(modifier = Modifier.padding(top = ShelfTop)) {
+                    ShelfHeader(
+                        title = tr("Исполнители"),
+                        count = null,
+                        position = rememberShelfPosition(row, results.artists.size)
+                    )
+                    ArtistRow(artists = results.artists, onOpen = onOpenArtist, state = row, edge = ShelfEdge)
+                }
+            }
+        }
+
+        if (results.albums.isNotEmpty()) {
+            item(key = "search-albums") {
+                Column(modifier = Modifier.padding(top = ShelfTop)) {
+                    ShelfHeader(title = tr("Альбомы"), count = null)
+                    AlbumCarousel(
+                        albums = results.albums.map { album ->
+                            CarouselAlbum(
+                                key = album.id,
+                                title = album.title ?: tr("Без названия"),
+                                subtitle = album.user?.username.orEmpty(),
+                                caption = setCaption(album),
+                                artworkUrl = album.displayArtworkUrl,
+                                onClick = { onOpenPlaylist(album) }
+                            )
+                        },
+                        modifier = margin.padding(top = 8.dp)
                     )
                 }
             }
         }
 
-        if (results.artists.isNotEmpty()) {
-            item(key = "search-artists-header") {
-                SectionTitle(tr("Исполнители"), modifier = Modifier.padding(top = 24.dp, bottom = 8.dp))
-            }
-            item(key = "search-artists") {
-                ArtistRow(artists = results.artists, onOpen = onOpenArtist)
-            }
-        }
-
-        if (results.albums.isNotEmpty()) {
-            item(key = "search-albums-header") {
-                SectionTitle(tr("Альбомы"), modifier = Modifier.padding(top = 24.dp, bottom = 8.dp))
-            }
-            item(key = "search-albums") {
-                AlbumCarousel(
-                    albums = results.albums.map { album ->
-                        CarouselAlbum(
-                            key = album.id,
-                            title = album.title ?: tr("Без названия"),
-                            subtitle = album.user?.username.orEmpty(),
-                            caption = setCaption(album),
-                            artworkUrl = album.displayArtworkUrl,
-                            onClick = { onOpenPlaylist(album) }
-                        )
-                    }
-                )
-            }
-        }
-
-        if (results.playlists.isNotEmpty()) {
-            item(key = "search-playlists-header") {
-                SectionTitle(
-                    tr("Плейлисты и сборники"),
-                    modifier = Modifier.padding(top = 24.dp, bottom = 8.dp)
-                )
-            }
-            // Two to a row, up to three rows; the rest are a scroll of the search further on.
-            results.playlists.take(6).chunked(2).forEachIndexed { rowIndex, pair ->
-                item(key = "search-playlists-row-$rowIndex") {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(bottom = 10.dp),
-                        horizontalArrangement = Arrangement.spacedBy(10.dp)
-                    ) {
-                        pair.forEach { playlist ->
-                            CompactCollectionCard(
-                                title = playlist.title ?: tr("Без названия"),
-                                caption = if (playlist.trackCount > 0) {
-                                    plural(playlist.trackCount, tr("трек"), tr("трека"), tr("треков"))
-                                } else {
-                                    setCaption(playlist)
-                                },
-                                artworkUrl = playlist.displayArtworkUrl,
-                                onClick = { onOpenPlaylist(playlist) },
-                                modifier = Modifier.weight(1f)
-                            )
-                        }
-                        if (pair.size == 1) Spacer(modifier = Modifier.weight(1f))
-                    }
+        if (playlistItems.isNotEmpty()) {
+            item(key = "search-playlists") {
+                val pages = rememberPagerState { (playlistItems.size + 1) / 2 }
+                Column(modifier = Modifier.padding(top = ShelfTop)) {
+                    ShelfHeader(
+                        title = tr("Плейлисты и сборники"),
+                        count = null,
+                        position = rememberShelfPosition(pages)
+                    )
+                    ShelfBlocks(playlistItems, pages, round = false)
                 }
             }
         }
@@ -6795,7 +6794,9 @@ private fun SearchResultsList(
         if (results.tracks.isNotEmpty()) {
             if (results.albums.isNotEmpty() || results.playlists.isNotEmpty() || results.artists.isNotEmpty() || topResult != null) {
                 item(key = "search-tracks-header") {
-                    SectionTitle(tr("Треки"), modifier = Modifier.padding(top = 18.dp, bottom = 8.dp))
+                    Box(modifier = Modifier.padding(top = ShelfTop, bottom = 4.dp)) {
+                        ShelfHeader(title = tr("Треки"), count = null)
+                    }
                 }
             } else {
                 item(key = "search-tracks-gap") { Spacer(modifier = Modifier.height(20.dp)) }
@@ -6807,33 +6808,106 @@ private fun SearchResultsList(
                 key = { _, track -> "${source.name}-search-${track.id}" }
             ) { index, track ->
                 val favorite = favoritesMap[track.id]
-                TrackCard(
-                    track = track,
-                    isFavorite = favorite != null,
-                    isSelected = track.id == currentTrackId,
-                    downloadState = favorite?.downloadState,
-                    progress = { downloadProgress[track.id] },
-                    isPlaying = isPlaying,
-                    onClick = { onPlayTrack(track) },
-                    onFavoriteClick = { onFavoriteClick(track) },
-                    position = groupPosition(index, rowCount)
-                )
+                Box(modifier = margin) {
+                    TrackCard(
+                        track = track,
+                        isFavorite = favorite != null,
+                        isSelected = track.id == currentTrackId,
+                        downloadState = favorite?.downloadState,
+                        progress = { downloadProgress[track.id] },
+                        isPlaying = isPlaying,
+                        onClick = { onPlayTrack(track) },
+                        onFavoriteClick = { onFavoriteClick(track) },
+                        position = groupPosition(index, rowCount)
+                    )
+                }
             }
             if (showLoadMore) {
                 item(key = "search-load-more") {
-                    LoadMoreRow(
-                        isLoading = isLoadingMore,
-                        onClick = onLoadMore,
-                        position = groupPosition(rowCount - 1, rowCount)
-                    )
+                    Box(modifier = margin) {
+                        LoadMoreRow(
+                            isLoading = isLoadingMore,
+                            onClick = onLoadMore,
+                            position = groupPosition(rowCount - 1, rowCount)
+                        )
+                    }
                 }
             }
         } else if (!results.loading && results.query.isNotBlank() && results.error == null &&
             results.albums.isEmpty() && results.playlists.isEmpty() && results.artists.isEmpty()
         ) {
             item(key = "search-empty") {
-                Box(modifier = Modifier.padding(top = 20.dp)) { EmptyState(tr("Ничего не нашлось.")) }
+                Box(modifier = margin.padding(top = 20.dp)) { EmptyState(tr("Ничего не нашлось.")) }
             }
+        }
+    }
+    }
+}
+
+/**
+ * Search's best result as a collection of home's, larger than the rest: its cover, and beside it
+ * what it is — singled out by name — its title and whose it is. A tap opens it, as any cover does.
+ */
+@Composable
+private fun SearchBest(set: SoundCloudPlaylist, onOpen: () -> Unit) {
+    val haptic = LocalHapticFeedback.current
+    val interaction = remember { MutableInteractionSource() }
+    val cover = (LocalShelfMetrics.current.blockCover * 1.25f).coerceAtMost(180.dp)
+    val currentOnOpen by rememberUpdatedState(onOpen)
+    val item = remember(set) {
+        HeroItem(
+            key = "search-best-${set.id}",
+            title = set.title ?: tr("Без названия"),
+            subtitle = null,
+            artworkUrl = set.displayArtworkUrl,
+            icon = Icons.Default.Album,
+            source = "set-${set.id}",
+            onClick = { currentOnOpen() }
+        )
+    }
+    // YouTube Music doesn't say how many tracks a set has until it is opened.
+    val whose = listOfNotNull(
+        set.user?.username,
+        set.trackCount.takeIf { it > 0 }?.let { plural(it, tr("трек"), tr("трека"), tr("треков")) }
+    ).joinToString(" · ")
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(start = ShelfEdge, top = 20.dp, end = ShelfEdge)
+            .clickable(interactionSource = interaction, indication = null) {
+                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                item.onClick()
+            },
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(16.dp)
+    ) {
+        ShelfCover(
+            item = item,
+            size = cover,
+            modifier = Modifier
+                .size(cover)
+                .pressMorph(interaction, corner = 30.dp, pressedCorner = cover / 2)
+        )
+        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text(
+                text = tr("Лучший результат").uppercase(),
+                style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.SemiBold, letterSpacing = 0.6.sp),
+                color = PanelColors.accent,
+                maxLines = 1
+            )
+            Text(
+                text = item.title,
+                style = MaterialTheme.typography.titleMedium.copy(fontSize = 21.sp, lineHeight = 25.sp, fontWeight = FontWeight.SemiBold),
+                maxLines = 3,
+                overflow = TextOverflow.Ellipsis
+            )
+            Text(
+                text = listOf(setCaption(set), whose).filter { it.isNotBlank() }.joinToString("\n"),
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis
+            )
         }
     }
 }
@@ -7078,8 +7152,19 @@ private fun HeaderPane(
 
 /** Artists a search found: round portraits with a name, the way people show everywhere else. */
 @Composable
-private fun ArtistRow(artists: List<SoundCloudUser>, onOpen: (SoundCloudUser) -> Unit) {
-    LazyRow(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+private fun ArtistRow(
+    artists: List<SoundCloudUser>,
+    onOpen: (SoundCloudUser) -> Unit,
+    state: androidx.compose.foundation.lazy.LazyListState = rememberLazyListState(),
+    // From the screen's edge, as home's shelves: their margin inside the row.
+    edge: Dp = 0.dp
+) {
+    LazyRow(
+        state = state,
+        modifier = if (edge > 0.dp) Modifier.fillMaxWidth().nestedScroll(rememberSidewaysEdge()) else Modifier,
+        contentPadding = PaddingValues(horizontal = edge),
+        horizontalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
         items(artists, key = { "artist-" + (it.permalinkUrl ?: it.id.toString()) }) { artist ->
             Column(
                 modifier = Modifier

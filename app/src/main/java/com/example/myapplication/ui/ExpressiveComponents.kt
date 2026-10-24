@@ -577,117 +577,6 @@ internal fun IconCover(icon: ImageVector, modifier: Modifier = Modifier, iconSiz
 
 // region Cards
 
-/**
- * "Лучший результат": the one hit worth singling out, as a compact colour-block card.
- */
-@Composable
-internal fun TopResultCard(
-    kicker: String,
-    title: String,
-    subtitle: String,
-    artworkUrl: String?,
-    onClick: () -> Unit,
-    modifier: Modifier = Modifier
-) {
-    val glass = LocalGlass.current
-    Surface(
-        onClick = onClick,
-        modifier = modifier
-            .fillMaxWidth()
-            .glassOr(RoundedCornerShape(32.dp), PanelColors.container),
-        shape = RoundedCornerShape(32.dp),
-        color = if (glass) Color.Transparent else PanelColors.container,
-        contentColor = PanelColors.content
-    ) {
-        Row(
-            modifier = Modifier.padding(16.dp),
-            horizontalArrangement = Arrangement.spacedBy(16.dp)
-        ) {
-            CoverImage(
-                url = artworkUrl,
-                size = 120.dp,
-                shape = RoundedCornerShape(24.dp)
-            )
-            Column(modifier = Modifier.weight(1f).height(120.dp)) {
-                Kicker(text = kicker, color = PanelColors.content.copy(alpha = 0.78f))
-                Spacer(modifier = Modifier.height(4.dp))
-                Text(
-                    text = title,
-                    style = MaterialTheme.typography.titleLarge,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis
-                )
-                Spacer(modifier = Modifier.height(4.dp))
-                Text(
-                    text = subtitle,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = PanelColors.content.copy(alpha = 0.8f),
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-                Spacer(modifier = Modifier.weight(1f))
-                Box(
-                    modifier = Modifier
-                        .align(Alignment.End)
-                        .size(44.dp)
-                        .clip(RoundedCornerShape(16.dp))
-                        .background(PanelColors.accent),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Icon(
-                        Icons.AutoMirrored.Filled.KeyboardArrowRight,
-                        contentDescription = null,
-                        tint = PanelColors.onAccent,
-                        modifier = Modifier.size(26.dp)
-                    )
-                }
-            }
-        }
-    }
-}
-
-/** Compact two-up card for playlists: small cover, two lines of title, a count. */
-@Composable
-internal fun CompactCollectionCard(
-    title: String,
-    caption: String,
-    artworkUrl: String?,
-    onClick: () -> Unit,
-    modifier: Modifier = Modifier
-) {
-    val glass = LocalGlass.current
-    Surface(
-        onClick = onClick,
-        modifier = modifier
-            .height(80.dp)
-            .glassOr(RoundedCornerShape(24.dp), MaterialTheme.colorScheme.surfaceContainerHigh),
-        shape = RoundedCornerShape(24.dp),
-        color = if (glass) Color.Transparent else MaterialTheme.colorScheme.surfaceContainerHigh
-    ) {
-        Row(
-            modifier = Modifier.padding(10.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(10.dp)
-        ) {
-            CoverImage(url = artworkUrl, size = 60.dp, shape = RoundedCornerShape(16.dp))
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = title,
-                    style = MaterialTheme.typography.titleSmall,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis
-                )
-                Text(
-                    text = caption,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1
-                )
-            }
-        }
-    }
-}
-
 /** One album in an [AlbumCarousel]. */
 internal data class CarouselAlbum(
     val key: Any,
@@ -707,9 +596,15 @@ internal data class CarouselAlbum(
  * position — on the page it was on unless dragged past half of it. A swipe up to a hard one, slower
  * than [manyVelocity], turns one page, however fast it was: an ordinary swipe went on past two or
  * three. Only a hard swipe flings as [fling] does, past several.
+ *
+ * At the row's end, with nowhere to go the way the swipe went, none of this: the swipe is left
+ * whole for what is around the row — home's or search's pages of services, which a drag past the
+ * end has already moved (see SidewaysEdge). Tamed here first, it reached them as next to nothing,
+ * and a service took a drag of a third of the screen to turn from a shelf.
  */
 internal class DeliberateFling(
     private val fling: androidx.compose.foundation.gestures.TargetedFlingBehavior,
+    private val state: androidx.compose.foundation.gestures.ScrollableState,
     private val minVelocity: Float,
     private val manyVelocity: Float,
     // What a swipe of one page is handed on as: over what [fling] takes for a fling at all, with
@@ -720,6 +615,8 @@ internal class DeliberateFling(
         initialVelocity: Float,
         onRemainingDistanceUpdated: (Float) -> Unit
     ): Float = with(fling) {
+        val onward = if (initialVelocity > 0f) state.canScrollForward else state.canScrollBackward
+        if (initialVelocity != 0f && !onward) return initialVelocity
         val speed = kotlin.math.abs(initialVelocity)
         val velocity = when {
             speed < minVelocity -> 0f
@@ -742,12 +639,14 @@ private val OnePageFlingVelocity = 700.dp
 
 @Composable
 internal fun rememberDeliberateFling(
-    fling: androidx.compose.foundation.gestures.TargetedFlingBehavior
+    fling: androidx.compose.foundation.gestures.TargetedFlingBehavior,
+    // The row [fling] moves, for whether it can go on the way a swipe goes.
+    state: androidx.compose.foundation.gestures.ScrollableState
 ): androidx.compose.foundation.gestures.TargetedFlingBehavior {
     val density = androidx.compose.ui.platform.LocalDensity.current
-    return remember(fling, density) {
+    return remember(fling, state, density) {
         with(density) {
-            DeliberateFling(fling, DeliberateFlingVelocity.toPx(), ManyPagesFlingVelocity.toPx(), OnePageFlingVelocity.toPx())
+            DeliberateFling(fling, state, DeliberateFlingVelocity.toPx(), ManyPagesFlingVelocity.toPx(), OnePageFlingVelocity.toPx())
         }
     }
 }
@@ -771,7 +670,7 @@ internal fun AlbumCarousel(
             itemSpacing = 8.dp,
             // A hard swipe goes on past several covers and settles on one, rather than the default
             // that moves one cover a swipe whatever the swipe was, a magnet under the finger.
-            flingBehavior = rememberDeliberateFling(androidx.compose.material3.carousel.CarouselDefaults.multiBrowseFlingBehavior(state)),
+            flingBehavior = rememberDeliberateFling(androidx.compose.material3.carousel.CarouselDefaults.multiBrowseFlingBehavior(state), state),
             modifier = Modifier
                 .fillMaxWidth()
                 .height(height)
