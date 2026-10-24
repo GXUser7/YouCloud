@@ -118,6 +118,11 @@ internal fun Modifier.pullToClose(onClose: () -> Unit): Modifier {
                 release(available.y)
                 return available
             }
+
+            // A fling run up into the top stops there. The list sprang past it and back, and a
+            // flick down meant to close the page ended in that bounce instead.
+            override suspend fun onPostFling(consumed: Velocity, available: Velocity): Velocity =
+                if (available.y > 0f) Velocity(0f, available.y) else Velocity.Zero
         }
     }
 

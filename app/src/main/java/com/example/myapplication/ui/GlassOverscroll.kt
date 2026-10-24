@@ -53,6 +53,8 @@ private class GlassOverscroll : OverscrollEffect {
     private var settling by mutableStateOf(false)
     // A finger came down on the list while it sprang back: the spring gives way to it.
     private var interrupted = false
+    // The fling under way ran into the list's end: only then is what it hands back an overshoot.
+    private var hitEnd = false
 
     // Only while a finger holds it past its end. Springing back it isn't "in progress": a list in
     // progress takes every touch on it at once, and a swipe sideways — to a carousel's next cover,
@@ -69,6 +71,7 @@ private class GlassOverscroll : OverscrollEffect {
         val scrolled = performScroll(left)
         val over = (left - scrolled).y
         // Only a finger pulls the content past its end; a fling running into it is applyToFling's.
+        if (source != NestedScrollSource.UserInput && over != 0f) hitEnd = true
         if (source == NestedScrollSource.UserInput && over != 0f) {
             pulled += over
             return Offset(scrolled.x, delta.y)
@@ -89,8 +92,11 @@ private class GlassOverscroll : OverscrollEffect {
         // A fling run into its end goes on a little past it and comes back. Not one that has run
         // out by itself: what it hands back is a last breath of speed, not nothing, and taken for
         // the end it set the list springing after every fling, in the middle of it.
+        // Asked of the fling itself, not read from the speed it hands back: a fling that runs out
+        // in the middle of the list hands back speed too, and the list sprang after every one.
+        hitEnd = false
         val left = performFling(velocity)
-        if (abs(left.y) > MIN_OVERSHOOT_VELOCITY) settle(left.y)
+        if (hitEnd && abs(left.y) > MIN_OVERSHOOT_VELOCITY) settle(left.y)
     }
 
     private suspend fun settle(velocity: Float) {
