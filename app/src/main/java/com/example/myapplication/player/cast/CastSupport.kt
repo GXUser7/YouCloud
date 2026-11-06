@@ -43,6 +43,26 @@ internal class CastSupport(
     private var wifiLock: WifiManager.WifiLock? = null
     private var wakeLock: PowerManager.WakeLock? = null
 
+    // The TV's queue and place in it, kept as it plays: once its session has ended, the Cast
+    // player has nothing left to hand back.
+    private var lastItems: List<MediaItem> = emptyList()
+    private var lastIndex = 0
+    private var lastPosition = 0L
+    private var lastPlaying = false
+    private val handler = android.os.Handler(android.os.Looper.getMainLooper())
+    private val snapshot = object : Runnable {
+        override fun run() {
+            val player = cast ?: return
+            if (player.mediaItemCount > 0) {
+                lastItems = (0 until player.mediaItemCount).map(player::getMediaItemAt)
+                lastIndex = player.currentMediaItemIndex
+                lastPosition = player.currentPosition
+                lastPlaying = player.playWhenReady
+            }
+            handler.postDelayed(this, 1_000)
+        }
+    }
+
     fun start() {
         try {
             CastContext.getSharedInstance(context, ContextCompat.getMainExecutor(context))
@@ -74,17 +94,33 @@ internal class CastSupport(
             hold(true)
         }
         if (from !== target) {
-            val items = (0 until from.mediaItemCount).map(from::getMediaItemAt)
-            val index = from.currentMediaItemIndex
-            val position = from.currentPosition
-            val playing = from.playWhenReady
+            val fromCast = from !== local
+            if (fromCast) snapshot.run()
+            handler.removeCallbacks(snapshot)
+            val keep = fromCast && from.mediaItemCount == 0
+            val items = if (keep) lastItems else (0 until from.mediaItemCount).map(from::getMediaItemAt)
+            val index = if (keep) lastIndex else from.currentMediaItemIndex
+            val position = if (keep) lastPosition else from.currentPosition
+            val playing = if (keep) lastPlaying else from.playWhenReady
             from.stop()
+            if (toCast) {
+                lastItems = items
+                lastIndex = index
+                lastPosition = position
+                lastPlaying = playing
+            }
             if (items.isNotEmpty()) {
                 target.setMediaItems(items, index.coerceIn(0, items.size - 1), position)
                 target.playWhenReady = playing
                 target.prepare()
             }
             mediaSession.player = target
+            if (toCast) handler.post(snapshot)
+        }
+        // What the phone was restoring isn't heard now.
+        if (toCast) {
+            com.example.myapplication.player.restore.RestoreState.report("main", false)
+            com.example.myapplication.player.restore.RestoreState.report("helper", false)
         }
         AudioOutputs.castingTo.value = if (toCast) {
             castContext?.sessionManager?.currentCastSession?.castDevice?.friendlyName ?: "Chromecast"
@@ -119,6 +155,7 @@ internal class CastSupport(
     }
 
     fun release() {
+        handler.removeCallbacks(snapshot)
         cast?.setSessionAvailabilityListener(null)
         cast?.release()
         cast = null

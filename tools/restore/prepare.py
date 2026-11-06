@@ -35,7 +35,8 @@ def songs_in(shards):
         t = pq.read_table(f, columns=["path", "instrument"])
         for i, (path, inst) in enumerate(zip(t.column("path").to_pylist(), t.column("instrument").to_pylist())):
             rows.setdefault(path.split("/")[-2], {})[inst] = (f, i)
-    for song, parts in sorted(rows.items()):
+    # PREPARE_REVERSE=1: from the end of the list, for a second run alongside the first.
+    for song, parts in sorted(rows.items(), reverse=os.environ.get("PREPARE_REVERSE") == "1"):
         if not {"mixture", "vocals", "drums", "bass", "other"} <= parts.keys():
             continue
         stems = {}

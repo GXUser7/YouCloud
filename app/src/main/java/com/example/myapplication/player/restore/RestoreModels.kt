@@ -6,6 +6,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -77,7 +78,19 @@ object RestoreModels {
         }.also { strongModel = it }
     }
 
-    suspend fun downloadStrong(context: Context, client: OkHttpClient) = withContext(Dispatchers.IO) {
+    // Its own scope: leaving the settings doesn't stop a download.
+    private val scope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + Dispatchers.IO)
+
+    /** Downloads the strong model, unless it is under way; [onReady] once it is on the phone. */
+    fun startStrongDownload(context: Context, onReady: () -> Unit) {
+        val app = context.applicationContext
+        scope.launch {
+            downloadStrong(app, OkHttpClient())
+            if (_strong.value == Download.Ready) onReady()
+        }
+    }
+
+    private suspend fun downloadStrong(context: Context, client: OkHttpClient) = withContext(Dispatchers.IO) {
         if (_strong.value is Download.Running) return@withContext
         _strong.value = Download.Running(0f)
         val target = strongFile(context)

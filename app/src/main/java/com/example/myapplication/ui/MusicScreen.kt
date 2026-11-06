@@ -6366,7 +6366,6 @@ private fun SettingsScreen(
 @Composable
 private fun RestoreSettingsCard(settingsRepository: SettingsRepository) {
     val context = LocalContext.current
-    val scope = rememberCoroutineScope()
     val enabled by settingsRepository.restoreEnabled.collectAsState()
     val strong by settingsRepository.restoreStrong.collectAsState()
     val models = com.example.myapplication.player.restore.RestoreModels
@@ -6374,12 +6373,7 @@ private fun RestoreSettingsCard(settingsRepository: SettingsRepository) {
     val download by models.strong.collectAsState()
     val ready = download == com.example.myapplication.player.restore.RestoreModels.Download.Ready
     val startDownload: () -> Unit = {
-        scope.launch {
-            models.downloadStrong(context, okhttp3.OkHttpClient())
-            if (models.strong.value == com.example.myapplication.player.restore.RestoreModels.Download.Ready) {
-                settingsRepository.setRestoreStrong(true)
-            }
-        }
+        models.startStrongDownload(context) { settingsRepository.setRestoreStrong(true) }
     }
     Card(
         modifier = Modifier
