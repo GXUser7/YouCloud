@@ -460,22 +460,48 @@ internal fun CollectionHero(
     }
 }
 
-/** Small tinted label on a colour-block panel. */
+/**
+ * Small tinted label on a colour-block panel; [trailingIcon] after its text and a dot, said by
+ * [trailingIconDescription] (the player's source chip: the service, and that the track is downloaded).
+ */
 @Composable
-internal fun OnPanelChip(text: String, modifier: Modifier = Modifier) {
+internal fun OnPanelChip(
+    text: String,
+    modifier: Modifier = Modifier,
+    trailingIcon: ImageVector? = null,
+    trailingIconDescription: String? = null
+) {
     Surface(
         modifier = modifier,
         shape = RoundedCornerShape(12.dp),
         color = PanelColors.content.copy(alpha = 0.12f),
         contentColor = PanelColors.content
     ) {
-        Kicker(
-            text = text,
-            color = PanelColors.content,
-            modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
-        )
+        Row(
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            // The text gives way first: the icon stays whole.
+            Kicker(
+                text = if (trailingIcon != null) "$text ·" else text,
+                color = PanelColors.content,
+                modifier = Modifier.weight(1f, fill = false)
+            )
+            if (trailingIcon != null) {
+                Spacer(modifier = Modifier.width(5.dp))
+                Icon(
+                    imageVector = trailingIcon,
+                    contentDescription = trailingIconDescription,
+                    tint = PanelColors.content,
+                    modifier = Modifier.size(PanelChipIconSize)
+                )
+            }
+        }
     }
 }
+
+// An icon in a panel chip: as tall as the chip's text.
+internal val PanelChipIconSize = 16.dp
 
 /** The main action on a panel, in the scheme's accent so it is the one thing that pops. */
 @Composable

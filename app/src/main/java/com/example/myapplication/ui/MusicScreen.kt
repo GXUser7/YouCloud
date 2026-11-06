@@ -11069,27 +11069,21 @@ private fun PlayerPanel(
                 val fromPhone = track.urn?.startsWith("local:") == true
                 val live = track.liveVideoId != null
                 var fxOpen by remember { mutableStateOf(false) }
-                // As tall with the effects' button as without it: the panel's height, and so the
-                // cover's size, is the same for every track.
-                Row(
-                    modifier = Modifier.heightIn(min = PanelChipRowHeight),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
                 // Gives way first when the row is full: the session's chip and the effects stay.
                 Box(modifier = Modifier.weight(1f)) {
+                // Where it is from, and, downloaded, a mark that it is on the phone.
+                val downloaded = !fromPhone && downloadState == DownloadState.DOWNLOADED
                 OnPanelChip(
-                    text = buildString {
-                        append(
-                            when {
-                                fromPhone -> tr("С телефона")
-                                live -> tr("YouTube · в эфире")
-                                track.urn?.startsWith("yandex:") == true -> tr("Яндекс Музыка")
-                                track.youTubeVideoId != null -> "YouTube Music"
-                                else -> "SoundCloud"
-                            }
-                        )
-                        if (!fromPhone && downloadState == DownloadState.DOWNLOADED) append(tr(" · на устройстве"))
-                    }
+                    text = when {
+                        fromPhone -> tr("С телефона")
+                        live -> tr("YouTube · в эфире")
+                        track.urn?.startsWith("yandex:") == true -> tr("Яндекс Музыка")
+                        track.youTubeVideoId != null -> "YouTube Music"
+                        else -> "SoundCloud"
+                    },
+                    trailingIcon = if (downloaded) Icons.Default.DownloadDone else null,
+                    trailingIconDescription = tr("Скачан")
                 )
                 }
                 LocalTogether.current?.let { badge ->
@@ -11295,9 +11289,6 @@ private fun PlayerPanel(
         }
     }
 }
-
-// The row of chips over the title: as tall as the effects' button in it, with it or without.
-private val PanelChipRowHeight = 32.dp
 
 // How small a long title may be set to keep to its one line, before it is cut short instead.
 private val PlayerTitleMinSize = 18.sp
@@ -11556,32 +11547,36 @@ private fun BoxScope.LandscapeControls(
 
 private const val LANDSCAPE_CONTROLS_HIDE_MS = 3_000L
 
-/** The button for a track's effects, across from where it is from: lit while it has any. */
+/**
+ * The button for a track's effects, across from where it is from: lit while it has any. The same
+ * pill as the chip saying where the track is from — its shape, its size, its lettering.
+ */
 @Composable
 private fun TrackFxButton(fx: com.example.myapplication.data.TrackFx, live: Boolean, color: Color, onClick: () -> Unit) {
     // A broadcast's speed isn't changed: only its reverb counts.
     val speed = if (live) 1f else fx.speed
     val active = speed != 1f || fx.reverb > 0 || fx.volume != 100
+    val content = if (active) PanelColors.onAccent else color
     Surface(
         onClick = onClick,
-        shape = CircleShape,
+        shape = RoundedCornerShape(12.dp),
         color = if (active) PanelColors.accent else color.copy(alpha = 0.12f),
-        contentColor = if (active) PanelColors.onAccent else color
+        contentColor = content
     ) {
         Row(
-            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(6.dp)
+            horizontalArrangement = Arrangement.spacedBy(5.dp)
         ) {
-            Icon(Icons.Rounded.Tune, contentDescription = null, modifier = Modifier.size(18.dp))
-            Text(
+            Icon(Icons.Rounded.Tune, contentDescription = null, modifier = Modifier.size(PanelChipIconSize))
+            Kicker(
                 text = when {
                     speed != 1f -> "%.2f×".format(speed)
                     fx.volume != 100 -> "${fx.volume}%"
                     fx.reverb > 0 -> tr("Реверб")
                     else -> tr("Эффекты")
                 },
-                style = MaterialTheme.typography.labelLarge
+                color = content
             )
         }
     }

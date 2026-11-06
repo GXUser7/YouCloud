@@ -267,7 +267,6 @@ internal object English {
         put("Выбран", "Selected")
         put("Не выбран", "Not selected")
         put("YouTube · в эфире", "YouTube · live")
-        put(" · на устройстве", " · on the device")
         put("Предыдущий трек", "Previous track")
         put("Следующий трек", "Next track")
         put("Не нравится", "Dislike")
@@ -904,5 +903,6 @@ internal object English {
         put("Громкость", "Volume")
         put("Только этого трека, отдельно от громкости телефона", "This track's alone, apart from the phone's volume")
         put("Как есть", "As is")
+        put("Скачан", "Downloaded")
     }
 }
