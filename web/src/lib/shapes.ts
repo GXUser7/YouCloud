@@ -119,6 +119,17 @@ export function clipPath(name: ShapeName, size: number): string {
   return `path('${d}Z')`
 }
 
+/** For `clip-path: polygon()` on an element of any size: the shape in percentages of its box. */
+export function clipPolygon(name: ShapeName): string {
+  const values = radii(name)
+  const points: string[] = []
+  for (let i = 0; i < values.length; i++) {
+    const a = (TAU * i) / values.length - Math.PI / 2
+    points.push(`${(50 + 50 * values[i] * Math.cos(a)).toFixed(2)}% ${(50 + 50 * values[i] * Math.sin(a)).toFixed(2)}%`)
+  }
+  return `polygon(${points.join(',')})`
+}
+
 export const COVER_SHAPES: ShapeName[] = [
   'cookie9',
   'clover4',

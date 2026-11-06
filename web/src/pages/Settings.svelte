@@ -9,7 +9,7 @@
   import { accounts } from '../lib/accounts.svelte'
   import { connect, connectSoundCloud, disconnect, refreshYouTube } from '../lib/login'
   import { diagnose } from '../lib/services/youtube'
-  import { app, remember, WAVE_LOOKS, type ThemeMode } from '../lib/state.svelte'
+  import { app, PLAYER_LOOKS, remember, WAVE_LOOKS, type PlayerLook, type ThemeMode } from '../lib/state.svelte'
   import { reason, toast } from '../lib/toast.svelte'
   import Avatar from '../components/Avatar.svelte'
   import ButtonGroup from '../components/ButtonGroup.svelte'
@@ -227,6 +227,18 @@
       onchange={(v) => v && setHomeVariant(v)}
     />
     <p class="muted t-sub layout-hint">{HOME_VARIANTS.find((v) => v.value === home.variant)?.hint}</p>
+    <p class="overline label">{tr('Полноэкранный плеер')}</p>
+    <ButtonGroup
+      options={PLAYER_LOOKS.map((v) => ({ value: v.value, label: v.label }))}
+      value={app.playerLook}
+      stretch
+      onchange={(v) => {
+        if (!v) return
+        app.playerLook = v as PlayerLook
+        remember('playerLook', v)
+      }}
+    />
+    <p class="muted t-sub layout-hint">{PLAYER_LOOKS.find((v) => v.value === app.playerLook)?.hint}</p>
     <div class="toggle">
       <div>
         <span class="t-name">{tr('Цвета из обложки')}</span>

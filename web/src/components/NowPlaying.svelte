@@ -3,6 +3,8 @@
   // and the lyrics or the queue beside them — or neither, for the cover and the controls alone,
   // centred. Lyrics and «Далее» are toggles: pressed again, the column goes. Narrow, the column
   // takes the cover's place instead. Behind it all, «Волна в плеере» when it is on.
+  // That is «Классика»; the other looks picked in Settings — «Афиша», «Карусель», «Форма» — are
+  // in components/player and take the whole window in its place.
   import { flushSync } from 'svelte'
   import { fly } from 'svelte/transition'
   import { tr } from '../lib/i18n.svelte'
@@ -18,6 +20,9 @@
   import Slider from './Slider.svelte'
   import TrackMenu from './TrackMenu.svelte'
   import TrackRow from './TrackRow.svelte'
+  import CarouselPlayer from './player/CarouselPlayer.svelte'
+  import PosterPlayer from './player/PosterPlayer.svelte'
+  import ShapePlayer from './player/ShapePlayer.svelte'
 
   type Side = 'lyrics' | 'queue' | 'none'
 
@@ -98,6 +103,13 @@
 
 <svelte:window onkeydown={(e) => e.key === 'Escape' && close()} />
 
+{#if app.playerLook === 'poster'}
+  <PosterPlayer onclose={close} />
+{:else if app.playerLook === 'carousel'}
+  <CarouselPlayer onclose={close} />
+{:else if app.playerLook === 'shape'}
+  <ShapePlayer onclose={close} />
+{:else}
 <div class="np" role="dialog" aria-label={tr('Сейчас играет')}>
   {#if app.playerWave}<PlayerWave around={artEl} />{/if}
 
@@ -237,6 +249,7 @@
     {/if}
   </div>
 </div>
+{/if}
 
 <style>
   .np {

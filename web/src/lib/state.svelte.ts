@@ -58,6 +58,15 @@ export const WAVE_LOOKS = [
 ] as const
 export type WaveLook = (typeof WAVE_LOOKS)[number]['value']
 
+/** How the full player is laid out (components/NowPlaying.svelte, the others in components/player). */
+export const PLAYER_LOOKS = [
+  { value: 'classic', label: tr('Классика'), hint: tr('Обложка, управление и текст или очередь рядом') },
+  { value: 'poster', label: tr('Афиша'), hint: tr('Окно в цвете обложки, название на всю ширину') },
+  { value: 'carousel', label: tr('Карусель'), hint: tr('Очередь лентой обложек, текущая — крупно в центре') },
+  { value: 'shape', label: tr('Форма'), hint: tr('Обложка в фигуре, перемотка — кольцо вокруг неё') },
+] as const
+export type PlayerLook = (typeof PLAYER_LOOKS)[number]['value']
+
 export const app = $state({
   route: parseHash(),
   service: stored<Service>('service', 'sc'),
@@ -73,6 +82,7 @@ export const app = $state({
   playerWave: stored('playerWave', true),
   waveLook: stored<WaveLook>('waveLook', 'dunes'),
   waveHears: stored('waveHears', true),
+  playerLook: stored<PlayerLook>('playerLook', 'classic'),
   query: '',
   waveMood: stored<string | null>('waveMood', null),
   waveMode: stored<string | null>('waveMode', null),
