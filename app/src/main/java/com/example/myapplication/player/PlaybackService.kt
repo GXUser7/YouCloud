@@ -43,8 +43,9 @@ class PlaybackService : MediaLibraryService() {
     // Fetches the next tracks in the queue into the stream cache while one plays.
     private var prefetcher: StreamPrefetcher? = null
 
-    // The reverb of a track's effects, in the player's own sound chain.
+    // The reverb and the volume of a track's effects, in the player's own sound chain.
     private val reverbProcessor = ReverbAudioProcessor()
+    private val gainProcessor = GainAudioProcessor()
 
     // The crossfade between tracks and the sleep timer's fade.
     private var fades: PlaybackFades? = null
@@ -198,7 +199,7 @@ class PlaybackService : MediaLibraryService() {
                     enableAudioTrackPlaybackParams: Boolean
                 ): androidx.media3.exoplayer.audio.AudioSink =
                     androidx.media3.exoplayer.audio.DefaultAudioSink.Builder(context)
-                        .setAudioProcessorChain(androidx.media3.exoplayer.audio.DefaultAudioSink.DefaultAudioProcessorChain(reverbProcessor))
+                        .setAudioProcessorChain(androidx.media3.exoplayer.audio.DefaultAudioSink.DefaultAudioProcessorChain(reverbProcessor, gainProcessor))
                         .setEnableAudioTrackPlaybackParams(enableAudioTrackPlaybackParams)
                         .build()
             })
@@ -747,12 +748,14 @@ class PlaybackService : MediaLibraryService() {
 
     /**
      * The track playing's own effects ([com.example.myapplication.data.TrackFx]): its speed, with
-     * or without its pitch, and its reverb, worked out in the player ([ReverbAudioProcessor]).
+     * or without its pitch, its reverb and its volume, worked out in the player
+     * ([ReverbAudioProcessor], [GainAudioProcessor]).
      */
     private fun applyTrackFx(player: ExoPlayer) {
-        val sound = player.currentMediaItem?.let(::trackSoundOf) ?: TrackSound(androidx.media3.common.PlaybackParameters.DEFAULT, 0)
+        val sound = player.currentMediaItem?.let(::trackSoundOf) ?: TrackSound(androidx.media3.common.PlaybackParameters.DEFAULT, 0, 100)
         player.playbackParameters = sound.parameters
         reverbProcessor.amount = sound.reverb
+        gainProcessor.percent = sound.volume
     }
 
     /** How [item] is played by its own effects: also the crossfade's, for the track coming in. */
@@ -764,7 +767,7 @@ class PlaybackService : MediaLibraryService() {
         // for more, slowed down it fell further and further behind.
         val live = item.localConfiguration?.uri?.scheme == "ytlive"
         val speed = if (live) 1f else fx.speed
-        return TrackSound(androidx.media3.common.PlaybackParameters(speed, if (fx.keepPitch) 1f else speed), fx.reverb)
+        return TrackSound(androidx.media3.common.PlaybackParameters(speed, if (fx.keepPitch) 1f else speed), fx.reverb, fx.volume)
     }
 
     private fun initEqualizer(owner: String, audioSessionId: Int) {

@@ -496,16 +496,31 @@ class MusicViewModel(
     private val _isLoggingIn = MutableStateFlow(false)
     val isLoggingIn = _isLoggingIn.asStateFlow()
 
+    // SoundCloud's sign-in, open: a window over the app, as Yandex's and YouTube's are, and as
+    // easily closed. SoundCloud is a service like the others — the app no longer waits behind it.
+    private val _soundCloudLoginOpen = MutableStateFlow(false)
+    val soundCloudLoginOpen = _soundCloudLoginOpen.asStateFlow()
+
     private val _loginError = MutableStateFlow<String?>(null)
     val loginError = _loginError.asStateFlow()
 
-    val isLoggedOut = combine(
+    /**
+     * Signed in to SoundCloud: its home, its search and its likes are offered. Not signed in, the
+     * app goes on without it — with the other services, and with what is on the phone.
+     */
+    val soundCloudConnected: StateFlow<Boolean> = combine(
         settingsRepository.clientId,
         settingsRepository.oauthToken,
         settingsRepository.userId
     ) { cId, token, uId ->
-        cId.isBlank() || token.isBlank() || uId.isBlank()
-    }
+        cId.isNotBlank() && token.isNotBlank() && uId.isNotBlank()
+    }.stateIn(
+        viewModelScope,
+        SharingStarted.Eagerly,
+        settingsRepository.clientId.value.isNotBlank() &&
+            settingsRepository.oauthToken.value.isNotBlank() &&
+            settingsRepository.userId.value.isNotBlank()
+    )
 
     private val _mixSection = MutableStateFlow<MixSection?>(null)
     val mixSection = _mixSection.asStateFlow()
@@ -566,6 +581,10 @@ class MusicViewModel(
     private val offlineVideos = com.example.myapplication.data.OfflineVideoStore(context)
     private val extrasQueue = kotlinx.coroutines.channels.Channel<SoundCloudTrack>(kotlinx.coroutines.channels.Channel.UNLIMITED)
     private val extrasQueued = java.util.concurrent.ConcurrentHashMap.newKeySet<Long>()
+
+    // Bumped as the phone comes onto a network (Wi-Fi after mobile data, say): what waits for one
+    // looks again. Above init, which reads it.
+    private val networkChanges = MutableStateFlow(0)
 
     // Tracks looked up lately, with or without a video, so reopening the player doesn't ask again.
     private val videoLookups = java.util.concurrent.ConcurrentHashMap<Long, Pair<TrackVideo?, Long>>()
@@ -681,7 +700,15 @@ class MusicViewModel(
             }
         }
         viewModelScope.launch {
-            combine(favorites, playlistsRepository.playlists) { saved, lists ->
+            combine(
+                favorites,
+                playlistsRepository.playlists,
+                // Videos let come over mobile data, or the phone on Wi-Fi again: the ones left
+                // for want of it come now.
+                settingsRepository.videoDownload,
+                settingsRepository.videoDownloadAnyNetwork,
+                networkChanges
+            ) { saved, lists, _, _, _ ->
                 (saved + lists.flatMap { it.tracks })
                     .filter { it.downloadState == DownloadState.DOWNLOADED }
                     .distinctBy { it.id }
@@ -1324,7 +1351,7 @@ class MusicViewModel(
         searchJob = viewModelScope.launch {
             delay(350)
             if (settingsRepository.clientId.value.isBlank()) {
-                _errorMessage.value = tr("Укажите SoundCloud client_id в настройках")
+                _errorMessage.value = tr("Чтобы искать, подключите SoundCloud, Яндекс Музыку или YouTube Music в настройках")
                 clearSoundCloudSearchResults()
                 return@launch
             }
@@ -1631,7 +1658,8 @@ class MusicViewModel(
                 val serviceUrl = serviceStreamUrl(track)
                 val clientId = settingsRepository.clientId.value
                 if (clientId.isBlank() && serviceUrl == null) {
-                    _errorMessage.value = tr("Укажите SoundCloud client_id в настройках")
+                    // Not signed in to SoundCloud: its tracks play from what is downloaded only.
+                    _errorMessage.value = tr("Войдите в SoundCloud в настройках, чтобы слушать этот трек")
                     return@launch
                 }
                 val streamUrl = if (serviceUrl != null) {
@@ -3268,6 +3296,8 @@ class MusicViewModel(
      */
     private fun flushPendingSoundCloudLikes(askForCaptcha: Boolean = false) {
         if (likeFlushJob?.isActive == true) return
+        // Signed out of SoundCloud: they wait for a sign-in.
+        if (settingsRepository.oauthTokenValue().isBlank()) return
         if (settingsRepository.pendingSoundCloudLikes().isEmpty()) {
             finishLikesPush()
             return
@@ -3633,8 +3663,22 @@ class MusicViewModel(
         }
     }
 
+    /** SoundCloud's sign-in, for a first sign-in or another after the session ran out. */
+    fun openSoundCloudLogin() {
+        _loginError.value = null
+        _soundCloudLoginOpen.value = true
+    }
+
+    /** Closed without signing in: everything stays as it was, signed in or not. */
+    fun cancelSoundCloudLogin() {
+        _soundCloudLoginOpen.value = false
+        _loginError.value = null
+    }
+
     fun onCredentialsCaptured(capturedClientId: String, capturedOauthToken: String) {
-        if (_isLoggingIn.value) return
+        // The page goes on sending signed requests after the first: only the first, and only
+        // while the sign-in is open, counts.
+        if (_isLoggingIn.value || !_soundCloudLoginOpen.value) return
         _isLoggingIn.value = true
         _loginError.value = null
 
@@ -3651,6 +3695,7 @@ class MusicViewModel(
                 settingsRepository.saveUserId(userIdString)
 
                 _isLoggingIn.value = false
+                _soundCloudLoginOpen.value = false
                 // Signed in afresh: whatever the old session's failures had set — the "sign in
                 // again" warning, the recovery ladder — is over, and home loads with the new one.
                 onAuthRecovered()
@@ -3662,6 +3707,7 @@ class MusicViewModel(
         }
     }
 
+    /** Signed out of SoundCloud: the app goes on with the other services and what is downloaded. */
     fun logout() {
         viewModelScope.launch {
             authRecoveryJob?.cancel()
@@ -3708,6 +3754,7 @@ class MusicViewModel(
     private val networkBack by lazy {
         object : android.net.ConnectivityManager.NetworkCallback() {
             override fun onAvailable(network: android.net.Network) {
+                networkChanges.update { it + 1 }
                 viewModelScope.launch { reloadMissingHome() }
             }
         }
@@ -4237,6 +4284,9 @@ class MusicViewModel(
      */
     private fun recoverFromAuthFailure(force: Boolean = false) {
         if (authRecoveryJob?.isActive == true) return
+        // Not signed in to SoundCloud at all: there is no session to recover, nor to ask to sign
+        // in again — a request turned away without one is only that.
+        if (settingsRepository.oauthTokenValue().isBlank()) return
 
         val now = System.currentTimeMillis()
         if (!force) {
@@ -4919,7 +4969,7 @@ class MusicViewModel(
                 } else if (isYandex) {
                     _errorMessage.value = tr("Укажите рабочий токен Яндекс Музыки в настройках.")
                 } else if (clientId.isBlank()) {
-                    _errorMessage.value = tr("Укажите SoundCloud client_id в настройках для загрузки трека")
+                    _errorMessage.value = tr("Войдите в SoundCloud в настройках, чтобы скачать трек")
                 } else {
                     _errorMessage.value = tr("Поток для загрузки не нашёлся.")
                 }
@@ -5029,15 +5079,18 @@ class MusicViewModel(
     /**
      * What a downloaded track needs to be itself offline, besides its sound: its synced lyrics
      * (Yandex keeps them on disk once fetched) and its video, the one the player would find for
-     * it. Videos only off metered networks, and only when the player shows them at all; a track
-     * that has none is marked, so it isn't looked up on every start.
+     * it. Videos only when the player shows them at all, and only over Wi-Fi (off metered
+     * networks) unless the listener lets them come over any; a track that has none is marked, so
+     * it isn't looked up on every start. One left for want of Wi-Fi is looked into again once the
+     * phone is on it (see [networkChanges]).
      */
     private suspend fun downloadExtras(track: SoundCloudTrack) {
         val urn = track.urn.orEmpty()
         if (track.liveVideoId == null) {
             (if (urn.startsWith("yandex:track:")) lyricsRepository.syncedLyrics(urn) else null) ?: lrcLib.syncedLyrics(track)
         }
-        if (!settingsRepository.playerVideos.value || !settingsRepository.videoDownload.value || isNetworkMetered()) return
+        if (!settingsRepository.playerVideos.value || !settingsRepository.videoDownload.value) return
+        if (!settingsRepository.videoDownloadAnyNetwork.value && isNetworkMetered()) return
         // Neither kind of video wanted: nothing to look for, and nothing to mark as not found.
         if (!settingsRepository.videoYouTube.value && !settingsRepository.videoYandex.value) return
         val video = findOnlineTrackVideo(track)

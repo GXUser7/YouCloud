@@ -24,8 +24,8 @@ import kotlin.math.abs
 import kotlin.math.cos
 import kotlin.math.sin
 
-/** How a track sounds by its own effects: its speed and pitch, and its reverb (0–100). */
-internal class TrackSound(val parameters: PlaybackParameters, val reverb: Int)
+/** How a track sounds by its own effects: its speed and pitch, its reverb (0–100) and its volume (percent). */
+internal class TrackSound(val parameters: PlaybackParameters, val reverb: Int, val volume: Int)
 
 /**
  * The player's volume over time: the crossfade between tracks, and the sleep timer's fade.
@@ -62,6 +62,7 @@ internal class PlaybackFades(
     private val handler = Handler(Looper.getMainLooper())
     private val scope = MainScope()
     private val helperReverb = ReverbAudioProcessor()
+    private val helperGain = GainAudioProcessor()
     private var helper: ExoPlayer? = null
 
     private enum class Phase {
@@ -265,6 +266,7 @@ internal class PlaybackFades(
         val sound = soundOf(next)
         player.playbackParameters = sound.parameters
         helperReverb.amount = sound.reverb
+        helperGain.percent = sound.volume
         player.setMediaItem(next, 0L)
         player.volume = 0f
         player.playWhenReady = false
@@ -549,7 +551,7 @@ internal class PlaybackFades(
                 enableFloatOutput: Boolean,
                 enableAudioTrackPlaybackParams: Boolean
             ): AudioSink = DefaultAudioSink.Builder(context)
-                .setAudioProcessorChain(DefaultAudioSink.DefaultAudioProcessorChain(helperReverb))
+                .setAudioProcessorChain(DefaultAudioSink.DefaultAudioProcessorChain(helperReverb, helperGain))
                 .setEnableAudioTrackPlaybackParams(enableAudioTrackPlaybackParams)
                 .build()
         })

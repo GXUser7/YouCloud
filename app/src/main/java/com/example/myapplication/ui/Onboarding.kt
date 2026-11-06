@@ -941,7 +941,7 @@ private fun DoneStep(onNext: () -> Unit) {
     )
 }
 
-// ----------------------------------------------------------------------------- After signing in
+// ----------------------------------------------------------------------------- The setup
 
 /** A service the setup offers to connect: its name, what it brings, and the way to sign in. */
 @androidx.compose.runtime.Immutable
@@ -970,9 +970,9 @@ internal class HeroChoices(
 private enum class SetupStep { Services, Home }
 
 /**
- * Once signed in to SoundCloud: the other services, each a tap from its sign-in, and then what each
- * service's home opens on — the shelf in its big carousel, «Моя форма» or another. Asked for again
- * from the settings ([homeOnly]), the choice of the carousels alone.
+ * The first time the app opens: the services, each a tap from its sign-in — none of them a must —
+ * and then what each service's home opens on: the shelf in its big carousel, «Моя форма» or
+ * another. Asked for again from the settings ([homeOnly]), the choice of the carousels alone.
  */
 @Composable
 internal fun HomeSetupOverlay(
@@ -1010,8 +1010,8 @@ internal fun HomeSetupOverlay(
 private fun ServicesStep(services: List<SetupService>, onNext: () -> Unit) {
     StepLayout(
         kicker = tr("Сервисы"),
-        title = tr("Что ещё подключить?"),
-        text = tr("SoundCloud уже здесь. Яндекс Музыку и YouTube Music можно подключить сейчас — или потом, в настройках."),
+        title = tr("Что подключить?"),
+        text = tr("Подключите сервисы, которыми пользуетесь, — сейчас или потом, в настройках. Ни один не обязателен: скачанное играет и без них."),
         button = tr("Дальше"),
         onNext = onNext,
         demoAlignment = Alignment.BottomCenter,

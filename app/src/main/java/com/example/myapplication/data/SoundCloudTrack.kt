@@ -25,6 +25,16 @@ data class SoundCloudTrack(
     val media: SoundCloudMedia? = null
 )
 
+/**
+ * Every credited artist, by name, as one line ("A, B, C"); the uploader where the track names no
+ * list. Null when it names nobody at all.
+ */
+val SoundCloudTrack.artistNames: String?
+    get() = artists?.mapNotNull { it.username?.takeIf(String::isNotBlank) }
+        ?.takeIf { it.isNotEmpty() }
+        ?.joinToString(", ")
+        ?: user?.username?.takeIf(String::isNotBlank)
+
 data class SoundCloudUser(
     val id: Long? = null,
     val username: String? = null,
