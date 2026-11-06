@@ -47,8 +47,24 @@ class PlaybackService : MediaLibraryService() {
     private val reverbProcessor = ReverbAudioProcessor()
     private val gainProcessor = GainAudioProcessor()
 
+    // Lossy tracks' lost top, brought back by a model — first in the chain, before the effects.
+    private val restoreProcessor = com.example.myapplication.player.restore.RestoreAudioProcessor { on ->
+        com.example.myapplication.player.restore.RestoreState.report("main", on)
+    }
+
     // The crossfade between tracks and the sleep timer's fade.
     private var fades: PlaybackFades? = null
+
+    // Playing on a TV over Google Cast, and the phone's own player, which the session hands the
+    // queue back to afterwards.
+    private var cast: com.example.myapplication.player.cast.CastSupport? = null
+    private var localPlayer: ExoPlayer? = null
+
+    private val restoreVerdicts by lazy { com.example.myapplication.player.restore.RestoreVerdicts(this) }
+
+    // Set while the Cast server resolves a track: SoundCloud's single-file stream is preferred
+    // then, which a TV can seek in, over the segmented one the phone plays.
+    private val castResolving = ThreadLocal<Boolean>()
 
     // Every track heard, for "Итоги".
     private var playLog: PlayLog.Tracker? = null
@@ -66,6 +82,12 @@ class PlaybackService : MediaLibraryService() {
         }
         if (key == KEY_CROSSFADE_SECONDS) {
             fades?.ensureTicking()
+            return@OnSharedPreferenceChangeListener
+        }
+        if (key == com.example.myapplication.player.restore.RestoreModels.KEY_ENABLED ||
+            key == com.example.myapplication.player.restore.RestoreModels.KEY_STRONG
+        ) {
+            applyRestore()
             return@OnSharedPreferenceChangeListener
         }
         for (eq in equalizers.values) {
@@ -199,7 +221,7 @@ class PlaybackService : MediaLibraryService() {
                     enableAudioTrackPlaybackParams: Boolean
                 ): androidx.media3.exoplayer.audio.AudioSink =
                     androidx.media3.exoplayer.audio.DefaultAudioSink.Builder(context)
-                        .setAudioProcessorChain(androidx.media3.exoplayer.audio.DefaultAudioSink.DefaultAudioProcessorChain(reverbProcessor, gainProcessor))
+                        .setAudioProcessorChain(androidx.media3.exoplayer.audio.DefaultAudioSink.DefaultAudioProcessorChain(restoreProcessor, reverbProcessor, gainProcessor))
                         .setEnableAudioTrackPlaybackParams(enableAudioTrackPlaybackParams)
                         .build()
             })
@@ -237,6 +259,8 @@ class PlaybackService : MediaLibraryService() {
                 prefetchNextYouTubeTrack(player)
                 applyTrackFx(player)
                 updateButtons()
+                // Heard before: restored from its first second, as it was then.
+                mediaItem?.mediaId?.let(restoreVerdicts::get)?.let(restoreProcessor::hint)
             }
         })
         prefetcher = StreamPrefetcher(this, player, resolver).also(player::addListener)
@@ -270,6 +294,17 @@ class PlaybackService : MediaLibraryService() {
             onHelperSession = { initEqualizer(EQ_HELPER, it) }
         )
         scope.launch { SessionBridge.crossfadeOverride.collect { fades?.ensureTicking() } }
+        applyRestore()
+        // What restoration made of each track, kept for the next time it plays: only while the
+        // track is well before its end, when what is listened to is surely this track's.
+        val main = android.os.Handler(android.os.Looper.getMainLooper())
+        restoreProcessor.onVerdict = { cutoff ->
+            main.post {
+                val id = player.currentMediaItem?.mediaId
+                val left = player.duration - player.currentPosition
+                if (id != null && player.duration > 0 && left > 4_000) restoreVerdicts.put(id, cutoff)
+            }
+        }
 
         // A stream that breaks off over a slow connection (a VPN's, say) is tried again, a little
         // later each time, rather than the player stopping at an error until touched. Preparing
@@ -314,6 +349,32 @@ class PlaybackService : MediaLibraryService() {
         mediaSession = MediaLibraryService.MediaLibrarySession.Builder(this, player, librarySessionCallback)
             .setSessionActivity(pendingIntent)
             .build()
+        localPlayer = player
+        cast = com.example.myapplication.player.cast.CastSupport(
+            context = this,
+            local = player,
+            session = { mediaSession },
+            server = com.example.myapplication.player.cast.CastStreamServer(
+                context = this,
+                resolve = { spec ->
+                    castResolving.set(true)
+                    try {
+                        resolver.resolveDataSpec(spec)
+                    } finally {
+                        castResolving.set(false)
+                    }
+                },
+                dataSources = baseFactory
+            )
+        ).also { it.start() }
+        // Where the music is heard, as picked in the track's menu: the phone, or a device by name.
+        scope.launch {
+            AudioOutputs.preferredDeviceId.collect { id ->
+                val device = AudioOutputs.deviceInfo(this@PlaybackService, id)
+                player.setPreferredAudioDevice(device)
+                fades?.preferredAudioDevice = device
+            }
+        }
         scope.launch {
             kotlinx.coroutines.flow.combine(SessionBridge.liked, SessionBridge.canDislike) { _, _ -> }.collect { updateButtons() }
         }
@@ -614,6 +675,7 @@ class PlaybackService : MediaLibraryService() {
 
         val clientId = preferences.getString("soundcloud_client_id", "") ?: ""
         val oauthToken = preferences.getString("soundcloud_oauth_token", "") ?: ""
+        val forCast = castResolving.get() == true
 
         return kotlinx.coroutines.runBlocking {
             kotlinx.coroutines.withTimeout(20_000L) {
@@ -648,7 +710,11 @@ class PlaybackService : MediaLibraryService() {
                 val playbackResolver = com.example.myapplication.data.SoundCloudPlaybackResolver(service)
                 val currentClientId = preferences.getString("soundcloud_client_id", "") ?: clientId
                 val track = service.getTrack(trackId, currentClientId)
-                playbackResolver.resolve(track, preferences.getString("soundcloud_client_id", "") ?: currentClientId)
+                playbackResolver.resolve(
+                    track,
+                    preferences.getString("soundcloud_client_id", "") ?: currentClientId,
+                    progressiveFirst = forCast
+                )
             } catch (e: Exception) {
                 Log.e("PlaybackService", "Error resolving track online: $trackId", e)
                 null
@@ -747,6 +813,24 @@ class PlaybackService : MediaLibraryService() {
     }
 
     /**
+     * Whether lossy tracks are restored, and by which model: the strong one once it is downloaded
+     * and chosen, the light one otherwise. Models are read off the main thread; until then the
+     * sound plays as it is.
+     */
+    private fun applyRestore() {
+        val enabled = preferences.getBoolean(com.example.myapplication.player.restore.RestoreModels.KEY_ENABLED, true)
+        val strong = preferences.getBoolean(com.example.myapplication.player.restore.RestoreModels.KEY_STRONG, false)
+        val processors = listOfNotNull(restoreProcessor, fades?.helperRestore)
+        processors.forEach { it.enabled = enabled }
+        if (!enabled) return
+        Thread {
+            val models = com.example.myapplication.player.restore.RestoreModels
+            val model = (if (strong) models.strong(this) else null) ?: models.light(this)
+            processors.forEach { it.model = model }
+        }.start()
+    }
+
+    /**
      * The track playing's own effects ([com.example.myapplication.data.TrackFx]): its speed, with
      * or without its pitch, its reverb and its volume, worked out in the player
      * ([ReverbAudioProcessor], [GainAudioProcessor]).
@@ -811,6 +895,8 @@ class PlaybackService : MediaLibraryService() {
         nowPlaying = null
         fades?.release()
         fades = null
+        cast?.release()
+        cast = null
         youTubePrefetch.shutdownNow()
         prefetcher?.release()
         prefetcher = null
@@ -818,9 +904,11 @@ class PlaybackService : MediaLibraryService() {
         equalizers.values.forEach { it.release() }
         equalizers.clear()
         mediaSession?.run {
-            player.release()
+            if (player !== localPlayer) player.release()
             release()
         }
+        localPlayer?.release()
+        localPlayer = null
         mediaSession = null
         super.onDestroy()
     }

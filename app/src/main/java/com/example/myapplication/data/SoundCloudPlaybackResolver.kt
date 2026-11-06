@@ -3,7 +3,8 @@ package com.example.myapplication.data
 class SoundCloudPlaybackResolver(
     private val service: SoundCloudService
 ) {
-    suspend fun resolve(track: SoundCloudTrack, clientId: String): String? {
+    /** [progressiveFirst]: a single file over a segmented stream, when there is one — for a TV, which can seek in it. */
+    suspend fun resolve(track: SoundCloudTrack, clientId: String, progressiveFirst: Boolean = false): String? {
         if (track.streamable != true || track.policy == "BLOCK" || track.policy == "SNIP") {
             return null
         }
@@ -12,7 +13,7 @@ class SoundCloudPlaybackResolver(
         val transcoding = track.media
             ?.transcodings
             ?.filter(::isPlayable)
-            ?.minByOrNull(::priority)
+            ?.minByOrNull { if (progressiveFirst && it.format?.protocol == "progressive") -1 else priority(it) }
             ?: return null
 
         return service.resolveTranscoding(

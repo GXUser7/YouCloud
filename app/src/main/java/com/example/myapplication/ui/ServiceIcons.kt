@@ -20,6 +20,10 @@ object ServiceIcons {
     // The menu of friends, the profile and the settings on home's toolbar: three dots one over
     // another, large, on nothing — the menu says what is in it.
     val Menu: ImageVector by lazy { icon("Меню", MENU) }
+    // A downloaded track: on the phone. A wide phone, filled, with a bold arrow down into it and
+    // the tray it lands on cut out — as heavy as the chip's capitals beside it, where the thin
+    // check over a line it replaces was lost.
+    val OnPhone: ImageVector by lazy { icon("Скачан", ON_PHONE, PathFillType.EvenOdd) }
 
     private fun icon(name: String, path: String, fillType: PathFillType = PathFillType.NonZero): ImageVector =
         ImageVector.Builder(
@@ -37,6 +41,9 @@ object ServiceIcons {
     private const val MENU = "M14.3 4.8A2.3 2.3 0 1 0 9.7 4.8A2.3 2.3 0 1 0 14.3 4.8Z" +
         "M14.3 12A2.3 2.3 0 1 0 9.7 12A2.3 2.3 0 1 0 14.3 12Z" +
         "M14.3 19.2A2.3 2.3 0 1 0 9.7 19.2A2.3 2.3 0 1 0 14.3 19.2Z"
+    private const val ON_PHONE = "M8,1.5H16A4,4 0 0 1 20,5.5V18.5A4,4 0 0 1 16,22.5H8A4,4 0 0 1 4,18.5V5.5A4,4 0 0 1 8,1.5Z" +
+        "M10.7,4.8H13.3V11.2H16.4L12,15.8L7.6,11.2H10.7Z" +
+        "M8.4,18H15.6A0.9,0.9 0 0 1 15.6,19.8H8.4A0.9,0.9 0 0 1 8.4,18Z"
     private const val YOUTUBE_MUSIC = "M12 0C5.376 0 0 5.376 0 12s5.376 12 12 12 12-5.376 12-12S18.624 0 12 0zm0 19.104c-3.924 0-7.104-3.18-7.104-7.104S8.076 4.896 12 4.896s7.104 3.18 7.104 7.104-3.18 7.104-7.104 7.104zm0-13.332c-3.432 0-6.228 2.796-6.228 6.228S8.568 18.228 12 18.228s6.228-2.796 6.228-6.228S15.432 5.772 12 5.772zM9.684 15.54V8.46L15.816 12l-6.132 3.54z"
 }
 

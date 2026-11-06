@@ -34,6 +34,11 @@
         android:supportsRtl="true"
         android:usesCleartextTraffic="true"
         android:theme="@style/Theme.MyApplication">
+        <!-- Google Cast: the receiver and what the framework shows, see CastOptionsProvider. -->
+        <meta-data
+            android:name="com.google.android.gms.cast.framework.OPTIONS_PROVIDER_CLASS_NAME"
+            android:value="com.example.myapplication.player.cast.CastOptionsProvider" />
+
 
         <!-- Tells Android Auto this app provides media; without it the app never appears in the car. -->
         <meta-data

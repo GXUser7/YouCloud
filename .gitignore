@@ -30,3 +30,6 @@ Thumbs.db
 /Screenshots/
 .claude/launch.json
 .github/workflows/build-apk.yml
+
+# Python caches of tools/
+__pycache__/
