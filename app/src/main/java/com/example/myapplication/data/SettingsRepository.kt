@@ -154,15 +154,9 @@ class SettingsRepository(
         preferences.edit().putBoolean(KEY_VIDEO_YANDEX, enabled).apply()
     }
 
-    // The glow around a video or the cover in the player, filling its background behind the panel.
-    val videoGlow = MutableStateFlow(preferences.getBoolean(KEY_VIDEO_GLOW, true))
-
-    fun setVideoGlow(enabled: Boolean) {
-        videoGlow.value = enabled
-        preferences.edit().putBoolean(KEY_VIDEO_GLOW, enabled).apply()
-    }
-
-    // How that glow is made, for a video and for the cover each.
+    // How the glow around a video or the cover in the player is made, filling its background
+    // behind the panel, for a video and for the cover each. The glow itself is always there: the
+    // player without it, the cover from edge to edge, is gone.
     val videoGlowStyle = MutableStateFlow(glowStyle(KEY_VIDEO_GLOW_STYLE))
     val coverGlowStyle = MutableStateFlow(glowStyle(KEY_COVER_GLOW_STYLE))
 
@@ -338,6 +332,14 @@ class SettingsRepository(
         preferences.edit().putBoolean(KEY_VIDEO_DOWNLOAD, enabled).apply()
     }
 
+    // Those videos over any network, mobile data too; off, only over Wi-Fi (an unmetered one).
+    val videoDownloadAnyNetwork = MutableStateFlow(preferences.getBoolean(KEY_VIDEO_DOWNLOAD_ANY_NETWORK, false))
+
+    fun setVideoDownloadAnyNetwork(any: Boolean) {
+        videoDownloadAnyNetwork.value = any
+        preferences.edit().putBoolean(KEY_VIDEO_DOWNLOAD_ANY_NETWORK, any).apply()
+    }
+
     // Asking GitHub for a new version twice a day; see UpdateRepository.
     val updateAutoCheck = MutableStateFlow(preferences.getBoolean(KEY_UPDATE_AUTO_CHECK, true))
 
@@ -509,7 +511,6 @@ class SettingsRepository(
         const val KEY_PLAYER_VIDEOS = "player_videos"
         const val KEY_VIDEO_YOUTUBE = "video_youtube"
         const val KEY_VIDEO_YANDEX = "video_yandex"
-        const val KEY_VIDEO_GLOW = "video_glow"
         const val KEY_VIDEO_GLOW_STYLE = "video_glow_style"
         const val KEY_YANDEX_WAVE_HEARD = "yandex_wave_heard"
         const val KEY_YANDEX_WAVE_SESSION = "yandex_wave_session"
@@ -530,6 +531,7 @@ class SettingsRepository(
         const val KEY_YT_ARTIST_SHOW_ALL = "yt_artist_show_all"
         const val KEY_COVER_GLOW_STYLE = "cover_glow_style"
         const val KEY_VIDEO_DOWNLOAD = "video_download"
+        const val KEY_VIDEO_DOWNLOAD_ANY_NETWORK = "video_download_any_network"
         const val KEY_PLAYER_COVER_COLORS = "player_cover_colors"
         const val KEY_UPDATE_AUTO_CHECK = "update_auto_check"
         const val KEY_LAST_UPDATE_CHECK = "last_update_check"

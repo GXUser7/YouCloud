@@ -142,6 +142,7 @@ import com.example.myapplication.data.isYtLikedMusic
 import com.example.myapplication.data.youTubeTrackId
 import com.example.myapplication.data.liveVideoId
 import com.example.myapplication.data.youTubeVideoId
+import com.example.myapplication.data.artistNames
 import androidx.compose.material.icons.filled.SmartDisplay
 import androidx.compose.material.icons.filled.OndemandVideo
 import androidx.compose.material.icons.filled.Videocam
@@ -242,7 +243,6 @@ import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.rememberModalBottomSheetState
 import com.example.myapplication.ui.theme.AppShapes
 import com.example.myapplication.ui.theme.AppTheme
-import com.example.myapplication.ui.theme.SoundCloudBrandSource
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.DisposableEffect
@@ -426,7 +426,9 @@ fun MusicScreen(viewModel: MusicViewModel) {
     // How far search's dock (the field, the services) has gone down out of the way of the results,
     // 0 to 1: the mini player standing on it goes down with it (see SearchDockHide).
     val searchDockHidden = remember { Animatable(0f) }
-    val isLoggedOut by viewModel.isLoggedOut.collectAsState(initial = false)
+    // Signed in to SoundCloud: no longer what the app waits behind, a service like the others.
+    val soundCloudConnected by viewModel.soundCloudConnected.collectAsState()
+    val soundCloudLoginOpen by viewModel.soundCloudLoginOpen.collectAsState()
     val tracks by viewModel.tracks.collectAsState()
     val searchQuery by viewModel.searchQuery.collectAsState()
     // Looked up by the progress bars themselves as they draw: see [DownloadProgressOf].
@@ -545,7 +547,6 @@ fun MusicScreen(viewModel: MusicViewModel) {
     val freeShelfSwipe by viewModel.settingsRepo.freeShelfSwipe.collectAsState()
     androidx.compose.runtime.SideEffect { ShelfSwipe.free = freeShelfSwipe }
     val playerCoverColors by viewModel.settingsRepo.playerCoverColors.collectAsState()
-    val videoGlow by viewModel.settingsRepo.videoGlow.collectAsState()
     val videoGlowStyle by viewModel.settingsRepo.videoGlowStyle.collectAsState()
     val coverGlowStyle by viewModel.settingsRepo.coverGlowStyle.collectAsState()
 
@@ -615,15 +616,15 @@ fun MusicScreen(viewModel: MusicViewModel) {
         }
     }
 
-    BackHandler(enabled = selectedTrack != null && !isLoggedOut) {
+    BackHandler(enabled = selectedTrack != null) {
         viewModel.closeTrack()
     }
 
-    BackHandler(enabled = selectedMix != null && selectedTrack == null && !isLoggedOut) {
+    BackHandler(enabled = selectedMix != null && selectedTrack == null) {
         viewModel.closeMix()
     }
 
-    BackHandler(enabled = selectedTrack == null && selectedMix == null && screen != AppScreen.HOME && !isLoggedOut) {
+    BackHandler(enabled = selectedTrack == null && selectedMix == null && screen != AppScreen.HOME) {
         when (screen) {
             AppScreen.SEARCH -> if (searchOpenedPlaylist != null) {
                 viewModel.closeSearchPlaylist()
@@ -655,9 +656,12 @@ fun MusicScreen(viewModel: MusicViewModel) {
     // all). The backdrop itself is under the window, and glass opens down to it (see frosted).
     val screensFrost = rememberFrostSource()
     Box(modifier = Modifier.fillMaxSize()) {
-        // The full player is opaque, and so is the sign-in screen; nothing behind them needs a
-        // frame, or the accelerometer.
-        ExpressiveBackground(motionEnabled = backgroundMotion, animated = selectedTrack == null && !isLoggedOut && !playerCovers)
+        // The full player is opaque; nothing behind it needs a frame, or the accelerometer.
+        ExpressiveBackground(motionEnabled = backgroundMotion, animated = selectedTrack == null && !playerCovers)
+
+        if (soundCloudLoginOpen) {
+            SoundCloudLoginDialog(viewModel = viewModel, onDismiss = viewModel::cancelSoundCloudLogin)
+        }
 
         yandexLoginUrl?.let { url ->
             YandexLoginDialog(
@@ -716,9 +720,7 @@ fun MusicScreen(viewModel: MusicViewModel) {
                 }
             )
         }
-        if (isLoggedOut) {
-            SoundCloudLoginScreen(viewModel = viewModel)
-        } else androidx.compose.runtime.CompositionLocalProvider(
+        androidx.compose.runtime.CompositionLocalProvider(
             LocalAlbumLibrary provides albumLibrary,
             LocalFrostSources provides emptyList(),
             LocalNowPlaying provides NowPlaying(isPlaying, playingFrom, currentTrackId),
@@ -752,6 +754,7 @@ fun MusicScreen(viewModel: MusicViewModel) {
                             ytShelves = ytHome,
                             ytConnected = ytMusicAccount != null,
                             yandexConnected = hasYandexToken,
+                            soundCloudConnected = soundCloudConnected,
                             ytLoading = ytHomeLoading,
                             ytError = ytHomeError,
                             onOpenYtSet = { set ->
@@ -805,7 +808,7 @@ fun MusicScreen(viewModel: MusicViewModel) {
                             onCreatePlaylist = viewModel::createPlaylist,
                             onRelogin = {
                                 haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                viewModel.logout()
+                                viewModel.openSoundCloudLogin()
                             },
                             onAutoRefreshClientId = viewModel::tryAutoRefreshClientId,
                             selectedTab = homeSelectedTab,
@@ -913,12 +916,13 @@ fun MusicScreen(viewModel: MusicViewModel) {
             val searchPage: @Composable () -> Unit = {
                 val searchSource by viewModel.searchSource.collectAsState()
                 val ytSearch by viewModel.ytSearch.collectAsState()
-                // SoundCloud always; the others once connected in settings.
+                // Each service once connected in settings, SoundCloud as the others. None at all:
+                // SoundCloud's page, which says to connect one.
                 val searchSources = buildList {
-                    add(SearchSource.SOUNDCLOUD)
+                    if (soundCloudConnected) add(SearchSource.SOUNDCLOUD)
                     if (hasYandexToken) add(SearchSource.YANDEX)
                     if (ytMusicAccount != null) add(SearchSource.YOUTUBE)
-                }
+                }.ifEmpty { listOf(SearchSource.SOUNDCLOUD) }
                 val yandexSearchQuery by viewModel.yandexSearchQuery.collectAsState()
                 val yandexTracks by viewModel.yandexTracks.collectAsState()
                 val yandexLoading by viewModel.yandexLoading.collectAsState()
@@ -1152,7 +1156,13 @@ fun MusicScreen(viewModel: MusicViewModel) {
                                 haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                                 viewModel.closeSettings()
                             },
-                            onRelogin = {
+                            soundCloudConnected = soundCloudConnected,
+                            soundCloudNeedsRelogin = needsRelogin,
+                            onSoundCloudLoginClick = {
+                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                viewModel.openSoundCloudLogin()
+                            },
+                            onSoundCloudLogoutClick = {
                                 haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                                 viewModel.logout()
                             },
@@ -1504,7 +1514,8 @@ fun MusicScreen(viewModel: MusicViewModel) {
                 Box(modifier = glassFading()) {
                 PlayerBar(
                     title = currentTrackTitle.orEmpty(),
-                    artist = currentPlayingTrack?.user?.username.orEmpty(),
+                    // Every credited artist, as the player shows them: it was only the first.
+                    artist = currentPlayingTrack?.artistNames.orEmpty(),
                     artworkUrl = currentPlayingTrack?.artworkUrl,
                     isPlaying = isPlaying,
                     progress = {
@@ -1569,7 +1580,6 @@ fun MusicScreen(viewModel: MusicViewModel) {
                         video = trackVideo?.takeIf { it.trackId == track.id },
                         upcomingVideo = pendingTrackVideo?.takeIf { it.trackId == track.id },
                         livePosition = viewModel::livePositionMs,
-                        videoGlow = videoGlow,
                         videoGlowStyle = videoGlowStyle,
                         coverGlowStyle = coverGlowStyle,
                         hasNeighbourTrack = viewModel::hasNeighbourTrack,
@@ -1632,17 +1642,24 @@ fun MusicScreen(viewModel: MusicViewModel) {
         }
     }
 
-    // Once signed in to SoundCloud (and whenever asked for again in settings): the other services,
-    // each a tap from its sign-in, and what each service's home opens on.
+    // The first time the app opens (and whenever asked for again in settings): the services, each a
+    // tap from its sign-in — none of them a must, SoundCloud no more than the others — and what each
+    // service's home opens on.
     val homeSetupDone by viewModel.settingsRepo.homeSetupDone.collectAsState()
     val homeChoicesOpen by viewModel.settingsRepo.homeChoicesOpen.collectAsState()
     // The first time the app opens (and whenever asked for again in settings): the gestures
     // nothing on screen shows, each tried out on the real thing — after the setup.
     val onboardingDone by viewModel.settingsRepo.onboardingDone.collectAsState()
-    if ((!homeSetupDone || homeChoicesOpen) && !isLoggedOut) {
+    if (!homeSetupDone || homeChoicesOpen) {
         HomeSetupOverlay(
             services = listOf(
-                SetupService("SoundCloud", ServiceIcons.SoundCloud, tr("Миксы, станции и тренды"), connected = true, onConnect = null),
+                SetupService(
+                    title = "SoundCloud",
+                    icon = ServiceIcons.SoundCloud,
+                    about = tr("Миксы, станции и тренды"),
+                    connected = soundCloudConnected,
+                    onConnect = viewModel::openSoundCloudLogin
+                ),
                 SetupService(
                     title = tr("Яндекс Музыка"),
                     icon = ServiceIcons.YandexMusic,
@@ -1658,7 +1675,7 @@ fun MusicScreen(viewModel: MusicViewModel) {
                     onConnect = viewModel::openYtMusicLogin
                 )
             ),
-            heroes = heroChoices(homeHeroes, hasYandexToken, ytMusicAccount != null, ytHome, yandexShelves, playlists),
+            heroes = heroChoices(homeHeroes, soundCloudConnected, hasYandexToken, ytMusicAccount != null, ytHome, yandexShelves, playlists),
             onPick = viewModel.settingsRepo::setHomeHero,
             onFinish = {
                 viewModel.settingsRepo.setHomeSetupDone(true)
@@ -1667,7 +1684,7 @@ fun MusicScreen(viewModel: MusicViewModel) {
             // Asked for again from the settings: the carousels alone.
             homeOnly = homeSetupDone
         )
-    } else if (!onboardingDone && !isLoggedOut) {
+    } else if (!onboardingDone) {
         OnboardingOverlay(onFinish = {
             viewModel.settingsRepo.setOnboardingDone(true)
         })
@@ -1928,6 +1945,7 @@ private const val HERO_WAVE = "wave"
  */
 private fun heroChoices(
     picked: Map<String, String>,
+    soundCloud: Boolean,
     yandex: Boolean,
     youTube: Boolean,
     ytRows: List<YtShelf>,
@@ -1943,15 +1961,17 @@ private fun heroChoices(
     fun withPicked(options: List<Pair<String, String>>, choice: String) =
         if (choice.startsWith("row:") && options.none { it.first == choice }) options + (choice to choice.removePrefix("row:")) else options
     return buildList {
-        add(
-            HeroChoices(
-                service = HomeService.SoundCloud.name,
-                title = HomeService.SoundCloud.title,
-                icon = ServiceIcons.SoundCloud,
-                options = listOf("mixes" to HomeCategory.Mixes.title, "stations" to HomeCategory.Stations.title, "trending" to HomeCategory.Trending.title),
-                picked = picked[HomeService.SoundCloud.name] ?: "mixes"
+        if (soundCloud) {
+            add(
+                HeroChoices(
+                    service = HomeService.SoundCloud.name,
+                    title = HomeService.SoundCloud.title,
+                    icon = ServiceIcons.SoundCloud,
+                    options = listOf("mixes" to HomeCategory.Mixes.title, "stations" to HomeCategory.Stations.title, "trending" to HomeCategory.Trending.title),
+                    picked = picked[HomeService.SoundCloud.name] ?: "mixes"
+                )
             )
-        )
+        }
         if (yandex) {
             val choice = picked[HomeService.Yandex.name] ?: HERO_WAVE
             add(
@@ -2019,6 +2039,7 @@ private fun HomeScreen(
     ytShelves: List<YtShelf>,
     ytConnected: Boolean,
     yandexConnected: Boolean,
+    soundCloudConnected: Boolean,
     ytLoading: Boolean,
     ytError: String?,
     onOpenYtSet: (SoundCloudPlaylist) -> Unit,
@@ -2068,21 +2089,23 @@ private fun HomeScreen(
 ) {
     val haptic = LocalHapticFeedback.current
     val scope = rememberCoroutineScope()
-    // The toolbar picks a service; a service not connected in settings isn't offered.
-    val services = remember(ytConnected, yandexConnected) {
+    // The toolbar picks a service; a service not connected in settings isn't offered — SoundCloud
+    // as much as the others. What is on the phone always is.
+    val services = remember(ytConnected, yandexConnected, soundCloudConnected) {
         HomeService.entries.filter { service ->
             when (service) {
+                HomeService.SoundCloud -> soundCloudConnected
                 HomeService.Yandex -> yandexConnected
                 HomeService.YouTube -> ytConnected
-                else -> true
+                HomeService.Downloads -> true
             }
         }
     }
     // [selectedTab] is a category's ordinal, kept between launches: the service it belongs to.
     val savedCategory = HomeCategory.entries.getOrNull(selectedTab)
-    var pickedService by remember { mutableStateOf(savedCategory?.service ?: HomeService.SoundCloud) }
-    // Signed out of the service meanwhile: SoundCloud's page instead.
-    val service = pickedService.takeIf { it in services } ?: HomeService.SoundCloud
+    var pickedService by remember { mutableStateOf(savedCategory?.service ?: services.first()) }
+    // Signed out of the service meanwhile: the first one there is instead.
+    val service = pickedService.takeIf { it in services } ?: services.first()
     var showCreatePlaylistDialog by remember { mutableStateOf(false) }
     var playlistNameInput by remember { mutableStateOf("") }
     // Each service's feed where it was left: there again when the service comes back into view,
@@ -2348,7 +2371,8 @@ private fun HomeScreen(
         if (index >= 0 && index != servicePager.currentPage) servicePager.scrollToPage(index)
     }
 
-    val hasWarning = clientId.isBlank() || needsRelogin || isClientIdExpired
+    // SoundCloud's troubles, said only while signed in to it: not signed in is no trouble.
+    val hasWarning = soundCloudConnected && (clientId.isBlank() || needsRelogin || isClientIdExpired)
     val menuItems = accountMenuItems(
         open = accountMenu.open,
         onOpenProfile = onOpenProfile,
@@ -5078,7 +5102,10 @@ private fun SettingsScreen(
     resetSoundCloudLikesSyncStatus: () -> Unit,
     resetYandexLikesSyncStatus: () -> Unit,
     onBack: () -> Unit,
-    onRelogin: () -> Unit,
+    soundCloudConnected: Boolean,
+    soundCloudNeedsRelogin: Boolean,
+    onSoundCloudLoginClick: () -> Unit,
+    onSoundCloudLogoutClick: () -> Unit,
     onClearCache: () -> Unit,
     onYandexLoginClick: () -> Unit,
     onYandexLogoutClick: () -> Unit,
@@ -5309,10 +5336,10 @@ private fun SettingsScreen(
         item {
             val playerVideos by settingsRepository.playerVideos.collectAsState()
             val videoYandex by settingsRepository.videoYandex.collectAsState()
-            val videoGlow by settingsRepository.videoGlow.collectAsState()
             val videoGlowStyle by settingsRepository.videoGlowStyle.collectAsState()
             val coverGlowStyle by settingsRepository.coverGlowStyle.collectAsState()
             val videoDownload by settingsRepository.videoDownload.collectAsState()
+            val videoDownloadAnyNetwork by settingsRepository.videoDownloadAnyNetwork.collectAsState()
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text(
                     text = tr("ВИДЕО"),
@@ -5353,41 +5380,57 @@ private fun SettingsScreen(
                             enabled = playerVideos
                         )
                         divider()
-                        SettingsSwitchRow(
+                        SettingsInfoRow(
                             icon = Icons.Default.AutoAwesome,
                             title = tr("Подсветка"),
-                            subtitle = tr("Свет клипа или обложки заполняет фон плеера и поля при повороте. Без неё — меньше нагрузка"),
-                            checked = videoGlow,
-                            onCheckedChange = settingsRepository::setVideoGlow
+                            subtitle = tr("Свет клипа или обложки заполняет фон плеера и поля при повороте")
                         )
                         GlowStyleRow(
                             title = tr("Клип"),
                             selected = videoGlowStyle,
                             onSelect = settingsRepository::setVideoGlowStyle,
-                            enabled = videoGlow && playerVideos
+                            enabled = playerVideos
                         )
                         GlowStyleRow(
                             title = tr("Обложка"),
                             selected = coverGlowStyle,
                             onSelect = settingsRepository::setCoverGlowStyle,
-                            enabled = videoGlow
+                            enabled = true
                         )
                         Text(
                             text = tr("Ambilight — свет от краёв расходится по экрану, как у расширения для YouTube, и легче для телефона. Копии — прежние ступени увеличенных размытых копий"),
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier
-                                .padding(start = 74.dp, end = 18.dp, bottom = 12.dp)
-                                .graphicsLayer { alpha = if (videoGlow) 1f else 0.38f }
+                            modifier = Modifier.padding(start = 74.dp, end = 18.dp, bottom = 12.dp)
                         )
                         divider()
                         SettingsSwitchRow(
                             icon = Icons.Default.Download,
                             title = tr("Скачивать клипы"),
-                            subtitle = tr("Вместе с треками в медиатеке, по Wi-Fi, чтобы играли без сети. Клип YouTube — десятки МБ"),
+                            subtitle = tr("Вместе с треками в медиатеке, чтобы играли без сети. Клип YouTube — десятки МБ"),
                             checked = videoDownload,
                             onCheckedChange = settingsRepository::setVideoDownload,
                             enabled = playerVideos
+                        )
+                        // Over which networks: Wi-Fi only, or mobile data too.
+                        SubChoiceRow(
+                            title = tr("Сеть"),
+                            items = listOf("Wi-Fi", tr("Любая")),
+                            selectedIndex = if (videoDownloadAnyNetwork) 1 else 0,
+                            onSelect = { settingsRepository.setVideoDownloadAnyNetwork(it == 1) },
+                            enabled = playerVideos && videoDownload
+                        )
+                        Text(
+                            text = if (videoDownloadAnyNetwork) {
+                                tr("Клипы скачиваются и по мобильному интернету")
+                            } else {
+                                tr("Только по Wi-Fi: скачанные без клипа получат его, как только телефон подключится")
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier
+                                .padding(start = 74.dp, end = 18.dp, bottom = 12.dp)
+                                .graphicsLayer { alpha = if (playerVideos && videoDownload) 1f else 0.38f }
                         )
                     }
                 }
@@ -5454,101 +5497,207 @@ private fun SettingsScreen(
                         modifier = Modifier.padding(18.dp),
                         verticalArrangement = Arrangement.spacedBy(16.dp)
                     ) {
-                        // SoundCloud Sync
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(14.dp)
-                        ) {
-                            Box(
-                                modifier = Modifier
-                                    .size(42.dp)
-                                    .background(AppTheme.brand.soundCloud.container, CircleShape),
-                                contentAlignment = Alignment.Center
+                        // SoundCloud Sync: only while signed in to it.
+                        if (soundCloudConnected) {
+                            // SoundCloud Sync
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(14.dp)
                             ) {
-                                Icon(
-                                    imageVector = Icons.Default.CloudSync,
-                                    contentDescription = null,
-                                    tint = AppTheme.brand.soundCloud.onContainer,
-                                    modifier = Modifier.size(22.dp)
-                                )
-                            }
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(
-                                    text = "SoundCloud",
-                                    style = MaterialTheme.typography.titleMedium
-                                )
-                                Text(
-                                    text = tr("Автоскачивание лайкнутых треков SoundCloud"),
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            }
-                        }
-
-                        if (soundcloudLikesSyncStatus.state != SyncState.IDLE) {
-                            val statusText = when (soundcloudLikesSyncStatus.state) {
-                                SyncState.FETCHING_LIKES -> tr("Получение лайкнутых треков...")
-                                SyncState.DOWNLOADING -> tr("Скачивание треков: %s из %s", soundcloudLikesSyncStatus.currentTrackIndex, soundcloudLikesSyncStatus.totalTracks)
-                                SyncState.COMPLETED -> tr("Синхронизация завершена!")
-                                SyncState.FAILED -> tr("Ошибка: %s", soundcloudLikesSyncStatus.errorMessage)
-                                else -> ""
+                                Box(
+                                    modifier = Modifier
+                                        .size(42.dp)
+                                        .background(AppTheme.brand.soundCloud.container, CircleShape),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.CloudSync,
+                                        contentDescription = null,
+                                        tint = AppTheme.brand.soundCloud.onContainer,
+                                        modifier = Modifier.size(22.dp)
+                                    )
+                                }
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = "SoundCloud",
+                                        style = MaterialTheme.typography.titleMedium
+                                    )
+                                    Text(
+                                        text = tr("Автоскачивание лайкнутых треков SoundCloud"),
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
                             }
 
-                            Text(
-                                text = statusText,
-                                style = MaterialTheme.typography.bodyMedium,
-                                fontWeight = FontWeight.Medium,
-                                color = if (soundcloudLikesSyncStatus.state == SyncState.FAILED) MaterialTheme.colorScheme.error else AppTheme.brand.soundCloud.color
+                            if (soundcloudLikesSyncStatus.state != SyncState.IDLE) {
+                                val statusText = when (soundcloudLikesSyncStatus.state) {
+                                    SyncState.FETCHING_LIKES -> tr("Получение лайкнутых треков...")
+                                    SyncState.DOWNLOADING -> tr("Скачивание треков: %s из %s", soundcloudLikesSyncStatus.currentTrackIndex, soundcloudLikesSyncStatus.totalTracks)
+                                    SyncState.COMPLETED -> tr("Синхронизация завершена!")
+                                    SyncState.FAILED -> tr("Ошибка: %s", soundcloudLikesSyncStatus.errorMessage)
+                                    else -> ""
+                                }
+
+                                Text(
+                                    text = statusText,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    fontWeight = FontWeight.Medium,
+                                    color = if (soundcloudLikesSyncStatus.state == SyncState.FAILED) MaterialTheme.colorScheme.error else AppTheme.brand.soundCloud.color
+                                )
+
+                                if (soundcloudLikesSyncStatus.state == SyncState.DOWNLOADING) {
+                                    Text(
+                                        text = tr("Скачивается: %s", soundcloudLikesSyncStatus.currentTrackTitle),
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+
+                                    val progress = if (soundcloudLikesSyncStatus.totalTracks > 0) {
+                                        (soundcloudLikesSyncStatus.downloadedCount + soundcloudLikesSyncStatus.failedCount).toFloat() / soundcloudLikesSyncStatus.totalTracks
+                                    } else 0f
+
+                                    AppLinearProgress(
+                                        progress = progress,
+                                        color = AppTheme.brand.soundCloud.color,
+                                        trackColor = AppTheme.brand.soundCloud.container,
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                    )
+
+                                    Text(
+                                        text = tr("Успешно: %s | Ошибки: %s", soundcloudLikesSyncStatus.downloadedCount, soundcloudLikesSyncStatus.failedCount),
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            }
+
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(10.dp)
+                            ) {
+                                if (soundcloudLikesSyncStatus.state == SyncState.FETCHING_LIKES || soundcloudLikesSyncStatus.state == SyncState.DOWNLOADING) {
+                                    FilledTonalButton(
+                                        onClick = stopLikesSync,
+                                        modifier = Modifier.weight(1f),
+                                        shape = MaterialTheme.shapes.large,
+                                        colors = androidx.compose.material3.ButtonDefaults.filledTonalButtonColors(
+                                            containerColor = MaterialTheme.colorScheme.errorContainer,
+                                            contentColor = MaterialTheme.colorScheme.onErrorContainer
+                                        )
+                                    ) {
+                                        Text(tr("Остановить"))
+                                    }
+                                } else {
+                                    Button(
+                                        onClick = startSoundCloudLikesSync,
+                                        modifier = Modifier.weight(1f),
+                                        shape = MaterialTheme.shapes.large,
+                                        colors = androidx.compose.material3.ButtonDefaults.buttonColors(
+                                            containerColor = AppTheme.brand.soundCloud.color,
+                                            contentColor = AppTheme.brand.soundCloud.onColor
+                                        )
+                                    ) {
+                                        Text(
+                                            text = if (soundcloudLikesSyncStatus.state == SyncState.COMPLETED || soundcloudLikesSyncStatus.state == SyncState.FAILED) tr("Синхронизировать заново") else tr("Синхронизировать лайки")
+                                        )
+                                    }
+
+                                    if (soundcloudLikesSyncStatus.state == SyncState.COMPLETED || soundcloudLikesSyncStatus.state == SyncState.FAILED) {
+                                        FilledTonalButton(
+                                            onClick = resetSoundCloudLikesSyncStatus,
+                                            modifier = Modifier.weight(1f),
+                                            shape = MaterialTheme.shapes.large
+                                        ) {
+                                            Text(tr("Сбросить"))
+                                        }
+                                    }
+                                }
+                            }
+
+                            HorizontalDivider(
+                                color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.25f),
+                                modifier = Modifier.padding(vertical = 4.dp)
                             )
 
-                            if (soundcloudLikesSyncStatus.state == SyncState.DOWNLOADING) {
-                                Text(
-                                    text = tr("Скачивается: %s", soundcloudLikesSyncStatus.currentTrackTitle),
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
-                                )
-
-                                val progress = if (soundcloudLikesSyncStatus.totalTracks > 0) {
-                                    (soundcloudLikesSyncStatus.downloadedCount + soundcloudLikesSyncStatus.failedCount).toFloat() / soundcloudLikesSyncStatus.totalTracks
-                                } else 0f
-
-                                AppLinearProgress(
-                                    progress = progress,
-                                    color = AppTheme.brand.soundCloud.color,
-                                    trackColor = AppTheme.brand.soundCloud.container,
+                            // The other direction: downloaded tracks whose like never reached SoundCloud.
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(14.dp)
+                            ) {
+                                Box(
                                     modifier = Modifier
-                                        .fillMaxWidth()
-                                )
-
-                                Text(
-                                    text = tr("Успешно: %s | Ошибки: %s", soundcloudLikesSyncStatus.downloadedCount, soundcloudLikesSyncStatus.failedCount),
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            }
-                        }
-
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(10.dp)
-                        ) {
-                            if (soundcloudLikesSyncStatus.state == SyncState.FETCHING_LIKES || soundcloudLikesSyncStatus.state == SyncState.DOWNLOADING) {
-                                FilledTonalButton(
-                                    onClick = stopLikesSync,
-                                    modifier = Modifier.weight(1f),
-                                    shape = MaterialTheme.shapes.large,
-                                    colors = androidx.compose.material3.ButtonDefaults.filledTonalButtonColors(
-                                        containerColor = MaterialTheme.colorScheme.errorContainer,
-                                        contentColor = MaterialTheme.colorScheme.onErrorContainer
-                                    )
+                                        .size(42.dp)
+                                        .background(AppTheme.brand.soundCloud.container, CircleShape),
+                                    contentAlignment = Alignment.Center
                                 ) {
-                                    Text(tr("Остановить"))
+                                    Icon(
+                                        imageVector = Icons.Default.CloudUpload,
+                                        contentDescription = null,
+                                        tint = AppTheme.brand.soundCloud.onContainer,
+                                        modifier = Modifier.size(22.dp)
+                                    )
                                 }
-                            } else {
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = tr("Лайки на SoundCloud"),
+                                        style = MaterialTheme.typography.titleMedium
+                                    )
+                                    Text(
+                                        text = tr("Лайкнуть на SoundCloud скачанные треки, чьи лайки туда не дошли"),
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            }
+
+                            val pushBusy = likesPushStatus.state == LikesPushState.CHECKING ||
+                                likesPushStatus.state == LikesPushState.SENDING
+                            if (likesPushStatus.state != LikesPushState.IDLE) {
+                                val statusText = when (likesPushStatus.state) {
+                                    LikesPushState.CHECKING -> tr("Сверяю с лайками SoundCloud...")
+                                    LikesPushState.SENDING -> tr("Отправлено %s из %s", likesPushStatus.sent, likesPushStatus.total)
+                                    LikesPushState.PAUSED -> tr("Отправлено %s из %s, пауза", likesPushStatus.sent, likesPushStatus.total)
+                                    LikesPushState.COMPLETED -> likesPushStatus.message
+                                        ?: tr("Готово: отправлено %s из %s", likesPushStatus.sent, likesPushStatus.total)
+                                    LikesPushState.FAILED -> tr("Ошибка: %s", likesPushStatus.message)
+                                    LikesPushState.IDLE -> ""
+                                }
+                                Text(
+                                    text = statusText,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    fontWeight = FontWeight.Medium,
+                                    color = if (likesPushStatus.state == LikesPushState.FAILED) MaterialTheme.colorScheme.error else AppTheme.brand.soundCloud.color
+                                )
+                                if (likesPushStatus.state == LikesPushState.PAUSED && likesPushStatus.message != null) {
+                                    Text(
+                                        text = likesPushStatus.message,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                                if ((likesPushStatus.state == LikesPushState.SENDING || likesPushStatus.state == LikesPushState.PAUSED) &&
+                                    likesPushStatus.total > 0
+                                ) {
+                                    AppLinearProgress(
+                                        progress = likesPushStatus.sent.toFloat() / likesPushStatus.total,
+                                        color = AppTheme.brand.soundCloud.color,
+                                        trackColor = AppTheme.brand.soundCloud.container,
+                                        modifier = Modifier.fillMaxWidth()
+                                    )
+                                }
+                            }
+
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(10.dp)
+                            ) {
                                 Button(
-                                    onClick = startSoundCloudLikesSync,
+                                    onClick = pushLikesToSoundCloud,
+                                    enabled = !pushBusy,
                                     modifier = Modifier.weight(1f),
                                     shape = MaterialTheme.shapes.large,
                                     colors = androidx.compose.material3.ButtonDefaults.buttonColors(
@@ -5557,13 +5706,16 @@ private fun SettingsScreen(
                                     )
                                 ) {
                                     Text(
-                                        text = if (soundcloudLikesSyncStatus.state == SyncState.COMPLETED || soundcloudLikesSyncStatus.state == SyncState.FAILED) tr("Синхронизировать заново") else tr("Синхронизировать лайки")
+                                        text = when (likesPushStatus.state) {
+                                            LikesPushState.PAUSED -> tr("Продолжить")
+                                            LikesPushState.COMPLETED, LikesPushState.FAILED -> tr("Проверить снова")
+                                            else -> tr("Отправить лайки")
+                                        }
                                     )
                                 }
-
-                                if (soundcloudLikesSyncStatus.state == SyncState.COMPLETED || soundcloudLikesSyncStatus.state == SyncState.FAILED) {
+                                if (likesPushStatus.state == LikesPushState.COMPLETED || likesPushStatus.state == LikesPushState.FAILED) {
                                     FilledTonalButton(
-                                        onClick = resetSoundCloudLikesSyncStatus,
+                                        onClick = resetLikesPushStatus,
                                         modifier = Modifier.weight(1f),
                                         shape = MaterialTheme.shapes.large
                                     ) {
@@ -5572,115 +5724,16 @@ private fun SettingsScreen(
                                 }
                             }
                         }
-
-                        HorizontalDivider(
-                            color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.25f),
-                            modifier = Modifier.padding(vertical = 4.dp)
-                        )
-
-                        // The other direction: downloaded tracks whose like never reached SoundCloud.
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(14.dp)
-                        ) {
-                            Box(
-                                modifier = Modifier
-                                    .size(42.dp)
-                                    .background(AppTheme.brand.soundCloud.container, CircleShape),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Default.CloudUpload,
-                                    contentDescription = null,
-                                    tint = AppTheme.brand.soundCloud.onContainer,
-                                    modifier = Modifier.size(22.dp)
-                                )
-                            }
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(
-                                    text = tr("Лайки на SoundCloud"),
-                                    style = MaterialTheme.typography.titleMedium
-                                )
-                                Text(
-                                    text = tr("Лайкнуть на SoundCloud скачанные треки, чьи лайки туда не дошли"),
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            }
-                        }
-
-                        val pushBusy = likesPushStatus.state == LikesPushState.CHECKING ||
-                            likesPushStatus.state == LikesPushState.SENDING
-                        if (likesPushStatus.state != LikesPushState.IDLE) {
-                            val statusText = when (likesPushStatus.state) {
-                                LikesPushState.CHECKING -> tr("Сверяю с лайками SoundCloud...")
-                                LikesPushState.SENDING -> tr("Отправлено %s из %s", likesPushStatus.sent, likesPushStatus.total)
-                                LikesPushState.PAUSED -> tr("Отправлено %s из %s, пауза", likesPushStatus.sent, likesPushStatus.total)
-                                LikesPushState.COMPLETED -> likesPushStatus.message
-                                    ?: tr("Готово: отправлено %s из %s", likesPushStatus.sent, likesPushStatus.total)
-                                LikesPushState.FAILED -> tr("Ошибка: %s", likesPushStatus.message)
-                                LikesPushState.IDLE -> ""
-                            }
+                        if (!soundCloudConnected && !hasYandexToken) {
                             Text(
-                                text = statusText,
+                                text = tr("Подключите SoundCloud или Яндекс Музыку в аккаунтах ниже, чтобы скачивать их лайки"),
                                 style = MaterialTheme.typography.bodyMedium,
-                                fontWeight = FontWeight.Medium,
-                                color = if (likesPushStatus.state == LikesPushState.FAILED) MaterialTheme.colorScheme.error else AppTheme.brand.soundCloud.color
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
-                            if (likesPushStatus.state == LikesPushState.PAUSED && likesPushStatus.message != null) {
-                                Text(
-                                    text = likesPushStatus.message,
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            }
-                            if ((likesPushStatus.state == LikesPushState.SENDING || likesPushStatus.state == LikesPushState.PAUSED) &&
-                                likesPushStatus.total > 0
-                            ) {
-                                AppLinearProgress(
-                                    progress = likesPushStatus.sent.toFloat() / likesPushStatus.total,
-                                    color = AppTheme.brand.soundCloud.color,
-                                    trackColor = AppTheme.brand.soundCloud.container,
-                                    modifier = Modifier.fillMaxWidth()
-                                )
-                            }
-                        }
-
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(10.dp)
-                        ) {
-                            Button(
-                                onClick = pushLikesToSoundCloud,
-                                enabled = !pushBusy,
-                                modifier = Modifier.weight(1f),
-                                shape = MaterialTheme.shapes.large,
-                                colors = androidx.compose.material3.ButtonDefaults.buttonColors(
-                                    containerColor = AppTheme.brand.soundCloud.color,
-                                    contentColor = AppTheme.brand.soundCloud.onColor
-                                )
-                            ) {
-                                Text(
-                                    text = when (likesPushStatus.state) {
-                                        LikesPushState.PAUSED -> tr("Продолжить")
-                                        LikesPushState.COMPLETED, LikesPushState.FAILED -> tr("Проверить снова")
-                                        else -> tr("Отправить лайки")
-                                    }
-                                )
-                            }
-                            if (likesPushStatus.state == LikesPushState.COMPLETED || likesPushStatus.state == LikesPushState.FAILED) {
-                                FilledTonalButton(
-                                    onClick = resetLikesPushStatus,
-                                    modifier = Modifier.weight(1f),
-                                    shape = MaterialTheme.shapes.large
-                                ) {
-                                    Text(tr("Сбросить"))
-                                }
-                            }
                         }
 
                         if (hasYandexToken) {
-                            HorizontalDivider(
+                            if (soundCloudConnected) HorizontalDivider(
                                 color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.25f),
                                 modifier = Modifier.padding(vertical = 4.dp)
                             )
@@ -5854,16 +5907,38 @@ private fun SettingsScreen(
                                     style = MaterialTheme.typography.titleMedium
                                 )
                                 Text(
-                                    text = tr("Вы вошли в аккаунт"),
+                                    text = when {
+                                        !soundCloudConnected -> tr("Не подключен")
+                                        soundCloudNeedsRelogin -> tr("Сессия истекла — войдите снова")
+                                        else -> tr("Подключен")
+                                    },
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
                             }
-                            FilledTonalButton(
-                                onClick = onRelogin,
-                                shape = MaterialTheme.shapes.medium
-                            ) {
-                                Text(tr("Перезайти"))
+                            // Signed out of as the other services are: the app goes on without it.
+                            if (soundCloudConnected) {
+                                FilledTonalButton(
+                                    onClick = onSoundCloudLogoutClick,
+                                    shape = MaterialTheme.shapes.medium,
+                                    colors = androidx.compose.material3.ButtonDefaults.filledTonalButtonColors(
+                                        containerColor = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.6f),
+                                        contentColor = MaterialTheme.colorScheme.error
+                                    )
+                                ) {
+                                    Text(tr("Выйти"))
+                                }
+                            } else {
+                                Button(
+                                    onClick = onSoundCloudLoginClick,
+                                    shape = MaterialTheme.shapes.medium,
+                                    colors = androidx.compose.material3.ButtonDefaults.buttonColors(
+                                        containerColor = MaterialTheme.colorScheme.primary,
+                                        contentColor = MaterialTheme.colorScheme.onPrimary
+                                    )
+                                ) {
+                                    Text(tr("Войти"))
+                                }
                             }
                         }
 
@@ -6274,6 +6349,24 @@ private fun GlowStyleRow(
     enabled: Boolean
 ) {
     val styles = com.example.myapplication.data.GlowStyle.entries
+    SubChoiceRow(
+        title = title,
+        items = styles.map { if (it == com.example.myapplication.data.GlowStyle.Ambilight) "Ambilight" else tr("Копии") },
+        selectedIndex = styles.indexOf(selected),
+        onSelect = { onSelect(styles[it]) },
+        enabled = enabled
+    )
+}
+
+/** A choice of a few under a switch it belongs to: its short [title], and a small pill beside it. */
+@Composable
+private fun SubChoiceRow(
+    title: String,
+    items: List<String>,
+    selectedIndex: Int,
+    onSelect: (Int) -> Unit,
+    enabled: Boolean
+) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -6284,9 +6377,9 @@ private fun GlowStyleRow(
     ) {
         Text(text = title, style = MaterialTheme.typography.titleSmall, modifier = Modifier.width(72.dp))
         SegmentedControl(
-            items = styles.map { if (it == com.example.myapplication.data.GlowStyle.Ambilight) "Ambilight" else tr("Копии") },
-            selectedIndex = styles.indexOf(selected),
-            onSelectedIndexChanged = { if (enabled) onSelect(styles[it]) },
+            items = items,
+            selectedIndex = selectedIndex,
+            onSelectedIndexChanged = { if (enabled) onSelect(it) },
             modifier = Modifier.weight(1f),
             height = 40.dp,
             textStyle = MaterialTheme.typography.labelLarge
@@ -6440,6 +6533,28 @@ private fun SettingsIcon(icon: ImageVector) {
     }
 }
 
+/** A settings row that only says what the rows under it are about: no switch, nothing to tap. */
+@Composable
+private fun SettingsInfoRow(icon: ImageVector, title: String, subtitle: String) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 18.dp, vertical = 14.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(14.dp)
+    ) {
+        SettingsIcon(icon)
+        Column(modifier = Modifier.weight(1f)) {
+            Text(text = title, style = MaterialTheme.typography.titleMedium)
+            Text(
+                text = subtitle,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+    }
+}
+
 @Composable
 private fun SettingsSwitchRow(
     icon: ImageVector,
@@ -6530,8 +6645,8 @@ private fun SearchScreen(
     LaunchedEffect(openedPlaylist == null) { if (openedPlaylist == null) setPulled = false }
     val resultsShown = { openedPlaylist == null || setPulled }
 
-    // A service signed out of meanwhile hands search back to SoundCloud.
-    val activeSource = if (source in sources) source else SearchSource.SOUNDCLOUD
+    // A service signed out of meanwhile hands search to the first one connected.
+    val activeSource = if (source in sources) source else sources.first()
     LaunchedEffect(activeSource, source) {
         if (activeSource != source) onSearchSourceChanged(activeSource)
     }
@@ -9770,11 +9885,7 @@ private fun Modifier.animatedHeight(max: Dp, fraction: () -> Float): Modifier = 
 private fun SoundCloudTrack.artistLine(): String =
     // Was just the uploader, so a collaboration listed one name here while the player showed
     // several.
-    artists?.takeIf { it.isNotEmpty() }
-        ?.mapNotNull { it.username }
-        ?.joinToString(", ")
-        ?: user?.username
-        ?: "Unknown Artist"
+    artistNames ?: "Unknown Artist"
 
 @Composable
 private fun TrackCard(
@@ -9963,7 +10074,6 @@ private fun TrackDetailScreen(
     upcomingVideo: com.example.myapplication.data.TrackVideo?,
     livePosition: () -> Long,
     // The glow around a video or the cover, and how each is made; see [VideoBackdrop].
-    videoGlow: Boolean = true,
     videoGlowStyle: com.example.myapplication.data.GlowStyle = com.example.myapplication.data.GlowStyle.Ambilight,
     coverGlowStyle: com.example.myapplication.data.GlowStyle = com.example.myapplication.data.GlowStyle.Ambilight,
     // Swiping the cover sideways: whether there is a track that way, and moving to it.
@@ -10104,10 +10214,8 @@ private fun TrackDetailScreen(
         label = "videoShown"
     )
     val immersiveVideo = videoState?.takeIf { it.isPortrait }
-    // A video in the cover's place fills the whole background with copies of itself — unless
-    // that glow is turned off, and the video stands on the player's own background.
-    val coverVideo = videoState?.takeIf { !it.isPortrait }
-    val backdropVideo = coverVideo?.takeIf { videoGlow }
+    // A video in the cover's place fills the whole background with copies of itself.
+    val backdropVideo = videoState?.takeIf { !it.isPortrait }
     // Paused, a video blurs, as if it had stopped to wait.
     val pauseBlur = animateDpAsState(
         targetValue = if (!isPlaying && videoState?.showing == true) 24.dp else 0.dp,
@@ -10117,9 +10225,10 @@ private fun TrackDetailScreen(
     // Turned sideways with a video playing: the video alone, on the whole screen.
     val landscape = LocalConfiguration.current.orientation == android.content.res.Configuration.ORIENTATION_LANDSCAPE
 
-    // Without a video the cover gets the same treatment: whole, between the buttons and the
-    // panel, its glow filling the screen around it and the panel frosted over it.
-    val coverGlowMode = videoGlow && !landscape
+    // Without a video the cover gets the same treatment: whole, between the status bar and the
+    // panel, its glow filling the screen around it and the panel frosted over it. Always, upright:
+    // the cover from edge to edge, without the glow, is gone.
+    val coverGlowMode = !landscape
     val coverGlow = rememberCoverGlow()
 
     // Swiping the cover (or the video) sideways moves to the track next to this one. While it is
@@ -10194,7 +10303,7 @@ private fun TrackDetailScreen(
                         alpha = 1f - ((pulled - CollapseFadeFrom) / (1f - CollapseFadeFrom)).coerceIn(0f, 1f)
                     }
             ) {
-                FullScreenVideo(state = videoState, blur = { pauseBlur.value }, glow = videoGlow, glowStyle = videoGlowStyle) {
+                FullScreenVideo(state = videoState, blur = { pauseBlur.value }, glowStyle = videoGlowStyle) {
                     LandscapeControls(
                         isPlaying = isPlaying,
                         live = track.liveVideoId != null,
@@ -10841,11 +10950,12 @@ private fun GlowingCover(
     }
 }
 
-// From the buttons' line at the top — they lie over its corners, as glass — to the panel's edge,
-// and from one side of the screen to the other if the height allows.
-private val CoverTopClearance = 12.dp
-private val CoverBottomGap = 0.dp
-private val CoverSideMargin = 0.dp
+// A square between the status bar and the panel, as large as fits with a margin all round it —
+// the same at the sides and over the panel, where its glow shows through. The panel is as tall for
+// every track, so the cover is as large for every track.
+private val CoverTopClearance = 16.dp
+private val CoverBottomGap = 16.dp
+private val CoverSideMargin = 16.dp
 private val CoverCorner = 28.dp
 
 // How much of the panel's colour frosts it over the cover's glow.
@@ -10962,19 +11072,18 @@ private fun PlayerPanel(
                 Row(verticalAlignment = Alignment.CenterVertically) {
                 // Gives way first when the row is full: the session's chip and the effects stay.
                 Box(modifier = Modifier.weight(1f)) {
+                // Where it is from, and, downloaded, a mark that it is on the phone.
+                val downloaded = !fromPhone && downloadState == DownloadState.DOWNLOADED
                 OnPanelChip(
-                    text = buildString {
-                        append(
-                            when {
-                                fromPhone -> tr("С телефона")
-                                live -> tr("YouTube · в эфире")
-                                track.urn?.startsWith("yandex:") == true -> tr("Яндекс Музыка")
-                                track.youTubeVideoId != null -> "YouTube Music"
-                                else -> "SoundCloud"
-                            }
-                        )
-                        if (!fromPhone && downloadState == DownloadState.DOWNLOADED) append(tr(" · на устройстве"))
-                    }
+                    text = when {
+                        fromPhone -> tr("С телефона")
+                        live -> tr("YouTube · в эфире")
+                        track.urn?.startsWith("yandex:") == true -> tr("Яндекс Музыка")
+                        track.youTubeVideoId != null -> "YouTube Music"
+                        else -> "SoundCloud"
+                    },
+                    trailingIcon = if (downloaded) Icons.Default.DownloadDone else null,
+                    trailingIconDescription = tr("Скачан")
                 )
                 }
                 LocalTogether.current?.let { badge ->
@@ -10996,20 +11105,15 @@ private fun PlayerPanel(
                 // A track of Yandex Music or YouTube Music is from an album: its title opens it.
                 val hasAlbum = onAlbumClick != null && !live && !fromPhone &&
                     (track.urn?.startsWith("yandex:track:") == true || track.youTubeVideoId != null)
-                Text(
-                    text = track.title ?: "Unknown Track",
-                    style = MaterialTheme.typography.headlineMedium,
-                    maxLines = if (landscape) 1 else 2,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = if (hasAlbum) {
-                        Modifier
-                            .clip(RoundedCornerShape(12.dp))
-                            .clickable {
-                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                onAlbumClick?.invoke(track)
-                            }
+                PlayerTitle(
+                    title = track.title ?: "Unknown Track",
+                    onClick = if (hasAlbum) {
+                        {
+                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                            onAlbumClick?.invoke(track)
+                        }
                     } else {
-                        Modifier
+                        null
                     }
                 )
                 Spacer(modifier = Modifier.height(if (landscape) 6.dp else 10.dp))
@@ -11057,7 +11161,15 @@ private fun PlayerPanel(
                 Spacer(modifier = Modifier.height(if (landscape) 6.dp else 14.dp))
                 // A broadcast has no length to seek along: in the bar's place, that it is on air.
                 if (live) {
-                    LiveMark(color = onPanel)
+                    Column {
+                        LiveMark(color = onPanel)
+                        // Where the seek bar has its times: the panel is as tall on air as off it.
+                        Spacer(
+                            modifier = Modifier.height(
+                                with(LocalDensity.current) { MaterialTheme.typography.labelLarge.lineHeight.toDp() }
+                            )
+                        )
+                    }
                 } else {
                     PlayerSeekBar(
                         trackId = track.id,
@@ -11174,6 +11286,120 @@ private fun PlayerPanel(
                 }
             }
             }
+        }
+    }
+}
+
+// How small a long title may be set to keep to its one line, before it is cut short instead.
+private val PlayerTitleMinSize = 18.sp
+
+/**
+ * The track's title on the player's panel: always one line, so that the panel is as tall for every
+ * track and the cover as large — two lines took a line's height from the cover. A title too long
+ * for the line is set smaller, a step at a time, down to [PlayerTitleMinSize]; longer still, it is
+ * cut short, and a touch on it shows it whole over the panel. Nothing moves meanwhile: no running
+ * text, nothing drawn on every frame. [onClick]: what a tap does otherwise (the track's album).
+ */
+@Composable
+private fun PlayerTitle(title: String, onClick: (() -> Unit)?) {
+    val haptic = LocalHapticFeedback.current
+    val style = MaterialTheme.typography.headlineMedium
+    val color = LocalContentColor.current
+    val density = LocalDensity.current
+    // Cut short even at its smallest: the whole of it is a touch away.
+    var cut by remember(title) { mutableStateOf(false) }
+    var whole by remember(title) { mutableStateOf(false) }
+    var width by remember { mutableIntStateOf(0) }
+    val showWhole = {
+        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+        whole = true
+    }
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            // One line's height at the full size, whatever size the line is set at.
+            .height(with(density) { style.lineHeight.toDp() })
+            .onSizeChanged { width = it.width },
+        contentAlignment = Alignment.CenterStart
+    ) {
+        androidx.compose.foundation.text.BasicText(
+            text = title,
+            style = style.copy(color = color),
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            autoSize = androidx.compose.foundation.text.TextAutoSize.StepBased(
+                minFontSize = PlayerTitleMinSize,
+                maxFontSize = style.fontSize,
+                stepSize = 1.sp
+            ),
+            onTextLayout = { layout -> cut = layout.lineCount > 0 && layout.isLineEllipsized(0) },
+            modifier = Modifier
+                .clip(RoundedCornerShape(12.dp))
+                .then(
+                    when {
+                        onClick != null -> Modifier.combinedClickable(
+                            onClick = onClick,
+                            onLongClick = if (cut) showWhole else null
+                        )
+                        cut -> Modifier.combinedClickable(onClick = showWhole, onLongClick = showWhole)
+                        else -> Modifier
+                    }
+                )
+        )
+        if (whole) {
+            WholeTitle(title = title, width = width, onDismiss = { whole = false })
+        }
+    }
+}
+
+/** A title cut short, whole: in a card over where it stands, as wide as its line, until let go. */
+@Composable
+private fun WholeTitle(title: String, width: Int, onDismiss: () -> Unit) {
+    val density = LocalDensity.current
+    val gap = with(density) { 8.dp.roundToPx() }
+    val shown = remember { Animatable(0f) }
+    LaunchedEffect(Unit) { shown.animateTo(1f, spring(dampingRatio = 0.8f, stiffness = Spring.StiffnessMediumLow)) }
+    // Over the title, or under it where there is no room above.
+    val position = remember(gap) {
+        object : androidx.compose.ui.window.PopupPositionProvider {
+            override fun calculatePosition(
+                anchorBounds: androidx.compose.ui.unit.IntRect,
+                windowSize: IntSize,
+                layoutDirection: LayoutDirection,
+                popupContentSize: IntSize
+            ): IntOffset {
+                val x = anchorBounds.left.coerceIn(0, (windowSize.width - popupContentSize.width).coerceAtLeast(0))
+                val above = anchorBounds.top - popupContentSize.height - gap
+                return IntOffset(x, if (above >= 0) above else anchorBounds.bottom + gap)
+            }
+        }
+    }
+    androidx.compose.ui.window.Popup(
+        popupPositionProvider = position,
+        onDismissRequest = onDismiss,
+        properties = androidx.compose.ui.window.PopupProperties(focusable = true)
+    ) {
+        Surface(
+            onClick = onDismiss,
+            shape = RoundedCornerShape(24.dp),
+            color = PanelColors.container,
+            contentColor = PanelColors.content,
+            shadowElevation = 8.dp,
+            modifier = Modifier
+                .width(with(density) { width.toDp() })
+                .graphicsLayer {
+                    alpha = shown.value.coerceIn(0f, 1f)
+                    val scale = 0.92f + 0.08f * shown.value
+                    scaleX = scale
+                    scaleY = scale
+                    transformOrigin = TransformOrigin(0f, 1f)
+                }
+        ) {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.titleLarge,
+                modifier = Modifier.padding(horizontal = 18.dp, vertical = 14.dp)
+            )
         }
     }
 }
@@ -11321,31 +11547,36 @@ private fun BoxScope.LandscapeControls(
 
 private const val LANDSCAPE_CONTROLS_HIDE_MS = 3_000L
 
-/** The button for a track's effects, across from where it is from: lit while it has any. */
+/**
+ * The button for a track's effects, across from where it is from: lit while it has any. The same
+ * pill as the chip saying where the track is from — its shape, its size, its lettering.
+ */
 @Composable
 private fun TrackFxButton(fx: com.example.myapplication.data.TrackFx, live: Boolean, color: Color, onClick: () -> Unit) {
     // A broadcast's speed isn't changed: only its reverb counts.
     val speed = if (live) 1f else fx.speed
-    val active = speed != 1f || fx.reverb > 0
+    val active = speed != 1f || fx.reverb > 0 || fx.volume != 100
+    val content = if (active) PanelColors.onAccent else color
     Surface(
         onClick = onClick,
-        shape = CircleShape,
+        shape = RoundedCornerShape(12.dp),
         color = if (active) PanelColors.accent else color.copy(alpha = 0.12f),
-        contentColor = if (active) PanelColors.onAccent else color
+        contentColor = content
     ) {
         Row(
-            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(6.dp)
+            horizontalArrangement = Arrangement.spacedBy(5.dp)
         ) {
-            Icon(Icons.Rounded.Tune, contentDescription = null, modifier = Modifier.size(18.dp))
-            Text(
+            Icon(Icons.Rounded.Tune, contentDescription = null, modifier = Modifier.size(PanelChipIconSize))
+            Kicker(
                 text = when {
                     speed != 1f -> "%.2f×".format(speed)
+                    fx.volume != 100 -> "${fx.volume}%"
                     fx.reverb > 0 -> tr("Реверб")
                     else -> tr("Эффекты")
                 },
-                style = MaterialTheme.typography.labelLarge
+                color = content
             )
         }
     }
@@ -11421,6 +11652,37 @@ private fun TrackFxSheet(
                 }
                 Switch(checked = fx.keepPitch, onCheckedChange = { onChange(fx.copy(keepPitch = it)) })
             }
+            }
+
+            // The track's own volume, apart from the phone's: a track mastered too quiet made louder.
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(tr("Громкость"), style = MaterialTheme.typography.titleMedium)
+                    Text(
+                        tr("Только этого трека, отдельно от громкости телефона"),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Text("${fx.volume}%", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.primary)
+            }
+            Slider(
+                value = fx.volume.toFloat(),
+                // By fives: a finer step can't be heard, and 100 is easy to land on again.
+                onValueChange = { onChange(fx.copy(volume = (Math.round(it / 5f) * 5).coerceIn(com.example.myapplication.data.TrackFx.MIN_VOLUME, com.example.myapplication.data.TrackFx.MAX_VOLUME))) },
+                valueRange = com.example.myapplication.data.TrackFx.MIN_VOLUME.toFloat()..com.example.myapplication.data.TrackFx.MAX_VOLUME.toFloat()
+            )
+            Row(
+                modifier = Modifier.horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                listOf(100, 150, 200, 300).forEach { volume ->
+                    FilterChip(
+                        selected = fx.volume == volume,
+                        onClick = { onChange(fx.copy(volume = volume)) },
+                        label = { Text(if (volume == 100) tr("Как есть") else "$volume%") }
+                    )
+                }
             }
 
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -12203,8 +12465,17 @@ private fun LyricsOverlay(
     }
 
     val lit = MaterialTheme.colorScheme.onSurface
+    val lineStyle = MaterialTheme.typography.headlineSmall
+    val measurer = androidx.compose.ui.text.rememberTextMeasurer()
+    val density = LocalDensity.current
     // The lines stand on the player's shade (see TextShade).
     BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+        // How wide a line wraps: the list's width inside its side padding, short of the edge by
+        // what the lit line grows (see below). A pixel or two less, so that a line broken to fit
+        // it here fits the line it is laid out in too, whatever the rounding.
+        val wrapWidth = with(density) {
+            ((maxWidth - LyricsSidePadding * 2).toPx() / LyricsLitScale).toInt() - 2
+        }
         LazyColumn(
             state = listState,
             modifier = Modifier
@@ -12233,8 +12504,8 @@ private fun LyricsOverlay(
                     )
                 },
             contentPadding = PaddingValues(
-                start = 28.dp,
-                end = 28.dp,
+                start = LyricsSidePadding,
+                end = LyricsSidePadding,
                 top = anchor,
                 // Enough room below the last line for it, too, to be scrolled up to the anchor.
                 bottom = (maxHeight - anchor - 48.dp).coerceAtLeast(PlayerPanelOverlap + LyricsFade)
@@ -12261,9 +12532,16 @@ private fun LyricsOverlay(
                     ),
                     label = "lyricLineEmphasis"
                 )
+                // Broken into its lines as the boldest weight breaks it, once: lighter, every line
+                // is narrower and stays as it is. Left to wrap by itself, a long line lit up and
+                // bolder took a line more — three became four — and the lines after it jumped down,
+                // and up again as it went back.
+                val text = remember(line.text, wrapWidth, lineStyle) {
+                    brokenLikeBoldest(measurer, line.text.ifBlank { "♪" }, lineStyle, wrapWidth)
+                }
                 Text(
-                    text = line.text.ifBlank { "♪" },
-                    style = MaterialTheme.typography.headlineSmall,
+                    text = text,
+                    style = lineStyle,
                     // Medium to extra bold, in hundreds: the system font has a weight per
                     // hundred and nothing between, so finer steps would only re-lay the text out
                     // each frame for nothing. The scale below is what reads as smooth.
@@ -12293,6 +12571,35 @@ private fun LyricsOverlay(
 
 // How much bigger the lit lyric line is than the rest.
 private const val LyricsLitScale = 1.16f
+
+// The lyrics' margins at the sides.
+private val LyricsSidePadding = 28.dp
+
+// The boldest a lyric line is drawn at: lit (see LyricsOverlay).
+private val LyricsBoldest = FontWeight(800)
+
+/**
+ * [text] with a line break wherever it wraps in [width] pixels at its boldest, [LyricsBoldest]: at
+ * any lighter weight each of those lines is narrower, so it breaks in the same places, and the line
+ * is as tall lit as it is unlit.
+ */
+private fun brokenLikeBoldest(
+    measurer: androidx.compose.ui.text.TextMeasurer,
+    text: String,
+    style: androidx.compose.ui.text.TextStyle,
+    width: Int
+): String {
+    if (width <= 0 || '\n' in text) return text
+    val layout = measurer.measure(
+        text = text,
+        style = style.copy(fontWeight = LyricsBoldest),
+        constraints = Constraints(maxWidth = width)
+    )
+    if (layout.lineCount <= 1) return text
+    return (0 until layout.lineCount).joinToString("\n") { line ->
+        text.substring(layout.getLineStart(line), layout.getLineEnd(line, visibleEnd = true)).trimStart()
+    }
+}
 
 // Height of the fades lyrics dissolve into, above the lit line and above the panel.
 private val LyricsFade = 64.dp
@@ -12673,7 +12980,7 @@ private fun QueueManagerPanel(
                                     color = if (isCurrent) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurface
                                 )
                                 Text(
-                                    text = trackItem.user?.username ?: "Unknown Artist",
+                                    text = trackItem.artistLine(),
                                     style = MaterialTheme.typography.bodyMedium,
                                     color = if (isCurrent) MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f) else MaterialTheme.colorScheme.onSurfaceVariant,
                                     maxLines = 1,
@@ -13307,263 +13614,210 @@ private fun EqualizerCard(
     }
 }
 
+/**
+ * Signing in to SoundCloud on its own site, in a window over the app as Yandex's and YouTube's
+ * sign-ins are — closed with its cross or "back" at any moment, signed in or not: SoundCloud is a
+ * service like the others, and the app no longer waits behind it. The first request the page
+ * sends signed carries the session: its client_id and OAuth token (see onCredentialsCaptured).
+ */
+@SuppressLint("SetJavaScriptEnabled")
 @Composable
-fun SoundCloudLoginScreen(
+fun SoundCloudLoginDialog(
     viewModel: MusicViewModel,
-    modifier: Modifier = Modifier
+    onDismiss: () -> Unit
 ) {
     val isLoggingIn by viewModel.isLoggingIn.collectAsState()
     val loginError by viewModel.loginError.collectAsState()
     var isWebViewLoading by remember { mutableStateOf(true) }
-    val context = LocalContext.current
 
-    Box(
-        modifier = modifier
-            .fillMaxSize()
-            .background(MaterialTheme.colorScheme.background)
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(
+            usePlatformDefaultWidth = false,
+            dismissOnBackPress = true,
+            dismissOnClickOutside = false
+        )
     ) {
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .statusBarsPadding()
-                .navigationBarsPadding()
+        Surface(
+            modifier = Modifier.fillMaxSize(),
+            color = MaterialTheme.colorScheme.background
         ) {
-            // Header
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(24.dp),
-                horizontalAlignment = Alignment.CenterHorizontally
-            ) {
-                Text(
-                    text = "SoundCloud",
-                    style = MaterialTheme.typography.headlineLarge.copy(
-                        color = AppTheme.brand.soundCloud.color
-                    )
-                )
-                Spacer(modifier = Modifier.height(8.dp))
-                Text(
-                    text = tr("Войдите в свой аккаунт, чтобы настроить приложение"),
-                    style = MaterialTheme.typography.bodyLarge,
-                    textAlign = TextAlign.Center,
-                    color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.7f)
-                )
-                if (loginError != null) {
-                    Spacer(modifier = Modifier.height(8.dp))
-                    Text(
-                        text = loginError!!,
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.error,
-                        textAlign = TextAlign.Center
-                    )
-                }
-            }
-
-            // WebView Container
-            Box(
-                modifier = Modifier
-                    .weight(1f)
-                    .fillMaxWidth()
-                    .clip(AppShapes.bottomSheet)
-                    .background(Color.White)
-            ) {
-                AndroidView(
-                    factory = { ctx ->
-                        val container = FrameLayout(ctx).apply {
-                            layoutParams = ViewGroup.LayoutParams(
-                                ViewGroup.LayoutParams.MATCH_PARENT,
-                                ViewGroup.LayoutParams.MATCH_PARENT
-                            )
+            Box(modifier = Modifier.fillMaxSize()) {
+                Column(modifier = Modifier.fillMaxSize()) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .statusBarsPadding()
+                            .padding(horizontal = 16.dp, vertical = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        IconButton(onClick = onDismiss) {
+                            Icon(imageVector = Icons.Default.Close, contentDescription = tr("Закрыть"))
                         }
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(text = tr("Вход в SoundCloud"), style = MaterialTheme.typography.titleLarge)
+                    }
+                    loginError?.let { error ->
+                        Text(
+                            text = error,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.error,
+                            modifier = Modifier.padding(start = 24.dp, end = 24.dp, bottom = 12.dp)
+                        )
+                    }
 
-                        val mainWebView = WebView(ctx)
-                        mainWebView.apply {
-                            layoutParams = FrameLayout.LayoutParams(
-                                FrameLayout.LayoutParams.MATCH_PARENT,
-                                FrameLayout.LayoutParams.MATCH_PARENT
-                            )
-                            settings.apply {
-                                javaScriptEnabled = true
-                                domStorageEnabled = true
-                                databaseEnabled = true
-                                setSupportMultipleWindows(true)
-                                javaScriptCanOpenWindowsAutomatically = true
-                                userAgentString = "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Mobile Safari/537.36"
-                            }
-                            
-                            // Enable cookies and third-party cookies to persist Google/SoundCloud logins
-                            val cookieManager = CookieManager.getInstance()
-                            cookieManager.setAcceptCookie(true)
-                            cookieManager.setAcceptThirdPartyCookies(this, true)
-
-                            var popupWebView: WebView? = null
-
-                            webChromeClient = object : WebChromeClient() {
-                                override fun onCreateWindow(
-                                    view: WebView?,
-                                    isDialog: Boolean,
-                                    isUserGesture: Boolean,
-                                    resultMsg: Message?
-                                ): Boolean {
-                                    popupWebView?.let { container.removeView(it) }
-
-                                    val newWebView = WebView(ctx).apply {
-                                        layoutParams = FrameLayout.LayoutParams(
-                                            FrameLayout.LayoutParams.MATCH_PARENT,
-                                            FrameLayout.LayoutParams.MATCH_PARENT
-                                        )
-                                        settings.apply {
-                                            javaScriptEnabled = true
-                                            domStorageEnabled = true
-                                            databaseEnabled = true
-                                            setSupportMultipleWindows(true)
-                                            javaScriptCanOpenWindowsAutomatically = true
-                                            userAgentString = mainWebView.settings.userAgentString
-                                        }
-                                        
-                                        // Enable cookies and third-party cookies for Google login popups
-                                        val cookieManager = CookieManager.getInstance()
-                                        cookieManager.setAcceptCookie(true)
-                                        cookieManager.setAcceptThirdPartyCookies(this, true)
-                                        
-                                        webChromeClient = object : WebChromeClient() {
+                    Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
+                        AndroidView(
+                            factory = { ctx ->
+                                val container = FrameLayout(ctx).apply {
+                                    layoutParams = ViewGroup.LayoutParams(
+                                        ViewGroup.LayoutParams.MATCH_PARENT,
+                                        ViewGroup.LayoutParams.MATCH_PARENT
+                                    )
+                                }
+                                val client = soundCloudSignInClient(
+                                    onLoading = { isWebViewLoading = it },
+                                    onCaptured = viewModel::onCredentialsCaptured
+                                )
+                                val mainWebView = soundCloudSignInWebView(ctx, client, userAgent = SoundCloudSignInUserAgent)
+                                var popupWebView: WebView? = null
+                                mainWebView.webChromeClient = object : WebChromeClient() {
+                                    // Google's and Apple's sign-ins open in a window of their own:
+                                    // laid over the page, signed requests from it count too.
+                                    override fun onCreateWindow(
+                                        view: WebView?,
+                                        isDialog: Boolean,
+                                        isUserGesture: Boolean,
+                                        resultMsg: Message?
+                                    ): Boolean {
+                                        popupWebView?.let { container.removeView(it) }
+                                        val popup = soundCloudSignInWebView(ctx, client, userAgent = mainWebView.settings.userAgentString)
+                                        popup.webChromeClient = object : WebChromeClient() {
                                             override fun onCloseWindow(window: WebView?) {
                                                 container.removeView(window)
                                                 popupWebView = null
                                             }
                                         }
-                                        
-                                        webViewClient = object : WebViewClient() {
-                                            override fun onPageStarted(view: WebView?, url: String?, favicon: android.graphics.Bitmap?) {
-                                                super.onPageStarted(view, url, favicon)
-                                                isWebViewLoading = true
-                                            }
-
-                                            override fun onPageFinished(view: WebView?, url: String?) {
-                                                super.onPageFinished(view, url)
-                                                isWebViewLoading = false
-                                                CookieManager.getInstance().flush()
-                                            }
-
-                                            override fun shouldInterceptRequest(
-                                                view: WebView?,
-                                                request: WebResourceRequest?
-                                            ): WebResourceResponse? {
-                                                if (request != null) {
-                                                    val url = request.url
-                                                    val clientId = url.getQueryParameter("client_id")
-                                                    val headers = request.requestHeaders
-                                                    val authHeader = headers["Authorization"] ?: headers["authorization"]
-
-                                                    if (!clientId.isNullOrBlank() && !authHeader.isNullOrBlank() && authHeader.startsWith("OAuth ", ignoreCase = true)) {
-                                                        val token = authHeader.removePrefix("OAuth ").trim()
-                                                        if (token.isNotEmpty()) {
-                                                            post {
-                                                                viewModel.onCredentialsCaptured(clientId, token)
-                                                            }
-                                                        }
-                                                    }
-                                                }
-                                                return super.shouldInterceptRequest(view, request)
-                                            }
-                                        }
+                                        popupWebView = popup
+                                        container.addView(popup)
+                                        val transport = resultMsg?.obj as? WebView.WebViewTransport
+                                        transport?.webView = popup
+                                        resultMsg?.sendToTarget()
+                                        return true
                                     }
 
-                                    popupWebView = newWebView
-                                    container.addView(newWebView)
-
-                                    val transport = resultMsg?.obj as? WebView.WebViewTransport
-                                    transport?.webView = newWebView
-                                    resultMsg?.sendToTarget()
-                                    return true
-                                }
-
-                                override fun onCloseWindow(window: WebView?) {
-                                    container.removeView(window)
-                                    if (window == popupWebView) {
-                                        popupWebView = null
+                                    override fun onCloseWindow(window: WebView?) {
+                                        container.removeView(window)
+                                        if (window == popupWebView) popupWebView = null
                                     }
                                 }
+                                mainWebView.loadUrl("https://soundcloud.com/signin")
+                                container.addView(mainWebView)
+                                container
+                            },
+                            onRelease = { container ->
+                                for (index in 0 until container.childCount) {
+                                    (container.getChildAt(index) as? WebView)?.destroy()
+                                }
+                                container.removeAllViews()
+                            },
+                            modifier = Modifier.fillMaxSize()
+                        )
+
+                        if (isWebViewLoading) {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .background(MaterialTheme.colorScheme.background),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                AppLoadingIndicator()
                             }
-
-                            webViewClient = object : WebViewClient() {
-                                override fun onPageStarted(view: WebView?, url: String?, favicon: android.graphics.Bitmap?) {
-                                    super.onPageStarted(view, url, favicon)
-                                    isWebViewLoading = true
-                                }
-
-                                override fun onPageFinished(view: WebView?, url: String?) {
-                                    super.onPageFinished(view, url)
-                                    isWebViewLoading = false
-                                    CookieManager.getInstance().flush()
-                                }
-
-                                override fun shouldInterceptRequest(
-                                    view: WebView?,
-                                    request: WebResourceRequest?
-                                ): WebResourceResponse? {
-                                    if (request != null) {
-                                        val url = request.url
-                                        val clientId = url.getQueryParameter("client_id")
-                                        val headers = request.requestHeaders
-                                        val authHeader = headers["Authorization"] ?: headers["authorization"]
-
-                                        if (!clientId.isNullOrBlank() && !authHeader.isNullOrBlank() && authHeader.startsWith("OAuth ", ignoreCase = true)) {
-                                            val token = authHeader.removePrefix("OAuth ").trim()
-                                            if (token.isNotEmpty()) {
-                                                post {
-                                                    viewModel.onCredentialsCaptured(clientId, token)
-                                                }
-                                            }
-                                        }
-                                    }
-                                    return super.shouldInterceptRequest(view, request)
-                                }
-                            }
-                            loadUrl("https://soundcloud.com/signin")
                         }
+                    }
+                }
 
-                        container.addView(mainWebView)
-                        container
-                    },
-                    modifier = Modifier.fillMaxSize()
-                )
-
-                if (isWebViewLoading) {
+                // Signed in on the page: the profile is being fetched with the session.
+                if (isLoggingIn) {
                     Box(
                         modifier = Modifier
                             .fillMaxSize()
-                            .background(Color.White),
+                            .background(MaterialTheme.colorScheme.background.copy(alpha = 0.92f)),
                         contentAlignment = Alignment.Center
                     ) {
-                        // This overlay sits on the WebView's own white page, not on a theme
-                        // surface, so it uses the unharmonized brand color — the harmonized
-                        // one is tuned for contrast against the scheme, not against white.
-                        AppLoadingIndicator(color = SoundCloudBrandSource)
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            AppLoadingIndicator()
+                            Spacer(modifier = Modifier.height(16.dp))
+                            Text(
+                                text = tr("Авторизация в SoundCloud..."),
+                                style = MaterialTheme.typography.titleMedium
+                            )
+                        }
                     }
                 }
             }
         }
+    }
+}
 
-        // Authentication overlay
-        if (isLoggingIn) {
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .background(MaterialTheme.colorScheme.scrim.copy(alpha = 0.7f)),
-                contentAlignment = Alignment.Center
-            ) {
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    AppLoadingIndicator(color = AppTheme.brand.soundCloud.color)
-                    Spacer(modifier = Modifier.height(16.dp))
-                    Text(
-                        text = tr("Авторизация в SoundCloud..."),
-                        color = Color.White,
-                        style = MaterialTheme.typography.titleMedium
-                    )
-                }
+// The page as a phone's Chrome asks for it: SoundCloud's sign-in works there.
+private const val SoundCloudSignInUserAgent =
+    "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Mobile Safari/537.36"
+
+/** A WebView for SoundCloud's sign-in: scripts, storage and windows of its own, cookies kept. */
+@SuppressLint("SetJavaScriptEnabled")
+private fun soundCloudSignInWebView(context: Context, client: WebViewClient, userAgent: String): WebView =
+    WebView(context).apply {
+        layoutParams = FrameLayout.LayoutParams(
+            FrameLayout.LayoutParams.MATCH_PARENT,
+            FrameLayout.LayoutParams.MATCH_PARENT
+        )
+        settings.apply {
+            javaScriptEnabled = true
+            domStorageEnabled = true
+            databaseEnabled = true
+            setSupportMultipleWindows(true)
+            javaScriptCanOpenWindowsAutomatically = true
+            userAgentString = userAgent
+        }
+        // Cookies, third-party ones too, so that a Google or SoundCloud sign-in persists.
+        val cookieManager = CookieManager.getInstance()
+        cookieManager.setAcceptCookie(true)
+        cookieManager.setAcceptThirdPartyCookies(this, true)
+        webViewClient = client
+    }
+
+/**
+ * Watches SoundCloud's sign-in pages: whether one is loading, and the first request sent signed —
+ * a client_id in its address, an OAuth token in its header — handed to [onCaptured] on the main
+ * thread.
+ */
+private fun soundCloudSignInClient(
+    onLoading: (Boolean) -> Unit,
+    onCaptured: (clientId: String, token: String) -> Unit
+): WebViewClient = object : WebViewClient() {
+    override fun onPageStarted(view: WebView?, url: String?, favicon: android.graphics.Bitmap?) {
+        super.onPageStarted(view, url, favicon)
+        onLoading(true)
+    }
+
+    override fun onPageFinished(view: WebView?, url: String?) {
+        super.onPageFinished(view, url)
+        onLoading(false)
+        CookieManager.getInstance().flush()
+    }
+
+    override fun shouldInterceptRequest(view: WebView?, request: WebResourceRequest?): WebResourceResponse? {
+        if (request != null) {
+            val clientId = request.url.getQueryParameter("client_id")
+            val headers = request.requestHeaders
+            val authHeader = headers["Authorization"] ?: headers["authorization"]
+            if (!clientId.isNullOrBlank() && !authHeader.isNullOrBlank() && authHeader.startsWith("OAuth ", ignoreCase = true)) {
+                val token = authHeader.removePrefix("OAuth ").trim()
+                if (token.isNotEmpty()) view?.post { onCaptured(clientId, token) }
             }
         }
+        return super.shouldInterceptRequest(view, request)
     }
 }
 
