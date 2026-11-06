@@ -62,3 +62,6 @@
 -keep class * extends androidx.work.ListenableWorker {
     <init>(android.content.Context, androidx.work.WorkerParameters);
 }
+
+# Google Cast makes the options provider by the name in the manifest's meta-data, which R8 can't see.
+-keep class com.example.myapplication.player.cast.CastOptionsProvider { <init>(); }
