@@ -515,7 +515,8 @@ internal fun OnPanelChip(
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Spacer(modifier = Modifier.width(5.dp))
                     Kicker(
-                        text = if (trailingIcon == null) "· ${shownBadge.orEmpty()}" else shownBadge.orEmpty(),
+                        // Set off by the same dot as the source is from the icon.
+                        text = "· ${shownBadge.orEmpty()}",
                         color = PanelColors.content,
                         modifier = Modifier.semantics { badgeDescription?.let { contentDescription = it } }
                     )
