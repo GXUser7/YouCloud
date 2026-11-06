@@ -673,12 +673,12 @@ fun FullScreenVideo(
     }
 }
 
-// Widest and softest first. Enough to fill the sides a 16:9 video leaves on a 20:9 screen.
+// Widest and softest first. Enough to fill the sides a 16:9 video leaves on a 20:9 screen. None
+// nearer than 1.12: a copy hugging the picture reads as its edges blurred, not as its light.
 private val FULL_SCREEN_GLOWS = listOf(
     Glow(scale = 1.6f, blur = 28.dp, opacity = 1f),
     Glow(scale = 1.3f, blur = 18.dp, opacity = 1f),
-    Glow(scale = 1.12f, blur = 10.dp, opacity = 1f),
-    Glow(scale = 1.04f, blur = 4.dp, opacity = 1f)
+    Glow(scale = 1.12f, blur = 10.dp, opacity = 1f)
 )
 
 private class Glow(val scale: Float, val blur: androidx.compose.ui.unit.Dp, val opacity: Float)
@@ -809,9 +809,9 @@ private fun Density.shrinkFor(blur: Dp): Int =
 
 private const val MIN_SHRUNK_BLUR_PX = 6f
 private const val MAX_BLUR_SHRINK = 8
-// Even the sharpest step (4 dp) at half the screen's resolution: blurred by eleven pixels there is
-// nothing finer than two for the full one to keep, and that one step, blurred at full size on
-// every frame of the video, was as much work as all the others. On a phone of a few years ago
+// Even the sharpest step at half the screen's resolution: blurred by eleven pixels there is nothing
+// finer than two for the full one to keep, and the sharpest step (then 4 dp), blurred at full size
+// on every frame of the video, was as much work as all the others. On a phone of a few years ago
 // the player with a video went from stuttering on half its frames to smooth.
 private const val MIN_BLUR_SHRINK = 2
 
@@ -823,8 +823,9 @@ private val AMBIENT_GLOWS = listOf(
     // moderately blurred: the top of the screen is where it shows alone.
     Glow(scale = 1.42f, blur = 22.dp, opacity = 1f),
     Glow(scale = 1.26f, blur = 15.dp, opacity = 1f),
-    Glow(scale = 1.14f, blur = 9.dp, opacity = 1f),
-    Glow(scale = 1.05f, blur = 4.dp, opacity = 1f)
+    // The nearest: no closer. One at 1.05, blurred by 4 dp, lay almost on the picture itself and
+    // showed as its edges blurred — round the cover, and through the video's fading top and bottom.
+    Glow(scale = 1.14f, blur = 9.dp, opacity = 1f)
 )
 
 /**

@@ -399,6 +399,7 @@ import androidx.compose.material3.LocalContentColor
 import androidx.compose.foundation.layout.RowScope
 import androidx.compose.ui.unit.Constraints
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
+import androidx.compose.material3.MaterialShapes
 import androidx.compose.material3.LinearWavyProgressIndicator
 import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.material.icons.filled.DownloadDone
@@ -598,6 +599,7 @@ fun MusicScreen(viewModel: MusicViewModel) {
     }
 
     val downloadedTracks = remember(favorites) { favorites.filter { it.downloadState == DownloadState.DOWNLOADED } }
+    val downloadedIds = remember(downloadedTracks) { downloadedTracks.mapTo(HashSet()) { it.id } }
     val history by viewModel.history.collectAsState()
 
     // Checks the SoundCloud session whenever the app comes back, so a token that lapsed in the
@@ -724,6 +726,7 @@ fun MusicScreen(viewModel: MusicViewModel) {
             LocalAlbumLibrary provides albumLibrary,
             LocalFrostSources provides emptyList(),
             LocalNowPlaying provides NowPlaying(isPlaying, playingFrom, currentTrackId),
+            LocalDownloadedIds provides downloadedIds,
             LocalTogether provides togetherLabel(togetherState)?.let { label -> TogetherBadge(label) { showTogether = true } }
         ) {
             Box(modifier = Modifier.fillMaxSize().drawWithContent { if (!playerCovers) drawContent() }.frostSource(screensFrost)) {
@@ -3594,12 +3597,11 @@ private fun ShelfBlock(item: HeroItem, round: Boolean) {
                 .pressMorph(interaction, corner = if (round) cover * 0.32f else 26.dp, pressedCorner = cover / 2)
         )
         Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-            Text(
-                text = item.title,
+            MarkedTitle(
+                title = item.title,
+                downloaded = item.trackId != null && item.trackId in LocalDownloadedIds.current,
                 style = MaterialTheme.typography.titleMedium.copy(fontSize = 19.sp, lineHeight = 23.sp, fontWeight = FontWeight.SemiBold),
-                color = if (playing) PanelColors.accent else MaterialTheme.colorScheme.onSurface,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis
+                color = if (playing) PanelColors.accent else MaterialTheme.colorScheme.onSurface
             )
             if (!item.subtitle.isNullOrBlank()) {
                 Text(
@@ -3710,11 +3712,10 @@ private fun ShelfCover(item: HeroItem, size: Dp, modifier: Modifier = Modifier, 
 @Composable
 private fun TileCaption(item: HeroItem, center: Boolean = false) {
     Column(horizontalAlignment = if (center) Alignment.CenterHorizontally else Alignment.Start) {
-        Text(
-            text = item.title,
+        MarkedTitle(
+            title = item.title,
+            downloaded = item.trackId != null && item.trackId in LocalDownloadedIds.current,
             style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.SemiBold),
-            maxLines = 2,
-            overflow = TextOverflow.Ellipsis,
             textAlign = if (center) TextAlign.Center else TextAlign.Start
         )
         if (!item.subtitle.isNullOrBlank()) {
@@ -3850,12 +3851,11 @@ private fun ShelfTrack(item: HeroItem, modifier: Modifier = Modifier) {
                 .pressMorph(interaction, corner = 14.dp, pressedCorner = ShelfTrackCover / 2)
         )
         Column(modifier = Modifier.weight(1f)) {
-            Text(
-                text = item.title,
+            TrackRowTitle(
+                title = item.title,
+                downloaded = item.trackId != null && item.trackId in LocalDownloadedIds.current,
                 style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold),
-                color = if (playing) PanelColors.accent else MaterialTheme.colorScheme.onSurface,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
+                color = if (playing) PanelColors.accent else MaterialTheme.colorScheme.onSurface
             )
             if (!item.subtitle.isNullOrBlank()) {
                 Text(text = item.subtitle, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -4884,6 +4884,12 @@ internal data class NowPlaying(val isPlaying: Boolean, val from: String?, val tr
  * again, not the screens around them.
  */
 internal val LocalNowPlaying = androidx.compose.runtime.compositionLocalOf { NowPlaying(false, null, null) }
+
+/**
+ * The ids of the tracks on the phone, for the cards that mark them (home's songs): as with
+ * [LocalNowPlaying], a download finishing composes those again, not the screens around them.
+ */
+private val LocalDownloadedIds = androidx.compose.runtime.compositionLocalOf<Set<Long>> { emptySet() }
 
 /**
  * Animated equaliser bars — the playing cue that replaced morphing the cover itself. [running]
@@ -9741,6 +9747,105 @@ private fun TrackRowFrame(
 /** Height of a track row's content; a row with a divider above is one dp taller. */
 private val TrackRowHeight = 72.dp
 
+/** A track row's title, after a [DownloadedMark] when the track is on the phone. */
+@Composable
+private fun TrackRowTitle(
+    title: String,
+    downloaded: Boolean,
+    style: androidx.compose.ui.text.TextStyle = MaterialTheme.typography.titleMedium,
+    color: Color = Color.Unspecified
+) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        if (downloaded) {
+            DownloadedMark()
+            Spacer(modifier = Modifier.width(6.dp))
+        }
+        Text(
+            text = title,
+            style = style,
+            color = color,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f, fill = false)
+        )
+    }
+}
+
+/**
+ * Downloaded: a tick on the accent's scalloped cookie, the app's own shape, before the title — as
+ * a streaming app marks what plays offline, and as small as the title's capitals are tall.
+ */
+@Composable
+private fun DownloadedMark() {
+    Box(
+        modifier = Modifier
+            .size(16.dp)
+            .clip(DownloadedMarkShape)
+            .background(MaterialTheme.colorScheme.primary),
+        contentAlignment = Alignment.Center
+    ) {
+        Icon(
+            imageVector = Icons.Rounded.Check,
+            contentDescription = tr("Скачано"),
+            tint = MaterialTheme.colorScheme.onPrimary,
+            modifier = Modifier.size(11.dp)
+        )
+    }
+}
+
+private val DownloadedMarkShape: Shape by lazy { PolygonShape(MaterialShapes.Cookie9Sided) }
+
+/**
+ * A title that may take more than one line (a tile's, a card's), after a [DownloadedMark] when the
+ * track is on the phone: the mark set in its first line as a letter is, the rest wrapping under it.
+ */
+@Composable
+private fun MarkedTitle(
+    title: String,
+    downloaded: Boolean,
+    style: androidx.compose.ui.text.TextStyle,
+    modifier: Modifier = Modifier,
+    color: Color = Color.Unspecified,
+    maxLines: Int = 2,
+    textAlign: TextAlign? = null
+) {
+    if (!downloaded) {
+        Text(title, modifier, color = color, style = style, maxLines = maxLines, overflow = TextOverflow.Ellipsis, textAlign = textAlign)
+        return
+    }
+    val text = remember(title) {
+        buildAnnotatedString {
+            appendInlineContent(DOWNLOADED_MARK, "✓")
+            append(title)
+        }
+    }
+    Text(
+        text = text,
+        modifier = modifier,
+        color = color,
+        style = style,
+        maxLines = maxLines,
+        overflow = TextOverflow.Ellipsis,
+        textAlign = textAlign,
+        inlineContent = DownloadedMarkInline
+    )
+}
+
+private const val DOWNLOADED_MARK = "downloaded"
+
+// The mark and the gap after it, as wide as in a row's title (see TrackRowTitle).
+private val DownloadedMarkInline = mapOf(
+    DOWNLOADED_MARK to androidx.compose.foundation.text.InlineTextContent(
+        androidx.compose.ui.text.Placeholder(
+            width = 22.sp,
+            height = 16.sp,
+            placeholderVerticalAlign = androidx.compose.ui.text.PlaceholderVerticalAlign.TextCenter
+        )
+    ) {
+        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.CenterStart) { DownloadedMark() }
+    }
+)
+
 /** Cover thumbnail for a row; the playing row shows moving equaliser bars over it. */
 @Composable
 private fun TrackRowArtwork(artworkUrl: String?, isCurrent: Boolean, isPlaying: Boolean) {
@@ -9914,11 +10019,9 @@ private fun TrackCard(
         }
         TrackRowArtwork(track.artworkUrl, isCurrent = isSelected, isPlaying = isPlaying)
         Column(modifier = Modifier.weight(1f)) {
-            Text(
-                text = track.title ?: "Unknown Track",
-                style = MaterialTheme.typography.titleMedium,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
+            TrackRowTitle(
+                title = track.title ?: "Unknown Track",
+                downloaded = downloadState == DownloadState.DOWNLOADED
             )
             val duration = track.duration.takeIf { it > 0L }?.let { " · " + formatDuration(it) }.orEmpty()
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -9994,11 +10097,10 @@ private fun DownloadedTrackCard(
         TrackRowArtwork(track.displayArtworkUrl, isCurrent = isSelected, isPlaying = isPlaying)
         // Nothing at the end: the text stops as far from the edge as the cover starts.
         Column(modifier = Modifier.weight(1f).then(if (trailing) Modifier else Modifier.padding(end = 8.dp))) {
-            Text(
-                text = track.title,
-                style = MaterialTheme.typography.titleMedium,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
+            // A playlist's own entry may not know: the track downloaded as a like, not from here.
+            TrackRowTitle(
+                title = track.title,
+                downloaded = track.downloadState == DownloadState.DOWNLOADED || track.id in LocalDownloadedIds.current
             )
             Row(
                 verticalAlignment = Alignment.CenterVertically,
@@ -11290,15 +11392,20 @@ private fun PlayerPanel(
     }
 }
 
-// How small a long title may be set to keep to its one line, before it is cut short instead.
-private val PlayerTitleMinSize = 18.sp
+// How small a long title may be set to keep to its one line, before it takes two.
+private val PlayerTitleOneLineMin = 22.sp
+// Two lines in one line's height: this size, the lines half the full line's height apart. About
+// two thirds of the full size, which keeps a long title whole and still headline-heavy, where one
+// line shrunk to fit it was set too small to read.
+private val PlayerTitleTwoLineSize = 17.sp
 
 /**
- * The track's title on the player's panel: always one line, so that the panel is as tall for every
- * track and the cover as large — two lines took a line's height from the cover. A title too long
- * for the line is set smaller, a step at a time, down to [PlayerTitleMinSize]; longer still, it is
- * cut short, and a touch on it shows it whole over the panel. Nothing moves meanwhile: no running
- * text, nothing drawn on every frame. [onClick]: what a tap does otherwise (the track's album).
+ * The track's title on the player's panel, always in one full-size line's height, so that the panel
+ * is as tall for every track and the cover as large. A title too long for the line is set a little
+ * smaller, a step at a time, down to [PlayerTitleOneLineMin]; longer, it takes two close lines at
+ * [PlayerTitleTwoLineSize] in that same height; longer still, the second is cut short, and a touch
+ * shows it whole over the panel. Nothing moves meanwhile: no running text, nothing drawn on every
+ * frame. [onClick]: what a tap does otherwise (the track's album).
  */
 @Composable
 private fun PlayerTitle(title: String, onClick: (() -> Unit)?) {
@@ -11306,7 +11413,8 @@ private fun PlayerTitle(title: String, onClick: (() -> Unit)?) {
     val style = MaterialTheme.typography.headlineMedium
     val color = LocalContentColor.current
     val density = LocalDensity.current
-    // Cut short even at its smallest: the whole of it is a touch away.
+    val measurer = androidx.compose.ui.text.rememberTextMeasurer(cacheSize = 0)
+    // Cut short even in two lines: the whole of it is a touch away.
     var cut by remember(title) { mutableStateOf(false) }
     var whole by remember(title) { mutableStateOf(false) }
     var width by remember { mutableIntStateOf(0) }
@@ -11314,26 +11422,32 @@ private fun PlayerTitle(title: String, onClick: (() -> Unit)?) {
         haptic.performHapticFeedback(HapticFeedbackType.LongPress)
         whole = true
     }
-    Box(
+    BoxWithConstraints(
         modifier = Modifier
             .fillMaxWidth()
-            // One line's height at the full size, whatever size the line is set at.
+            // One line's height at the full size, however the title is set in it.
             .height(with(density) { style.lineHeight.toDp() })
             .onSizeChanged { width = it.width },
         contentAlignment = Alignment.CenterStart
     ) {
+        // Worked out once for a title and a width, before it is drawn: no frame shows it at the
+        // wrong size first.
+        val room = constraints.maxWidth
+        val (setStyle, lines) = remember(title, room, style, density) {
+            fitPlayerTitle(measurer, title, style, room)
+        }
         androidx.compose.foundation.text.BasicText(
             text = title,
-            style = style.copy(color = color),
-            maxLines = 1,
+            style = setStyle.copy(color = color),
+            maxLines = lines,
             overflow = TextOverflow.Ellipsis,
-            autoSize = androidx.compose.foundation.text.TextAutoSize.StepBased(
-                minFontSize = PlayerTitleMinSize,
-                maxFontSize = style.fontSize,
-                stepSize = 1.sp
-            ),
-            onTextLayout = { layout -> cut = layout.lineCount > 0 && layout.isLineEllipsized(0) },
+            onTextLayout = { layout ->
+                cut = layout.lineCount > 0 && layout.isLineEllipsized(layout.lineCount - 1)
+            },
             modifier = Modifier
+                // Free of the box's height: two half-height lines, each rounded up to whole pixels,
+                // come a pixel taller than it, and held to it the second was cut away.
+                .wrapContentHeight(unbounded = true)
                 .clip(RoundedCornerShape(12.dp))
                 .then(
                     when {
@@ -11350,6 +11464,39 @@ private fun PlayerTitle(title: String, onClick: (() -> Unit)?) {
             WholeTitle(title = title, width = width, onDismiss = { whole = false })
         }
     }
+}
+
+/**
+ * How [PlayerTitle] sets [title] in [width] px: the largest size from [style]'s down to
+ * [PlayerTitleOneLineMin] it fits on one line at; failing that, two lines at
+ * [PlayerTitleTwoLineSize], each half of [style]'s line height, so the two take the one's room.
+ */
+private fun fitPlayerTitle(
+    measurer: androidx.compose.ui.text.TextMeasurer,
+    title: String,
+    style: androidx.compose.ui.text.TextStyle,
+    width: Int
+): Pair<androidx.compose.ui.text.TextStyle, Int> {
+    val constraints = Constraints(maxWidth = width.coerceAtLeast(0))
+    var size = style.fontSize.value
+    while (size >= PlayerTitleOneLineMin.value) {
+        val one = style.copy(fontSize = size.sp)
+        if (!measurer.measure(title, one, maxLines = 1, constraints = constraints).hasVisualOverflow) {
+            return one to 1
+        }
+        size -= 1f
+    }
+    return style.copy(
+        fontSize = PlayerTitleTwoLineSize,
+        lineHeight = (style.lineHeight.value / 2).sp,
+        letterSpacing = (-0.2).sp,
+        // Each line its half of the height exactly, the letters in its middle: the two sit close,
+        // and together as tall as the one line was.
+        lineHeightStyle = androidx.compose.ui.text.style.LineHeightStyle(
+            alignment = androidx.compose.ui.text.style.LineHeightStyle.Alignment.Center,
+            trim = androidx.compose.ui.text.style.LineHeightStyle.Trim.None
+        )
+    ) to 2
 }
 
 /** A title cut short, whole: in a card over where it stands, as wide as its line, until let go. */
@@ -12669,6 +12816,7 @@ private fun QueueManagerPanel(
 ) {
     val haptic = LocalHapticFeedback.current
     val density = androidx.compose.ui.platform.LocalDensity.current
+    val downloadedIds = LocalDownloadedIds.current
     val lazyListState = rememberLazyListState()
     var draggedIndex by remember { mutableStateOf<Int?>(null) }
     // The finger's absolute position inside the list, and where within the row it grabbed.
@@ -12972,11 +13120,10 @@ private fun QueueManagerPanel(
                             Spacer(modifier = Modifier.width(14.dp))
 
                             Column(modifier = Modifier.weight(1f)) {
-                                Text(
-                                    text = trackItem.title ?: "Unknown Track",
+                                TrackRowTitle(
+                                    title = trackItem.title ?: "Unknown Track",
+                                    downloaded = trackItem.id in downloadedIds,
                                     style = MaterialTheme.typography.bodyLarge,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis,
                                     color = if (isCurrent) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurface
                                 )
                                 Text(
@@ -14744,6 +14891,7 @@ private fun VideoTileRow(
     // A video's picture is YouTube's own, wide; a song's cover is square.
     val wide = tracks.firstOrNull()?.artworkUrl?.contains("/vi/") == true
     val width = if (wide) 216.dp else 148.dp
+    val downloadedIds = LocalDownloadedIds.current
     val shape = RoundedCornerShape(20.dp)
     val state = rememberLazyListState()
     LazyRow(
@@ -14779,11 +14927,10 @@ private fun VideoTileRow(
                         Box(modifier = Modifier.padding(8.dp)) { LiveBadge() }
                     }
                 }
-                Text(
-                    text = track.title.orEmpty(),
+                MarkedTitle(
+                    title = track.title.orEmpty(),
+                    downloaded = track.id in downloadedIds,
                     style = MaterialTheme.typography.titleSmall,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.padding(start = 4.dp, top = 8.dp, end = 4.dp, bottom = 4.dp)
                 )
             }
