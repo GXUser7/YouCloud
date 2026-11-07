@@ -473,9 +473,10 @@ internal fun OnPanelChip(
     modifier: Modifier = Modifier,
     trailingIcon: ImageVector? = null,
     trailingIconDescription: String? = null,
-    // A word after it all — "+AI" — that comes and goes, sliding in.
+    // A word after it all — "+AI" — that comes with a track, sliding in when [badgeSlides].
     badge: String? = null,
-    badgeDescription: String? = null
+    badgeDescription: String? = null,
+    badgeSlides: Boolean = true
 ) {
     Surface(
         modifier = modifier,
@@ -507,9 +508,13 @@ internal fun OnPanelChip(
             if (badge != null) shownBadge = badge
             androidx.compose.animation.AnimatedVisibility(
                 visible = badge != null,
-                enter = androidx.compose.animation.expandHorizontally(
-                    spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessLow)
-                ) + androidx.compose.animation.fadeIn(),
+                enter = if (badgeSlides) {
+                    androidx.compose.animation.expandHorizontally(
+                        spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessLow)
+                    ) + androidx.compose.animation.fadeIn()
+                } else {
+                    androidx.compose.animation.EnterTransition.None
+                },
                 exit = androidx.compose.animation.shrinkHorizontally() + androidx.compose.animation.fadeOut()
             ) {
                 Row(verticalAlignment = Alignment.CenterVertically) {

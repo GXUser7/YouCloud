@@ -108,7 +108,6 @@
     overflow: hidden;
     isolation: isolate;
     background: color-mix(in oklab, var(--on-surface) 7%, var(--glass));
-    border: 1px solid var(--glass-line);
     transition:
       border-radius var(--d-spatial) var(--spring),
       background-color 250ms var(--ease-emph),

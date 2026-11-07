@@ -15,6 +15,7 @@
   import PlayerControls from '../PlayerControls.svelte'
   import PlayerWave from '../PlayerWave.svelte'
   import TrackMenu from '../TrackMenu.svelte'
+  import VolumeButton from '../VolumeButton.svelte'
   import WavyProgress from '../WavyProgress.svelte'
 
   let { onclose }: { onclose: () => void } = $props()
@@ -153,6 +154,7 @@
         >
           {#key player.repeat === 'one'}<span class="ic swap"><Icon name={player.repeat === 'one' ? 'repeat_one' : 'repeat'} size={24} /></span>{/key}
         </button>
+        <VolumeButton xb align="end" />
       </div>
       <TrackMenu id={t.id} large onleave={onclose} />
     </div>

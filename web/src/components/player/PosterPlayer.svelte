@@ -4,24 +4,30 @@
   // title is set across the whole width, as large as the window lets it, and the cover lies over
   // its top when it is short. The song's words, or what comes next, are the poster's text, and
   // everything pressed is low: what is next, the controls in an ink capsule, the rest beside.
+  // With «Волна в плеере» on, the poster is printed on the wave instead: the page's dark (or light)
+  // surface moving to the music, the ink its text colour — the bright paper only without it.
   import { tr } from '../../lib/i18n.svelte'
   import { serviceName, track } from '../../lib/catalog'
   import { fit } from '../../lib/fit'
   import { time } from '../../lib/format'
-  import { currentTrack, cycleRepeat, go, jump, player, remember, seek, startRadio, stored } from '../../lib/state.svelte'
+  import { queueWindow, revealNow } from '../../lib/queueView'
+  import { app, currentTrack, cycleRepeat, go, jump, player, remember, seek, startRadio, stored } from '../../lib/state.svelte'
   import Cover from '../Cover.svelte'
   import Icon from '../Icon.svelte'
   import Lyrics from '../Lyrics.svelte'
   import PlayerControls from '../PlayerControls.svelte'
+  import PlayerWave from '../PlayerWave.svelte'
   import Slider from '../Slider.svelte'
   import TrackMenu from '../TrackMenu.svelte'
+  import VolumeButton from '../VolumeButton.svelte'
 
   let { onclose }: { onclose: () => void } = $props()
 
   const t = $derived(currentTrack()!)
   const duration = $derived(player.duration || t.duration || 1)
   const upNext = $derived(player.queue[player.index + 1] ? track(player.queue[player.index + 1]) : null)
-  const upcoming = $derived(player.queue.slice(player.index + 1, player.index + 9))
+  const list = $derived(queueWindow(40))
+  let artEl = $state<HTMLElement>()
   let scrub = $state<number | null>(null)
 
   let side = $state<'lyrics' | 'queue'>(stored<string>('posterSide', 'lyrics') === 'queue' ? 'queue' : 'lyrics')
@@ -45,7 +51,8 @@
 
 <svelte:window bind:innerWidth={width} />
 
-<div class="poster" role="dialog" aria-label={tr('Сейчас играет')}>
+<div class="poster" class:waved={app.playerWave} role="dialog" aria-label={tr('Сейчас играет')}>
+  {#if app.playerWave}<div class="bg"><PlayerWave around={artEl} /></div>{/if}
   <svg class="grain" aria-hidden="true">
     <filter id="poster-grain" x="0" y="0" width="100%" height="100%">
       <feTurbulence type="fractalNoise" baseFrequency=".85" numOctaves="2" stitchTiles="stitch" />
@@ -78,26 +85,28 @@
         {#if side === 'lyrics'}
           <Lyrics size="l" />
         {:else}
-          <ol class="list">
-            {#each upcoming as id, i (id + i)}
+          <ol class="list" use:revealNow={0}>
+            {#each list.ids as id, i (list.from + i + ':' + id)}
               {@const q = track(id)}
-              <li>
-                <button onclick={() => jump(player.index + 1 + i)}>
-                  <span class="n">{String(player.index + 2 + i).padStart(2, '0')}</span>
+              {@const at = list.from + i}
+              <li class:past={at < player.index} class:now={at === player.index} data-now={at === player.index ? '' : undefined}>
+                <button onclick={() => jump(at)} aria-current={at === player.index ? 'true' : undefined}>
+                  <span class="n">{String(at + 1).padStart(2, '0')}</span>
                   <span class="qt ellipsis">{q.title}</span>
                   <span class="qd">{q.duration ? time(q.duration) : ''}</span>
                   <span class="qa ellipsis">{q.artists.map((a) => a.name).join(', ')}</span>
                 </button>
               </li>
-            {:else}
-              <li class="empty">{player.radio ? tr('Радио подбирает следующие треки…') : tr('Дальше ничего нет — включи радио по треку.')}</li>
             {/each}
+            {#if player.index + 1 >= player.queue.length}
+              <li class="empty">{player.radio ? tr('Радио подбирает следующие треки…') : tr('Дальше ничего нет — включи радио по треку.')}</li>
+            {/if}
           </ol>
         {/if}
       </div>
     </div>
     {#key t.id}
-      <div class="art" class:tuck style:width="{art}px" style:height="{art}px"><Cover seed={t.id} color={t.color} src={t.cover} grain /></div>
+      <div class="art" class:tuck bind:this={artEl} style:width="{art}px" style:height="{art}px"><Cover seed={t.id} color={t.color} src={t.cover} grain /></div>
     {/key}
   </div>
 
@@ -165,6 +174,7 @@
       >
         <Icon name={player.repeat === 'one' ? 'repeat_one' : 'repeat'} size={22} />
       </button>
+      <span class="vol-host"><VolumeButton align="end" /></span>
       <span class="menu-host"><TrackMenu id={t.id} large onleave={onclose} /></span>
       <button class="pb" onclick={onclose} aria-label={tr('Свернуть')} title={tr('Свернуть')}><Icon name="keyboard_arrow_down" size={26} /></button>
     </div>
@@ -175,6 +185,8 @@
   .poster {
     --paper: var(--primary);
     --ink: var(--on-primary);
+    /* What the shadows are cast in: the ink on paper; plain black on the wave, whose ink is light. */
+    --shade: var(--ink);
     position: fixed;
     inset: 0;
     z-index: 20;
@@ -203,8 +215,22 @@
     mix-blend-mode: multiply;
     pointer-events: none;
   }
-  .poster > :not(.grain) {
+  .poster > :not(.grain, .bg) {
     position: relative;
+  }
+  /* On the wave: the page's surface for paper, its text colour for ink; the wave has grain of its own. */
+  .poster.waved {
+    --paper: var(--surface);
+    --ink: var(--on-surface);
+    --shade: #000;
+    background: var(--surface);
+  }
+  .waved .grain {
+    display: none;
+  }
+  .bg {
+    position: absolute;
+    inset: 0;
   }
 
   .top {
@@ -340,6 +366,18 @@
   .list button:hover {
     background: color-mix(in oklab, var(--ink) 8%, transparent);
   }
+  /* The one playing stands out; what was played is quieter, still there to pick. */
+  .list .now button {
+    background: color-mix(in oklab, var(--ink) 14%, transparent);
+  }
+  .list .past {
+    opacity: 0.55;
+    transition: opacity 150ms;
+  }
+  .list .past:hover,
+  .list .past:focus-within {
+    opacity: 1;
+  }
   .n {
     font-weight: 800;
     font-size: 13px;
@@ -372,8 +410,8 @@
     border-radius: 22px;
     overflow: hidden;
     box-shadow:
-      0 46px 80px -34px color-mix(in oklab, var(--ink) 75%, transparent),
-      0 10px 26px -10px color-mix(in oklab, var(--ink) 45%, transparent);
+      0 46px 80px -34px color-mix(in oklab, var(--shade) 75%, transparent),
+      0 10px 26px -10px color-mix(in oklab, var(--shade) 45%, transparent);
     animation: art-in 480ms var(--ease-in-place);
   }
   @keyframes art-in {
@@ -465,7 +503,7 @@
     overflow: hidden;
     display: grid;
     place-items: center;
-    box-shadow: 0 10px 20px -10px color-mix(in oklab, var(--ink) 60%, transparent);
+    box-shadow: 0 10px 20px -10px color-mix(in oklab, var(--shade) 60%, transparent);
   }
   .next-cover.empty {
     background: color-mix(in oklab, var(--ink) 12%, transparent);
@@ -503,7 +541,15 @@
     border-radius: 999px;
     background: var(--ink);
     color: var(--paper);
-    box-shadow: 0 24px 40px -18px color-mix(in oklab, var(--ink) 75%, transparent);
+    box-shadow: 0 24px 40px -18px color-mix(in oklab, var(--shade) 75%, transparent);
+  }
+  /* The ends follow the capsule's round: a like or shuffle that is on squares only its inner
+     corners, so the outer ones stay concentric with the capsule's. */
+  .capsule :global(.xb:first-child) {
+    border-radius: calc(var(--h) / 2) var(--r) var(--r) calc(var(--h) / 2);
+  }
+  .capsule :global(.xb:last-child) {
+    border-radius: var(--r) calc(var(--h) / 2) calc(var(--h) / 2) var(--r);
   }
   .capsule :global(.xgroup) {
     --w: 52px;
@@ -544,6 +590,25 @@
     border-radius: 15px;
     background: var(--ink);
     color: var(--paper);
+  }
+  /* Volume in ink like the rest; its pill stands on a sheet of the paper. */
+  .vol-host {
+    display: contents;
+    --on-surface: var(--ink);
+    --on-surface-variant: var(--ink);
+    --primary: var(--ink);
+    --on-primary: var(--paper);
+    --vb-pop: color-mix(in oklab, var(--paper) 90%, var(--ink));
+  }
+  .vol-host :global(.round) {
+    background: color-mix(in oklab, var(--ink) 12%, transparent);
+  }
+  .vol-host :global(.round:hover) {
+    background: color-mix(in oklab, var(--ink) 18%, transparent);
+  }
+  .vol-host :global(.round.on) {
+    border-radius: 15px;
+    background: var(--ink);
   }
   /* The track's menu: its button in ink like the rest; the menu itself keeps the page's colours. */
   .menu-host {

@@ -4,13 +4,15 @@
   // the progress is a ring, wavy while it plays, dragged round to seek. «Играть» is a big sun that
   // turns while it plays and rounds off on pause; like, back and forward are shapes of the same
   // family. The line being sung stands under the title; «Далее» swaps it for the tracks to come,
-  // each in a shape of its own. Behind, a few shapes drift in the cover's colours.
+  // each in a shape of its own, the last few played before them. Behind, a few shapes drift in
+  // the cover's colours — or, with «Волна в плеере» on, the wave moves there instead.
   import { tr } from '../../lib/i18n.svelte'
   import { serviceName, track } from '../../lib/catalog'
   import { fit } from '../../lib/fit'
   import { time } from '../../lib/format'
   import { clipPolygon, shapePath, type ShapeName } from '../../lib/shapes'
   import {
+    app,
     currentTrack,
     cycleRepeat,
     dislike,
@@ -32,8 +34,10 @@
   import Icon from '../Icon.svelte'
   import LoadingIndicator from '../LoadingIndicator.svelte'
   import Lyrics from '../Lyrics.svelte'
+  import PlayerWave from '../PlayerWave.svelte'
   import ServiceGlyph from '../ServiceGlyph.svelte'
   import TrackMenu from '../TrackMenu.svelte'
+  import VolumeButton from '../VolumeButton.svelte'
 
   let { onclose }: { onclose: () => void } = $props()
 
@@ -41,6 +45,11 @@
   const duration = $derived(player.duration || t.duration || 1)
   const upNext = $derived(player.queue[player.index + 1] ? track(player.queue[player.index + 1]) : null)
   const upcoming = $derived(player.queue.slice(player.index + 1, player.index + 7))
+  // The last three played, before what comes: picked again from here, not only by «Предыдущий».
+  const played = $derived.by(() => {
+    const from = Math.max(0, player.index - 3)
+    return player.queue.slice(from, player.index).map((id, i) => ({ id, at: from + i }))
+  })
   const liked = $derived(isLiked(t.id))
 
   let side = $state<'lyrics' | 'queue'>(stored<string>('shapeSide', 'lyrics') === 'queue' ? 'queue' : 'lyrics')
@@ -80,9 +89,9 @@
     return { x: C + R * Math.sin(a), y: C - R * Math.cos(a), deg: fraction * 360 }
   })
 
-  let dial: HTMLDivElement
+  let dial = $state<HTMLDivElement>()
   function at(e: PointerEvent) {
-    const r = dial.getBoundingClientRect()
+    const r = dial!.getBoundingClientRect()
     let a = Math.atan2(e.clientX - (r.left + r.width / 2), -(e.clientY - (r.top + r.height / 2)))
     if (a < 0) a += Math.PI * 2
     return a / (Math.PI * 2)
@@ -122,9 +131,13 @@
 </script>
 
 <div class="shape" class:playing={player.playing} role="dialog" aria-label={tr('Сейчас играет')}>
-  <div class="decor" aria-hidden="true">
-    {#each DECOR as clip, i (i)}<span class="f f{i}" style:clip-path={clip}></span>{/each}
-  </div>
+  {#if app.playerWave}
+    <div class="bg"><PlayerWave around={dial} /></div>
+  {:else}
+    <div class="decor" aria-hidden="true">
+      {#each DECOR as clip, i (i)}<span class="f f{i}" style:clip-path={clip}></span>{/each}
+    </div>
+  {/if}
 
   <div class="top">
     <span class="overline">{player.wave ? tr('Моя волна') : tr('Играет из')}</span>
@@ -195,7 +208,14 @@
           <Lyrics size="l" />
         {:else}
           <div class="shapes">
-            {#each upcoming as id, i (id + i)}
+            {#each played as p (p.at + ':' + p.id)}
+              {@const q = track(p.id)}
+              <button class="shp past" onclick={() => jump(p.at)} title="{q.title} — {q.artists.map((a) => a.name).join(', ')}" aria-label={tr('Включить: %s', q.title)}>
+                <span class="shp-art" style:clip-path={QUEUE_CLIPS[(p.at + 5) % QUEUE_CLIPS.length]}><Cover seed={q.id} color={q.color} src={q.cover} /></span>
+              </button>
+            {/each}
+            {#if played.length && upcoming.length}<span class="here" aria-hidden="true"></span>{/if}
+            {#each upcoming as id, i (player.index + 1 + i + ':' + id)}
               {@const q = track(id)}
               <button class="shp" onclick={() => jump(player.index + 1 + i)} title="{q.title} — {q.artists.map((a) => a.name).join(', ')}" aria-label={tr('Включить: %s', q.title)}>
                 <span class="shp-art" style:clip-path={QUEUE_CLIPS[i % QUEUE_CLIPS.length]}><Cover seed={q.id} color={q.color} src={q.cover} /></span>
@@ -254,6 +274,7 @@
       >
         <Icon name={player.repeat === 'one' ? 'repeat_one' : 'repeat'} size={20} />
       </button>
+      <VolumeButton align="end" size={20} />
       <TrackMenu id={t.id} large onleave={onclose} />
     </div>
   </div>
@@ -279,7 +300,7 @@
       opacity: 0;
     }
   }
-  .shape > :not(.decor) {
+  .shape > :not(.decor, .bg) {
     position: relative;
   }
 
@@ -575,6 +596,25 @@
   .shp:active {
     transform: scale(0.94);
   }
+  /* Played already: quieter, and set apart from what comes by a dot where the track playing is. */
+  .shp.past {
+    opacity: 0.5;
+  }
+  .shp.past:hover,
+  .shp.past:focus-visible {
+    opacity: 1;
+  }
+  .here {
+    width: 8px;
+    height: 8px;
+    flex: none;
+    border-radius: 50%;
+    background: var(--primary);
+  }
+  .bg {
+    position: absolute;
+    inset: 0;
+  }
   .shp-art {
     display: block;
     width: 100%;
@@ -653,8 +693,14 @@
     flex: none;
     display: grid;
     place-items: center;
+    color: var(--on-surface);
+    transition:
+      transform var(--d-fast) var(--spring-fast),
+      color 250ms var(--ease-emph);
+  }
+  /* Paused, the sun is a quiet round in the other buttons' tone; playing, it turns, lit. */
+  .playing .sun {
     color: var(--on-primary);
-    transition: transform var(--d-fast) var(--spring-fast);
   }
   .sun:active {
     transform: scale(0.92);
@@ -666,19 +712,24 @@
     width: 100%;
     height: 100%;
     overflow: visible;
-    filter: drop-shadow(0 14px 22px color-mix(in oklab, var(--primary) 50%, transparent));
     animation: turn 14s linear infinite;
     animation-play-state: paused;
   }
   .playing .sun svg {
+    filter: drop-shadow(0 14px 22px color-mix(in oklab, var(--primary) 50%, transparent));
     animation-play-state: running;
   }
   .sun path {
+    fill: color-mix(in oklab, var(--on-surface) 12%, transparent);
+    transition:
+      d 600ms var(--spring),
+      fill 250ms var(--ease-emph);
+  }
+  .playing .sun path {
     fill: var(--primary);
-    transition: d 600ms var(--spring);
   }
   .sun :global(.loader path) {
-    fill: var(--on-primary);
+    fill: currentColor;
   }
   .sun .ic {
     position: relative;

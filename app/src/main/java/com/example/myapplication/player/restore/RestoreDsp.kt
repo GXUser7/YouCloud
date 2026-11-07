@@ -40,6 +40,16 @@ internal object RestoreDsp {
 
     fun db(power: Float): Float = 10f * log10(power + EPS)
 
+    /** Whether there is enough sound in [longDb] (2–8 kHz) to tell a cutoff from none. */
+    fun loudEnough(longDb: FloatArray, rate: Int): Boolean {
+        val hz = rate.toFloat() / FRAME
+        var ref = 0f
+        val refFrom = (2000 / hz).toInt()
+        val refTo = (8000 / hz).toInt()
+        for (k in refFrom until refTo) ref += longDb[k]
+        return ref / (refTo - refFrom) >= -90f
+    }
+
     /**
      * [longDb]: the long-term mean power of each bin, in dB. The cutoff in Hz, or null when the sound
      * reaches the top — or there is too little of it to tell.
