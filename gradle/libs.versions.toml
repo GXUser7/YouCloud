@@ -30,6 +30,9 @@ playServicesNearby = "19.3.0"
 # Jetpack Glance: the home screen widget, in Compose, with Material You's colours and buttons.
 # 1.1.x is built on Kotlin 1.9, which this compiler reads.
 glance = "1.1.1"
+# Google Cast: the track played on a TV or a speaker with Chromecast built in. Media3's CastPlayer
+# (with Google's Cast framework under it) and the router that finds the devices on the network.
+mediarouter = "1.7.0"
 
 [libraries]
 androidx-glance-appwidget = { group = "androidx.glance", name = "glance-appwidget", version.ref = "glance" }
@@ -54,6 +57,8 @@ androidx-compose-material-icons-extended = { group = "androidx.compose.material"
 media3-exoplayer = { group = "androidx.media3", name = "media3-exoplayer", version.ref = "media3" }
 media3-exoplayer-hls = { group = "androidx.media3", name = "media3-exoplayer-hls", version.ref = "media3" }
 media3-session = { group = "androidx.media3", name = "media3-session", version.ref = "media3" }
+media3-cast = { group = "androidx.media3", name = "media3-cast", version.ref = "media3" }
+androidx-mediarouter = { group = "androidx.mediarouter", name = "mediarouter", version.ref = "mediarouter" }
 retrofit = { group = "com.squareup.retrofit2", name = "retrofit", version.ref = "retrofit" }
 retrofit-gson = { group = "com.squareup.retrofit2", name = "converter-gson", version.ref = "retrofit" }
 okhttp = { group = "com.squareup.okhttp3", name = "okhttp", version.ref = "okhttp" }

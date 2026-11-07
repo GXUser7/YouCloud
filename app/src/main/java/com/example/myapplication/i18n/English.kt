@@ -5,7 +5,7 @@ package com.example.myapplication.i18n
  * English order (`%1$s`) where that differs. Filled in parts, as one method holds only so much.
  */
 internal object English {
-    private val phrases: Map<String, String> = HashMap<String, String>(856).apply {
+    private val phrases: Map<String, String> = HashMap<String, String>(900).apply {
         part1()
         part2()
         part3()
@@ -13,6 +13,7 @@ internal object English {
         part5()
         part6()
         part7()
+        part8()
     }
 
     operator fun get(ru: String): String? = phrases[ru]
@@ -904,5 +905,38 @@ internal object English {
         put("Только этого трека, отдельно от громкости телефона", "This track's alone, apart from the phone's volume")
         put("Как есть", "As is")
         put("Скачан", "Downloaded")
+    }
+
+    // Quality restoration, and where the sound goes.
+    private fun HashMap<String, String>.part8() {
+        put("Восстановление качества", "Quality restoration")
+        put("Модель возвращает верхние частоты, срезанные в MP3 и AAC до 160 кбит/с. Включается сама и только для сжатых треков, в плеере тогда «+AI»", "A model brings back the highs that MP3 and AAC up to 160 kbps cut off. It turns on by itself, only for compressed tracks, and the player then says “+AI”")
+        put("Модель", "Model")
+        put("Лёгкая", "Light")
+        put("Мощная", "Strong")
+        put("Скачивается мощная модель · %s%%", "Downloading the strong model · %s%%")
+        put("Мощная модель не скачалась. Нажмите «Мощная», чтобы попробовать ещё раз", "The strong model didn't download. Tap “Strong” to try again")
+        put("Удалить мощную модель", "Delete the strong model")
+        put("Улучшено моделью", "Enhanced by the model")
+        put("Звук", "Sound")
+        put("Куда идёт звук: телефон, Bluetooth или телевизор", "Where the sound goes: the phone, Bluetooth or a TV")
+        put("Телефон", "Phone")
+        put("Этот телефон", "This phone")
+        put("Как в системе", "As the system has it")
+        put("Последние подключённые наушники или колонка, без них — телефон", "The last headphones or speaker connected, the phone without them")
+        put("Сейчас звук здесь", "Playing here now")
+        put("Только динамик телефона, даже с наушниками", "The phone's speaker only, even with headphones on")
+        put("Bluetooth · подключено", "Bluetooth · connected")
+        put("Наушники по проводу", "Wired headphones")
+        put("Слуховой аппарат", "Hearing aid")
+        put("Показать колонки Bluetooth", "Show Bluetooth speakers")
+        put("Сопряжённые с телефоном: нужно разрешение на устройства рядом", "Those paired with the phone: needs the nearby devices permission")
+        put("Не подключено · подключить в системном меню", "Not connected · connect in the system menu")
+        put("Играет здесь · нажмите, чтобы вернуть на телефон", "Playing here · tap to bring it back to the phone")
+        put("Google Cast · в этой сети Wi-Fi", "Google Cast · on this Wi-Fi")
+        put("Телевизоры и колонки с Google Cast появятся здесь, если они в той же сети Wi-Fi", "TVs and speakers with Google Cast show up here when they're on the same Wi-Fi")
+        put("Выбрано", "Selected")
+        put("Мощная: полосы вдвое уже, точнее форма верха. Работает втрое тяжелее лёгкой — всё равно немного", "Strong: bands half as wide, the shape of the highs closer. Three times the light one's work — still little")
+        put("Лёгкая встроена и почти не нагружает телефон. Мощная точнее передаёт форму верха, %s МБ — скачается по нажатию", "The light one is built in and barely loads the phone. The strong one gets the shape of the highs closer, %s MB — downloaded on a tap")
     }
 }

@@ -97,6 +97,17 @@ import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.material.icons.rounded.Forum
 import androidx.compose.material.icons.rounded.Groups
+import androidx.compose.material.icons.rounded.Memory
+import androidx.compose.material.icons.rounded.Bluetooth
+import androidx.compose.material.icons.rounded.Headphones
+import androidx.compose.material.icons.rounded.Usb
+import androidx.compose.material.icons.rounded.Hearing
+import androidx.compose.material.icons.rounded.Cast
+import androidx.compose.material.icons.rounded.PhoneAndroid
+import androidx.compose.material.icons.rounded.SettingsSuggest
+import androidx.compose.material.icons.rounded.BluetoothSearching
+import androidx.compose.material.icons.rounded.BluetoothDisabled
+import androidx.compose.material.icons.rounded.Tv
 import androidx.compose.material.icons.rounded.TouchApp
 import androidx.compose.material.icons.rounded.ViewCarousel
 import androidx.compose.material.icons.rounded.KeyboardArrowDown
@@ -6231,6 +6242,7 @@ private fun SettingsScreen(
                     eqEnabled = eqEnabled,
                     eqPreset = eqPreset
                 )
+                RestoreSettingsCard(settingsRepository)
                 val fxButton by settingsRepository.playerFxButton.collectAsState()
                 Card(
                     modifier = Modifier
@@ -6343,6 +6355,106 @@ private fun SettingsScreen(
             }
         }
     }
+    }
+}
+
+/**
+ * Restoring lossy tracks: whether, and with which model — the light one in the app, or the strong
+ * one, downloaded here. Choosing the strong one before it is on the phone downloads it, and it is
+ * used from the moment it is.
+ */
+@Composable
+private fun RestoreSettingsCard(settingsRepository: SettingsRepository) {
+    val context = LocalContext.current
+    val enabled by settingsRepository.restoreEnabled.collectAsState()
+    val strong by settingsRepository.restoreStrong.collectAsState()
+    val models = com.example.myapplication.player.restore.RestoreModels
+    LaunchedEffect(Unit) { models.refresh(context) }
+    val download by models.strong.collectAsState()
+    val ready = download == com.example.myapplication.player.restore.RestoreModels.Download.Ready
+    val startDownload: () -> Unit = {
+        models.startStrongDownload(context) { settingsRepository.setRestoreStrong(true) }
+    }
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .glassOr(MaterialTheme.shapes.extraLarge, MaterialTheme.colorScheme.surfaceContainer),
+        shape = MaterialTheme.shapes.extraLarge,
+        colors = CardDefaults.cardColors(containerColor = glassFill(MaterialTheme.colorScheme.surfaceContainer))
+    ) {
+        Column(modifier = Modifier.padding(vertical = 4.dp)) {
+            SettingsSwitchRow(
+                icon = Icons.Default.AutoAwesome,
+                title = tr("Восстановление качества"),
+                subtitle = tr("Модель возвращает верхние частоты, срезанные в MP3 и AAC до 160 кбит/с. Включается сама и только для сжатых треков, в плеере тогда «+AI»"),
+                checked = enabled,
+                onCheckedChange = settingsRepository::setRestoreEnabled
+            )
+            HorizontalDivider(
+                color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.25f),
+                modifier = Modifier.padding(horizontal = 18.dp)
+            )
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .graphicsLayer { alpha = if (enabled) 1f else 0.38f }
+                    .padding(horizontal = 18.dp, vertical = 14.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+                    SettingsIcon(Icons.Rounded.Memory)
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(tr("Модель"), style = MaterialTheme.typography.titleMedium)
+                        Text(
+                            text = when (val d = download) {
+                                is com.example.myapplication.player.restore.RestoreModels.Download.Running ->
+                                    tr("Скачивается мощная модель · %s%%", (d.fraction * 100).toInt())
+                                is com.example.myapplication.player.restore.RestoreModels.Download.Failed ->
+                                    tr("Мощная модель не скачалась. Нажмите «Мощная», чтобы попробовать ещё раз")
+                                else -> if (strong && ready) {
+                                    tr("Мощная: полосы вдвое уже, точнее форма верха. Работает втрое тяжелее лёгкой — всё равно немного")
+                                } else {
+                                    tr("Лёгкая встроена и почти не нагружает телефон. Мощная точнее передаёт форму верха, %s МБ — скачается по нажатию", "2")
+                                }
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+                val running = download is com.example.myapplication.player.restore.RestoreModels.Download.Running
+                if (running) {
+                    val fraction = (download as com.example.myapplication.player.restore.RestoreModels.Download.Running).fraction
+                    AppLinearProgress(progress = { fraction }, modifier = Modifier.padding(start = 56.dp).fillMaxWidth())
+                }
+                SegmentedControl(
+                    items = listOf(tr("Лёгкая"), tr("Мощная")),
+                    selectedIndex = if (strong && ready) 1 else 0,
+                    onSelectedIndexChanged = { index ->
+                        if (!enabled) return@SegmentedControl
+                        when {
+                            index == 0 -> settingsRepository.setRestoreStrong(false)
+                            ready -> settingsRepository.setRestoreStrong(true)
+                            !running -> startDownload()
+                        }
+                    },
+                    modifier = Modifier.padding(start = 56.dp),
+                    height = 44.dp,
+                    textStyle = MaterialTheme.typography.labelLarge
+                )
+                if (ready) {
+                    TextButton(
+                        onClick = {
+                            settingsRepository.setRestoreStrong(false)
+                            models.deleteStrong(context)
+                        },
+                        modifier = Modifier.padding(start = 44.dp)
+                    ) {
+                        Text(tr("Удалить мощную модель"))
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -11176,6 +11288,7 @@ private fun PlayerPanel(
                 Box(modifier = Modifier.weight(1f)) {
                 // Where it is from, and, downloaded, a mark that it is on the phone.
                 val downloaded = !fromPhone && downloadState == DownloadState.DOWNLOADED
+                val enhanced by com.example.myapplication.player.restore.RestoreState.enhancing.collectAsState()
                 OnPanelChip(
                     text = when {
                         fromPhone -> tr("С телефона")
@@ -11184,8 +11297,11 @@ private fun PlayerPanel(
                         track.youTubeVideoId != null -> "YouTube Music"
                         else -> "SoundCloud"
                     },
-                    trailingIcon = if (downloaded) Icons.Default.DownloadDone else null,
-                    trailingIconDescription = tr("Скачан")
+                    trailingIcon = if (downloaded) ServiceIcons.OnPhone else null,
+                    trailingIconDescription = tr("Скачан"),
+                    // Restored by the model as it plays: a lossy file, its lost top brought back.
+                    badge = if (enhanced) "+AI" else null,
+                    badgeDescription = tr("Улучшено моделью")
                 )
                 }
                 LocalTogether.current?.let { badge ->
@@ -15223,6 +15339,8 @@ fun TrackActionsDialog(
     // The sleep timer's and the crossfade's choices; one open at a time, with the playlists.
     var choosingSleep by remember { mutableStateOf(false) }
     var choosingCrossfade by remember { mutableStateOf(false) }
+    // Where the music is heard: the phone, a Bluetooth speaker, a TV.
+    var choosingOutput by remember { mutableStateOf(false) }
     var showCreatePlaylistDialog by remember { mutableStateOf(false) }
     var playlistNameInput by remember { mutableStateOf("") }
     val colors = MaterialTheme.colorScheme
@@ -15292,6 +15410,7 @@ fun TrackActionsDialog(
                         choosingPlaylist = !choosingPlaylist
                         choosingSleep = false
                         choosingCrossfade = false
+                        choosingOutput = false
                     },
                     modifier = Modifier.weight(1f)
                 )
@@ -15366,6 +15485,7 @@ fun TrackActionsDialog(
                             choosingSleep = !choosingSleep
                             choosingCrossfade = false
                             choosingPlaylist = false
+                            choosingOutput = false
                         },
                         modifier = Modifier.weight(1f)
                     )
@@ -15379,9 +15499,34 @@ fun TrackActionsDialog(
                             choosingCrossfade = !choosingCrossfade
                             choosingSleep = false
                             choosingPlaylist = false
+                            choosingOutput = false
                         },
                         modifier = Modifier.weight(1f)
                     )
+                    if (!demo) {
+                        val castingTo by com.example.myapplication.player.AudioOutputs.castingTo.collectAsState()
+                        val preferred by com.example.myapplication.player.AudioOutputs.preferredDeviceId.collectAsState()
+                        val outputContext = LocalContext.current
+                        val here = remember(preferred, castingTo, choosingOutput) {
+                            com.example.myapplication.player.AudioOutputs.current(
+                                com.example.myapplication.player.AudioOutputs.connected(outputContext, tr("Телефон"))
+                            )
+                        }
+                        SheetTile(
+                            icon = outputIcon(if (castingTo != null) com.example.myapplication.player.AudioOutputs.Kind.Cast else here?.kind),
+                            label = castingTo ?: here?.name ?: tr("Звук"),
+                            description = tr("Куда идёт звук: телефон, Bluetooth или телевизор"),
+                            selected = choosingOutput,
+                            onClick = {
+                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                choosingOutput = !choosingOutput
+                                choosingSleep = false
+                                choosingCrossfade = false
+                                choosingPlaylist = false
+                            },
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
                 }
                 AnimatedVisibility(
                     visible = choosingSleep,
@@ -15410,6 +15555,13 @@ fun TrackActionsDialog(
                             }.takeIf { timer != com.example.myapplication.player.SleepTimer.State.Off }
                         )
                     )
+                }
+                AnimatedVisibility(
+                    visible = choosingOutput,
+                    enter = expandVertically(spring(dampingRatio = 0.85f, stiffness = Spring.StiffnessMediumLow)) + fadeIn(),
+                    exit = shrinkVertically(spring(dampingRatio = 1f, stiffness = Spring.StiffnessMedium)) + fadeOut()
+                ) {
+                    OutputChoices(onPicked = dismissSheet)
                 }
                 AnimatedVisibility(
                     visible = choosingCrossfade,
@@ -15667,7 +15819,8 @@ private fun SheetRow(
     title: String,
     subtitle: String?,
     onClick: () -> Unit,
-    titleColor: Color = PanelColors.content
+    titleColor: Color = PanelColors.content,
+    trailing: (@Composable () -> Unit)? = null
 ) {
     Row(
         modifier = Modifier
@@ -15690,6 +15843,7 @@ private fun SheetRow(
                 )
             }
         }
+        trailing?.invoke()
     }
 }
 
@@ -15703,6 +15857,193 @@ private fun SheetRowIcon(icon: ImageVector, tint: Color = PanelColors.accent) {
         contentAlignment = Alignment.Center
     ) {
         Icon(icon, contentDescription = null, tint = tint, modifier = Modifier.size(22.dp))
+    }
+}
+
+/** The glyph of where the sound goes. */
+private fun outputIcon(kind: com.example.myapplication.player.AudioOutputs.Kind?): ImageVector = when (kind) {
+    com.example.myapplication.player.AudioOutputs.Kind.Bluetooth -> Icons.Rounded.Bluetooth
+    com.example.myapplication.player.AudioOutputs.Kind.Wired -> Icons.Rounded.Headphones
+    com.example.myapplication.player.AudioOutputs.Kind.Usb -> Icons.Rounded.Usb
+    com.example.myapplication.player.AudioOutputs.Kind.HearingAid -> Icons.Rounded.Hearing
+    com.example.myapplication.player.AudioOutputs.Kind.Cast -> Icons.Rounded.Cast
+    else -> Icons.Rounded.PhoneAndroid
+}
+
+/**
+ * Where the music is heard, picked in the track's menu: as Android has it, the phone itself, each
+ * device connected now, the speakers paired before (connected through the phone's own switcher —
+ * Android lets no app do it), and the TVs and speakers with Google Cast on this Wi-Fi, found while
+ * it is open.
+ */
+@Composable
+private fun OutputChoices(onPicked: () -> Unit) {
+    val context = LocalContext.current
+    val haptic = LocalHapticFeedback.current
+    val outputs = com.example.myapplication.player.AudioOutputs
+    val phoneName = tr("Этот телефон")
+    var connected by remember { mutableStateOf(outputs.connected(context, phoneName)) }
+    var canListPaired by remember { mutableStateOf(outputs.canListPaired(context)) }
+    val paired = remember(connected, canListPaired) { outputs.paired(context, connected.map { it.key }.toSet()) }
+    val preferred by outputs.preferredDeviceId.collectAsState()
+    val castingTo by outputs.castingTo.collectAsState()
+    val current = remember(connected, preferred) { outputs.current(connected) }
+    val askPaired = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.RequestPermission()
+    ) { canListPaired = outputs.canListPaired(context) }
+
+    // Devices coming and going while it is open.
+    DisposableEffect(Unit) {
+        val audio = context.getSystemService(android.media.AudioManager::class.java)
+        val callback = object : android.media.AudioDeviceCallback() {
+            override fun onAudioDevicesAdded(addedDevices: Array<out android.media.AudioDeviceInfo>?) {
+                connected = outputs.connected(context, phoneName)
+            }
+
+            override fun onAudioDevicesRemoved(removedDevices: Array<out android.media.AudioDeviceInfo>?) {
+                connected = outputs.connected(context, phoneName)
+            }
+        }
+        audio?.registerAudioDeviceCallback(callback, android.os.Handler(android.os.Looper.getMainLooper()))
+        onDispose { audio?.unregisterAudioDeviceCallback(callback) }
+    }
+
+    // Cast devices on the network, looked for while this is open.
+    val router = remember { runCatching { androidx.mediarouter.media.MediaRouter.getInstance(context) }.getOrNull() }
+    val selector = remember {
+        androidx.mediarouter.media.MediaRouteSelector.Builder()
+            .addControlCategory(
+                com.google.android.gms.cast.CastMediaControlIntent.categoryForCast(
+                    com.google.android.gms.cast.CastMediaControlIntent.DEFAULT_MEDIA_RECEIVER_APPLICATION_ID
+                )
+            )
+            .build()
+    }
+    var castRoutes by remember { mutableStateOf(emptyList<androidx.mediarouter.media.MediaRouter.RouteInfo>()) }
+    DisposableEffect(router) {
+        if (router == null) return@DisposableEffect onDispose { }
+        // The Cast framework starts a session when a route is picked, once it is set up.
+        runCatching {
+            com.google.android.gms.cast.framework.CastContext.getSharedInstance(context, androidx.core.content.ContextCompat.getMainExecutor(context))
+        }
+        fun refresh() {
+            castRoutes = router.routes.filter { !it.isDefault && !it.isBluetooth && it.isEnabled && it.matchesSelector(selector) }
+        }
+        val callback = object : androidx.mediarouter.media.MediaRouter.Callback() {
+            override fun onRouteAdded(router: androidx.mediarouter.media.MediaRouter, route: androidx.mediarouter.media.MediaRouter.RouteInfo) = refresh()
+            override fun onRouteRemoved(router: androidx.mediarouter.media.MediaRouter, route: androidx.mediarouter.media.MediaRouter.RouteInfo) = refresh()
+            override fun onRouteChanged(router: androidx.mediarouter.media.MediaRouter, route: androidx.mediarouter.media.MediaRouter.RouteInfo) = refresh()
+        }
+        router.addCallback(selector, callback, androidx.mediarouter.media.MediaRouter.CALLBACK_FLAG_PERFORM_ACTIVE_SCAN)
+        refresh()
+        onDispose { router.removeCallback(callback) }
+    }
+    val stopCasting: () -> Unit = {
+        runCatching {
+            com.google.android.gms.cast.framework.CastContext.getSharedInstance()?.sessionManager?.endCurrentSession(true)
+        }
+    }
+    val selectedMark: @Composable () -> Unit = {
+        Icon(Icons.Rounded.CheckCircle, contentDescription = tr("Выбрано"), tint = PanelColors.accent, modifier = Modifier.size(22.dp))
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .heightIn(max = 380.dp)
+            .clip(RoundedCornerShape(24.dp))
+            .background(PanelColors.container)
+            .verticalScroll(rememberScrollState())
+    ) {
+        SheetRow(
+            leading = { SheetRowIcon(Icons.Rounded.SettingsSuggest) },
+            title = tr("Как в системе"),
+            subtitle = tr("Последние подключённые наушники или колонка, без них — телефон"),
+            onClick = {
+                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                if (castingTo != null) stopCasting()
+                outputs.preferredDeviceId.value = null
+                onPicked()
+            },
+            trailing = if (preferred == null && castingTo == null) selectedMark else null
+        )
+        connected.forEach { output ->
+            SheetDivider()
+            val chosen = castingTo == null && preferred != null && output.deviceId == preferred
+            SheetRow(
+                leading = { SheetRowIcon(outputIcon(output.kind)) },
+                title = output.name,
+                subtitle = when {
+                    castingTo == null && current?.key == output.key -> tr("Сейчас звук здесь")
+                    output.kind == com.example.myapplication.player.AudioOutputs.Kind.Phone -> tr("Только динамик телефона, даже с наушниками")
+                    output.kind == com.example.myapplication.player.AudioOutputs.Kind.Bluetooth -> tr("Bluetooth · подключено")
+                    output.kind == com.example.myapplication.player.AudioOutputs.Kind.Wired -> tr("Наушники по проводу")
+                    output.kind == com.example.myapplication.player.AudioOutputs.Kind.Usb -> "USB"
+                    else -> tr("Слуховой аппарат")
+                },
+                onClick = {
+                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                    if (castingTo != null) stopCasting()
+                    outputs.preferredDeviceId.value = output.deviceId
+                    onPicked()
+                },
+                trailing = if (chosen) selectedMark else null
+            )
+        }
+        if (!canListPaired) {
+            SheetDivider()
+            SheetRow(
+                leading = { SheetRowIcon(Icons.Rounded.BluetoothSearching) },
+                title = tr("Показать колонки Bluetooth"),
+                subtitle = tr("Сопряжённые с телефоном: нужно разрешение на устройства рядом"),
+                onClick = { askPaired.launch(android.Manifest.permission.BLUETOOTH_CONNECT) }
+            )
+        }
+        paired.forEach { output ->
+            SheetDivider()
+            SheetRow(
+                leading = { SheetRowIcon(Icons.Rounded.BluetoothDisabled, tint = PanelColors.content.copy(alpha = 0.6f)) },
+                title = output.name,
+                subtitle = tr("Не подключено · подключить в системном меню"),
+                onClick = {
+                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                    outputs.openSystemSwitcher(context)
+                    onPicked()
+                }
+            )
+        }
+        castRoutes.forEach { route ->
+            SheetDivider()
+            val playing = route.isSelected || castingTo == route.name
+            SheetRow(
+                leading = { SheetRowIcon(if (route.deviceType == androidx.mediarouter.media.MediaRouter.RouteInfo.DEVICE_TYPE_TV) Icons.Rounded.Tv else Icons.Rounded.Cast) },
+                title = route.name,
+                subtitle = if (playing) tr("Играет здесь · нажмите, чтобы вернуть на телефон") else tr("Google Cast · в этой сети Wi-Fi"),
+                onClick = {
+                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                    if (playing) stopCasting() else router?.selectRoute(route)
+                    onPicked()
+                },
+                trailing = if (playing) selectedMark else null
+            )
+        }
+        if (castRoutes.isEmpty() && castingTo == null) {
+            SheetDivider()
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 14.dp, vertical = 12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(14.dp)
+            ) {
+                SheetRowIcon(Icons.Rounded.Cast, tint = PanelColors.content.copy(alpha = 0.6f))
+                Text(
+                    tr("Телевизоры и колонки с Google Cast появятся здесь, если они в той же сети Wi-Fi"),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = PanelColors.content.copy(alpha = 0.7f)
+                )
+            }
+        }
     }
 }
 

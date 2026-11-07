@@ -56,6 +56,9 @@ import androidx.compose.runtime.Stable
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -469,7 +472,10 @@ internal fun OnPanelChip(
     text: String,
     modifier: Modifier = Modifier,
     trailingIcon: ImageVector? = null,
-    trailingIconDescription: String? = null
+    trailingIconDescription: String? = null,
+    // A word after it all — "+AI" — that comes and goes, sliding in.
+    badge: String? = null,
+    badgeDescription: String? = null
 ) {
     Surface(
         modifier = modifier,
@@ -481,7 +487,7 @@ internal fun OnPanelChip(
             modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            // The text gives way first: the icon stays whole.
+            // The text gives way first: the icon and the badge stay whole.
             Kicker(
                 text = if (trailingIcon != null) "$text ·" else text,
                 color = PanelColors.content,
@@ -495,6 +501,26 @@ internal fun OnPanelChip(
                     tint = PanelColors.content,
                     modifier = Modifier.size(PanelChipIconSize)
                 )
+            }
+            // Kept while it slides out, when there is no longer one to show.
+            var shownBadge by remember { mutableStateOf(badge) }
+            if (badge != null) shownBadge = badge
+            androidx.compose.animation.AnimatedVisibility(
+                visible = badge != null,
+                enter = androidx.compose.animation.expandHorizontally(
+                    spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessLow)
+                ) + androidx.compose.animation.fadeIn(),
+                exit = androidx.compose.animation.shrinkHorizontally() + androidx.compose.animation.fadeOut()
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Spacer(modifier = Modifier.width(5.dp))
+                    Kicker(
+                        // Set off by the same dot as the source is from the icon.
+                        text = "· ${shownBadge.orEmpty()}",
+                        color = PanelColors.content,
+                        modifier = Modifier.semantics { badgeDescription?.let { contentDescription = it } }
+                    )
+                }
             }
         }
     }

@@ -63,7 +63,19 @@ internal class PlaybackFades(
     private val scope = MainScope()
     private val helperReverb = ReverbAudioProcessor()
     private val helperGain = GainAudioProcessor()
+
+    /** Restores the next track as the main player does its own: the service keeps the two alike. */
+    val helperRestore = com.example.myapplication.player.restore.RestoreAudioProcessor { on ->
+        com.example.myapplication.player.restore.RestoreState.report("helper", on)
+    }
     private var helper: ExoPlayer? = null
+
+    /** Where the helper is heard: where the main player is (see [AudioOutputs.preferredDeviceId]). */
+    var preferredAudioDevice: android.media.AudioDeviceInfo? = null
+        set(value) {
+            field = value
+            helper?.setPreferredAudioDevice(value)
+        }
 
     private enum class Phase {
         Idle,
@@ -551,7 +563,7 @@ internal class PlaybackFades(
                 enableFloatOutput: Boolean,
                 enableAudioTrackPlaybackParams: Boolean
             ): AudioSink = DefaultAudioSink.Builder(context)
-                .setAudioProcessorChain(DefaultAudioSink.DefaultAudioProcessorChain(helperReverb, helperGain))
+                .setAudioProcessorChain(DefaultAudioSink.DefaultAudioProcessorChain(helperRestore, helperReverb, helperGain))
                 .setEnableAudioTrackPlaybackParams(enableAudioTrackPlaybackParams)
                 .build()
         })
@@ -564,6 +576,7 @@ internal class PlaybackFades(
         .build()
         .apply {
             trackSelectionParameters = trackSelectionParameters.buildUpon().setTrackTypeDisabled(C.TRACK_TYPE_VIDEO, true).build()
+            setPreferredAudioDevice(preferredAudioDevice)
             // Its own session, with the equalizer put on it.
             if (audioSessionId != C.AUDIO_SESSION_ID_UNSET) onHelperSession(audioSessionId)
             addListener(object : Player.Listener {

@@ -142,6 +142,8 @@ dependencies {
     implementation(libs.media3.exoplayer)
     implementation(libs.media3.exoplayer.hls)
     implementation(libs.media3.session)
+    implementation(libs.media3.cast)
+    implementation(libs.androidx.mediarouter)
     implementation(libs.retrofit)
     implementation(libs.retrofit.gson)
     implementation(libs.okhttp)
@@ -153,6 +155,8 @@ dependencies {
     implementation(libs.androidx.glance.appwidget)
     implementation(libs.androidx.glance.material3)
     testImplementation(libs.junit)
+    // Android's own org.json is only a stub in unit tests: the restoration models' headers are read with it.
+    testImplementation("org.json:json:20240303")
     // Virtual time for the tests of listening together: a host and a guest, minutes in a moment.
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.9.0")
     androidTestImplementation(platform(libs.androidx.compose.bom))

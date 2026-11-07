@@ -281,6 +281,25 @@ class SettingsRepository(
         preferences.edit().putBoolean(KEY_AUTO_CONTINUE, enabled).apply()
     }
 
+    /**
+     * Restoring lossy tracks (MP3 and AAC cut off under 18 kHz) with a model, in the player itself.
+     * The playback service reads these preferences as they change.
+     */
+    val restoreEnabled = MutableStateFlow(preferences.getBoolean(KEY_RESTORE_ENABLED, true))
+
+    fun setRestoreEnabled(enabled: Boolean) {
+        restoreEnabled.value = enabled
+        preferences.edit().putBoolean(KEY_RESTORE_ENABLED, enabled).apply()
+    }
+
+    /** Which model restores: the light one in the app, or the strong one, once downloaded. */
+    val restoreStrong = MutableStateFlow(preferences.getBoolean(KEY_RESTORE_STRONG, false))
+
+    fun setRestoreStrong(strong: Boolean) {
+        restoreStrong.value = strong
+        preferences.edit().putBoolean(KEY_RESTORE_STRONG, strong).apply()
+    }
+
     val playerFxButton = MutableStateFlow(preferences.getBoolean(KEY_PLAYER_FX_BUTTON, false))
 
     fun setPlayerFxButton(enabled: Boolean) {
@@ -516,6 +535,8 @@ class SettingsRepository(
         const val KEY_YANDEX_WAVE_SESSION = "yandex_wave_session"
         const val KEY_YANDEX_WAVE_PICKS = "yandex_wave_picks"
         const val KEY_PLAYER_FX_BUTTON = "player_fx_button"
+        const val KEY_RESTORE_ENABLED = com.example.myapplication.player.restore.RestoreModels.KEY_ENABLED
+        const val KEY_RESTORE_STRONG = com.example.myapplication.player.restore.RestoreModels.KEY_STRONG
         const val KEY_AUTO_CONTINUE = "auto_continue"
         const val KEY_OPEN_PLAYER_ON_TAP = "open_player_on_tap"
         const val KEY_SMOOTH_MOTION = "smooth_motion"
