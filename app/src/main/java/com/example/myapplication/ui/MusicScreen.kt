@@ -11288,7 +11288,9 @@ private fun PlayerPanel(
                 Box(modifier = Modifier.weight(1f)) {
                 // Where it is from, and, downloaded, a mark that it is on the phone.
                 val downloaded = !fromPhone && downloadState == DownloadState.DOWNLOADED
-                val enhanced by com.example.myapplication.player.restore.RestoreState.enhancing.collectAsState()
+                // Decided once a track and held to its end (see RestoreState.badge).
+                val restoreBadge by com.example.myapplication.player.restore.RestoreState.badge.collectAsState()
+                val enhanced = restoreBadge?.let { it.restored && it.mediaId == track.id.toString() } == true
                 OnPanelChip(
                     text = when {
                         fromPhone -> tr("С телефона")
@@ -11301,7 +11303,9 @@ private fun PlayerPanel(
                     trailingIconDescription = tr("Скачан"),
                     // Restored by the model as it plays: a lossy file, its lost top brought back.
                     badge = if (enhanced) "+AI" else null,
-                    badgeDescription = tr("Улучшено моделью")
+                    badgeDescription = tr("Улучшено моделью"),
+                    // Slides in with a new track; found while one plays, it is just there.
+                    badgeSlides = restoreBadge?.fromStart != false
                 )
                 }
                 LocalTogether.current?.let { badge ->

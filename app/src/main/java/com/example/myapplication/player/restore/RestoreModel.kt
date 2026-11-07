@@ -56,12 +56,7 @@ class RestoreModel private constructor(
         /** [input]: [inputs] values; [output]: [bands] values, in 20 dB units over the anchor. */
         fun step(input: FloatArray, output: FloatArray) {
             val n = inputs
-            for (i in 0 until hidden) {
-                var s = inB[i]
-                val row = i * n
-                for (j in 0 until n) s += inW[row + j] * input[j]
-                x[i] = tanh(s)
-            }
+            for (i in 0 until hidden) x[i] = tanh(inB[i] + dot(inW, i * n, input, n))
             for (layer in 0 until layers) {
                 val prev = h[layer]
                 val wi = wih[layer]
@@ -69,15 +64,9 @@ class RestoreModel private constructor(
                 val bi = bih[layer]
                 val bh = bhh[layer]
                 for (r in 0 until 3 * hidden) {
-                    var a = bi[r]
-                    var b = bh[r]
                     val row = r * hidden
-                    for (j in 0 until hidden) {
-                        a += wi[row + j] * x[j]
-                        b += wh[row + j] * prev[j]
-                    }
-                    gates[r] = a
-                    recurrent[r] = b
+                    gates[r] = bi[r] + dot(wi, row, x, hidden)
+                    recurrent[r] = bh[r] + dot(wh, row, prev, hidden)
                 }
                 // PyTorch's order: reset, update, new.
                 for (i in 0 until hidden) {
@@ -88,12 +77,7 @@ class RestoreModel private constructor(
                 }
                 System.arraycopy(prev, 0, x, 0, hidden)
             }
-            for (o in 0 until bands) {
-                var s = outB[o]
-                val row = o * hidden
-                for (j in 0 until hidden) s += outW[row + j] * x[j]
-                output[o] = s
-            }
+            for (o in 0 until bands) output[o] = outB[o] + dot(outW, o * hidden, x, hidden)
         }
     }
 
@@ -111,10 +95,48 @@ class RestoreModel private constructor(
         }
     }
 
+    /** [pred] set to the fixed fall-off alone, as if the model had said nothing: the least work there is. */
+    fun priorOnly(pred: FloatArray, cutoffHz: Float) {
+        for (b in 0 until bands) {
+            val center = (edges[b] + edges[b + 1]) / 2f
+            val octaves = log2(maxOf(center, cutoffHz + 1f) / cutoffHz)
+            pred[b] = (priorAtCutoffDb + priorPerOctaveDb * octaves) / 20f
+        }
+    }
+
     companion object {
         private val MAGIC = byteArrayOf('Y'.code.toByte(), 'C'.code.toByte(), 'R'.code.toByte(), 'M'.code.toByte())
 
         private fun sigmoid(v: Float): Float = 1f / (1f + exp(-v))
+
+        /**
+         * A row of [w] from [offset] times [v], [n] long: four sums side by side, so a phone's core
+         * keeps several multiply-adds in flight instead of waiting on each — on a small core it is
+         * the difference between the strong model keeping time or not.
+         */
+        @JvmStatic
+        private fun dot(w: FloatArray, offset: Int, v: FloatArray, n: Int): Float {
+            var s0 = 0f
+            var s1 = 0f
+            var s2 = 0f
+            var s3 = 0f
+            var j = 0
+            var o = offset
+            while (j + 3 < n) {
+                s0 += w[o] * v[j]
+                s1 += w[o + 1] * v[j + 1]
+                s2 += w[o + 2] * v[j + 2]
+                s3 += w[o + 3] * v[j + 3]
+                j += 4
+                o += 4
+            }
+            while (j < n) {
+                s0 += w[o] * v[j]
+                j++
+                o++
+            }
+            return (s0 + s1) + (s2 + s3)
+        }
 
         fun read(stream: InputStream): RestoreModel {
             val input = DataInputStream(stream.buffered())

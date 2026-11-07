@@ -61,6 +61,8 @@ class PlaybackService : MediaLibraryService() {
     private var localPlayer: ExoPlayer? = null
 
     private val restoreVerdicts by lazy { com.example.myapplication.player.restore.RestoreVerdicts(this) }
+    // The track playing, once its sound has settled as lossy this play (see onVerdict).
+    private var settledLossy: String? = null
 
     // Set while the Cast server resolves a track: SoundCloud's single-file stream is preferred
     // then, which a TV can seek in, over the segmented one the phone plays.
@@ -259,8 +261,17 @@ class PlaybackService : MediaLibraryService() {
                 prefetchNextYouTubeTrack(player)
                 applyTrackFx(player)
                 updateButtons()
-                // Heard before: restored from its first second, as it was then.
-                mediaItem?.mediaId?.let(restoreVerdicts::get)?.let(restoreProcessor::hint)
+                // Heard before: restored from its first second, as it was then; and "+AI" decided
+                // for it as it begins, held to its end.
+                val id = mediaItem?.mediaId
+                val verdict = id?.let(restoreVerdicts::get)
+                verdict?.let(restoreProcessor::hint)
+                settledLossy = null
+                if (id != null) {
+                    val on = preferences.getBoolean(com.example.myapplication.player.restore.RestoreModels.KEY_ENABLED, true)
+                    val restored = if (!on) false else verdict?.let { it > 0f && it < com.example.myapplication.player.restore.RestoreDsp.LOW_QUALITY_HZ }
+                    com.example.myapplication.player.restore.RestoreState.trackStarted(id, restored)
+                }
             }
         })
         prefetcher = StreamPrefetcher(this, player, resolver).also(player::addListener)
@@ -298,13 +309,22 @@ class PlaybackService : MediaLibraryService() {
         // What restoration made of each track, kept for the next time it plays: only while the
         // track is well before its end, when what is listened to is surely this track's.
         val main = android.os.Handler(android.os.Looper.getMainLooper())
-        restoreProcessor.onVerdict = { cutoff ->
+        // Once a lossy track has settled as lossy, a later doubt in the same play (a passage with
+        // nothing up high) isn't kept over it: the file is what it was.
+        restoreProcessor.onVerdict = { cutoff, settled ->
             main.post {
                 val id = player.currentMediaItem?.mediaId
                 val left = player.duration - player.currentPosition
-                if (id != null && player.duration > 0 && left > 4_000) restoreVerdicts.put(id, cutoff)
+                if (id != null && player.duration > 0 && left > 4_000) {
+                    com.example.myapplication.player.restore.RestoreState.decided(id, cutoff > 0f)
+                    if (settled && (cutoff > 0f || settledLossy != id)) {
+                        restoreVerdicts.put(id, cutoff)
+                        if (cutoff > 0f) settledLossy = id
+                    }
+                }
             }
         }
+        restoreProcessor.onLevel = { level -> Log.i("PlaybackService", "Restoration keeps time at $level") }
 
         // A stream that breaks off over a slow connection (a VPN's, say) is tried again, a little
         // later each time, rather than the player stopping at an error until touched. Preparing
@@ -822,11 +842,20 @@ class PlaybackService : MediaLibraryService() {
         val strong = preferences.getBoolean(com.example.myapplication.player.restore.RestoreModels.KEY_STRONG, false)
         val processors = listOfNotNull(restoreProcessor, fades?.helperRestore)
         processors.forEach { it.enabled = enabled }
-        if (!enabled) return
+        if (!enabled) {
+            // Switched off while a track plays: its "+AI" goes, and stays gone to its end.
+            com.example.myapplication.player.restore.RestoreState.off(mediaSession?.player?.currentMediaItem?.mediaId)
+            return
+        }
         Thread {
             val models = com.example.myapplication.player.restore.RestoreModels
-            val model = (if (strong) models.strong(this) else null) ?: models.light(this)
-            processors.forEach { it.model = model }
+            val light = models.light(this)
+            val model = (if (strong) models.strong(this) else null) ?: light
+            processors.forEach {
+                // The strong model steps down to the light one where the phone can't keep up.
+                it.fallback = light
+                it.model = model
+            }
         }.start()
     }
 
