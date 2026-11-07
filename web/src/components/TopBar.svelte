@@ -141,13 +141,17 @@
 </header>
 
 <style>
-  /* Three columns, the middle one the search: it stays in the middle whatever the sides hold. */
+  /* Three columns, the middle one the search: it stays in the middle whatever the sides hold. The
+     sides never get less than what they hold — with a panel open beside the page the bar is
+     narrower than the window, and it is the search that gives way, not the buttons, which
+     otherwise spilled over it. */
   .topbar {
     position: relative;
     z-index: 5;
     flex: none;
+    container: topbar / inline-size;
     display: grid;
-    grid-template-columns: minmax(0, 1fr) minmax(0, 760px) minmax(0, 1fr);
+    grid-template-columns: minmax(max-content, 1fr) minmax(0, 760px) minmax(max-content, 1fr);
     align-items: center;
     gap: 16px;
     width: 100%;
@@ -395,6 +399,12 @@
     background: var(--state-press);
   }
 
+  /* The bar itself narrow (a panel beside it): the name goes, so the search keeps its room. */
+  @container topbar (max-width: 1000px) {
+    .wordmark {
+      display: none;
+    }
+  }
   /* Narrower: the name goes first, then the sides close in on the search. */
   @media (max-width: 1100px) {
     .wordmark {

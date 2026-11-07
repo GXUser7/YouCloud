@@ -6,6 +6,7 @@
   import { openLink } from '../lib/links'
   import { ago, avatarUrl, listeningNow, shownName, social } from '../lib/social.svelte'
   import { app, currentTrack, go, jump, openPanel, player, remember, type Panel } from '../lib/state.svelte'
+  import { queueWindow, revealNow } from '../lib/queueView'
   import Avatar from './Avatar.svelte'
   import ButtonGroup from './ButtonGroup.svelte'
   import Cover from './Cover.svelte'
@@ -34,7 +35,10 @@
       .slice(0, 12),
   )
   const SERVICES: Record<string, Service> = { soundcloud: 'sc', yandex: 'ya', youtube: 'yt' }
-  const upNext = $derived(player.queue.slice(player.index + 1, player.index + 101))
+  const list = $derived(queueWindow(100))
+  // The window's parts: what was played (above the one playing) and what comes.
+  const before = $derived(list.ids.slice(0, player.index - list.from))
+  const upNext = $derived(list.ids.slice(player.index - list.from + 1))
   const t = $derived(currentTrack())
   let source = $state<string | null>(null)
 </script>
@@ -96,15 +100,21 @@
       {/if}
     </div>
   {:else if app.panel === 'queue'}
-    <div class="scroll">
+    <div class="scroll" use:revealNow>
       {#if t}
-        <p class="overline head">{tr('Сейчас играет')}</p>
+        {#if before.length}
+          <p class="overline head">{tr('Ранее')}</p>
+          {#each before as id, i (list.from + i + ':' + id)}
+            <div class="past"><TrackRow {id} list={player.queue} compact context={player.context} contextId={player.contextId} onplay={() => jump(list.from + i)} /></div>
+          {/each}
+        {/if}
+        <p class="overline head" data-now>{tr('Сейчас играет')}</p>
         <TrackRow id={t.id} list={player.queue} compact context={player.context} contextId={player.contextId} />
         <div class="queue-head">
           <p class="overline">{tr('Далее')}</p>
           <span class="from ellipsis">{player.wave ? tr('Моя волна') : player.context}</span>
         </div>
-        {#each upNext as id, i (id + i)}
+        {#each upNext as id, i (player.index + 1 + i + ':' + id)}
           <TrackRow {id} list={player.queue} compact context={player.context} contextId={player.contextId} onplay={() => jump(player.index + 1 + i)} />
         {:else}
           <p class="muted empty">
@@ -165,6 +175,15 @@
   }
   .head {
     padding: 10px 8px 8px;
+  }
+  /* What was played: still there to pick, quieter than what comes. */
+  .past {
+    opacity: 0.55;
+    transition: opacity 150ms;
+  }
+  .past:hover,
+  .past:focus-within {
+    opacity: 1;
   }
   .friend {
     display: flex;

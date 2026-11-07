@@ -128,7 +128,6 @@
     border-radius: var(--r-2xl);
     isolation: isolate;
     background: var(--glass);
-    border: 1px solid var(--glass-line);
     transition:
       border-radius var(--d-spatial) var(--spring),
       transform var(--d-spatial) var(--spring),

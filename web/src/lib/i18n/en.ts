@@ -64,6 +64,8 @@ export const EN: Record<string, string> = {
   'Играет из': 'Playing from',
   'Далее': 'Up next',
   'Далее · %s': 'Up next · %s',
+  'Очередь · %s': 'Queue · %s',
+  'Ранее': 'Earlier',
   'Радио по треку': 'Track radio',
   'Включить: %s': 'Play: %s',
   'Текст': 'Lyrics',

@@ -11,6 +11,7 @@
   import { serviceName, track } from '../lib/catalog'
   import { app, currentTrack, cycleRepeat, go, jump, player, remember, seek, startRadio } from '../lib/state.svelte'
   import { time } from '../lib/format'
+  import { queueWindow, revealNow } from '../lib/queueView'
   import Cover from './Cover.svelte'
   import Icon from './Icon.svelte'
   import Lyrics from './Lyrics.svelte'
@@ -20,6 +21,7 @@
   import Slider from './Slider.svelte'
   import TrackMenu from './TrackMenu.svelte'
   import TrackRow from './TrackRow.svelte'
+  import VolumeButton from './VolumeButton.svelte'
   import CarouselPlayer from './player/CarouselPlayer.svelte'
   import PosterPlayer from './player/PosterPlayer.svelte'
   import ShapePlayer from './player/ShapePlayer.svelte'
@@ -29,7 +31,7 @@
   const t = $derived(currentTrack()!)
   const upNext = $derived(player.queue[player.index + 1] ? track(player.queue[player.index + 1]) : null)
   const duration = $derived(player.duration || t.duration || 1)
-  const upcoming = $derived(player.queue.slice(player.index + 1, player.index + 60))
+  const list = $derived(queueWindow(60))
   let scrub = $state<number | null>(null)
 
   function storedSide(): Side {
@@ -227,6 +229,7 @@
           >
             {#key player.repeat === 'one'}<span class="ic swap"><Icon name={player.repeat === 'one' ? 'repeat_one' : 'repeat'} size={24} /></span>{/key}
           </button>
+          <VolumeButton xb align="end" />
         </div>
       </div>
     </div>
@@ -236,13 +239,17 @@
         {#if shown === 'lyrics'}
           <Lyrics size="l" />
         {:else}
-          <div class="queue">
-            <p class="overline queue-head">{tr('Далее · %s', player.wave ? tr('Моя волна') : player.context)}</p>
-            {#each upcoming as id, i (id + i)}
-              <TrackRow {id} list={player.queue} compact context={player.context} contextId={player.contextId} onplay={() => jump(player.index + 1 + i)} />
-            {:else}
-              <p class="muted">{player.radio ? tr('Радио подбирает следующие треки…') : tr('Дальше ничего нет — включи радио по треку.')}</p>
+          <div class="queue" use:revealNow>
+            <p class="overline queue-head">{tr('Очередь · %s', player.wave ? tr('Моя волна') : player.context)}</p>
+            {#each list.ids as id, i (list.from + i + ':' + id)}
+              {@const at = list.from + i}
+              <div class:past={at < player.index} data-now={at === player.index ? '' : undefined}>
+                <TrackRow {id} list={player.queue} compact context={player.context} contextId={player.contextId} onplay={() => jump(at)} />
+              </div>
             {/each}
+            {#if player.index + 1 >= player.queue.length}
+              <p class="muted">{player.radio ? tr('Радио подбирает следующие треки…') : tr('Дальше ничего нет — включи радио по треку.')}</p>
+            {/if}
           </div>
         {/if}
       </div>
@@ -521,6 +528,15 @@
   }
   .queue-head {
     padding: 4px 10px 10px;
+  }
+  /* What was played: still there to pick, quieter than what comes. */
+  .past {
+    opacity: 0.55;
+    transition: opacity 150ms;
+  }
+  .past:hover,
+  .past:focus-within {
+    opacity: 1;
   }
 
   /* Narrow: the column takes the cover's place when asked for. */

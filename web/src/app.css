@@ -186,13 +186,11 @@ p {
   background: var(--glass);
   backdrop-filter: blur(28px) saturate(1.25);
   -webkit-backdrop-filter: blur(28px) saturate(1.25);
-  border: 1px solid var(--glass-line);
 }
 .glass-strong {
   background: var(--glass-strong);
   backdrop-filter: blur(32px) saturate(1.3);
   -webkit-backdrop-filter: blur(32px) saturate(1.3);
-  border: 1px solid var(--glass-line);
 }
 
 /* In Masaki: the page is see-through to the browser's own glass (it sits on the same frosted
@@ -557,31 +555,39 @@ p {
   transform: translateX(5px) scale(0.92);
 }
 
-/* Play: round while paused, squared while it plays; its glow stays put. */
+/* Play: paused, round and in the same quiet tone as the buttons beside it — nothing waits for a
+   press louder than the rest; playing, squared and lit in the theme's colour, with its glow. */
 .xb.play {
   --base: var(--play-w);
-  --fill: var(--primary);
+  --fill: color-mix(in oklab, var(--on-surface) 12%, transparent);
   --press: 1.12;
   --r: calc(var(--play-h) / 2);
   height: var(--play-h);
   margin: 0 4px;
-  color: var(--on-primary);
-  box-shadow: 0 10px 26px -10px color-mix(in oklab, var(--primary) 85%, transparent);
+  color: var(--on-surface);
+  box-shadow: 0 10px 26px -10px transparent;
   transition:
     border-radius var(--d-spatial) var(--spring),
-    color 250ms var(--ease-emph);
+    color 250ms var(--ease-emph),
+    box-shadow 300ms var(--ease-emph);
 }
 .xb.play.playing {
+  --fill: var(--primary);
   --r: calc(var(--play-h) * 0.32);
+  color: var(--on-primary);
+  box-shadow: 0 10px 26px -10px color-mix(in oklab, var(--primary) 85%, transparent);
 }
 .xb.play:hover {
+  color: var(--on-surface);
+}
+.xb.play.playing:hover {
   color: var(--on-primary);
 }
 .xb.play:active {
   --r: calc(var(--play-h) * 0.24);
 }
 .xb.play .loader path {
-  fill: var(--on-primary);
+  fill: currentColor;
 }
 
 /* ---- Chips ---- */
