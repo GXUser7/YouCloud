@@ -76,7 +76,7 @@ def main():
     strong, _ = read_model(strong_path)
     # The fixed fall-off, fitted as train.py fits it.
     from train import load, tilt_baseline
-    xs, ys = load(os.path.join(pairs, "train"), "light")
+    xs, ys = load(os.path.join(pairs, "train"), "light", limit=3_000_000)
     coef = tilt_baseline(xs, ys, dsp.LIGHT_EDGES)
     del xs, ys
     ways = [

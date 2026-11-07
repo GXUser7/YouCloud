@@ -41,13 +41,33 @@ class Net(nn.Module):
         return self.out(y), h
 
 
-def load(dirname, grid):
-    # Half precision in memory: all of it in single precision is more than the machine has.
+# At most this many frames are kept, in pieces from every file: all of it is more than memory holds.
+MAX_FRAMES = 8_000_000
+PIECE = 4096
+
+
+def load(dirname, grid, limit=None):
+    # Half precision in memory, and, past [limit] frames, pieces of each file at random.
+    files = sorted(glob.glob(os.path.join(dirname, "*.npz")))
+    rng = np.random.default_rng(11)
+    sizes = []
+    for f in files:
+        with np.load(f) as d:
+            sizes.append(d[f"y_{grid}"].shape[0])
+    keep = 1.0 if limit is None else min(1.0, limit / max(1, sum(sizes)))
     xs, ys = [], []
-    for f in sorted(glob.glob(os.path.join(dirname, "*.npz"))):
+    for f, n in zip(files, sizes):
         d = np.load(f)
-        xs.append(d[f"x_{grid}"].astype(np.float16))
-        ys.append(d[f"y_{grid}"].astype(np.float16))
+        x, y = d[f"x_{grid}"], d[f"y_{grid}"]
+        if keep < 1.0:
+            starts = np.arange(0, max(1, n - PIECE), PIECE)
+            chosen = rng.choice(starts, size=max(1, int(round(len(starts) * keep))), replace=False)
+            for s0 in sorted(chosen):
+                xs.append(x[s0:s0 + PIECE].astype(np.float16))
+                ys.append(y[s0:s0 + PIECE].astype(np.float16))
+        else:
+            xs.append(x.astype(np.float16))
+            ys.append(y.astype(np.float16))
     return xs, ys
 
 
@@ -154,7 +174,7 @@ def main():
     torch.manual_seed(1)
     torch.set_num_threads(4)
     rng = np.random.default_rng(1)
-    xs, ys = load(os.path.join(pairs, "train"), name)
+    xs, ys = load(os.path.join(pairs, "train"), name, limit=MAX_FRAMES)
     vx, vy = load(os.path.join(pairs, "val"), name)
     bands = len(cfg["edges"]) - 1
     print(f"{name}: {sum(map(len, xs))} training frames in {len(xs)} files, {sum(map(len, vx))} to check against")
