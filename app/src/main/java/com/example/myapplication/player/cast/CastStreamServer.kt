@@ -28,8 +28,8 @@ import java.util.concurrent.Executors
  * sources ([dataSources]). So a downloaded track plays on the TV too, and so does YouTube's audio,
  * whose links work only from the address that asked for them: the phone's.
  *
- * Only what is in the Cast queue is served, each track under a token of its own, random and long:
- * nothing else on the phone can be asked for. A track the service streams as HLS is sent on as one
+ * Only what is in the Cast queue is served, each track (and a download's cover) under a token of
+ * its own, random and long: nothing else on the phone can be asked for. A track the service streams as HLS is sent on as one
  * file, its segments one after another — the TV plays it through, though it can't seek in it.
  */
 @UnstableApi
@@ -42,6 +42,9 @@ internal class CastStreamServer(
     private val pool = Executors.newCachedThreadPool { r -> Thread(r, "CastStream").apply { isDaemon = true } }
     private val tokens = ConcurrentHashMap<String, Uri>()
     private val byUri = ConcurrentHashMap<String, String>()
+    // Covers on the phone (a download's), served as they are: the TV shows them beside the track.
+    private val images = ConcurrentHashMap<String, Uri>()
+    private val imageByUri = ConcurrentHashMap<String, String>()
     private val random = SecureRandom()
 
     @Synchronized
@@ -66,6 +69,8 @@ internal class CastStreamServer(
         socket = null
         tokens.clear()
         byUri.clear()
+        images.clear()
+        imageByUri.clear()
     }
 
     /** The address a Cast device fetches [uri] at; null without an address on Wi-Fi or Ethernet. */
@@ -78,6 +83,17 @@ internal class CastStreamServer(
             bytes.joinToString("") { "%02x".format(it) }.also { tokens[it] = uri }
         }
         return "http://$host:$port/t/$token"
+    }
+
+    /** The address a Cast device fetches the picture at [uri] (a file or content on the phone) at. */
+    fun imageUrlFor(uri: Uri): String? {
+        val port = socket?.localPort ?: return null
+        val host = localAddress() ?: return null
+        val token = imageByUri.getOrPut(uri.toString()) {
+            val bytes = ByteArray(16).also(random::nextBytes)
+            bytes.joinToString("") { "%02x".format(it) }.also { images[it] = uri }
+        }
+        return "http://$host:$port/i/$token"
     }
 
     private fun localAddress(): String? {
@@ -110,6 +126,11 @@ internal class CastStreamServer(
                 val method = parts.getOrNull(0).orEmpty()
                 val path = parts.getOrNull(1).orEmpty()
                 val out = socket.getOutputStream()
+                if ((method == "GET" || method == "HEAD") && path.startsWith("/i/")) {
+                    val image = path.removePrefix("/i/").substringBefore('?').let(images::get)
+                    if (image == null) respond(out, "404 Not Found", emptyMap()) else sendImage(image, method == "HEAD", out)
+                    return
+                }
                 val uri = path.removePrefix("/t/").substringBefore('?').let(tokens::get)
                 if ((method != "GET" && method != "HEAD") || !path.startsWith("/t/") || uri == null) {
                     respond(out, "404 Not Found", emptyMap())
@@ -158,6 +179,25 @@ internal class CastStreamServer(
             copy(source, out)
         } finally {
             runCatching { source.close() }
+        }
+    }
+
+    private fun sendImage(uri: Uri, headOnly: Boolean, out: OutputStream) {
+        val bytes = context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
+        if (bytes == null || bytes.size > 8_000_000) {
+            respond(out, "404 Not Found", emptyMap())
+            return
+        }
+        fun at(i: Int) = if (i < bytes.size) bytes[i].toInt() and 0xFF else -1
+        val type = when {
+            at(0) == 0x89 && at(1) == 0x50 && at(2) == 0x4E && at(3) == 0x47 -> "image/png"
+            at(8) == 'W'.code && at(9) == 'E'.code && at(10) == 'B'.code && at(11) == 'P'.code -> "image/webp"
+            else -> "image/jpeg"
+        }
+        respond(out, "200 OK", mapOf("Content-Type" to type, "Content-Length" to bytes.size.toString(), "Cache-Control" to "max-age=3600"))
+        if (!headOnly) {
+            out.write(bytes)
+            out.flush()
         }
     }
 
