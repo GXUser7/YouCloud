@@ -9,7 +9,8 @@ import java.io.File
 
 /**
  * The Kotlin restoration against the Python it was trained with (tools/restore/vectors.py): a
- * 128 kbps MP3's cutoff, one frame's model input, the light model's answer, the gains after it.
+ * 128 kbps MP3's cutoff, one frame's model input, the light model's answer (alone and blended
+ * with its fixed fall-off), the gains after it.
  */
 class RestoreDspTest {
     private val vectors = JSONObject(javaClass.getResource("/restore/vectors.json")!!.readText())
@@ -45,6 +46,10 @@ class RestoreDspTest {
         model.State().step(floats("features"), out)
         val expected = floats("modelOut")
         for (i in expected.indices) assertEquals("band $i", expected[i], out[i], 1e-4f)
+        // Then half and half with the fixed fall-off the file carries.
+        model.blendPrior(out, vectors.getDouble("cutoff").toFloat())
+        val blended = floats("blended")
+        for (i in blended.indices) assertEquals("blended band $i", blended[i], out[i], 1e-4f)
     }
 
     @Test
@@ -57,7 +62,7 @@ class RestoreDspTest {
         val previous = FloatArray(top - kc) { Float.NaN }
         RestoreDsp.gains(
             floats("midRe"), floats("midIm"), kc, top, RestoreDsp.patchWidth(kc, rate),
-            floats("modelOut"), vectors.getDouble("anchor").toFloat(), RestoreDsp.Bands(model.edges, rate),
+            floats("blended"), vectors.getDouble("anchor").toFloat(), RestoreDsp.Bands(model.edges, rate),
             bandGain, previous
         )
         val expected = floats("gains")

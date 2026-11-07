@@ -107,12 +107,24 @@ def detect_cutoff(power_db_long, rate):
     return k * hz
 
 
+# A codec's low-pass doesn't stop dead at the cutoff: the half kilohertz under it is already
+# fading. The copy starts that far under it, rising over it, and is copied from under it too:
+# a multiple of 4 bins, so the shift still keeps the phase.
+FILL = 12
+
+
 def patch_plan(cutoff_bin, rate):
-    """The band copied up: its width W (a multiple of 4 bins) and where it starts."""
+    """The band copied up: its width W (a multiple of 4 bins), and the bin the copy starts at."""
     hz = rate / N
-    w = min(cutoff_bin // 2, int(5000 / hz))
+    start = cutoff_bin - FILL
+    w = min(start // 2, int(5000 / hz))
     w -= w % 4
-    return w, cutoff_bin - w
+    return w, start
+
+
+def source(k, start, w):
+    """The bins [k] (at or over [start]) are copied from: a band's width at a time, down under it."""
+    return k - w * (1 + (k - start) // w)
 
 
 def anchor_db(power, cutoff_bin, rate):
@@ -149,6 +161,23 @@ def targets(power_orig, anchor, kc, edges_hz, rate):
     return np.clip((db - anchor[:, None]) / 20.0, -5, 2).astype(np.float32)
 
 
+def prior(edges_hz, cutoff_hz, at_cutoff_db, per_octave_db):
+    """The fixed fall-off over the cutoff, per band, in the model's units (20 dB over the anchor)."""
+    centers = (edges_hz[:-1] + edges_hz[1:]) / 2
+    octaves = np.log2(np.maximum(centers, cutoff_hz + 1) / cutoff_hz)
+    return (at_cutoff_db + per_octave_db * octaves) / 20
+
+
+def blend(pred, edges_hz, cutoff_hz, header):
+    """The model's answer half and half with the fixed fall-off its file carries: on songs neither
+    heard, the two together come closer than either alone."""
+    p = header.get("prior")
+    if not p:
+        return pred
+    w = p["weight"]
+    return w * pred + (1 - w) * prior(edges_hz, cutoff_hz, p["atCutoffDb"], p["perOctaveDb"])
+
+
 NOISE_LOW = 0.1
 NOISE_HIGH = 0.4
 MAX_BOOST_DB = 24.0
@@ -157,30 +186,33 @@ MAX_BOOST_DB = 24.0
 def frame_gains(mid_spec, kc, pred_row, anchor, edges_hz, rate, previous=None):
     """
     One frame's gains in dB for the bins from the cutoff up: what each band should be ([pred_row],
-    20 dB units over [anchor]) against what the copy of the mid brings, between band centres a
-    straight line, eased from the frame before ([previous]: attack 0.6, release 0.25).
+    20 dB units over [anchor]) against what the copy of the mid brings, the same over the whole
+    band (bins past the last band hold its gain), eased from the frame before ([previous]: attack
+    0.6, release 0.25).
     """
     hz = rate / N
     bins = N // 2 + 1
     top = min(bins, int(22050 / hz) + 1)
-    w, _ = patch_plan(kc, rate)
+    w, start = patch_plan(kc, rate)
     lo, hi = band_bins(edges_hz, rate)
     k = np.arange(kc, top)
-    src = k - w * (1 + (k - kc) // w)
+    src = source(k, start, w)
     p_mid = np.abs(mid_spec[src]) ** 2
-    g_db = np.full(len(lo), np.nan)
+    g = np.full(len(k), np.nan)
     for b in range(len(lo)):
         a, z = max(lo[b], kc), min(hi[b], top)
         if a >= z or np.isnan(pred_row[b]):
             continue
         have = 10 * np.log10(p_mid[a - kc:z - kc].mean() + EPS)
         want = anchor + 20 * pred_row[b]
-        g_db[b] = np.clip(want - have, -60, MAX_BOOST_DB)
-    ok = ~np.isnan(g_db)
-    if not ok.any():
+        g[a - kc:z - kc] = np.clip(want - have, -60, MAX_BOOST_DB)
+    if np.isnan(g).all():
         return previous
-    centers = (lo + hi - 1) / 2.0
-    g = np.interp(k, centers[ok], g_db[ok])
+    for i in range(1, len(g)):
+        if np.isnan(g[i]):
+            g[i] = g[i - 1]
+    first = np.argmax(~np.isnan(g))
+    g[:first] = g[first]
     if previous is not None:
         g = np.where(g > previous, previous + 0.6 * (g - previous), previous + 0.25 * (g - previous))
     return g
@@ -190,31 +222,34 @@ def synthesize(specs, kc, pred, anchor, edges_hz, rate, rng=None):
     """
     The band over the cutoff, made from the one under it: copied up in steps of its width, each band
     then set to the level [pred] says (20 dB units over [anchor]), the same gain on every channel,
-    a little noise in its phase. specs: list of (frames, bins) complex, one per channel. Returns the
-    same shape: only the new band.
+    a little noise in its phase; under the cutoff, over the codec's fade, rising to it. specs: list
+    of (frames, bins) complex, one per channel. Returns the same shape: only what is made.
     """
     rng = rng or np.random.default_rng(0)
     hz = rate / N
     bins = N // 2 + 1
     top = min(bins, int(22050 / hz) + 1)
-    w, _ = patch_plan(kc, rate)
+    w, start = patch_plan(kc, rate)
     out = [np.zeros_like(s) for s in specs]
     if w < 8:
         return out
-    k = np.arange(kc, top)
-    src = k - w * (1 + (k - kc) // w)
+    k = np.arange(start, top)
+    src = source(k, start, w)
     mid = sum(specs) / len(specs)
-    noise_mix = NOISE_LOW + (NOISE_HIGH - NOISE_LOW) * (k - kc) / max(1, top - kc)
-    ramp = np.clip((k - kc + 1) / 4.0, 0, 1)
+    noise_mix = NOISE_LOW + (NOISE_HIGH - NOISE_LOW) * np.clip(k - kc, 0, None) / max(1, top - kc)
+    ramp = np.clip((k - start + 1) / (FILL + 1), 0, 1)
     gains = None
     for t in range(specs[0].shape[0]):
         gains = frame_gains(mid[t], kc, pred[t], anchor[t], edges_hz, rate, gains)
         if gains is None:
             continue
-        g = 10 ** (gains / 20)
+        # Under the cutoff, the gain at it.
+        full = np.concatenate([np.full(kc - start, gains[0]), gains])
+        # Noise in the phase takes some of the energy with it: given back.
+        g = 10 ** (full / 20) / np.sqrt((1 - noise_mix) ** 2 + noise_mix ** 2)
         phase = np.exp(2j * np.pi * rng.random(len(k)))
         for c, s in enumerate(specs):
             p = s[t, src]
             mixed = (1 - noise_mix) * p + noise_mix * np.abs(p) * phase
-            out[c][t, kc:top] = mixed * g * ramp
+            out[c][t, start:top] = mixed * g * ramp
     return out

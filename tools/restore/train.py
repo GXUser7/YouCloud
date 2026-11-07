@@ -140,7 +140,7 @@ def tilt_error(coef, xs, ys, edges):
     return total / count
 
 
-def export(net, cfg, name, path, metrics):
+def export(net, cfg, name, path, metrics, coef=None):
     """
     YCRM v1: "YCRM", version, header length, a JSON header (the bands, the shape of the network,
     the tensors in order) and the tensors as little-endian float32, in that order.
@@ -160,6 +160,9 @@ def export(net, cfg, name, path, metrics):
         "tensors": [{"name": n, "shape": list(sd[n].shape)} for n in names],
         "metrics": metrics,
     }
+    if coef is not None:
+        # The fixed fall-off, blended half and half with the model's answer (see dsp.blend).
+        header["prior"] = {"atCutoffDb": float(coef[0]), "perOctaveDb": float(coef[1]), "weight": 0.5}
     blob = json.dumps(header).encode()
     with open(path, "wb") as f:
         f.write(b"YCRM")
@@ -208,7 +211,7 @@ def main():
         print(f"epoch {epoch + 1}: train {np.mean(losses):.4f}, held-out {err:.2f} dB ({time.time() - t0:.0f} s)", flush=True)
     net.load_state_dict(best_state)
     metrics = {"heldOutBandErrorDb": round(float(best), 2), "fixedFallOffErrorDb": round(float(base), 2)}
-    export(net, cfg, name, out, metrics)
+    export(net, cfg, name, out, metrics, coef)
     print("written", out, os.path.getsize(out), "bytes", metrics)
 
 

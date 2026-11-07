@@ -33,11 +33,12 @@ def tilt_predictor(coef):
     return predict
 
 
-def model_predictor(net):
+def model_predictor(net, header):
+    """The model's answer, blended with the fixed fall-off its file carries, as the app does."""
     def predict(feats, edges):
         with torch.no_grad():
             out, _ = net(torch.from_numpy(feats)[None])
-        return out[0].numpy()
+        return dsp.blend(out[0].numpy(), edges, float(feats[0, -1]) * 22050, header)
     return predict
 
 
@@ -72,8 +73,8 @@ def scores(x, out, kc):
 def main():
     pairs, light_path, strong_path = sys.argv[1:4]
     picture = sys.argv[4] if len(sys.argv) > 4 else None
-    light, _ = read_model(light_path)
-    strong, _ = read_model(strong_path)
+    light, light_header = read_model(light_path)
+    strong, strong_header = read_model(strong_path)
     # The fixed fall-off, fitted as train.py fits it.
     from train import load, tilt_baseline
     xs, ys = load(os.path.join(pairs, "train"), "light", limit=3_000_000)
@@ -82,8 +83,8 @@ def main():
     ways = [
         ("as it is", None, None),
         ("fixed fall-off (DSP)", dsp.LIGHT_EDGES, tilt_predictor(coef)),
-        ("light model", dsp.LIGHT_EDGES, model_predictor(light)),
-        ("strong model", dsp.STRONG_EDGES, model_predictor(strong)),
+        ("light model", dsp.LIGHT_EDGES, model_predictor(light, light_header)),
+        ("strong model", dsp.STRONG_EDGES, model_predictor(strong, strong_header)),
     ]
     totals = {name: [] for name, _, _ in ways}
     shown = None

@@ -6412,9 +6412,9 @@ private fun RestoreSettingsCard(settingsRepository: SettingsRepository) {
                                 is com.example.myapplication.player.restore.RestoreModels.Download.Failed ->
                                     tr("Мощная модель не скачалась. Нажмите «Мощная», чтобы попробовать ещё раз")
                                 else -> if (strong && ready) {
-                                    tr("Мощная: полосы вдвое уже и вдвое больше памяти — точнее, но нагружает телефон сильнее")
+                                    tr("Мощная: полосы вдвое уже, точнее форма верха. Работает втрое тяжелее лёгкой — всё равно немного")
                                 } else {
-                                    tr("Лёгкая встроена и почти не тратит батарею. Мощная точнее, %s МБ — скачается по нажатию", "2")
+                                    tr("Лёгкая встроена и почти не нагружает телефон. Мощная точнее передаёт форму верха, %s МБ — скачается по нажатию", "2")
                                 }
                             },
                             style = MaterialTheme.typography.bodySmall,

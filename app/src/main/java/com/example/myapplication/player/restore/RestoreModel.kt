@@ -7,6 +7,7 @@ import java.io.InputStream
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import kotlin.math.exp
+import kotlin.math.log2
 import kotlin.math.tanh
 
 /**
@@ -32,7 +33,11 @@ class RestoreModel private constructor(
     private val outB: FloatArray,
     /** How far off it was, in dB a band, on songs it never heard (and a fixed fall-off's, to compare). */
     val heldOutErrorDb: Float?,
-    val fixedFallOffErrorDb: Float?
+    val fixedFallOffErrorDb: Float?,
+    /** The fixed fall-off its answer is blended with: dB at the cutoff, dB an octave over it, and the model's share. */
+    private val priorAtCutoffDb: Float = 0f,
+    private val priorPerOctaveDb: Float = 0f,
+    private val modelWeight: Float = 1f
 ) {
     val bands: Int get() = edges.size - 1
     val inputs: Int get() = 2 * bands + 2
@@ -92,6 +97,20 @@ class RestoreModel private constructor(
         }
     }
 
+    /**
+     * [pred] (as [State.step] left it) half and half with the fixed fall-off its file carries, in
+     * place: on songs neither heard, the two together come closer than either alone.
+     */
+    fun blendPrior(pred: FloatArray, cutoffHz: Float) {
+        if (modelWeight >= 1f) return
+        for (b in 0 until bands) {
+            val center = (edges[b] + edges[b + 1]) / 2f
+            val octaves = log2(maxOf(center, cutoffHz + 1f) / cutoffHz)
+            val prior = (priorAtCutoffDb + priorPerOctaveDb * octaves) / 20f
+            pred[b] = modelWeight * pred[b] + (1f - modelWeight) * prior
+        }
+    }
+
     companion object {
         private val MAGIC = byteArrayOf('Y'.code.toByte(), 'C'.code.toByte(), 'R'.code.toByte(), 'M'.code.toByte())
 
@@ -121,6 +140,7 @@ class RestoreModel private constructor(
             val edgesJson = header.getJSONArray("edges")
             val layers = header.getInt("layers")
             val metrics = header.optJSONObject("metrics")
+            val prior = header.optJSONObject("prior")
             fun tensor(name: String) = tensors[name] ?: throw IOException("restoration model lacks $name")
             if (header.getInt("frame") != RestoreDsp.FRAME || header.getInt("hop") != RestoreDsp.HOP) {
                 throw IOException("restoration model made for other frames")
@@ -139,7 +159,10 @@ class RestoreModel private constructor(
                 outW = tensor("out.weight"),
                 outB = tensor("out.bias"),
                 heldOutErrorDb = metrics?.optDouble("heldOutBandErrorDb")?.takeIf { !it.isNaN() }?.toFloat(),
-                fixedFallOffErrorDb = metrics?.optDouble("fixedFallOffErrorDb")?.takeIf { !it.isNaN() }?.toFloat()
+                fixedFallOffErrorDb = metrics?.optDouble("fixedFallOffErrorDb")?.takeIf { !it.isNaN() }?.toFloat(),
+                priorAtCutoffDb = prior?.optDouble("atCutoffDb", 0.0)?.toFloat() ?: 0f,
+                priorPerOctaveDb = prior?.optDouble("perOctaveDb", 0.0)?.toFloat() ?: 0f,
+                modelWeight = prior?.optDouble("weight", 1.0)?.toFloat() ?: 1f
             ).also { model ->
                 if (model.inW.size != model.hidden * model.inputs || model.outW.size != model.bands * model.hidden) {
                     throw IOException("restoration model's tensors don't fit its bands")

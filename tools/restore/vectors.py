@@ -52,7 +52,8 @@ def main():
     with torch.no_grad():
         out, _ = net(torch.from_numpy(feats)[None])
     pred = out[0, 0].numpy()
-    gains = dsp.frame_gains(s[t], kc, pred, anchor[0], edges, rate)
+    blended = dsp.blend(pred[None, :], edges, cutoff, header)[0]
+    gains = dsp.frame_gains(s[t], kc, blended, anchor[0], edges, rate)
     json.dump({
         "rate": rate,
         "longDb": long_db.tolist(),
@@ -63,6 +64,7 @@ def main():
         "features": feats[0].tolist(),
         "anchor": float(anchor[0]),
         "modelOut": pred.tolist(),
+        "blended": blended.tolist(),
         "gains": gains.tolist(),
     }, open(sys.argv[2], "w"))
     print("cutoff", cutoff, "kc", kc, "anchor", anchor[0])

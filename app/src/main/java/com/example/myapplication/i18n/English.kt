@@ -5,7 +5,7 @@ package com.example.myapplication.i18n
  * English order (`%1$s`) where that differs. Filled in parts, as one method holds only so much.
  */
 internal object English {
-    private val phrases: Map<String, String> = HashMap<String, String>(856).apply {
+    private val phrases: Map<String, String> = HashMap<String, String>(900).apply {
         part1()
         part2()
         part3()
@@ -936,5 +936,7 @@ internal object English {
         put("Google Cast · в этой сети Wi-Fi", "Google Cast · on this Wi-Fi")
         put("Телевизоры и колонки с Google Cast появятся здесь, если они в той же сети Wi-Fi", "TVs and speakers with Google Cast show up here when they're on the same Wi-Fi")
         put("Выбрано", "Selected")
+        put("Мощная: полосы вдвое уже, точнее форма верха. Работает втрое тяжелее лёгкой — всё равно немного", "Strong: bands half as wide, the shape of the highs closer. Three times the light one's work — still little")
+        put("Лёгкая встроена и почти не нагружает телефон. Мощная точнее передаёт форму верха, %s МБ — скачается по нажатию", "The light one is built in and barely loads the phone. The strong one gets the shape of the highs closer, %s MB — downloaded on a tap")
     }
 }

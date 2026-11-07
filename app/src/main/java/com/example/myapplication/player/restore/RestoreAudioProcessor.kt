@@ -215,6 +215,7 @@ class RestoreAudioProcessor(
         }
         ownTop = 0
         state.step(input, pred)
+        model.blendPrior(pred, cutoff)
         RestoreDsp.gains(midRe, midIm, kc, top, width, pred, anchor, bands, bandGain, previous)
         synthesize()
     }
@@ -306,29 +307,34 @@ class RestoreAudioProcessor(
         return RestoreDsp.db(sum / (to - from)) > anchor - OWN_TOP_DB
     }
 
-    /** The band over the cutoff, per channel: the copy, a little noise in its phase, at the gains. */
+    /**
+     * What is made, per channel: the copy, a little noise in its phase, at the gains — from under
+     * the cutoff, over the codec's fade, rising to it, up to the top.
+     */
     private fun synthesize() {
-        val count = top - kc
+        val start = RestoreDsp.patchStart(kc)
         for (c in 0 until channels) {
             val r = re[c]
             val i = im[c]
-            // Into the second half of the same arrays' space: a new spectrum, only over the cutoff.
             val outRe = scratchRe
             val outIm = scratchIm
             java.util.Arrays.fill(outRe, 0f)
             java.util.Arrays.fill(outIm, 0f)
-            for (j in 0 until count) {
-                val k = kc + j
-                val s = RestoreDsp.source(k, kc, width)
+            for (k in start until top) {
+                // Over the cutoff, its own gain; under it, the gain at the cutoff.
+                val j = k - kc
+                val gainDb = previous[maxOf(j, 0)]
+                // No gain worked out for it yet: nothing made there.
+                if (gainDb.isNaN()) continue
+                val s = RestoreDsp.source(k, start, width)
                 val pr = r[s]
                 val pi = i[s]
                 val magnitude = kotlin.math.sqrt(pr * pr + pi * pi)
                 val angle = nextRandom() * (2f * Math.PI.toFloat())
-                val n = noise[j]
-                // No gain worked out for it yet: nothing made there.
-                val gainDb = previous[j]
-                if (gainDb.isNaN()) continue
-                val g = RestoreDsp.dbToAmplitude(gainDb) * ((j + 1) / 4f).coerceAtMost(1f)
+                val n = if (j > 0) noise[j] else RestoreDsp.NOISE_LOW
+                val ramp = ((k - start + 1f) / (RestoreDsp.FILL + 1)).coerceAtMost(1f)
+                // Noise in the phase takes some of the energy with it: given back.
+                val g = RestoreDsp.dbToAmplitude(gainDb) * ramp / kotlin.math.sqrt((1f - n) * (1f - n) + n * n)
                 outRe[k] = ((1f - n) * pr + n * magnitude * kotlin.math.cos(angle)) * g
                 outIm[k] = ((1f - n) * pi + n * magnitude * kotlin.math.sin(angle)) * g
             }

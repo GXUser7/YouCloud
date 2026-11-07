@@ -131,10 +131,20 @@ internal object RestoreDsp {
         return anchor
     }
 
-    /** Where the copied band starts and how wide it is, in bins: a multiple of 4, so it keeps its phase. */
+    /**
+     * A codec's low-pass doesn't stop dead at the cutoff: the half kilohertz under it is already
+     * fading. The copy starts this many bins under it, rising over them, and is copied from under
+     * them too — a multiple of 4, so the shift still keeps the phase.
+     */
+    const val FILL = 12
+
+    /** The bin the copy starts at. */
+    fun patchStart(kc: Int): Int = kc - FILL
+
+    /** How wide the copied band is, in bins: a multiple of 4, so it keeps its phase. */
     fun patchWidth(kc: Int, rate: Int): Int {
         val hz = rate.toFloat() / FRAME
-        var w = min(kc / 2, (5000 / hz).toInt())
+        var w = min(patchStart(kc) / 2, (5000 / hz).toInt())
         w -= w % 4
         return w
     }
@@ -144,14 +154,18 @@ internal object RestoreDsp {
 
     /**
      * One frame's gains, in dB, for every bin from the cutoff up to [top]: what each band should be
-     * ([pred], 20 dB units over [anchor]) against what the copy of the mid brings, eased from the
-     * frame before ([previous], updated in place; NaN at first).
+     * ([pred], 20 dB units over [anchor]) against what the copy of the mid brings — the same over
+     * the whole band, bins past the last band holding its gain — eased from the frame before
+     * ([previous], updated in place; NaN at first).
      */
     fun gains(
         midRe: FloatArray, midIm: FloatArray, kc: Int, top: Int, width: Int,
         pred: FloatArray, anchor: Float, bands: Bands,
         bandGain: FloatArray, previous: FloatArray
     ) {
+        val count = top - kc
+        val g = scratch(count)
+        java.util.Arrays.fill(g, 0, count, Float.NaN)
         var any = false
         for (b in 0 until bands.count) {
             val a = max(bands.lo[b], kc)
@@ -162,49 +176,44 @@ internal object RestoreDsp {
             }
             var sum = 0f
             for (k in a until z) {
-                val s = source(k, kc, width)
+                val s = source(k, patchStart(kc), width)
                 sum += midRe[s] * midRe[s] + midIm[s] * midIm[s]
             }
             val have = db(sum / (z - a))
             val want = anchor + 20f * pred[b]
             bandGain[b] = (want - have).coerceIn(-60f, MAX_BOOST_DB)
+            for (k in a until z) g[k - kc] = bandGain[b]
             any = true
         }
         if (!any) return
-        // Between band centres, a straight line; past the first and last, held (as numpy's interp).
-        var lower = -1
-        for (k in kc until top) {
-            while (true) {
-                val next = nextValid(bandGain, lower + 1)
-                if (next >= 0 && bands.center[next] <= k) lower = next else break
-            }
-            val upper = nextValid(bandGain, lower + 1)
-            val g = when {
-                lower < 0 -> bandGain[upper]
-                upper < 0 -> bandGain[lower]
-                else -> {
-                    val x0 = bands.center[lower]
-                    val x1 = bands.center[upper]
-                    bandGain[lower] + (bandGain[upper] - bandGain[lower]) * (k - x0) / (x1 - x0)
-                }
-            }
-            val i = k - kc
+        // Bins no band covers hold the gain of the one before them (the first, of the one after).
+        for (i in 1 until count) if (g[i].isNaN()) g[i] = g[i - 1]
+        var first = 0
+        while (first < count && g[first].isNaN()) first++
+        for (i in 0 until first) g[i] = g[first]
+        for (i in 0 until count) {
             val old = previous[i]
+            val v = g[i]
             previous[i] = when {
-                old.isNaN() -> g
-                g > old -> old + ATTACK * (g - old)
-                else -> old + RELEASE * (g - old)
+                old.isNaN() -> v
+                v > old -> old + ATTACK * (v - old)
+                else -> old + RELEASE * (v - old)
             }
         }
     }
 
-    private fun nextValid(values: FloatArray, from: Int): Int {
-        for (i in from until values.size) if (!values[i].isNaN()) return i
-        return -1
+    // A frame's gains before easing, kept: not an array made for every frame. One playback
+    // thread per processor at a time, so one per thread.
+    private val scratchHolder = ThreadLocal<FloatArray>()
+
+    private fun scratch(size: Int): FloatArray {
+        val have = scratchHolder.get()
+        if (have != null && have.size >= size) return have
+        return FloatArray(size).also(scratchHolder::set)
     }
 
-    /** The bin [k] (at or over the cutoff) is copied from: a band's width at a time, down below the cutoff. */
-    fun source(k: Int, kc: Int, width: Int): Int = k - width * (1 + (k - kc) / width)
+    /** The bin [k] (at or over [start]) is copied from: a band's width at a time, down under it. */
+    fun source(k: Int, start: Int, width: Int): Int = k - width * (1 + (k - start) / width)
 
     fun dbToAmplitude(gainDb: Float): Float = 10f.pow(gainDb / 20f)
 }
