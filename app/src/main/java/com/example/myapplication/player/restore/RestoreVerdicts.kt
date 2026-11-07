@@ -6,7 +6,7 @@ import android.content.Context
  * What restoration found in each track the last time it played — its cutoff, or 0 for a file that
  * reaches the top — so that the next time it is restored from its first second, not after the
  * second or two it takes to listen. The sound itself is never kept: it is restored as it plays,
- * for less than a hundredth of the phone's processor, and a restored copy would be compressed again.
+ * for a few percent of one of the phone's cores, and a restored copy would be compressed again.
  */
 class RestoreVerdicts(context: Context) {
     private val preferences = context.getSharedPreferences("restore_verdicts", Context.MODE_PRIVATE)
