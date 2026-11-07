@@ -115,9 +115,10 @@ def tilt_baseline(xs, ys, edges):
     for x, y in zip(xs, ys):
         cutoff = float(x[0, -1]) * 22050
         octs = np.log2(np.maximum(centers, cutoff + 1) / cutoff)
-        y = y.astype(np.float32)
+        # Every eighth frame: plenty for a line, and the whole of it is gigabytes.
+        y = y[::8].astype(np.float32)
         m = ~np.isnan(y)
-        rows.append(np.broadcast_to(octs, y.shape)[m])
+        rows.append(np.broadcast_to(octs, y.shape)[m].astype(np.float32))
         vals.append(y[m] * 20)
     o, v = np.concatenate(rows), np.concatenate(vals)
     a = np.stack([np.ones_like(o), o], axis=1)
