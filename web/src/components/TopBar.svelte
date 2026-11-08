@@ -121,7 +121,7 @@
       </button>
       {#if menu}
         <button class="scrim" aria-label={tr('Закрыть меню')} onclick={() => (menu = false)}></button>
-        <div class="menu glass-strong" role="menu">
+        <div class="menu glass-overlay glass-overlay-menu" role="menu">
           <div class="who">
             {#if social.me}
               <Avatar name={shownName(social.me)} color={social.me.color} src={avatarUrl(social.me)} size={44} />
@@ -354,7 +354,6 @@
     width: 260px;
     padding: 8px;
     border-radius: var(--r-xl);
-    box-shadow: var(--shadow);
     transform-origin: top right;
     animation: pop var(--d-fast) var(--spring-fast);
   }

@@ -96,23 +96,19 @@
     gap: 14px;
     padding: 8px 10px 8px 8px;
     border-radius: var(--r-l);
-    transition:
-      background-color 200ms var(--ease-emph),
-      border-radius var(--d-spatial) var(--spring);
+    transition: background-color 200ms var(--ease-emph);
     position: relative;
     user-select: none;
-    border: 1px solid transparent;
   }
-  .row:hover {
-    background: var(--state-hover);
+  .row:hover,
+  .row:focus-within {
+    background: color-mix(in oklab, var(--on-surface) 8%, transparent);
+  }
+  .row:focus-visible {
+    outline-offset: -3px;
   }
   .row.unavailable {
     opacity: 0.45;
-  }
-  .row.current {
-    background: color-mix(in oklab, var(--primary) 16%, transparent);
-    border-color: color-mix(in oklab, var(--primary) 22%, transparent);
-    border-radius: var(--r-xl);
   }
   .num {
     width: 26px;
