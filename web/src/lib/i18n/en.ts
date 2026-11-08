@@ -96,6 +96,8 @@ export const EN: Record<string, string> = {
   'Подстраивается под «Нравится» и пропуски': 'Learns from your likes and skips',
   'Под тебя': 'For you',
   'Под твой вкус': 'To your taste',
+  'Настроение': 'Mood',
+  'Знакомство': 'Discovery',
   'Бодрое': 'Energetic',
   'Весёлое': 'Happy',
   'Спокойное': 'Calm',

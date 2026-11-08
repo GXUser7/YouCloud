@@ -1,6 +1,5 @@
 <script lang="ts">
-  // Yandex Music's home: «Моя волна» and what Yandex made for the listener (only the chart when
-  // signed out), laid out as the layout picked in Settings has it, then the library and the rows.
+  // Yandex Music's home: My Wave leads the page, then the layout picked in Settings and the library.
   import { onMount } from 'svelte'
   import { extension, onExtension } from '../lib/extension'
   import { home, leading, libraryOf } from '../lib/home.svelte'
@@ -43,11 +42,7 @@
   const subtitle = $derived(tr('Моя волна, твоё любимое и подборки'))
 </script>
 
-{#snippet waveBig()}<WaveCompact size="big" />{/snippet}
-{#snippet waveCard()}<WaveCompact size="card" />{/snippet}
-{#snippet waveTile()}<WaveCompact size="tile" />{/snippet}
-
-{#if home.variant !== 'quick' || ext === null}<PageHeader title={tr('Яндекс Музыка')} {subtitle} />{/if}
+{#if ext === null}<PageHeader title={tr('Яндекс Музыка')} {subtitle} />{/if}
 {#if ext === null}
   <ExtensionCard why={tr('Яндекс Музыка отвечает только твоему IP, а не Cloudflare: подборки, поиск и звук идут через расширение.')} />
 {:else if ext !== undefined}
@@ -55,12 +50,13 @@
     <Loading text={tr('Спрашиваю Яндекс…')} />
   {:then sections}
     {@const lead = leading(sections)}
+    {#if signedIn}<WaveCompact size="hero" />{/if}
     {#if home.variant === 'bento'}
-      <Bento service="ya" lead={lead?.sets ?? []} leadTitle={lead?.title ?? ''} lib={lib.lib} {signedIn} main={signedIn ? waveBig : undefined} />
+      <Bento service="ya" lead={lead?.sets ?? []} leadTitle={lead?.title ?? ''} lib={lib.lib} {signedIn} />
     {:else if home.variant === 'stage'}
-      <Stage service="ya" lead={lead?.sets ?? []} leadTitle={lead?.title ?? ''} lib={lib.lib} {signedIn} extra={signedIn ? waveCard : undefined} />
+      <Stage service="ya" lead={lead?.sets ?? []} leadTitle={lead?.title ?? ''} lib={lib.lib} {signedIn} />
     {:else}
-      <Quick service="ya" lead={lead?.sets ?? []} lib={lib.lib} {signedIn} subtitle="{tr('Яндекс Музыка')} · {subtitle}" first={signedIn ? waveTile : undefined} />
+      <Quick service="ya" lead={lead?.sets ?? []} lib={lib.lib} {signedIn} subtitle="{tr('Яндекс Музыка')} · {subtitle}" />
     {/if}
     <LibraryShelves lib={lib.lib} />
     {#each sections.filter((x) => x.sets.length && (x !== lead || home.variant === 'quick')) as section (section.title)}

@@ -1,22 +1,39 @@
 <script lang="ts">
-  // Yandex's «Моя волна» in the new homes: its shape — the mood's lobes, turning while it plays —
-  // and play, at three sizes: the big tile with the mood and the mode to pick ('big'), a card
-  // beside the likes with the mood ('card'), a quick tile ('tile').
+  // My Wave is the first thing on Yandex's home: a quiet living shape when idle, a faster pulse
+  // while it plays, and the controls that tune the stream without leaving the page.
+  import { onMount } from 'svelte'
   import { tr } from '../../lib/i18n.svelte'
   import { artistNames } from '../../lib/catalog'
   import { pathFromRadii, waveRadii } from '../../lib/shapes'
   import { app, currentTrack, player, startWave, toggle, tuneWave, WAVE } from '../../lib/state.svelte'
   import ButtonGroup from '../ButtonGroup.svelte'
+  import Cover from '../Cover.svelte'
   import Icon from '../Icon.svelte'
 
-  let { size }: { size: 'big' | 'card' | 'tile' } = $props()
+  let { size = 'hero' }: { size?: 'hero' } = $props()
+  let hero = $state<HTMLElement>()
+  let visible = $state(false)
+  let hidden = $state(false)
+  let starting = $state(false)
 
   const mood = $derived(WAVE.moods.find((m) => m.seed === app.waveMood))
   const shape = $derived(pathFromRadii(waveRadii(mood?.lobes ?? 10, mood?.depth ?? 0.07)))
   const inner = $derived(pathFromRadii(waveRadii(mood?.lobes ?? 10, (mood?.depth ?? 0.07) * 1.4), 0.74, 180 / (mood?.lobes ?? 10)))
   const t = $derived(currentTrack())
-  let starting = $state(false)
   const on = $derived((player.wave && player.playing) || starting)
+  const animate = $derived(visible && !hidden)
+
+  onMount(() => {
+    const observer = new IntersectionObserver(([entry]) => (visible = entry.isIntersecting), { threshold: 0.05 })
+    if (hero) observer.observe(hero)
+
+    const onVisibility = () => (hidden = document.hidden)
+    document.addEventListener('visibilitychange', onVisibility)
+    return () => {
+      observer.disconnect()
+      document.removeEventListener('visibilitychange', onVisibility)
+    }
+  })
 
   async function wave() {
     if (player.wave) {
@@ -24,85 +41,251 @@
       return
     }
     starting = true
-    await startWave()
-    starting = false
+    try {
+      await startWave()
+    } finally {
+      starting = false
+    }
   }
 </script>
 
-{#snippet form(px: number)}
-  <button class="form" class:on style:--px="{px}px" onclick={wave} aria-label={player.wave && player.playing ? tr('Пауза') : tr('Включить волну')}>
-    <span class="spin">
-      <svg viewBox="0 0 100 100" aria-hidden="true"><path class="outer" d={shape} /><path class="inner" d={inner} /></svg>
-    </span>
-    <span class="glyph"><Icon name={player.wave && player.playing ? 'pause' : 'play_arrow'} fill size={Math.round(px * 0.3)} /></span>
-  </button>
-{/snippet}
+<section bind:this={hero} class="hero glass rise" class:animate class:playing={on && animate}>
+  <div class="hero-copy">
+    <span class="overline">{tr('Яндекс Музыка')}</span>
+    <h2 class="display">{tr('Моя волна')}</h2>
+    <p class="subtitle">{tr('Подстраивается под «Нравится» и пропуски')}</p>
 
-{#if size === 'big'}
-  <div class="big">
-    <div class="big-in">
-      {@render form(220)}
-      <div class="big-text">
-        <span class="overline">{tr('Яндекс Музыка')}</span>
-        <h2 class="display">{tr('Моя волна')}</h2>
-        <p class="muted now">{player.wave && t ? `${t.title} — ${artistNames(t)}` : starting ? tr('Волна подбирает треки…') : tr('Подстраивается под «Нравится» и пропуски')}</p>
+    {#if player.wave && t}
+      <div class="now-playing">
+        <span class="now-cover"><Cover seed={t.id} color={t.color} src={t.cover} /></span>
+        <span class="now-copy">
+          <span class="now-label">{tr('Сейчас играет')}</span>
+          <span class="ellipsis now-title">{t.title}</span>
+          <span class="ellipsis muted now-artist">{artistNames(t)}</span>
+        </span>
       </div>
-      <div class="chips moods">
-        <ButtonGroup options={WAVE.moods.map((m) => ({ value: m.seed, label: m.title }))} value={app.waveMood} allowNone size="s" onchange={(v) => tuneWave('mood', v)} />
+    {:else if starting}
+      <p class="status muted">{tr('Волна подбирает треки…')}</p>
+    {/if}
+
+    <div class="tuning">
+      <div class="tuning-row">
+        <span class="tuning-label">{tr('Настроение')}</span>
+        <div class="chips">
+          <ButtonGroup options={WAVE.moods.map((m) => ({ value: m.seed, label: m.title }))} value={app.waveMood} allowNone size="s" onchange={(v) => tuneWave('mood', v)} />
+        </div>
       </div>
-      <div class="chips modes">
-        <ButtonGroup options={WAVE.modes.map((m) => ({ value: m.seed, label: m.title }))} value={app.waveMode} allowNone size="s" onchange={(v) => tuneWave('mode', v)} />
+      <div class="tuning-row">
+        <span class="tuning-label">{tr('Знакомство')}</span>
+        <div class="chips">
+          <ButtonGroup options={WAVE.modes.map((m) => ({ value: m.seed, label: m.title }))} value={app.waveMode} allowNone size="s" onchange={(v) => tuneWave('mode', v)} />
+        </div>
       </div>
     </div>
   </div>
-{:else if size === 'card'}
-  <div class="card">
-    {@render form(132)}
-    <div class="card-text">
-      <span class="overline">{tr('Моя волна')}</span>
-      <h3 class="headline">{player.wave && t ? t.title : (mood?.title ?? tr('Под тебя'))}</h3>
-      <ButtonGroup options={WAVE.moods.map((m) => ({ value: m.seed, label: m.title }))} value={app.waveMood} allowNone size="s" onchange={(v) => tuneWave('mood', v)} />
-    </div>
+
+  <div class="visual">
+    <svg class="backdrop" viewBox="0 0 100 100" preserveAspectRatio="xMidYMid meet" aria-hidden="true">
+      <path class="blob blob-a" d={shape} />
+      <path class="blob blob-b" d={inner} />
+      <path class="blob blob-c" d={shape} />
+    </svg>
+    <button class="form" class:on={on && animate} onclick={wave} aria-label={player.wave && player.playing ? tr('Пауза') : tr('Включить волну')}>
+      <span class="spin">
+        <svg viewBox="0 0 100 100"><path class="outer" d={shape} /><path class="inner" d={inner} /></svg>
+      </span>
+      <span class="glyph"><Icon name={player.wave && player.playing ? 'pause' : 'play_arrow'} fill size={58} /></span>
+    </button>
   </div>
-{:else}
-  <button class="tile" onclick={wave}>
-    <span class="tile-form" class:on>
-      <span class="spin"><svg viewBox="0 0 100 100" aria-hidden="true"><path class="outer" d={shape} /></svg></span>
-      <span class="glyph"><Icon name={player.wave && player.playing ? 'pause' : 'waves'} fill size={26} /></span>
-    </span>
-    <span class="tile-text">
-      <span class="ellipsis title">{tr('Моя волна')}</span>
-      <span class="ellipsis sub">{player.wave && t ? t.title : (mood?.title ?? tr('Под твой вкус'))}</span>
-    </span>
-  </button>
-{/if}
+</section>
 
 <style>
-  /* The shape: the theme's colour, turning slowly while the wave plays; the corners of the lobes
-     deepen under the pointer. */
-  .form {
-    width: var(--px);
-    height: var(--px);
+  .hero {
+    position: relative;
+    min-height: clamp(380px, 50vh, 580px);
+    margin-top: 24px;
+    padding: clamp(28px, 4vw, 56px);
+    display: grid;
+    grid-template-columns: minmax(0, 0.95fr) minmax(360px, 1.05fr);
+    gap: 24px;
+    overflow: hidden;
+    isolation: isolate;
+    border-radius: 36px;
+    background: color-mix(in oklab, var(--primary) 9%, var(--glass));
+    box-shadow: var(--shadow);
+  }
+  .hero-copy {
+    position: relative;
+    z-index: 2;
+    min-width: 0;
+    align-self: center;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+  }
+  .hero h2 {
+    max-width: 9ch;
+    margin-top: 14px;
+    font-size: clamp(44px, 5.5vw, 86px);
+    text-wrap: balance;
+  }
+  .subtitle {
+    max-width: 38ch;
+    margin-top: 18px;
+    font-size: clamp(16px, 1.5vw, 21px);
+    color: var(--on-surface-variant);
+  }
+  .status {
+    margin-top: 24px;
+    font-size: 15px;
+  }
+  .now-playing {
+    max-width: min(100%, 430px);
+    margin-top: 24px;
+    padding: 8px 16px 8px 8px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    border-radius: var(--r-xl);
+    background: color-mix(in oklab, var(--surface) 22%, transparent);
+    backdrop-filter: blur(18px);
+    -webkit-backdrop-filter: blur(18px);
+  }
+  .now-cover {
+    width: 52px;
+    height: 52px;
     flex: none;
+    overflow: hidden;
+    border-radius: 16px;
+  }
+  .now-copy {
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+  }
+  .now-label,
+  .tuning-label {
+    color: var(--on-surface-variant);
+    font-size: 11px;
+    font-weight: 750;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+  }
+  .now-title {
+    font-weight: 750;
+    font-size: 15px;
+  }
+  .now-artist {
+    font-size: 13px;
+  }
+  .tuning {
+    width: 100%;
+    max-width: 600px;
+    margin-top: 30px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+  .tuning-row {
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    gap: 14px;
+  }
+  .tuning-label {
+    width: 78px;
+    flex: none;
+  }
+  .chips {
+    min-width: 0;
+    max-width: 100%;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+  .visual {
+    position: relative;
+    min-height: 300px;
+    display: grid;
+    place-items: center;
+    align-self: stretch;
+  }
+  .backdrop {
+    position: absolute;
+    inset: -26%;
+    width: 152%;
+    height: 152%;
+    overflow: visible;
+    opacity: 0;
+    transform: rotate(-12deg) scale(0.88);
+    transition: opacity 700ms var(--ease-emph), transform 1.2s var(--spring);
+    filter: blur(8px);
+  }
+  .animate .backdrop {
+    opacity: 0.92;
+    transform: rotate(-12deg) scale(1);
+  }
+  .blob {
+    transform-box: fill-box;
+    transform-origin: center;
+    fill: var(--primary);
+  }
+  .blob-a {
+    opacity: 0.28;
+    transform: translate(3%, 4%) scale(1.1);
+  }
+  .blob-b {
+    fill: var(--secondary-container, var(--primary-container));
+    opacity: 0.48;
+    transform: translate(-8%, -6%) scale(0.72) rotate(36deg);
+  }
+  .blob-c {
+    opacity: 0.18;
+    transform: translate(18%, 10%) scale(0.66) rotate(-24deg);
+  }
+  .animate .blob-a {
+    animation: drift-a 16s ease-in-out infinite alternate;
+  }
+  .animate .blob-b {
+    animation: drift-b 19s ease-in-out infinite alternate-reverse;
+  }
+  .animate .blob-c {
+    animation: drift-c 23s ease-in-out infinite alternate;
+  }
+  .playing .blob-a {
+    animation-duration: 7s;
+  }
+  .playing .blob-b {
+    animation-duration: 9s;
+  }
+  .playing .blob-c {
+    animation-duration: 11s;
+  }
+  .form {
+    position: relative;
+    z-index: 1;
+    width: clamp(170px, 19vw, 280px);
+    aspect-ratio: 1;
     display: grid;
     place-items: center;
     color: var(--on-primary);
-    transition: transform var(--d-fast) var(--spring-fast);
-  }
-  .form > *,
-  .tile-form > * {
-    grid-area: 1 / 1;
+    transition: transform var(--d-fast) var(--spring-fast), filter var(--d-fast) var(--ease-emph);
   }
   .form:hover {
     transform: scale(1.04);
+    filter: drop-shadow(0 22px 28px color-mix(in oklab, var(--primary) 26%, transparent));
   }
   .form:active {
-    transform: scale(0.94);
+    transform: scale(0.92);
+  }
+  .form > *,
+  .spin > * {
+    grid-area: 1 / 1;
   }
   .spin {
     width: 100%;
     height: 100%;
-    display: block;
+    display: grid;
     animation: turn 30s linear infinite;
     animation-play-state: paused;
     will-change: transform;
@@ -110,7 +293,7 @@
   .on .spin {
     animation-play-state: running;
   }
-  svg {
+  .form svg {
     width: 100%;
     height: 100%;
     overflow: visible;
@@ -132,140 +315,58 @@
       transform: rotate(360deg);
     }
   }
+  @keyframes drift-a {
+    to { transform: translate(-5%, -4%) scale(1.2) rotate(12deg); }
+  }
+  @keyframes drift-b {
+    to { transform: translate(8%, 8%) scale(0.82) rotate(-18deg); }
+  }
+  @keyframes drift-c {
+    to { transform: translate(2%, -8%) scale(0.78) rotate(18deg); }
+  }
 
-  /* Sized by its tile, not the window: the tile's width differs with the layout, the side panel
-     and the browser around the site. Wide, the shape on the left and everything beside it;
-     narrower, a smaller shape; narrow, the shape beside the title and the moods and modes under
-     both, across the tile. --k scales the shape and its glyph. */
-  .big {
-    height: 100%;
-    container: wave / inline-size;
-  }
-  .big-in {
-    --k: 1;
-    height: 100%;
-    box-sizing: border-box;
-    display: grid;
-    grid-template-columns: auto minmax(0, 1fr);
-    grid-template-areas:
-      'form text'
-      'form moods'
-      'form modes';
-    align-content: center;
-    align-items: start;
-    column-gap: 32px;
-    row-gap: 10px;
-    padding: 28px 32px;
-  }
-  .big-in .form {
-    grid-area: form;
-    align-self: center;
-    width: calc(220px * var(--k));
-    height: calc(220px * var(--k));
-  }
-  .big-in .glyph {
-    scale: var(--k);
-  }
-  .big-text {
-    grid-area: text;
-    min-width: 0;
-    display: flex;
-    flex-direction: column;
-    align-items: flex-start;
-    gap: 10px;
-  }
-  .big-text h2 {
-    font-size: clamp(28px, 7.4cqi, 52px);
-  }
-  .now {
-    margin-bottom: 8px;
-    max-width: 40ch;
-  }
-  .moods {
-    grid-area: moods;
-  }
-  .modes {
-    grid-area: modes;
-  }
-  /* A group a little too wide for the tile scrolls rather than spilling past its edge. */
-  .chips {
-    min-width: 0;
-    overflow-x: auto;
-    scrollbar-width: none;
-  }
-  @container wave (max-width: 700px) {
-    .big-in {
-      --k: 0.7;
-      column-gap: 24px;
+  @media (prefers-reduced-motion: reduce) {
+    .animate .blob,
+    .on .spin {
+      animation: none;
     }
   }
-  @container wave (max-width: 560px) {
-    .big-in {
-      --k: 0.46;
-      grid-template-areas:
-        'form text'
-        'moods moods'
-        'modes modes';
-      column-gap: 18px;
-      padding: 24px;
+
+  @container page (max-width: 760px) {
+    .hero {
+      min-height: 0;
+      padding: 28px 22px 24px;
+      display: flex;
+      flex-direction: column;
+      gap: 0;
     }
-    .now {
-      margin-bottom: 0;
+    .hero h2 {
+      max-width: 10ch;
+      font-size: clamp(40px, 12vw, 64px);
     }
-    .moods {
+    .subtitle {
+      margin-top: 14px;
+    }
+    .tuning {
+      margin-top: 24px;
+    }
+    .tuning-row {
+      align-items: flex-start;
+      flex-direction: column;
+      gap: 7px;
+    }
+    .visual {
+      min-height: 210px;
       margin-top: 8px;
+      align-items: end;
     }
-  }
-
-  .card {
-    display: flex;
-    align-items: center;
-    gap: 20px;
-    height: 100%;
-  }
-  .card-text {
-    min-width: 0;
-    display: flex;
-    flex-direction: column;
-    align-items: flex-start;
-    gap: 8px;
-  }
-  .card-text h3 {
-    font-size: 22px;
-  }
-
-  .tile {
-    width: 100%;
-    height: 100%;
-    display: flex;
-    align-items: center;
-    gap: 14px;
-    padding-left: 10px;
-    text-align: left;
-  }
-  .tile-form {
-    width: 64px;
-    height: 64px;
-    flex: none;
-    display: grid;
-    place-items: center;
-    color: var(--on-primary);
-  }
-  .tile:hover .tile-form .spin {
-    animation-play-state: running;
-  }
-  .tile-text {
-    min-width: 0;
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-  }
-  .title {
-    font-weight: 750;
-    font-size: 15.5px;
-  }
-  .sub {
-    font-size: 13px;
-    color: var(--on-surface-variant);
+    .backdrop {
+      inset: -34% -22%;
+      width: 144%;
+      height: 144%;
+    }
+    .form {
+      width: min(210px, 58vw);
+    }
   }
 </style>
