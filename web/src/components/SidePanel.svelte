@@ -43,7 +43,7 @@
   let source = $state<string | null>(null)
 </script>
 
-<aside class="panel glass">
+<aside class="panel glass-overlay">
   <header>
     <ButtonGroup
       options={tabs}
@@ -144,6 +144,7 @@
 
 <style>
   .panel {
+    --shadow: var(--overlay-shadow);
     grid-area: side;
     border-radius: var(--r-2xl);
     display: flex;

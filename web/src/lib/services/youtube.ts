@@ -13,6 +13,7 @@ import { artists as artistIndex, colorFor, putArtist, putSet, putTrack, sets, tr
 import { accounts } from '../accounts.svelte'
 import { extension, extensionCall, extensionHost, hostStream, hostStreams, mediaRelay } from '../extension'
 import { at, getText, HttpError, postJson, request } from '../net'
+import type { ArtistPage, ResultPage, SearchResult, SearchSection } from '../live'
 
 const ORIGIN = 'https://music.youtube.com'
 const API = `${ORIGIN}/youtubei/v1/`
@@ -120,12 +121,19 @@ type Thumb = { url: string; width?: number; height?: number }
 /** The largest picture, and Google's resizable ones asked for at a size worth showing. */
 function picture(list: Thumb[] | undefined | null, size = 544): string | null {
   if (!list?.length) return null
-  const best = [...list].sort((a, b) => (b.width ?? 0) - (a.width ?? 0))[0].url
-  return best.replace(/=w\d+-h\d+[^&?]*/, `=w${size}-h${size}-l90-rj`).replace(/^\/\//, 'https://')
+  const best = [...list].sort((a, b) => (b.width ?? 0) - (a.width ?? 0))[0]
+  const dimension = best.url.match(/=w(\d+)-h(\d+)/)
+  // Never below what was asked, never past what a page shows: an artist's header comes at 2880.
+  const target = Math.min(1600, Math.max(size, best.width ?? 0, best.height ?? 0, Number(dimension?.[1] ?? 0), Number(dimension?.[2] ?? 0)))
+  return best.url.replace(/=w\d+-h\d+[^&?]*/, `=w${target}-h${target}-l90-rj`).replace(/^\/\//, 'https://')
 }
 
+const isThumbs = (v: any): v is Thumb[] => Array.isArray(v) && typeof v[0]?.url === 'string'
+
+// Pictures sit in a different field on each kind of item; a MusicThumbnail (an artist's header)
+// keeps them in [contents].
 const thumbsOf = (item: any): Thumb[] =>
-  item?.thumbnails ?? item?.thumbnail?.contents ?? (Array.isArray(item?.thumbnail) ? item.thumbnail : []) ?? []
+  Array.isArray(item) ? item : [item?.thumbnails, item?.thumbnail?.contents, item?.thumbnail, item?.contents].find(isThumbs) ?? []
 
 const text = (t: any): string => (t == null ? '' : typeof t === 'string' ? t : (t.text ?? t.toString?.() ?? ''))
 
@@ -184,7 +192,7 @@ function putYtArtist(item: any): string | null {
     id,
     name: text(item.title) || item.name || tr('Артист'),
     service: 'yt',
-    image: picture(thumbsOf(item)),
+    image: picture(thumbsOf(item), 1000),
     color: colorFor(id),
     followers: item.subscribers ? `${item.subscribers}`.replace(/subscribers?/i, tr('подписчиков')) : undefined,
     link: `https://music.youtube.com/channel/${channelId}`,
@@ -388,23 +396,27 @@ export async function loadSet(id: string): Promise<TrackSet> {
   return finish(id, tracks)
 }
 
-export interface ArtistPage {
-  artist: string
-  top: string[]
-  releases: string[]
-  playlists: string[]
-  similar: string[]
+async function artistSongPage(playlist: any, artist: { id: string; name: string }): Promise<ResultPage> {
+  const items = (playlist.items ?? []).flatMap((item: any) => {
+    const id = putYtTrack(item, { artist })
+    return id ? [id] : []
+  })
+  return {
+    items,
+    next: playlist.has_continuation ? async () => artistSongPage(await playlist.getContinuation(), artist) : undefined,
+  }
 }
 
 export async function loadArtist(id: string): Promise<ArtistPage> {
   const channelId = id.slice('yt:a:'.length)
-  const page: any = await (await yt()).music.getArtist(channelId)
+  const client = await yt()
+  const page: any = await client.music.getArtist(channelId)
   const header = page.header
   putArtist({
     id,
     name: text(header?.title) || tr('Артист'),
     service: 'yt',
-    image: picture(thumbsOf(header?.thumbnail)),
+    image: picture([...thumbsOf(header?.thumbnail), ...thumbsOf(header?.foreground_thumbnail)], 1000),
     color: colorFor(id),
     followers: header?.subscription_button?.subscriber_count?.toString?.()
       ? tr('%s подписчиков', header.subscription_button.subscriber_count)
@@ -415,22 +427,51 @@ export async function loadArtist(id: string): Promise<ArtistPage> {
   const releases: string[] = []
   const playlists: string[] = []
   const similar: string[] = []
+  let songsEndpoint: any
+  let songShelf: any
   for (const section of (page.sections ?? []) as any[]) {
     const into = { tracks: [] as string[], sets: [] as string[], artists: [] as string[] }
     sortItems(section.contents, into)
-    if (section.type === 'MusicShelf') top.push(...into.tracks)
+    const songs = (section.contents ?? []).filter((item: any) => item.item_type === 'song')
+    top.push(...songs.flatMap((item: any) => {
+      const track = putYtTrack(item)
+      return track ? [track] : []
+    }))
+    if ((songs.length || section.type === 'MusicShelf' && !section.contents?.length) && !songShelf) {
+      songShelf = section
+      songsEndpoint = section.endpoint ?? section.navigation_endpoint ?? section.bottom_button?.endpoint ?? section.header?.more_content?.endpoint
+    }
     for (const s of into.sets) (sets.get(s)?.kind === 'album' ? releases : playlists).push(s)
     similar.push(...into.artists)
   }
-  return { artist: id, top, releases, playlists, similar }
-}
-
-export interface SearchResult {
-  best?: { type: 'artist' | 'track' | 'album' | 'playlist'; id: string }
-  tracks: string[]
-  artists: string[]
-  albums: string[]
-  playlists: string[]
+  const artist = { id, name: text(header?.title) || tr('Артист') }
+  let moreTop: ArtistPage['moreTop']
+  if (songsEndpoint) {
+    const loadSongs = async () => {
+      const { YTMusic } = await import('youtubei.js/web')
+      const response = await songsEndpoint.call(client.actions, { client: 'YTMUSIC' })
+      return artistSongPage(new YTMusic.Playlist(response, client.actions), artist)
+    }
+    if (top.length) moreTop = loadSongs
+    else {
+      const songs = await loadSongs()
+      top.push(...songs.items)
+      moreTop = songs.next
+    }
+  } else if (songShelf?.continuation) {
+    const { YTMusic } = await import('youtubei.js/web')
+    moreTop = async () => artistSongPage(new YTMusic.Playlist(
+      await client.actions.execute('/browse', { client: 'YTMUSIC', continuation: songShelf.continuation }), client.actions,
+    ), artist)
+  } else if (!top.length) {
+    const playlistId = header?.play_button?.endpoint?.payload?.playlistId
+    if (playlistId) {
+      const songs = await artistSongPage(await client.music.getPlaylist(playlistId), artist)
+      top.push(...songs.items)
+      moreTop = songs.next
+    } else throw new Error(tr('YouTube не отдал треки артиста'))
+  }
+  return { artist: id, top, moreTop, releases, playlists, similar }
 }
 
 /** The search page's top card, as an artist, album or song — put first in its own row too. */
@@ -465,6 +506,38 @@ function topResult(card: any, rows: { tracks: string[]; artists: string[]; album
   return undefined
 }
 
+function searchItems(page: any, section: SearchSection): string[] {
+  const into = { tracks: [] as string[], sets: [] as string[], artists: [] as string[] }
+  // SearchContinuation.contents is a MusicShelfContinuation, not an array of shelves.
+  const contents = page.contents
+  if (Array.isArray(contents)) {
+    for (const shelf of contents) sortItems(shelf.contents ?? [], into)
+  } else sortItems(contents?.contents ?? [], into)
+  if (section === 'tracks') return into.tracks
+  if (section === 'artists') return into.artists
+  return into.sets.filter((id) => id.startsWith(section === 'albums' ? 'yt:al:' : 'yt:pl:'))
+}
+
+function searchResultPage(page: any, section: SearchSection): ResultPage {
+  return {
+    items: searchItems(page, section),
+    next: page.has_continuation ? async () => searchResultPage(await page.getContinuation(), section) : undefined,
+  }
+}
+
+function searchMore(found: any, q: string): SearchResult['more'] {
+  const more: NonNullable<SearchResult['more']> = {}
+  const types = { tracks: 'song', artists: 'artist', albums: 'album', playlists: 'playlist' } as const
+  for (const section of Object.keys(types) as SearchSection[]) {
+    const shelves = (found.contents ?? []).filter((shelf: any) => searchItems({ contents: [shelf] }, section).length)
+    const shelf = shelves.find((shelf: any) => shelf.type === 'MusicShelf' && shelf.endpoint)
+    // Mixed search has no continuation. A shelf's endpoint (or a typed search) opens its full list.
+    if (shelf) more[section] = async () => searchResultPage(await found.getMore(shelf), section)
+    else if (shelves.length) more[section] = async () => searchResultPage(await (await yt()).music.search(q, { type: types[section] }), section)
+  }
+  return more
+}
+
 export async function search(q: string): Promise<SearchResult> {
   const found: any = await (await yt()).music.search(q)
   // Shelves are told apart by what they hold, not by their titles, which come in the page's language.
@@ -489,6 +562,7 @@ export async function search(q: string): Promise<SearchResult> {
     artists,
     albums,
     playlists,
+    more: searchMore(found, q),
   }
 }
 

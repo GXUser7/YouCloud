@@ -9,7 +9,8 @@
     "preview": "vite preview",
     "check": "svelte-check --tsconfig ./tsconfig.json && tsc -p worker",
     "deploy": "vite build && wrangler deploy",
-    "test:helper": "node scripts/helper-test.mjs"
+    "test:helper": "node scripts/helper-test.mjs",
+    "test:hearing": "node scripts/hearing-test.mjs"
   },
   "dependencies": {
     "@material/material-color-utilities": "^0.4.0",

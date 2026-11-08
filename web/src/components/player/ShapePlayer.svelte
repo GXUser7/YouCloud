@@ -68,7 +68,7 @@
 
   // The ring, in a box 1000 across: the part played a wave going round, the rest a thin track.
   const C = 500
-  const R = 466
+  const R = 411
   const LENGTH = 2 * Math.PI * R
   function ring(amplitude: number): string {
     let d = ''
@@ -195,7 +195,7 @@
         {/if}
       </div>
       {#key t.id}
-        <h1 class="title" use:fit={{ text: t.title, max: 128, min: 26, height: () => Math.max(64, innerHeight * 0.24) }}>{t.title}</h1>
+        <h1 class="title" use:fit={{ text: t.title, max: 180, min: 20, height: () => Math.max(48, Math.min(innerWidth / 1280, innerHeight / 720) * 114) }}>{t.title}</h1>
       {/key}
       <div class="artists">
         {#each t.artists as a, i (a.id + i)}
@@ -205,7 +205,8 @@
 
       <div class="slot">
         {#if side === 'lyrics'}
-          <Lyrics size="l" />
+          <span class="kicker singing">♪ {tr('Сейчас играет')}</span>
+          <div class="words"><Lyrics size="l" /></div>
         {:else}
           <div class="shapes">
             {#each played as p (p.at + ':' + p.id)}
@@ -252,30 +253,33 @@
 
   <div class="bar">
     <button class="icon-btn l glassy" onclick={onclose} aria-label={tr('Свернуть')} title={tr('Свернуть')}><Icon name="keyboard_arrow_down" size={30} /></button>
-    <button class="next-card" class:on={side === 'queue'} onclick={() => show(side === 'queue' ? 'lyrics' : 'queue')} aria-pressed={side === 'queue'} title={side === 'queue' ? tr('Скрыть очередь') : tr('Показать очередь')}>
-      {#if upNext}
-        {#key upNext.id}<span class="next-art" style:clip-path={NEXT_CLIP}><Cover seed={upNext.id} color={upNext.color} src={upNext.cover} /></span>{/key}
-        <span class="next-text"><span class="kicker">{tr('Далее')}</span><span class="ellipsis next-title">{upNext.title}</span></span>
-      {:else}
-        <span class="next-art empty" style:clip-path={NEXT_CLIP}><Icon name="radio" size={22} /></span>
-        <span class="next-text"><span class="kicker">{tr('Далее')}</span><span class="ellipsis next-title">{player.radio ? tr('Радио подбирает треки…') : tr('Очередь пуста')}</span></span>
-      {/if}
-    </button>
-    <div class="pills">
-      <button class="pill-btn" class:on={side === 'lyrics'} onclick={() => show('lyrics')} aria-pressed={side === 'lyrics'}><Icon name="lyrics" fill={side === 'lyrics'} size={20} /><span class="hide-s">{tr('Текст')}</span></button>
-      <button class="pill-btn round" onclick={() => startRadio(t.id)} aria-label={tr('Радио по треку')} title={tr('Радио по треку')}><Icon name="radio" size={20} /></button>
-      <button
-        class="pill-btn round"
-        class:on={player.repeat !== 'off'}
-        onclick={cycleRepeat}
-        aria-pressed={player.repeat !== 'off'}
-        aria-label={tr('Повтор')}
-        title={player.repeat === 'one' ? tr('Повтор трека') : player.repeat === 'all' ? tr('Повтор очереди') : tr('Повтор')}
-      >
-        <Icon name={player.repeat === 'one' ? 'repeat_one' : 'repeat'} size={20} />
+    <div class="footer-right">
+      <button class="next-card" class:on={side === 'queue'} onclick={() => show(side === 'queue' ? 'lyrics' : 'queue')} aria-pressed={side === 'queue'} title={side === 'queue' ? tr('Скрыть очередь') : tr('Показать очередь')}>
+        {#if upNext}
+          {#key upNext.id}<span class="next-art" style:clip-path={NEXT_CLIP}><Cover seed={upNext.id} color={upNext.color} src={upNext.cover} /></span>{/key}
+          <span class="next-text"><span class="kicker">{tr('Далее')}</span><span class="ellipsis next-title">{upNext.title}</span></span>
+        {:else}
+          <span class="next-art empty" style:clip-path={NEXT_CLIP}><Icon name="radio" size={22} /></span>
+          <span class="next-text"><span class="kicker">{tr('Далее')}</span><span class="ellipsis next-title">{player.radio ? tr('Радио подбирает треки…') : tr('Очередь пуста')}</span></span>
+        {/if}
       </button>
-      <VolumeButton align="end" size={20} />
-      <TrackMenu id={t.id} large onleave={onclose} />
+      <div class="pills">
+        <button class="pill-btn" class:on={side === 'lyrics'} onclick={() => show('lyrics')} aria-pressed={side === 'lyrics'} aria-label={tr('Текст')} title={tr('Текст')}><Icon name="lyrics" fill={side === 'lyrics'} size={20} /><span class="hide-s">{tr('Текст')}</span></button>
+        <button class="pill-btn round" class:on={side === 'queue'} onclick={() => show('queue')} aria-pressed={side === 'queue'} aria-label={tr('Очередь')} title={tr('Очередь')}><Icon name="queue_music" size={20} /></button>
+        <button class="pill-btn round" onclick={() => startRadio(t.id)} aria-label={tr('Радио по треку')} title={tr('Радио по треку')}><Icon name="radio" size={20} /></button>
+        <button
+          class="pill-btn round"
+          class:on={player.repeat !== 'off'}
+          onclick={cycleRepeat}
+          aria-pressed={player.repeat !== 'off'}
+          aria-label={tr('Повтор')}
+          title={player.repeat === 'one' ? tr('Повтор трека') : player.repeat === 'all' ? tr('Повтор очереди') : tr('Повтор')}
+        >
+          <Icon name={player.repeat === 'one' ? 'repeat_one' : 'repeat'} size={20} />
+        </button>
+        <VolumeButton align="end" size={20} />
+        <TrackMenu id={t.id} large onleave={onclose} />
+      </div>
     </div>
   </div>
 </div>
@@ -286,8 +290,10 @@
     inset: 0;
     z-index: 20;
     overflow: hidden;
-    display: flex;
-    flex-direction: column;
+    /* One artboard pixel, scaled by whichever side of the window has less room. */
+    --unit: min(0.078125vw, 0.138889dvh);
+    display: grid;
+    grid-template-rows: calc(64 * var(--unit)) minmax(0, 1fr) calc(100 * var(--unit));
     background:
       radial-gradient(circle at 26% 52%, color-mix(in oklab, var(--primary-container) 85%, transparent), transparent 55%),
       radial-gradient(circle at 90% 6%, color-mix(in oklab, var(--primary-container) 55%, transparent), transparent 40%),
@@ -370,7 +376,7 @@
     display: flex;
     flex-direction: column;
     align-items: center;
-    padding-top: clamp(12px, 2.4vh, 22px);
+    padding-top: calc(16 * var(--unit));
   }
   .top .overline {
     font-size: 11px;
@@ -382,13 +388,12 @@
   }
 
   .main {
-    flex: 1;
     min-height: 0;
     display: grid;
-    grid-template-columns: auto minmax(0, 1fr);
-    align-items: center;
-    gap: clamp(24px, 4.4vw, 80px);
-    padding: 0 clamp(20px, 4vw, 64px);
+    grid-template-columns: minmax(0, 540fr) minmax(0, 596fr);
+    align-items: start;
+    gap: calc(40 * var(--unit));
+    padding: calc(16 * var(--unit)) calc(44 * var(--unit)) 0 calc(60 * var(--unit));
   }
 
   /* The dial: the cookie, its glow, the ring. */
@@ -396,11 +401,11 @@
     display: flex;
     flex-direction: column;
     align-items: center;
-    gap: 8px;
+    min-width: 0;
   }
   .dial {
     position: relative;
-    width: min(66vh, 42vw, 620px);
+    width: min(100%, calc(540 * var(--unit)));
     aspect-ratio: 1;
     border-radius: 50%;
   }
@@ -418,7 +423,7 @@
     animation-play-state: paused;
   }
   .cookie {
-    inset: 10%;
+    inset: 16%;
     animation-name: art-in, turn;
     animation-duration: 520ms, 64s;
     animation-timing-function: var(--ease-in-place), linear;
@@ -488,7 +493,8 @@
     outline-offset: 4px;
   }
   .times {
-    font-size: 13px;
+    margin-top: calc(-28 * var(--unit));
+    font-size: clamp(12px, calc(13 * var(--unit)), 18px);
     font-variant-numeric: tabular-nums;
     color: var(--on-surface-variant);
   }
@@ -514,13 +520,21 @@
   /* The words side. */
   .info {
     min-width: 0;
-    display: flex;
-    flex-direction: column;
+    min-height: 0;
+    height: calc(498 * var(--unit));
+    margin-top: calc(12 * var(--unit));
+    display: grid;
+    grid-template-rows: auto auto auto minmax(0, 1fr) auto;
   }
   .chips {
     display: flex;
-    flex-wrap: wrap;
+    min-width: 0;
     gap: 8px;
+  }
+  .chips .chip {
+    min-width: 0;
+    height: clamp(28px, calc(30 * var(--unit)), 40px);
+    font-size: clamp(12px, calc(13 * var(--unit)), 18px);
   }
   .service {
     color: var(--primary);
@@ -530,13 +544,16 @@
   }
   .title {
     width: 100%;
-    margin: clamp(10px, 2vh, 20px) 0 0;
+    min-height: 0;
+    max-height: calc(114 * var(--unit));
+    margin: calc(18 * var(--unit)) 0 0;
+    overflow: hidden;
     font-family: var(--font-display);
     font-weight: 900;
     line-height: 0.95;
     letter-spacing: -0.04em;
     text-wrap: balance;
-    overflow-wrap: normal;
+    overflow-wrap: anywhere;
     animation: title-in 380ms var(--ease-in-place);
   }
   @keyframes title-in {
@@ -547,10 +564,12 @@
   }
   .artists {
     display: flex;
-    flex-wrap: wrap;
     gap: 0 0.3em;
-    margin-top: clamp(6px, 1.2vh, 12px);
-    font-size: clamp(20px, 3.4vh, 30px);
+    min-width: 0;
+    max-height: 1.4em;
+    overflow: hidden;
+    margin-top: calc(10 * var(--unit));
+    font-size: clamp(18px, calc(28 * var(--unit)), 40px);
     font-weight: 800;
     color: var(--on-surface-variant);
   }
@@ -562,9 +581,22 @@
     color: var(--on-surface);
   }
   .slot {
-    height: clamp(96px, 19vh, 190px);
-    margin-top: clamp(8px, 1.6vh, 16px);
-    max-width: 640px;
+    min-width: 0;
+    min-height: 0;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    margin: calc(30 * var(--unit)) 0 calc(24 * var(--unit));
+  }
+  .singing {
+    flex: none;
+    color: var(--primary);
+    margin-bottom: 4px;
+  }
+  .words {
+    flex: 1;
+    min-height: 0;
+    overflow: hidden;
   }
   .slot :global(.state) {
     place-items: center start;
@@ -574,15 +606,23 @@
   .slot :global(.l .line) {
     font-family: var(--font-body);
     font-weight: 800;
-    font-size: clamp(18px, 3vh, 26px);
+    font-size: clamp(16px, calc(20 * var(--unit)), 28px);
     padding: 3px 8px;
   }
+  .slot :global(.l .line.now) {
+    font-size: clamp(18px, calc(26 * var(--unit)), 36px);
+    color: var(--on-surface);
+    transform: none;
+  }
   .shapes {
+    min-height: 0;
     height: 100%;
+    overflow-y: auto;
     display: flex;
     align-items: center;
     flex-wrap: wrap;
     gap: 14px;
+    padding: 6px;
   }
   .shp {
     width: clamp(56px, 9vh, 84px);
@@ -625,8 +665,8 @@
   .ctrls {
     display: flex;
     align-items: center;
-    gap: clamp(8px, 1.2vw, 16px);
-    margin-top: clamp(10px, 2.4vh, 26px);
+    gap: calc(14 * var(--unit));
+    height: calc(120 * var(--unit));
   }
   .sb {
     display: grid;
@@ -651,9 +691,9 @@
     transition: transform var(--d-fast) var(--spring-fast);
   }
   .like {
-    width: 64px;
-    height: 64px;
-    border-radius: 24px;
+    width: calc(64 * var(--unit));
+    height: calc(64 * var(--unit));
+    border-radius: calc(24 * var(--unit));
   }
   .like.on {
     background: color-mix(in oklab, var(--primary) 26%, transparent);
@@ -663,9 +703,9 @@
     border-radius: 32px;
   }
   .pill {
-    width: 84px;
-    height: 60px;
-    border-radius: 30px;
+    width: calc(80 * var(--unit));
+    height: calc(58 * var(--unit));
+    border-radius: calc(29 * var(--unit));
   }
   .pill:active {
     border-radius: 16px;
@@ -677,9 +717,9 @@
     transform: translateX(3px);
   }
   .round {
-    width: 60px;
-    height: 60px;
-    border-radius: 30px;
+    width: calc(58 * var(--unit));
+    height: calc(58 * var(--unit));
+    border-radius: 50%;
   }
   .round.on {
     border-radius: 20px;
@@ -688,8 +728,8 @@
   }
   .sun {
     position: relative;
-    width: 124px;
-    height: 124px;
+    width: calc(120 * var(--unit));
+    height: calc(120 * var(--unit));
     flex: none;
     display: grid;
     place-items: center;
@@ -738,14 +778,23 @@
 
   .bar {
     display: grid;
-    grid-template-columns: auto minmax(0, 1fr) auto;
+    grid-template-columns: minmax(0, 540fr) minmax(0, 596fr);
     align-items: center;
-    gap: 14px;
-    padding: clamp(8px, 1.6vh, 16px) clamp(16px, 3vw, 40px) clamp(14px, 2.6vh, 26px);
+    gap: calc(40 * var(--unit));
+    padding: 0 calc(44 * var(--unit)) calc(14 * var(--unit)) calc(60 * var(--unit));
+  }
+  .bar > .icon-btn {
+    margin-left: calc(-36 * var(--unit));
+  }
+  .footer-right {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    min-width: 0;
   }
   .next-card {
-    justify-self: start;
-    max-width: min(100%, 360px);
+    flex: 1;
+    max-width: 360px;
     min-width: 0;
     height: 60px;
     display: flex;
@@ -800,12 +849,14 @@
   }
   .pills {
     display: flex;
+    flex: none;
     align-items: center;
     gap: 8px;
+    margin-left: auto;
   }
   .pill-btn {
-    height: 48px;
-    min-width: 48px;
+    height: 44px;
+    min-width: 44px;
     display: inline-flex;
     align-items: center;
     justify-content: center;
@@ -822,7 +873,7 @@
       color 250ms var(--ease-emph);
   }
   .pill-btn.round {
-    width: 48px;
+    width: 44px;
     padding: 0;
   }
   .pill-btn:hover {
@@ -837,18 +888,71 @@
     color: var(--on-primary);
   }
 
+  @media (max-width: 1100px) {
+    .hide-s {
+      display: none;
+    }
+    .pill-btn {
+      padding: 0 12px;
+    }
+  }
   @media (max-width: 900px) {
+    .shape {
+      --unit: min(1px, 0.15dvh, calc((100vw - 40px) / 458));
+      grid-template-rows: 56px minmax(0, 1fr) auto;
+    }
     .main {
       grid-template-columns: minmax(0, 1fr);
       overflow-y: auto;
-      align-items: start;
-      padding-top: 12px;
+      gap: 24px;
+      padding: 12px 20px 24px;
     }
     .dial {
-      width: min(46vh, 76vw);
+      width: min(46dvh, 76vw);
     }
-    .hide-s {
-      display: none;
+    .info {
+      height: auto;
+      min-height: calc(430 * var(--unit));
+      margin: 0;
+      grid-template-rows: auto auto auto minmax(100px, 1fr) auto;
+    }
+    .title {
+      max-height: 114px;
+    }
+    .ctrls {
+      justify-content: center;
+    }
+    .bar {
+      grid-template-columns: auto minmax(0, 1fr);
+      gap: 12px;
+      padding: 10px 16px;
+    }
+    .bar > .icon-btn {
+      margin: 0;
+    }
+    .footer-right {
+      justify-content: flex-end;
+    }
+    .next-card {
+      height: 48px;
+    }
+    .next-art {
+      width: 40px;
+      height: 40px;
+    }
+  }
+  @media (max-width: 600px) {
+    .footer-right {
+      display: contents;
+    }
+    .next-card {
+      max-width: none;
+    }
+    .pills {
+      grid-column: 1 / -1;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+      gap: 4px;
     }
   }
 </style>

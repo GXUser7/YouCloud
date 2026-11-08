@@ -47,6 +47,7 @@
   })
 
   let box = $state<HTMLDivElement>()
+  let height = $state(0)
   const current = $derived.by(() => {
     if (!synced) return -1
     let index = 0
@@ -56,8 +57,8 @@
 
   $effect(() => {
     const line = box?.children[current] as HTMLElement | undefined
-    if (!line || !box) return
-    box.scrollTo({ top: line.offsetTop - box.clientHeight / 2 + line.clientHeight / 2, behavior: 'smooth' })
+    if (!line || !box || !height) return
+    box.scrollTo({ top: line.offsetTop - height / 2 + line.clientHeight / 2, behavior: 'smooth' })
   })
 </script>
 
@@ -68,7 +69,7 @@
     <p class="none">{player.live ? tr('У прямого эфира нет текста') : tr('У этого трека нет текста')}</p>
   </div>
 {:else}
-  <div class="lyrics {size}" class:plain={!synced} bind:this={box}>
+  <div class="lyrics {size}" class:plain={!synced} bind:this={box} bind:clientHeight={height} style:--lyrics-padding="{height / 2}px">
     {#each lines as line, i (i)}
       {#if synced}
         <button class="line" class:past={i < current} class:now={i === current} onclick={() => seek(line.at)}>{line.text || '♪'}</button>
@@ -94,11 +95,15 @@
     max-width: 22ch;
   }
   .lyrics {
+    position: relative;
     height: 100%;
+    min-height: 0;
     overflow-y: auto;
-    padding: 40% 4px;
+    /* Percentage block padding follows width, so a wide, short lyric slot would overflow. */
+    padding: var(--lyrics-padding, 64px) 4px;
     scrollbar-width: none;
     mask-image: linear-gradient(transparent, #000 18%, #000 82%, transparent);
+    -webkit-mask-image: linear-gradient(transparent, #000 18%, #000 82%, transparent);
   }
   .lyrics::-webkit-scrollbar {
     display: none;

@@ -11,6 +11,8 @@
     item,
     stretch = false,
     allowNone = false,
+    expressive = false,
+    label,
   }: {
     options: { value: T; label: string }[]
     value: T | null
@@ -19,10 +21,12 @@
     item?: Snippet<[{ value: T; label: string }, boolean]>
     stretch?: boolean
     allowNone?: boolean
+    expressive?: boolean
+    label?: string
   } = $props()
 </script>
 
-<div class="group {size}" class:stretch role="radiogroup">
+<div class="group {size}" class:stretch class:expressive role="radiogroup" aria-label={label}>
   {#each options as option (option.value)}
     {@const selected = option.value === value}
     <button
@@ -105,5 +109,36 @@
   }
   .s .segment.selected {
     padding-inline: 18px;
+  }
+  .expressive {
+    --h: 46px;
+    gap: 2px;
+  }
+  .expressive .segment {
+    min-width: 0;
+    padding-inline: clamp(10px, 1.2vw, 22px);
+    font-size: 15px;
+    background: color-mix(in oklab, var(--on-surface) 11%, transparent);
+    transition:
+      border-radius var(--d-spatial) var(--spring),
+      transform var(--d-fast) var(--spring-fast),
+      background-color 250ms var(--ease-emph),
+      color 250ms var(--ease-emph);
+  }
+  .expressive .segment:hover {
+    background: color-mix(in oklab, var(--on-surface) 18%, transparent);
+  }
+  .expressive .segment.selected {
+    background: var(--secondary-container);
+    color: var(--on-secondary-container);
+  }
+  .expressive .segment:active {
+    transform: scale(0.96);
+    border-radius: var(--r-full);
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .expressive .segment {
+      transition: none;
+    }
   }
 </style>

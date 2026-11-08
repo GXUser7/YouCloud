@@ -18,6 +18,7 @@ import {
 } from '../catalog'
 import { md5 } from '../md5'
 import { getJson, getText, HttpError, postForm, postJson } from '../net'
+import type { ArtistPage, ResultPage, SearchResult, SearchSection } from '../live'
 
 const API = 'https://api.music.yandex.net/'
 const SALT = 'XGRlBW9FXlekgbPrRHuSiA'
@@ -162,7 +163,7 @@ function putYaArtist(a: YaArtist): string {
     id,
     name: a.name,
     service: 'ya',
-    image: cover(a.cover?.uri ?? a.ogImage, '400x400'),
+    image: cover(a.cover?.uri ?? a.ogImage, '1000x1000'),
     color: colorFor(id),
     followers: likes != null ? tr('%s в избранном', `${compact(likes)} ${countWords(likes, 'слушатель', 'слушателя', 'слушателей')}`) : undefined,
     albums: a.counts?.directAlbums,
@@ -255,44 +256,89 @@ function finish(id: string, tracks: string[]): TrackSet {
   return done
 }
 
-export interface ArtistPage {
-  artist: string
-  top: string[]
-  releases: string[]
-  playlists: string[]
-  similar: string[]
+type YaArtistTrack = YaTrack | string | number | { id: string | number; albumId?: string | number }
+
+async function artistTrackIds(items: YaArtistTrack[]): Promise<string[]> {
+  const keys = items.map((item) => typeof item === 'object' ? ('albumId' in item && item.albumId ? `${item.id}:${item.albumId}` : String(item.id)) : String(item))
+  const missing = items.flatMap((item, index) => typeof item === 'object' && 'title' in item && item.title ? [] : [keys[index]])
+  const hydrated = new Map((await tracksById(missing)).map((id) => [id.slice('ya:t:'.length), id]))
+  return items.flatMap((item, index) => {
+    if (typeof item === 'object' && 'title' in item && item.title) return [putYaTrack(item)]
+    const id = hydrated.get(keys[index].split(':')[0])
+    if (!id) throw new Error(tr('Яндекс не отдал треки артиста'))
+    return [id]
+  })
+}
+
+interface YaPager {
+  page?: number
+  perPage?: number
+  total?: number
+}
+
+async function artistTracks(artistId: string, page = 0, total?: number): Promise<ResultPage> {
+  const pageSize = 50
+  const r = await yaGet<{ tracks?: YaArtistTrack[]; pager?: YaPager }>(`artists/${artistId}/tracks`, { page, 'page-size': pageSize })
+  if (!Array.isArray(r.tracks)) throw new Error(tr('Яндекс не отдал треки артиста'))
+  const current = r.pager?.page ?? page
+  const perPage = r.pager?.perPage ?? pageSize
+  const count = r.pager?.total ?? total
+  return {
+    items: await artistTrackIds(r.tracks),
+    next: r.tracks.length > 0 && count != null && (current + 1) * perPage < count
+      ? () => artistTracks(artistId, current + 1, count) : undefined,
+  }
 }
 
 export async function loadArtist(id: string): Promise<ArtistPage> {
-  const info = await yaGet<{ artist: YaArtist; popularTracks?: YaTrack[]; albums?: YaAlbum[]; alsoAlbums?: YaAlbum[]; similarArtists?: YaArtist[]; playlists?: YaPlaylist[] }>(
-    `artists/${id.slice('ya:a:'.length)}/brief-info`,
+  const artistId = id.slice('ya:a:'.length)
+  const info = await yaGet<{ artist: YaArtist; popularTracks?: YaArtistTrack[]; tracks?: YaArtistTrack[]; albums?: YaAlbum[]; alsoAlbums?: YaAlbum[]; similarArtists?: YaArtist[]; playlists?: YaPlaylist[] }>(
+    `artists/${artistId}/brief-info`,
   )
   putYaArtist(info.artist)
+  const popular = await artistTrackIds(info.popularTracks?.length ? info.popularTracks : info.tracks ?? [])
+  // brief-info is only a highlight reel; fetch the first full page even when it supplied songs.
+  const page = await artistTracks(artistId, 0, info.artist.counts?.tracks)
   return {
     artist: id,
-    top: (info.popularTracks ?? []).map(putYaTrack),
+    top: [...new Set([...popular, ...page.items])],
+    moreTop: page.next,
     releases: [...(info.albums ?? []), ...(info.alsoAlbums ?? [])].map(putYaAlbum),
     playlists: (info.playlists ?? []).map((p) => putYaPlaylist(p)),
     similar: (info.similarArtists ?? []).map(putYaArtist),
   }
 }
 
-export interface SearchResult {
-  best?: { type: 'artist' | 'track' | 'album' | 'playlist'; id: string }
-  tracks: string[]
-  artists: string[]
-  albums: string[]
-  playlists: string[]
+interface YaSearchGroup<T> extends YaPager {
+  results?: T[]
+}
+
+interface YaSearch {
+  best?: { type: string; result: any }
+  tracks?: YaSearchGroup<YaTrack>
+  artists?: YaSearchGroup<YaArtist>
+  albums?: YaSearchGroup<YaAlbum>
+  playlists?: YaSearchGroup<YaPlaylist>
+}
+
+const searchTypes: Record<SearchSection, string> = { tracks: 'track', artists: 'artist', albums: 'album', playlists: 'playlist' }
+const searchPut = { tracks: putYaTrack, artists: putYaArtist, albums: putYaAlbum, playlists: (p: YaPlaylist) => putYaPlaylist(p) }
+
+function searchPage(r: YaSearch, section: SearchSection, text: string, page: number): ResultPage {
+  const group = r[section]
+  const results = group?.results ?? []
+  const current = group?.page ?? page
+  const perPage = group?.perPage
+  return {
+    items: results.map(searchPut[section] as (item: any) => string),
+    next: results.length > 0 && group?.total != null && perPage != null && perPage > 0 && (current + 1) * perPage < group.total
+      ? async () => searchPage(await yaGet<YaSearch>('search', { text, type: searchTypes[section], page: current + 1, nocorrect: false }), section, text, current + 1)
+      : undefined,
+  }
 }
 
 export async function search(text: string): Promise<SearchResult> {
-  const r = await yaGet<{
-    best?: { type: string; result: any }
-    tracks?: { results: YaTrack[] }
-    artists?: { results: YaArtist[] }
-    albums?: { results: YaAlbum[] }
-    playlists?: { results: YaPlaylist[] }
-  }>('search', { text, type: 'all', page: 0, nocorrect: false, 'playlist-in-best': true })
+  const r = await yaGet<YaSearch>('search', { text, type: 'all', page: 0, nocorrect: false, 'playlist-in-best': true })
   let best: SearchResult['best']
   if (r.best?.result) {
     if (r.best.type === 'artist') best = { type: 'artist', id: putYaArtist(r.best.result) }
@@ -300,12 +346,17 @@ export async function search(text: string): Promise<SearchResult> {
     else if (r.best.type === 'album') best = { type: 'album', id: putYaAlbum(r.best.result) }
     else if (r.best.type === 'playlist') best = { type: 'playlist', id: putYaPlaylist(r.best.result) }
   }
+  const tracks = searchPage(r, 'tracks', text, 0)
+  const artists = searchPage(r, 'artists', text, 0)
+  const albums = searchPage(r, 'albums', text, 0)
+  const playlists = searchPage(r, 'playlists', text, 0)
   return {
     best,
-    tracks: (r.tracks?.results ?? []).map(putYaTrack),
-    artists: (r.artists?.results ?? []).map(putYaArtist),
-    albums: (r.albums?.results ?? []).map(putYaAlbum),
-    playlists: (r.playlists?.results ?? []).map((p) => putYaPlaylist(p)),
+    tracks: tracks.items,
+    artists: artists.items,
+    albums: albums.items,
+    playlists: playlists.items,
+    more: { tracks: tracks.next, artists: artists.next, albums: albums.next, playlists: playlists.next },
   }
 }
 
@@ -403,11 +454,31 @@ export async function radioMore(sessionId: string, heard: string[]): Promise<Rad
   return batchOf(await yaPostJson<RotorAnswer>(`rotor/session/${sessionId}/tracks`, { queue: heard }))
 }
 
-export function radioFeedback(sessionId: string, batchId: string | undefined, type: string, track?: Track, played?: number) {
-  const event: Record<string, unknown> = { type, timestamp: new Date().toISOString() }
+// Web My Wave attribution used by session Rotor clients (yamusic-tui and YaMusic).
+export const WAVE_FROM = 'web-home-rup_main-radio-default'
+export type RadioEvent = 'radioStarted' | 'trackStarted' | 'trackFinished' | 'skip' | 'like' | 'unlike' | 'dislike'
+
+export function radioFeedback(sessionId: string, batchId: string | undefined, type: RadioEvent, track?: Track, played?: number, timestamp = new Date().toISOString()) {
+  const event: Record<string, unknown> = { type, timestamp }
   if (track) event.trackId = trackKey(track)
   if (played != null) event.totalPlayedSeconds = played
-  return yaPostJson(`rotor/session/${sessionId}/feedback`, { event, batchId }).catch(() => {})
+  return yaPostJson(`rotor/session/${sessionId}/feedback`, { event, batchId, from: WAVE_FROM })
+}
+
+export interface PlayReport {
+  trackId: string
+  albumId?: string
+  from: string
+  playId: string
+  timestamp: string
+  totalPlayedSeconds: number
+  endPositionSeconds: number
+  trackLengthSeconds: number
+}
+
+/** /plays is JSON/camelCase, unlike the older form-encoded /play-audio endpoint. */
+export async function plays(play: PlayReport): Promise<void> {
+  await postJson(apiUrl('plays', { 'client-now': new Date().toISOString() }), { plays: [{ ...play, fromCache: false }] }, { headers: auth() })
 }
 
 export const yaKey = (track: Track) => trackKey(track)

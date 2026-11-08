@@ -20,6 +20,7 @@ import {
   type TrackSet,
 } from '../catalog'
 import { getJson, getText, HttpError, request } from '../net'
+import type { ArtistPage, ResultPage, SearchResult } from '../live'
 
 const API = 'https://api-v2.soundcloud.com/'
 const APP_VERSION = '1778677443'
@@ -307,7 +308,7 @@ export function putScUser(u: ScUser): string {
     id,
     name: u.username,
     service: 'sc',
-    image: art(u.avatar_url),
+    image: u.avatar_url?.replace(/-(?:large|t\d+x\d+)\.(jpg|png|webp)(?=\?|$)/, '-original.$1') ?? null,
     color: colorFor(id),
     followers: u.followers_count != null ? `${compact(u.followers_count)} ${countWords(u.followers_count, 'подписчик', 'подписчика', 'подписчиков')}` : undefined,
     link: u.permalink_url,
@@ -445,59 +446,83 @@ function finish(id: string, tracks: string[]): TrackSet {
   return done
 }
 
-export interface ArtistPage {
-  artist: string
-  top: string[]
-  releases: string[]
-  playlists: string[]
-  similar: string[]
+interface ScPage<T> {
+  collection: T[]
+  next_href?: string | null
+  total_results?: number
+}
+
+async function resultPage<T>(path: string, params: Params, put: (item: T) => string, offset = 0): Promise<ResultPage> {
+  const page = await scGet<ScPage<T>>(path, { ...params, offset, linked_partitioning: 1 })
+  const nextOffset = offset + page.collection.length
+  const nextPath = page.next_href
+  const hasOffset = page.total_results != null && nextOffset < page.total_results && page.collection.length > 0
+  return {
+    items: page.collection.map(put),
+    next: nextPath
+      ? () => resultPage(nextPath, {}, put, new URL(nextPath, API).searchParams.has('offset') ? Number(new URL(nextPath, API).searchParams.get('offset')) : nextOffset)
+      : hasOffset ? () => resultPage(path, params, put, nextOffset) : undefined,
+  }
+}
+
+async function artistTracks(userId: string): Promise<ResultPage> {
+  let top: ResultPage
+  try {
+    top = await resultPage(`users/${userId}/toptracks`, { limit: 20 }, putScTrack)
+  } catch {
+    return resultPage(`users/${userId}/tracks`, { limit: 20 }, putScTrack)
+  }
+  if (!top.items.length) return resultPage(`users/${userId}/tracks`, { limit: 20 }, putScTrack)
+  // Top tracks can be a capped highlight reel. The uploads endpoint supplies the rest.
+  const uploads = await resultPage(`users/${userId}/tracks`, { limit: 20 }, putScTrack)
+  const extend = (page: ResultPage): ResultPage => ({
+    items: page.items,
+    next: page.next ? async () => extend(await page.next!()) : uploads.next,
+  })
+  return { ...extend(top), items: [...new Set([...top.items, ...uploads.items])] }
 }
 
 export async function loadArtist(id: string): Promise<ArtistPage> {
   const userId = id.slice('sc:u:'.length)
   const [user, top, albums, playlists, related] = await Promise.allSettled([
     scGet<ScUser>(`users/${userId}`),
-    scGet<{ collection: ScTrack[] }>(`users/${userId}/toptracks`, { limit: 10 }),
+    artistTracks(userId),
     scGet<{ collection: ScPlaylist[] }>(`users/${userId}/albums`, { limit: 20 }),
     scGet<{ collection: ScPlaylist[] }>(`users/${userId}/playlists_without_albums`, { limit: 20 }),
     scGet<{ collection: ScUser[] }>(`users/${userId}/relatedartists`, { limit: 12 }),
   ])
   if (user.status === 'rejected') throw user.reason
+  if (top.status === 'rejected') throw top.reason
   putScUser(user.value)
-  let topIds = top.status === 'fulfilled' ? top.value.collection.map(putScTrack) : []
-  if (!topIds.length) {
-    const recent = await scGet<{ collection: ScTrack[] }>(`users/${userId}/tracks`, { limit: 10 }).catch(() => ({ collection: [] }))
-    topIds = recent.collection.map(putScTrack)
-  }
   return {
     artist: id,
-    top: topIds,
+    top: top.value.items,
+    moreTop: top.value.next,
     releases: albums.status === 'fulfilled' ? albums.value.collection.map(putScPlaylist) : [],
     playlists: playlists.status === 'fulfilled' ? playlists.value.collection.map(putScPlaylist) : [],
     similar: related.status === 'fulfilled' ? related.value.collection.map(putScUser) : [],
   }
 }
 
-export interface SearchResult {
-  tracks: string[]
-  artists: string[]
-  albums: string[]
-  playlists: string[]
-}
-
 export async function search(q: string): Promise<SearchResult> {
   const [tracks, users, albums, playlists] = await Promise.allSettled([
-    scGet<{ collection: ScTrack[] }>('search/tracks', { q, limit: 20 }),
-    scGet<{ collection: ScUser[] }>('search/users', { q, limit: 10 }),
-    scGet<{ collection: ScPlaylist[] }>('search/albums', { q, limit: 12 }),
-    scGet<{ collection: ScPlaylist[] }>('search/playlists_without_albums', { q, limit: 12 }),
+    resultPage('search/tracks', { q, limit: 20 }, putScTrack),
+    resultPage('search/users', { q, limit: 10 }, putScUser),
+    resultPage('search/albums', { q, limit: 12 }, putScPlaylist),
+    resultPage('search/playlists_without_albums', { q, limit: 12 }, putScPlaylist),
   ])
-  if (tracks.status === 'rejected' && users.status === 'rejected') throw tracks.reason
+  if (tracks.status === 'rejected') throw tracks.reason
   return {
-    tracks: tracks.status === 'fulfilled' ? tracks.value.collection.map(putScTrack) : [],
-    artists: users.status === 'fulfilled' ? users.value.collection.map(putScUser) : [],
-    albums: albums.status === 'fulfilled' ? albums.value.collection.map(putScPlaylist) : [],
-    playlists: playlists.status === 'fulfilled' ? playlists.value.collection.map(putScPlaylist) : [],
+    tracks: tracks.value.items,
+    artists: users.status === 'fulfilled' ? users.value.items : [],
+    albums: albums.status === 'fulfilled' ? albums.value.items : [],
+    playlists: playlists.status === 'fulfilled' ? playlists.value.items : [],
+    more: {
+      tracks: tracks.value.next,
+      artists: users.status === 'fulfilled' ? users.value.next : () => resultPage('search/users', { q, limit: 10 }, putScUser),
+      albums: albums.status === 'fulfilled' ? albums.value.next : () => resultPage('search/albums', { q, limit: 12 }, putScPlaylist),
+      playlists: playlists.status === 'fulfilled' ? playlists.value.next : () => resultPage('search/playlists_without_albums', { q, limit: 12 }, putScPlaylist),
+    },
   }
 }
 
