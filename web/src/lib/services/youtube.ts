@@ -123,7 +123,8 @@ function picture(list: Thumb[] | undefined | null, size = 544): string | null {
   if (!list?.length) return null
   const best = [...list].sort((a, b) => (b.width ?? 0) - (a.width ?? 0))[0]
   const dimension = best.url.match(/=w(\d+)-h(\d+)/)
-  const target = Math.max(size, best.width ?? 0, best.height ?? 0, Number(dimension?.[1] ?? 0), Number(dimension?.[2] ?? 0))
+  // Never below what was asked, never past what a page shows: an artist's header comes at 2880.
+  const target = Math.min(1600, Math.max(size, best.width ?? 0, best.height ?? 0, Number(dimension?.[1] ?? 0), Number(dimension?.[2] ?? 0)))
   return best.url.replace(/=w\d+-h\d+[^&?]*/, `=w${target}-h${target}-l90-rj`).replace(/^\/\//, 'https://')
 }
 
