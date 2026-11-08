@@ -127,8 +127,12 @@ function picture(list: Thumb[] | undefined | null, size = 544): string | null {
   return best.url.replace(/=w\d+-h\d+[^&?]*/, `=w${target}-h${target}-l90-rj`).replace(/^\/\//, 'https://')
 }
 
+const isThumbs = (v: any): v is Thumb[] => Array.isArray(v) && typeof v[0]?.url === 'string'
+
+// Pictures sit in a different field on each kind of item; a MusicThumbnail (an artist's header)
+// keeps them in [contents].
 const thumbsOf = (item: any): Thumb[] =>
-  Array.isArray(item) ? item : item?.thumbnails ?? item?.thumbnail?.contents ?? (Array.isArray(item?.thumbnail) ? item.thumbnail : []) ?? []
+  Array.isArray(item) ? item : [item?.thumbnails, item?.thumbnail?.contents, item?.thumbnail, item?.contents].find(isThumbs) ?? []
 
 const text = (t: any): string => (t == null ? '' : typeof t === 'string' ? t : (t.text ?? t.toString?.() ?? ''))
 

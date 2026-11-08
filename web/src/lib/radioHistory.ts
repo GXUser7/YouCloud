@@ -7,6 +7,7 @@ export interface RadioHeard {
 
 const MONTH = 30 * 24 * 60 * 60_000
 const LIMIT = 1000
+const QUEUE_LIMIT = 100
 
 /** Oldest first, with the most recently heard track last, including after a replay. */
 export function radioHistory(value: unknown, now = Date.now()): RadioHeard[] {
@@ -24,8 +25,9 @@ export function rememberRadioTrack(history: RadioHeard[], id: string, key: strin
   return radioHistory([...history.filter((entry) => entry.id !== id), { id, key, at: now }], now)
 }
 
+/** What Rotor is told was heard: the recent tail, as the app sends — the month stays our own filter. */
 export function radioQueue(history: RadioHeard[], now = Date.now()): string[] {
-  return radioHistory(history, now).map((entry) => entry.key)
+  return radioHistory(history, now).slice(-QUEUE_LIMIT).map((entry) => entry.key)
 }
 
 export interface TrackBatch {

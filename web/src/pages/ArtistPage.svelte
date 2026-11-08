@@ -4,7 +4,6 @@
   import { artist, artists, serviceName, set } from '../lib/catalog'
   import { plural, tracksCount } from '../lib/format'
   import * as live from '../lib/live'
-  import { clipPolygon } from '../lib/shapes'
   import { player, playQueue, startRadio, toggle } from '../lib/state.svelte'
   import { reason } from '../lib/toast.svelte'
   import ArtistCard from '../components/ArtistCard.svelte'
@@ -23,7 +22,6 @@
 
   const known = $derived(artists.get(id))
   const ctx = $derived('artist-' + id)
-  const portraitShape = clipPolygon('cookie12')
   let page = $state<live.ArtistPage | null>(null)
   let loading = $state(true)
   let error = $state('')
@@ -246,10 +244,8 @@
   {@const a = artist(artistId)}
   <section class="hero">
     <div class="ambient" aria-hidden="true"><Cover seed={'artist-' + a.id} color={a.color} src={a.image} kind="artist" /></div>
+    <div class="photo" aria-hidden="true"><Cover seed={'artist-' + a.id} color={a.color} src={a.image} kind="artist" /></div>
     <div class="shade"></div>
-    <div class="portrait" style:clip-path={portraitShape}>
-      <Cover seed={'artist-' + a.id} color={a.color} src={a.image} kind="artist" grain />
-    </div>
     <div class="who">
       <span class="overline kind"><ServiceGlyph service={a.service} size={16} />{tr('Артист · %s', serviceName(a.service))}</span>
       <h1 class="display">{a.name}</h1>
@@ -261,14 +257,16 @@
 {/snippet}
 
 <style>
+  /* The photo is the hero itself: on the right at the hero's full height, no frame, dissolving
+     into the page on its left and lower edges, the name running over that edge. It is drawn no
+     larger than the hero, so a 1000 px picture stays sharp instead of stretched across the page. */
   .hero {
     position: relative;
     isolation: isolate;
-    display: grid;
-    grid-template-columns: clamp(220px, 30cqw, 360px) minmax(0, 1fr);
-    align-items: center;
-    gap: clamp(28px, 4cqw, 64px);
-    padding: 32px;
+    display: flex;
+    align-items: flex-end;
+    min-height: clamp(340px, 50vh, 560px);
+    padding: clamp(28px, 4cqw, 56px);
     margin-top: 8px;
     border-radius: var(--r-2xl);
     overflow: hidden;
@@ -276,34 +274,46 @@
   }
   .ambient {
     position: absolute;
-    z-index: -2;
-    inset: -60px;
-    opacity: 0.35;
-    filter: blur(48px) saturate(0.7);
+    z-index: -3;
+    inset: -80px;
+    opacity: 0.45;
+    filter: blur(70px) saturate(1.1);
     pointer-events: none;
   }
-  .ambient :global(.cover) {
-    object-position: center 35%;
+  .photo {
+    position: absolute;
+    z-index: -2;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    width: min(66%, 760px);
+    -webkit-mask-image: linear-gradient(90deg, transparent, #000 42%), linear-gradient(0deg, transparent, #000 34%);
+    -webkit-mask-composite: source-in;
+    mask-image: linear-gradient(90deg, transparent, #000 42%), linear-gradient(0deg, transparent, #000 34%);
+    mask-composite: intersect;
+    animation: settle var(--d-slow) var(--spring) both;
+    pointer-events: none;
+  }
+  .photo :global(.cover) {
+    object-position: center 22%;
   }
   .shade {
     position: absolute;
     z-index: -1;
     inset: 0;
-    background: linear-gradient(110deg, color-mix(in oklab, var(--surface) 32%, transparent), color-mix(in oklab, var(--surface) 88%, transparent));
+    background: linear-gradient(0deg, color-mix(in oklab, var(--surface) 55%, transparent), transparent 55%);
     pointer-events: none;
   }
-  .portrait {
-    width: 100%;
-    max-width: 360px;
-    aspect-ratio: 1;
-    overflow: hidden;
-    animation: rise var(--d-slow) var(--spring) both;
-  }
-  .portrait :global(.cover) {
-    object-position: center 30%;
+  @keyframes settle {
+    from {
+      opacity: 0;
+      transform: scale(1.06);
+    }
   }
   .who {
     min-width: 0;
+    max-width: min(72%, 1000px);
+    text-shadow: 0 2px 30px color-mix(in oklab, var(--surface) 60%, transparent);
     animation: rise var(--d-slow) var(--spring) 60ms both;
   }
   .kind {
@@ -314,8 +324,8 @@
     line-height: 1.6;
   }
   h1 {
-    font-size: clamp(34px, 5cqw, 72px);
-    line-height: 1.12;
+    font-size: clamp(36px, 6.4cqw, 104px);
+    line-height: 1.05;
     margin: 16px 0;
     overflow-wrap: anywhere;
   }
@@ -399,21 +409,27 @@
   }
   @container page (max-width: 760px) {
     .hero {
-      grid-template-columns: clamp(160px, 32cqw, 240px) minmax(0, 1fr);
-      gap: 24px;
       padding: 24px;
     }
-    h1 {
-      font-size: clamp(28px, 5cqw, 40px);
+    .photo {
+      width: 82%;
+    }
+    .who {
+      max-width: 100%;
     }
   }
   @container page (max-width: 520px) {
     .hero {
-      grid-template-columns: minmax(0, 1fr);
-      gap: 24px;
+      min-height: 0;
+      padding-top: min(78cqw, 380px);
     }
-    .portrait {
-      width: min(76%, 280px);
+    .photo {
+      left: 0;
+      width: auto;
+      bottom: auto;
+      height: min(100cqw, 460px);
+      -webkit-mask-image: linear-gradient(0deg, transparent, #000 45%);
+      mask-image: linear-gradient(0deg, transparent, #000 45%);
     }
     h1 {
       font-size: clamp(30px, 8cqw, 42px);

@@ -919,8 +919,15 @@ addEventListener('pageshow', () => {
   if (t && !audio.paused && loaded === t.id) radioHeard(t)
 })
 
-function batchExclusions(queued: () => string[]) {
-  return () => ({ history: heard, queued: queued(), disliked })
+// «Любимое» plays the listener's own favourites, which they hear everywhere else too: there a
+// track is held back only for a few hours after it was heard, or every batch would be thrown away.
+const FAVOURITES_REST = 3 * 60 * 60_000
+
+function batchExclusions(queued: () => string[], favourites = () => player.wave && app.waveMode === 'favorite') {
+  return () => {
+    const since = favourites() ? Date.now() - FAVOURITES_REST : -Infinity
+    return { history: heard.filter((h) => h.at >= since), queued: queued(), disliked }
+  }
 }
 
 /** Tops the queue up from its radio when only a couple of tracks are left. */
@@ -983,7 +990,7 @@ export async function startWave(retune = false) {
     if (request !== radioRequest || (accounts.ya?.uid ?? 0) !== uid) return
     const radio: YaRadio = { kind: 'ya', sessionId: batch.sessionId, batchOf: {}, uid }
     feedback(radio, 'radioStarted', undefined, undefined, batch.batchId)
-    const fresh = await freshRadioTracks(batch, () => yandex.radioMore(radio.sessionId, radioQueue(heard)), batchExclusions(() => player.queue.slice(player.index, player.index + 1)))
+    const fresh = await freshRadioTracks(batch, () => yandex.radioMore(radio.sessionId, radioQueue(heard)), batchExclusions(() => player.queue.slice(player.index, player.index + 1), () => app.waveMode === 'favorite'))
     if (request !== radioRequest || (accounts.ya?.uid ?? 0) !== uid) return
     if (!fresh.tracks.length) throw new Error(tr('волна ничего не предложила'))
     radio.batchOf = fresh.batchOf
@@ -1014,7 +1021,7 @@ export async function startRadio(id: string) {
       if (request !== radioRequest || (accounts.ya?.uid ?? 0) !== uid) return
       const radio: YaRadio = { kind: 'ya', sessionId: batch.sessionId, batchOf: batch.tracks.includes(id) ? { [id]: batch.batchId } : {}, uid }
       feedback(radio, 'radioStarted', undefined, undefined, batch.batchId)
-      const fresh = await freshRadioTracks(batch, () => yandex.radioMore(radio.sessionId, radioQueue(heard)), batchExclusions(() => [id]))
+      const fresh = await freshRadioTracks(batch, () => yandex.radioMore(radio.sessionId, radioQueue(heard)), batchExclusions(() => [id], () => false))
       if (request !== radioRequest || (accounts.ya?.uid ?? 0) !== uid) return
       if (!fresh.tracks.length) throw new Error(tr('радио ничего не предложило'))
       Object.assign(radio.batchOf, fresh.batchOf)
