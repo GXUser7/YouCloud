@@ -94,6 +94,7 @@ export const EN: Record<string, string> = {
   'Включить волну': 'Play My Wave',
   'Волна подбирает треки…': 'The wave is picking tracks…',
   'Подстраивается под «Нравится» и пропуски': 'Learns from your likes and skips',
+  'Бесконечный поток. Только твой.': 'An endless stream. Yours alone.',
   'Под тебя': 'For you',
   'Под твой вкус': 'To your taste',
   'Настроение': 'Mood',
