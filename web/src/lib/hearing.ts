@@ -14,7 +14,9 @@ import { player, playingSound } from './state.svelte'
 export const BANDS = 32
 
 export type Levels = {
-  /** 0…1 each, eased: the kick lifts [bass] at once and lets it down slower. */
+  /** The kick jumps at once and settles in about 200 ms; [bass] holds the body underneath. */
+  punch: number
+  kick: boolean
   bass: number
   mid: number
   high: number
@@ -26,26 +28,127 @@ export type Levels = {
   heard: boolean
 }
 
-export const levels: Levels = { bass: 0, mid: 0, high: 0, bands: new Float32Array(BANDS), energy: 0, heard: false }
+export const levels: Levels = {
+  punch: 0,
+  kick: false,
+  bass: 0,
+  mid: 0,
+  high: 0,
+  bands: new Float32Array(BANDS),
+  energy: 0,
+  heard: false,
+}
 
 const EDGES = Array.from({ length: BANDS + 1 }, (_, i) => 40 * Math.pow(14000 / 40, i / BANDS))
+const clamp = (v: number) => Math.max(0, Math.min(1, v))
+const ease = (v: number, to: number, dt: number, up: number, down: number) => v + (to - v) * (1 - Math.exp(-dt * (to > v ? up : down)))
+
+export type HearingFrame = {
+  punch: number
+  kick: boolean
+  bass: number
+}
+
+export type HearingState = {
+  previous: Float32Array | null
+  fluxMean: number
+  fluxDeviation: number
+  refractory: number
+  subEnvelope: number
+  subPeak: number
+  punch: number
+  result: HearingFrame
+}
+
+export function createHearingState(): HearingState {
+  return {
+    previous: null,
+    fluxMean: 0,
+    fluxDeviation: 0,
+    refractory: 1,
+    subEnvelope: 0,
+    subPeak: 0.01,
+    punch: 0,
+    result: { punch: 0, kick: false, bass: 0 },
+  }
+}
+
+/** Extract the low-end onset and envelope from one linear-magnitude FFT frame. */
+export function processHearingFrame(frame: Float32Array, dt: number, sampleRate = 48000, state = createHearingState()): HearingFrame {
+  const fftSize = Math.max(2, (frame.length - 1) * 2)
+  const hz = sampleRate / fftSize
+  const lowStart = Math.max(1, Math.floor(40 / hz))
+  const lowEnd = Math.min(frame.length - 1, Math.ceil(130 / hz))
+  const subStart = Math.max(1, Math.floor(30 / hz))
+  const subEnd = Math.min(frame.length - 1, Math.ceil(160 / hz))
+  const previous = state.previous && state.previous.length === frame.length ? state.previous : null
+  let flux = 0
+  let sub = 0
+  for (let i = lowStart; i <= lowEnd; i++) {
+    const value = frame[i]
+    if (previous) flux += Math.max(0, value - previous[i])
+  }
+  for (let i = subStart; i <= subEnd; i++) sub += frame[i]
+  flux /= Math.max(1, lowEnd - lowStart + 1)
+  sub /= Math.max(1, subEnd - subStart + 1)
+
+  const safeDt = Math.min(0.1, Math.max(0.001, dt))
+  const threshold = state.fluxMean + 2.2 * state.fluxDeviation + 0.0015
+  // A relative floor keeps quiet passages quiet while still allowing a quiet track to wake up.
+  const floor = Math.max(0.0003, state.subEnvelope * 0.035)
+  const onset = previous !== null && state.refractory >= 0.12 && flux > threshold && flux > floor
+  const strength = onset ? clamp((flux - threshold) / Math.max(flux, 0.01)) : 0
+  const meanDelta = Math.abs(flux - state.fluxMean)
+  state.fluxMean = ease(state.fluxMean, flux, safeDt, 1 / 1.2, 1 / 0.7)
+  state.fluxDeviation = ease(state.fluxDeviation, meanDelta, safeDt, 1 / 1.2, 1 / 0.7)
+  state.refractory = onset ? 0 : state.refractory + safeDt
+  const attack = 1 - Math.exp(-safeDt * 35)
+  const release = 1 - Math.exp(-safeDt * 5)
+  state.subEnvelope += (sub - state.subEnvelope) * (sub > state.subEnvelope ? attack : release)
+  state.subPeak = Math.max(sub, state.subPeak * Math.exp(-safeDt / 6), 0.0001)
+  state.punch = onset ? Math.max(0.78, strength) : state.punch * Math.exp(-safeDt / 0.19)
+
+  if (!state.previous || state.previous.length !== frame.length) state.previous = new Float32Array(frame.length)
+  state.previous.set(frame)
+  const result = state.result
+  result.punch = state.punch
+  result.kick = onset
+  result.bass = clamp(state.subEnvelope / state.subPeak)
+  return result
+}
+
+const peak = { bass: 0.015, mid: 0.02, high: 0.01, bands: 0.02 }
+const spectrum = new Float32Array(BANDS)
+const hearingState = createHearingState()
+
+type Capturable = HTMLAudioElement & { captureStream?: () => MediaStream }
 
 let ctx: AudioContext | null = null
 let analyser: AnalyserNode | null = null
-let bins: Uint8Array<ArrayBuffer> | null = null
+let onsetAnalyser: AnalyserNode | null = null
+let bins: Float32Array<ArrayBuffer> | null = null
+let onsetBins: Float32Array<ArrayBuffer> | null = null
 let source: MediaStreamAudioSourceNode | null = null
 let captured: HTMLAudioElement | null = null
 let stream: MediaStream | null = null
 let trackId = ''
 let triedAt = -Infinity
 
-// How loud each part has been lately: what is heard is measured against it, so a quiet track
-// moves the wave as much as a loud one. [mean] is the bass of the last second or two, for the kick
-// above it.
-const peak = { bass: 0.3, mid: 0.3, high: 0.2, bands: 0.3 }
-let mean = 0
-
-type Capturable = HTMLAudioElement & { captureStream?: () => MediaStream }
+function resetState() {
+  peak.bass = 0.015
+  peak.mid = 0.02
+  peak.high = 0.01
+  peak.bands = 0.02
+  hearingState.previous = null
+  hearingState.fluxMean = 0
+  hearingState.fluxDeviation = 0
+  hearingState.refractory = 1
+  hearingState.subEnvelope = 0
+  hearingState.subPeak = 0.01
+  hearingState.punch = 0
+  hearingState.result.punch = 0
+  hearingState.result.kick = false
+}
 
 function release() {
   source?.disconnect()
@@ -53,6 +156,7 @@ function release() {
   stream?.getTracks().forEach((t) => t.stop())
   stream = null
   trackId = ''
+  resetState()
 }
 
 function attach(track: MediaStreamTrack) {
@@ -62,19 +166,23 @@ function attach(track: MediaStreamTrack) {
     analyser = ctx.createAnalyser()
     analyser.fftSize = 2048
     analyser.smoothingTimeConstant = 0.5
-    bins = new Uint8Array(analyser.frequencyBinCount)
+    bins = new Float32Array(analyser.frequencyBinCount)
+  }
+  if (!onsetAnalyser) {
+    onsetAnalyser = ctx.createAnalyser()
+    onsetAnalyser.fftSize = 1024
+    onsetAnalyser.smoothingTimeConstant = 0
+    onsetBins = new Float32Array(onsetAnalyser.frequencyBinCount)
   }
   source?.disconnect()
   source = ctx.createMediaStreamSource(new MediaStream([track]))
   source.connect(analyser)
+  source.connect(onsetAnalyser)
   trackId = track.id
+  resetState()
 }
 
-/**
- * The playing <audio>'s sound into the analyser: captured anew when the player has moved to
- * another <audio>, or the capture has lost its track. False when it can't be heard; a refused
- * capture is tried again a second later, as the same <audio> may play another stream by then.
- */
+/** The playing <audio>'s sound into the analyser. False when the browser cannot let the wave hear it. */
 function connect(now: number): boolean {
   const el = playingSound() as Capturable
   if (!el.captureStream || typeof AudioContext === 'undefined') return false
@@ -97,44 +205,52 @@ function connect(now: number): boolean {
   return !!first
 }
 
-/** The share of the loudest byte in [from, to) Hz. */
 function part(from: number, to: number): number {
   const hz = ctx!.sampleRate / analyser!.fftSize
   const a = Math.max(1, Math.floor(from / hz))
   const b = Math.max(a, Math.min(bins!.length - 1, Math.ceil(to / hz) - 1))
   let sum = 0
   for (let i = a; i <= b; i++) sum += bins![i]
-  return sum / ((b - a + 1) * 255)
+  return sum / (b - a + 1)
 }
 
-const clamp = (v: number) => Math.max(0, Math.min(1, v))
-const ease = (v: number, to: number, dt: number, up: number, down: number) => v + (to - v) * (1 - Math.exp(-dt * (to > v ? up : down)))
-const remembered = (key: keyof typeof peak, v: number, dt: number) => (peak[key] = Math.max(v, peak[key] * Math.exp(-dt / 6), 0.06))
+const remembered = (key: keyof typeof peak, v: number, dt: number) => (peak[key] = Math.max(v, peak[key] * Math.exp(-dt / 6), 0.0001))
 
-/**
- * Where the wave stands now, [dt] seconds after it was asked last. [listen]: the sound is wanted;
- * when not («Под музыку» off), the wave only breathes.
- */
+/** Where the wave stands now, [dt] seconds after it was asked last. [listen] keeps the setting «Под музыку». */
 export function hear(now: number, dt: number, listen: boolean): Levels {
   const playing = player.playing && !player.loading
   let bass = 0, mid = 0, high = 0
+  let punch = 0
+  let kick = false
   let heard = false
-  const bands = new Float32Array(BANDS)
-  if (listen && playing && connect(now) && analyser && bins) {
-    analyser.getByteFrequencyData(bins)
+  for (let j = 0; j < BANDS; j++) spectrum[j] = 0
+  if (listen && playing && connect(now) && analyser && onsetAnalyser && bins && onsetBins) {
+    analyser.getFloatFrequencyData(bins)
+    onsetAnalyser.getFloatFrequencyData(onsetBins)
+    for (let i = 0; i < bins.length; i++) bins[i] = Number.isFinite(bins[i]) ? Math.pow(10, bins[i] / 20) : 0
+    for (let i = 0; i < onsetBins.length; i++) onsetBins[i] = Number.isFinite(onsetBins[i]) ? Math.pow(10, onsetBins[i] / 20) : 0
+    const sampleRate = ctx!.sampleRate
     const b = part(30, 160), m = part(300, 2000), h = part(4000, 12000)
-    // Digital silence, or a capture the browser keeps empty: nothing to go by.
-    heard = b + m + h > 0.004
+    heard = b + m + h > 0.00004
+    const onset = processHearingFrame(onsetBins, dt, sampleRate, hearingState)
     if (heard) {
-      mean = ease(mean, b, dt, 0.8, 0.8)
-      const top = remembered('bass', b, dt)
-      bass = clamp(0.45 * Math.pow(b / top, 2) + 0.7 * clamp((b - mean) / Math.max(0.03, top - mean)))
+      bass = clamp(Math.pow(b / remembered('bass', b, dt), 0.7))
+      bass = Math.max(bass, onset.bass)
       mid = clamp(m / remembered('mid', m, dt))
-      high = clamp((h / remembered('high', h, dt) - 0.2) / 0.8)
+      high = clamp((h / remembered('high', h, dt) - 0.16) / 0.84)
       let loudest = 0
-      for (let j = 0; j < BANDS; j++) loudest = Math.max(loudest, (bands[j] = part(EDGES[j], EDGES[j + 1])))
-      const top2 = remembered('bands', loudest, dt)
-      for (let j = 0; j < BANDS; j++) bands[j] = clamp(Math.pow(bands[j] / top2, 1.4))
+      for (let j = 0; j < BANDS; j++) {
+        const a = Math.max(1, Math.floor(EDGES[j] / (sampleRate / analyser.fftSize)))
+        const z = Math.max(a, Math.min(bins.length - 1, Math.ceil(EDGES[j + 1] / (sampleRate / analyser.fftSize)) - 1))
+        let sum = 0
+        for (let i = a; i <= z; i++) sum += bins[i]
+        const value = sum / (z - a + 1)
+        loudest = Math.max(loudest, spectrum[j] = value)
+      }
+      const top = remembered('bands', loudest, dt)
+      for (let j = 0; j < BANDS; j++) spectrum[j] = clamp(Math.pow(spectrum[j] / top, 1.25))
+      punch = onset.punch
+      kick = onset.kick
     }
   }
   if (!heard && playing) {
@@ -145,15 +261,17 @@ export function hear(now: number, dt: number, listen: boolean): Levels {
     high = 0.12 + 0.06 * Math.sin(t * 2.3)
     for (let j = 0; j < BANDS; j++) {
       const u = j / (BANDS - 1)
-      bands[j] = (bass * Math.pow(1 - u, 2) + 0.75 * mid * Math.exp(-Math.pow((u - 0.45) / 0.22, 2)) + 0.5 * high * u) * (0.8 + 0.2 * Math.sin(t * (0.9 + (j % 5) * 0.3) + j * 1.9))
+      spectrum[j] = (bass * Math.pow(1 - u, 2) + 0.75 * mid * Math.exp(-Math.pow((u - 0.45) / 0.22, 2)) + 0.5 * high * u) * (0.8 + 0.2 * Math.sin(t * (0.9 + (j % 5) * 0.3) + j * 1.9))
     }
   }
   levels.heard = heard
-  levels.bass = ease(levels.bass, bass, dt, heard ? 30 : 3, heard ? 7 : 2)
+  levels.kick = kick
+  levels.punch = heard ? punch : 0
+  levels.bass = ease(levels.bass, bass, dt, heard ? 18 : 3, heard ? 4 : 2)
   levels.mid = ease(levels.mid, mid, dt, 6, 3)
   levels.high = ease(levels.high, high, dt, 40, 9)
   levels.energy = ease(levels.energy, playing ? 1 : 0, dt, 1.5, 0.8)
-  for (let j = 0; j < BANDS; j++) levels.bands[j] = ease(levels.bands[j], bands[j], dt, 18, 5)
+  for (let j = 0; j < BANDS; j++) levels.bands[j] = ease(levels.bands[j], spectrum[j], dt, 18, 5)
   return levels
 }
 

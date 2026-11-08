@@ -20,7 +20,7 @@
   const SHRINK = 5
   const BLUR = { dunes: 7, shape: 6, tide: 6, silk: 4.5 }
 
-  const REST: Levels = { bass: 0, mid: 0, high: 0, bands: new Float32Array(BANDS), energy: 0, heard: false }
+  const REST: Levels = { punch: 0, kick: false, bass: 0, mid: 0, high: 0, bands: new Float32Array(BANDS), energy: 0, heard: false }
 
   let canvas: HTMLCanvasElement
   let soft = $state(false)
@@ -77,15 +77,15 @@
 
   /** Dunes: four layers low on the screen; the bass lifts the crests, the highs ripple their edges. */
   function dunes(g: CanvasRenderingContext2D, W: number, H: number, L: Levels, f: number, C: Colors) {
-    const glow = g.createRadialGradient(W * 0.5, H * 1.05, 0, W * 0.5, H * 1.05, H * (0.75 + 0.25 * L.bass))
-    glow.addColorStop(0, css(C.mid, 0.3 + 0.35 * L.bass))
+    const glow = g.createRadialGradient(W * 0.5, H * 1.05, 0, W * 0.5, H * 1.05, H * (0.75 + 0.25 * L.bass + 0.18 * L.punch))
+    glow.addColorStop(0, css(C.mid, 0.3 + 0.35 * L.bass + 0.22 * L.punch))
     glow.addColorStop(1, css(C.mid, 0))
     g.fillStyle = glow
     g.fillRect(0, 0, W, H)
     for (let i = 0; i < 4; i++) {
       const d = i / 3
       const base = H * (0.5 + 0.24 * d)
-      const amp = H * (0.03 + 0.04 * L.energy + (0.1 - 0.04 * d) * L.bass + 0.03 * L.mid)
+      const amp = H * (0.03 + 0.04 * L.energy + (0.1 - 0.04 * d) * L.bass + 0.03 * L.mid + 0.16 * L.punch)
       const k1 = 1.1 + 0.45 * i, k2 = 2.6 + 0.7 * i
       const s1 = f * (0.5 + 0.22 * i) + i * 1.7, s2 = -f * (0.8 + 0.15 * i) + i
       const ys = across(W, (x) => {
@@ -120,7 +120,7 @@
     const mood = WAVE.moods.find((m) => m.seed === app.waveMood)
     const n = mood?.lobes ?? 10
     const cx = W * at.x, cy = H * at.y
-    const R = H * at.r * 1.35 * (1 + 0.08 * L.bass)
+    const R = H * at.r * 1.35 * (1 + 0.08 * L.bass + 0.14 * L.punch)
     const far = g.createRadialGradient(W * 0.85, H * 0.25, 0, W * 0.85, H * 0.25, H * 0.9)
     far.addColorStop(0, css(C.deep, 0.4))
     far.addColorStop(1, css(C.deep, 0))
@@ -139,7 +139,7 @@
       g.lineWidth = H * 0.012
       g.stroke()
     }
-    const depth = (mood?.depth ?? 0.07) * 0.6 + 0.05 * L.energy + 0.06 * L.bass
+    const depth = (mood?.depth ?? 0.07) * 0.6 + 0.05 * L.energy + 0.06 * L.bass + 0.04 * L.punch
     // Outside in: darker and quieter outward, so the title and the controls beside the cover keep
     // to the dark.
     const layers: [number, RGB, number, number, number][] = [
@@ -153,7 +153,7 @@
       g.fill()
     }
     const core = g.createRadialGradient(cx, cy, 0, cx, cy, R * 1.2)
-    core.addColorStop(0, css(C.light, 0.2 + 0.3 * L.bass))
+    core.addColorStop(0, css(C.light, 0.2 + 0.3 * L.bass + 0.25 * L.punch))
     core.addColorStop(1, css(C.light, 0))
     g.fillStyle = core
     g.fillRect(0, 0, W, H)
@@ -173,16 +173,16 @@
     sky.addColorStop(0.6, css(C.deep, 0))
     g.fillStyle = sky
     g.fillRect(0, 0, W, H)
-    const layer = (bands: Float32Array, base: number, lift: number, color: RGB, alpha: number, swell: number) => {
-      const ys = across(W, (x) => base - H * lift * level(bands, Math.abs(x / W - 0.5) * 2) - H * 0.035 * Math.sin((x / W) * Math.PI * 3 + f * swell))
+    const layer = (bands: Float32Array, base: number, lift: number, color: RGB, alpha: number, swell: number, bassLift = 0) => {
+      const ys = across(W, (x) => base - H * bassLift - H * lift * level(bands, Math.abs(x / W - 0.5) * 2) - H * 0.035 * Math.sin((x / W) * Math.PI * 3 + f * swell))
       const fill = g.createLinearGradient(0, Math.min(...ys), 0, H)
       fill.addColorStop(0, css(color, alpha))
       fill.addColorStop(1, css(C.deep, alpha * 0.6))
       under(g, W, H, ys, fill)
       return ys
     }
-    layer(slow, H * 0.8, 0.42, mix(C.deep, C.mid, 0.25), 0.7, 0.6)
-    crest(g, layer(L.bands, H * 0.88, 0.36, C.mid, 0.6, -0.9), css(C.light, 0.25 + 0.45 * L.high * L.energy))
+    layer(slow, H * 0.8, 0.42, mix(C.deep, C.mid, 0.25), 0.7, 0.6, 0.06 * L.bass)
+    crest(g, layer(L.bands, H * 0.88, 0.36, C.mid, 0.6, -0.9, 0.14 * L.punch + 0.04 * L.bass), css(C.light, 0.25 + 0.45 * L.high * L.energy + 0.2 * L.punch))
   }
 
   /** Silk: a cloth laid on the diagonal over the whole screen. The bass gathers its folds, a sheen
@@ -191,7 +191,7 @@
     const FOLDS = 12
     const edge = (k: number, x: number) => {
       const u = (x / W) * Math.PI * 2
-      const A = H * (0.04 + 0.04 * L.energy + 0.1 * L.bass * (0.6 + 0.4 * Math.sin(k * 1.3)))
+      const A = H * (0.04 + 0.04 * L.energy + (0.1 * L.bass + 0.1 * L.punch) * (0.6 + 0.4 * Math.sin(k * 1.3)))
       return H * (-0.35 + (1.7 * k) / FOLDS) - (x - W / 2) * 0.32 + A * Math.sin(u * 0.9 + f * 0.7 + k * 0.45) + A * 0.5 * Math.sin(u * 2.1 - f * 1.1 + k * 0.9)
     }
     for (let k = 0; k < FOLDS; k++) {
@@ -246,7 +246,6 @@
     let gliding = false
     const rings: Ring[] = []
     const slow = new Float32Array(BANDS)
-    let wasKick = false
     let ringAt = 0
     let flow = 0, last = 0, drawn = 0, lookedAt = 0
     let raf = 0
@@ -295,12 +294,11 @@
       const L = still ? REST : hear(now, dt, app.waveHears)
       if (!still) flow += dt * (0.15 + 0.85 * L.energy)
       for (let j = 0; j < BANDS; j++) slow[j] += (L.bands[j] * 1.15 - slow[j]) * (1 - Math.exp(-dt * 1.6))
-      const kick = L.heard ? L.bass > 0.7 : player.playing && now - ringAt > 2400
-      if (kick && !wasKick && now - ringAt > 250 && L.energy > 0.4) {
-        rings.push({ r: H * at.r * 1.5, a: 0.55 * L.energy, turn: flow * 0.2 })
+      const kick = L.heard ? L.kick : player.playing && now - ringAt > 2400
+      if (kick && now - ringAt > 120 && L.energy > 0.4) {
+        rings.push({ r: H * at.r * 1.5, a: (0.42 + 0.3 * L.punch) * L.energy, turn: flow * 0.2 })
         ringAt = now
       }
-      wasKick = L.heard ? L.bass > 0.45 : kick
 
       s.fillStyle = css(shown.bg)
       s.fillRect(0, 0, W, H)
