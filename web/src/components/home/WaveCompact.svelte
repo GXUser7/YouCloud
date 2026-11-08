@@ -2,11 +2,9 @@
   // The stream flows behind the controls; the cover's palette already follows the player on :root.
   import { onMount } from 'svelte'
   import { tr } from '../../lib/i18n.svelte'
-  import { artistNames } from '../../lib/catalog'
-  import { clipPolygon, pathFromRadii, shapePath, waveRadii } from '../../lib/shapes'
-  import { app, currentTrack, player, startWave, toggle, tuneWave, WAVE } from '../../lib/state.svelte'
+  import { pathFromRadii, shapePath, waveRadii } from '../../lib/shapes'
+  import { app, player, startWave, toggle, tuneWave, WAVE } from '../../lib/state.svelte'
   import ButtonGroup from '../ButtonGroup.svelte'
-  import Cover from '../Cover.svelte'
 
   let { size = 'hero' }: { size?: 'hero' } = $props()
   let hero: HTMLElement
@@ -16,7 +14,6 @@
 
   const mood = $derived(WAVE.moods.find((m) => m.seed === app.waveMood))
   const shape = $derived(pathFromRadii(waveRadii(mood?.lobes ?? 8, mood?.depth ?? 0.13)))
-  const t = $derived(currentTrack())
   const on = $derived(player.wave && player.playing)
   const animate = $derived(visible && !hidden)
   const clouds = ['cookie12', 'sunny', 'flower', 'softBurst'] as const
@@ -115,17 +112,7 @@
       </div>
     </div>
 
-    {#if player.wave && t}
-      <div class="now-playing">
-        <span class="now-cover" style:clip-path={clipPolygon('cookie12')}><Cover seed={t.id} color={t.color} src={t.cover} /></span>
-        <span class="now-copy">
-          <span class="now-label">{player.playing ? tr('Сейчас играет') : tr('Пауза')}</span>
-          <span class="ellipsis now-title">{t.title}</span>
-          <span class="ellipsis muted now-artist">{artistNames(t)}</span>
-        </span>
-        <span class="equalizer" aria-hidden="true">{#each [0, 1, 2, 3] as i}<i style:--i={i}></i>{/each}</span>
-      </div>
-    {:else if starting}
+    {#if starting}
       <p class="status muted" role="status">{tr('Волна подбирает треки…')}</p>
     {/if}
   </div>
@@ -146,7 +133,6 @@
           </svg>
         </button>
       </div>
-      <p class="stream-caption">{tr('Бесконечный поток. Только твой.')}</p>
     </div>
   </div>
 </section>
@@ -250,7 +236,7 @@
     gap: 18px;
   }
   .tuning-row { min-width: 0; display: flex; flex-direction: column; align-items: flex-start; gap: 8px; }
-  .tuning-label, .now-label {
+  .tuning-label {
     color: var(--on-surface-variant);
     font-size: 10px;
     font-weight: 750;
@@ -262,11 +248,10 @@
     display: flex;
     flex-direction: column;
     align-items: center;
-    gap: 36px;
     transform: translate3d(calc(var(--px) * 0.4), calc(var(--py) * 0.4), 0);
     transition: transform 700ms var(--spring);
   }
-  .beacon { position: relative; width: clamp(180px, 11.5vw, 220px); aspect-ratio: 1; }
+  .beacon { position: relative; width: clamp(210px, 14vw, 280px); aspect-ratio: 1; }
   .beacon::before {
     content: '';
     position: absolute;
@@ -311,42 +296,7 @@
   .form svg { width: 100%; height: 100%; overflow: visible; }
   .outer { fill: var(--primary); transition: d var(--d-spatial) var(--spring); }
   .form:active .outer { d: var(--round); }
-  .form .glyph { position: relative; width: 64px; height: 64px; fill: currentColor; }
-  .stream-caption {
-    max-width: 22ch;
-    text-align: center;
-    text-wrap: balance;
-    font-size: 14px;
-    font-weight: 500;
-    letter-spacing: 0.015em;
-    color: var(--on-surface-variant);
-  }
-  .now-playing {
-    width: min(100%, 410px);
-    margin-top: 24px;
-    padding: 8px 16px 8px 8px;
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    border-radius: 24px;
-    background: color-mix(in oklab, var(--surface) 36%, transparent);
-  }
-  .now-cover { width: 52px; height: 52px; flex: none; overflow: hidden; }
-  .now-copy { min-width: 0; flex: 1; display: flex; flex-direction: column; gap: 2px; }
-  .now-title { font-weight: 750; font-size: 15px; }
-  .now-artist { font-size: 13px; }
-  .equalizer { display: flex; align-items: center; gap: 3px; height: 24px; color: var(--primary); }
-  .equalizer i {
-    width: 3px;
-    height: 20px;
-    border-radius: var(--r-full);
-    background: currentColor;
-    transform: scaleY(0.3);
-    animation: equalize 950ms ease-in-out infinite alternate;
-    animation-delay: calc(var(--i) * -230ms);
-    animation-play-state: paused;
-  }
-  .playing .equalizer i { animation-play-state: var(--motion); }
+  .form .glyph { position: relative; width: 72px; height: 72px; fill: currentColor; }
   .status { margin-top: 24px; font-size: 14px; }
   @keyframes turn { to { transform: rotate(360deg); } }
   @keyframes drift { to { transform: translate3d(9%, 12%, 0) rotate(48deg) scale(1.12, 0.94); } }
@@ -357,10 +307,7 @@
   @keyframes ripple {
     from { transform: scale(0.85); opacity: 0.32; }
     to { transform: scale(2.15); opacity: 0; }
-  }
-  @keyframes equalize { to { transform: scaleY(1); } }
-
-  @container page (max-width: 1100px) {
+  }  @container page (max-width: 1100px) {
     .hero h2 { font-size: clamp(54px, 7.4cqw, 90px); }
     .hero { grid-template-columns: minmax(0, 1.8fr) minmax(220px, 1fr); }
     .tuning { margin-top: 24px; gap: 14px; }
@@ -391,9 +338,7 @@
       font-size: clamp(12px, 3.35cqw, 15px);
     }
     .visual { min-height: 270px; margin-top: 22px; }
-    .beacon { width: 180px; }
-    .invitation { gap: 26px; }
-    .stream-caption { font-size: 13px; max-width: none; }
+    .beacon { width: 210px; }
     .flow-depth { inset: 20% -100% -10%; mask-image: linear-gradient(180deg, transparent, #000 35%); }
     .cloud-depth { width: 125%; }
     .cloud-0 { top: -10%; left: -75%; }
@@ -407,7 +352,7 @@
   }
   @media (prefers-reduced-motion: reduce) {
     .hero { --motion: paused; }
-    .hero :is(.cloud, .current, .ripples circle, .spin, .equalizer i) { animation: none; }
+    .hero :is(.cloud, .current, .ripples circle, .spin) { animation: none; }
     .ripples circle { opacity: 0; }
     .ripples circle:first-child { opacity: 0.18; transform: scale(1.35); }
     .hero :is(.cloud-depth, .flow-depth, .invitation, .form, .outer) { transition: none; }

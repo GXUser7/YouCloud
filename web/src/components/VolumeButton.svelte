@@ -77,6 +77,12 @@
       color 200ms var(--ease-emph),
       transform var(--d-fast) var(--spring-fast);
   }
+  /* As an inline span the wrapper grows a line box (the inherited font's line-height) and the
+     glyph, seated on its baseline, drifts off the circle; a grid keeps the box glyph-sized. */
+  .round .ic {
+    display: grid;
+    place-items: center;
+  }
   .round:hover {
     background: color-mix(in oklab, var(--on-surface) 15%, transparent);
   }
