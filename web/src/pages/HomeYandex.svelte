@@ -42,7 +42,7 @@
   const subtitle = $derived(tr('Моя волна, твоё любимое и подборки'))
 </script>
 
-{#if ext === null}<PageHeader title={tr('Яндекс Музыка')} {subtitle} />{/if}
+<PageHeader title={tr('Яндекс Музыка')} {subtitle} />
 {#if ext === null}
   <ExtensionCard why={tr('Яндекс Музыка отвечает только твоему IP, а не Cloudflare: подборки, поиск и звук идут через расширение.')} />
 {:else if ext !== undefined}
