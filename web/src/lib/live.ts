@@ -17,17 +17,27 @@ export interface Section {
   tracks?: string[]
 }
 
+// The service keeps its cursor in the callback; pages only append ids and follow what is left.
+export interface ResultPage {
+  items: string[]
+  next?: () => Promise<ResultPage>
+}
+
+export type SearchSection = 'tracks' | 'artists' | 'albums' | 'playlists'
+
 export interface SearchResult {
   best?: { type: 'artist' | 'track' | 'album' | 'playlist'; id: string }
   tracks: string[]
   artists: string[]
   albums: string[]
   playlists: string[]
+  more?: Partial<Record<SearchSection, () => Promise<ResultPage>>>
 }
 
 export interface ArtistPage {
   artist: string
   top: string[]
+  moreTop?: () => Promise<ResultPage>
   releases: string[]
   playlists: string[]
   similar: string[]
@@ -80,6 +90,11 @@ export async function loadSet(id: string): Promise<TrackSet> {
 }
 
 export async function loadArtist(id: string): Promise<ArtistPage> {
+  const page = await artistIn(id)
+  return { ...page, top: unique(page.top), releases: unique(page.releases), playlists: unique(page.playlists), similar: unique(page.similar) }
+}
+
+async function artistIn(id: string): Promise<ArtistPage> {
   const svc = serviceOf(id)
   if (svc === 'sc') return soundcloud.loadArtist(id)
   if (svc === 'ya') return yandex.loadArtist(id)
