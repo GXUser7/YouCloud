@@ -10,6 +10,7 @@
 
 import { tr } from './i18n.svelte'
 import Hls from 'hls.js'
+import { accounts } from './accounts.svelte'
 import { untrack } from 'svelte'
 import { putTrack, serviceName, track as trackOf, type Service, type Track } from './catalog'
 import { favorites, setFavorite } from './favorites.svelte'
@@ -17,7 +18,9 @@ import { BridgeLoader } from './hlsBridge'
 import * as live from './live'
 import { directFailed, reach, readable, readingRefused } from './media.svelte'
 import { WAVE_MODES, WAVE_MOODS } from './mock'
+import { HttpError } from './net'
 import * as yandex from './services/yandex'
+import { freshRadioTracks, radioEndType, radioHistory, radioQueue, rememberRadioTrack } from './radioHistory'
 import { reason, toast } from './toast.svelte'
 
 export type RouteName = 'home' | 'search' | 'liked' | 'friends' | 'settings' | 'set' | 'artist'
@@ -119,7 +122,7 @@ export function openPanel(panel: Panel) {
 /** A radio that keeps the queue going: Yandex's Rotor session, or the tracks related to the last
  *  (SoundCloud's related, YouTube Music's up next). */
 export type Radio =
-  | { kind: 'ya'; sessionId: string; batchOf: Record<string, string | undefined> }
+  | { kind: 'ya'; sessionId: string; batchOf: Record<string, string | undefined>; uid: number }
   | { kind: 'related' }
 
 export const player = $state({
@@ -158,6 +161,7 @@ let loadSeq = 0
 let streamUrl: string | null = null
 let attempt = 0
 let wantPlay = false
+let transport = 0
 /** When the playing <audio> was paused last: a broadcast paused for long is joined anew. */
 let pausedAt = 0
 
@@ -173,13 +177,24 @@ function sound(): HTMLAudioElement {
   on('playing', () => {
     player.loading = false
     passedOver = 0
+    const t = currentTrack()
+    if (t && loaded === t.id) radioHeard(t)
+    listenClock()
+    refill()
   })
-  on('waiting', () => (player.loading = true))
+  on('waiting', () => {
+    listenClock(false)
+    player.loading = true
+  })
   on('pause', () => {
+    listenClock(false)
+    checkpointPlay(true)
     if (!el.ended) player.playing = false
     pausedAt = Date.now()
   })
   on('timeupdate', () => {
+    listenClock()
+    checkpointPlay()
     player.position = el.currentTime
     // A broadcast is joined where it is now, not where it was left.
     remember('position', player.live ? 0 : Math.floor(el.currentTime))
@@ -188,6 +203,8 @@ function sound(): HTMLAudioElement {
     // A broadcast's is how much of it the browser can reach, which grows: not a length.
     if (!player.live && Number.isFinite(el.duration) && el.duration > 0) player.duration = el.duration
   })
+  on('seeking', () => listenClock(false))
+  on('seeked', () => listenClock())
   on('ended', () => next(true))
   on('error', () => {
     const t = currentTrack()
@@ -268,7 +285,6 @@ async function loadCurrent(autoplay: boolean, startAt = 0, retry = 0) {
     return
   }
   mediaSession(t)
-  radioHeard(t)
   player.loading = true
   const ready = retry ? null : take(t.id)
   if (ready && (await takeOver(ready, startAt, autoplay, seq))) return
@@ -491,6 +507,9 @@ $effect.root(() => {
 /** Plays [ids] from [start]; [radio] keeps it going past its end. */
 export function playQueue(ids: string[], start = 0, context = '', contextId: string | null = null, radio: Radio | null = null, wave = false) {
   if (!ids.length) return
+  radioTold(currentTrack(), 'skip')
+  radioRequest++
+  transport++
   player.queue = ids
   player.index = Math.max(0, Math.min(start, ids.length - 1))
   player.context = context
@@ -516,6 +535,7 @@ export function playTrack(id: string, ids: string[], context = '', contextId: st
 const LIVE_REJOIN_MS = 20_000
 
 export function toggle() {
+  transport++
   const t = currentTrack()
   if (!t) return
   if (silent) {
@@ -538,19 +558,32 @@ export function toggle() {
 
 /** The next track; [disliked], the one left was disliked — the radio heard that, not a skip. */
 export function next(auto = false, disliked = false) {
+  const intent = ++transport
   const t = currentTrack()
   if (!t) return
   // A broadcast that ended can't be played again: the next one comes.
   if (auto && player.repeat === 'one' && !player.live) {
+    radioTold(t, 'trackFinished')
     seek(0)
     if (!silent) audio.play().catch(() => {})
     return
   }
-  if (!disliked) radioTold(t, auto ? 'trackFinished' : 'skip')
+  if (!disliked) radioTold(t, radioEndType(auto))
   if (player.index < player.queue.length - 1) player.index++
   else if (player.repeat === 'all') player.index = 0
   else {
+    audio.pause()
     player.playing = false
+    const radio = player.radio
+    const index = player.index
+    if (radio) {
+      refill().then(() => {
+        if (transport !== intent || player.radio !== radio || player.index !== index || player.playing || player.index >= player.queue.length - 1) return
+        player.index++
+        saveQueue()
+        loadCurrent(true)
+      })
+    }
     return
   }
   saveQueue()
@@ -559,11 +592,13 @@ export function next(auto = false, disliked = false) {
 }
 
 export function prev() {
+  transport++
   if (player.position > 3) {
     seek(0)
     return
   }
   if (player.index === 0) return
+  radioTold(currentTrack(), 'skip')
   player.index--
   saveQueue()
   loadCurrent(true)
@@ -571,7 +606,9 @@ export function prev() {
 
 /** Plays the queue's [index]th track. */
 export function jump(index: number) {
-  if (index < 0 || index >= player.queue.length) return
+  if (index < 0 || index >= player.queue.length || index === player.index) return
+  transport++
+  radioTold(currentTrack(), 'skip')
   player.index = index
   saveQueue()
   loadCurrent(true)
@@ -673,6 +710,7 @@ export async function like(id: string) {
       return
     }
     if (!live.signedIn(t.service)) return
+    radioLiked(t, want)
     player.liked[id] = want
     live.setLiked(t, want).catch((e) => {
       toast(want ? tr('Добавлено в «Любимое», но %s лайк не принял: %s', serviceName(t.service), reason(e)) : tr('Убрано из «Любимого», но %s лайк не снял: %s', serviceName(t.service), reason(e)))
@@ -682,6 +720,7 @@ export async function like(id: string) {
   player.liked[id] = want
   try {
     await live.setLiked(t, want)
+    radioLiked(t, want)
   } catch (e) {
     player.liked[id] = !want
     toast(want ? tr('Не вышло лайкнуть: %s', reason(e)) : tr('Не вышло убрать лайк: %s', reason(e)))
@@ -708,7 +747,7 @@ export function dislike() {
   if (!t || !radio) return
   disliked.add(t.id)
   remember('disliked', [...disliked].slice(-500))
-  if (radio.kind === 'ya' && t.ya) yandex.radioFeedback(radio.sessionId, radio.batchOf[t.id], 'dislike', t, Math.round(player.position))
+  radioTold(t, 'dislike')
   const told = live.dislike(t)
   if (told) {
     told.catch((e) => toast(tr('%s не принял «Не нравится»: %s', serviceName(t.service), reason(e))))
@@ -721,43 +760,200 @@ export function dislike() {
 
 // ------------------------------------------------------------------------------------ radio
 
-let refilling = false
+let heard = radioHistory(stored('radioHeard', []))
+let radioRequest = 0
+const refilling = new WeakMap<Radio, Promise<void>>()
 
-/** Tops the queue up from its radio when only a couple of tracks are left. */
-async function refill() {
-  const radio = player.radio
-  if (!radio || refilling || player.index < player.queue.length - 3) return
-  refilling = true
-  try {
-    const have = new Set(player.queue)
-    let more: string[] = []
-    if (radio.kind === 'ya') {
-      const heard = player.queue.slice(-20).map((id) => yandex.yaKey(trackOf(id)))
-      const batch = await yandex.radioMore(radio.sessionId, heard)
-      more = welcome(batch.tracks).filter((id) => !have.has(id))
-      more.forEach((id) => (radio.batchOf[id] = batch.batchId))
-    } else {
-      more = welcome(await live.relatedTo(trackOf(player.queue[player.queue.length - 1]))).filter((id) => !have.has(id))
-    }
-    if (more.length && player.radio === radio) {
-      player.queue = player.queue.concat(more)
-      saveQueue()
-    }
-  } catch (e) {
-    toast(tr('Радио не продолжилось: %s', reason(e)))
-  } finally {
-    refilling = false
-  }
+type YaRadio = Extract<Radio, { kind: 'ya' }>
+type RadioPlay = {
+  track: Track
+  uid: number
+  radio: YaRadio | null
+  batchId?: string
+  playId: string
+  timestamp: string
+  from: string
+  played: number
+  position: number
+  clock: number
+  running: boolean
+}
+let radioPlay: RadioPlay | null = null
+
+// Feedback and play reports stay ordered, retain their original session, and survive a reload.
+type NewRadioReport =
+  | { kind: 'feedback'; sessionId: string; batchId?: string; type: yandex.RadioEvent; track?: Track; played?: number; timestamp: string }
+  | { kind: 'play'; play: yandex.PlayReport }
+type RadioReport = NewRadioReport & { uid: number }
+let reports = stored<RadioReport[]>('radioReports', []).filter((item) => typeof item?.uid === 'number')
+let reporting = false
+let reportTimer: ReturnType<typeof setTimeout> | undefined
+
+function report(item: NewRadioReport, uid = accounts.ya?.uid) {
+  if (!uid) return
+  reports.push({ ...item, uid })
+  remember('radioReports', reports)
+  flushReports()
 }
 
-function radioTold(t: Track, type: 'trackFinished' | 'skip') {
-  const radio = player.radio
-  if (radio?.kind === 'ya' && t.ya) yandex.radioFeedback(radio.sessionId, radio.batchOf[t.id], type, t, Math.round(player.position))
+let reportWait = Promise.resolve()
+function flushReports(): Promise<void> {
+  if (reporting) return reportWait
+  reportWait = drainReports()
+  return reportWait
+}
+
+async function drainReports() {
+  if (!reports.length || !live.signedIn('ya')) return
+  reporting = true
+  clearTimeout(reportTimer)
+  try {
+    while (accounts.ya) {
+      const index = reports.findIndex((item) => item.uid === accounts.ya!.uid)
+      if (index < 0) break
+      const item = reports[index]
+      try {
+        if (item.kind === 'play') await yandex.plays(item.play)
+        else await yandex.radioFeedback(item.sessionId, item.batchId, item.type, item.track, item.played, item.timestamp)
+      } catch (e) {
+        if (!(e instanceof HttpError) || ![400, 404, 410, 422].includes(e.status)) throw e
+        // An expired session or rejected payload must not block feedback for every later session.
+        const rejected = stored<RadioReport[]>('radioRejectedReports', [])
+        remember('radioRejectedReports', [...rejected, item].slice(-100))
+        console.warn('Yandex rejected a listening report', e)
+      }
+      reports.splice(index, 1)
+      remember('radioReports', reports)
+    }
+  } catch {
+    // A temporary bridge or network failure must not silently erase the listener's feedback.
+    reportTimer = setTimeout(flushReports, 30_000)
+  } finally {
+    reporting = false
+  }
+}
+addEventListener('online', flushReports)
+$effect.root(() => {
+  $effect(() => {
+    if (accounts.ya) untrack(flushReports)
+  })
+})
+
+function feedback(radio: YaRadio, type: yandex.RadioEvent, track?: Track, played?: number, batchId = track ? radio.batchOf[track.id] : undefined) {
+  report({ kind: 'feedback', sessionId: radio.sessionId, batchId, type, track, played, timestamp: new Date().toISOString() }, radio.uid)
+}
+
+/** Count audible time, not the seek position or the time spent paused/buffering. */
+function listenClock(running?: boolean) {
+  const p = radioPlay
+  if (!p) return
+  const now = performance.now()
+  if (p.running) p.played += Math.max(0, now - p.clock) / 1000
+  p.clock = now
+  p.position = audio.currentTime
+  p.running = running ?? (!audio.paused && !audio.ended && !audio.seeking && audio.readyState >= 3)
+}
+
+let checkpointAt = 0
+function checkpointPlay(force = false) {
+  if (!radioPlay || (!force && Date.now() - checkpointAt < 5000)) return
+  checkpointAt = Date.now()
+  remember('radioActivePlay', radioPlay)
+}
+
+function playReport(p: RadioPlay) {
+  report({ kind: 'play', play: {
+    trackId: p.track.ya!.trackId,
+    albumId: p.track.ya!.albumId,
+    from: p.from,
+    playId: p.playId,
+    timestamp: p.timestamp,
+    totalPlayedSeconds: Math.round(p.played),
+    endPositionSeconds: Math.round(p.position),
+    trackLengthSeconds: p.track.duration,
+  } }, p.uid)
+}
+
+function radioLiked(t: Track, liked: boolean) {
+  const p = radioPlay
+  if (p?.radio && p.track.id === t.id) feedback(p.radio, liked ? 'like' : 'unlike', t, undefined, p.batchId)
+}
+
+function radioTold(t: Track | undefined, type: 'trackFinished' | 'skip' | 'dislike') {
+  const p = radioPlay
+  if (!p || t?.id !== p.track.id) return
+  listenClock()
+  if (p.radio) feedback(p.radio, type, p.track, Math.round(p.played), p.batchId)
+  playReport(p)
+  radioPlay = null
+  remember('radioActivePlay', null)
 }
 
 function radioHeard(t: Track) {
+  if (!t.ya || radioPlay?.track.id === t.id) return
+  const radio = player.radio?.kind === 'ya' ? player.radio : null
+  const timestamp = new Date().toISOString()
+  radioPlay = {
+    track: t, uid: radio?.uid ?? accounts.ya?.uid ?? 0, radio, batchId: radio?.batchOf[t.id], playId: crypto.randomUUID(), timestamp,
+    from: radio ? yandex.WAVE_FROM : 'web',
+    played: 0, position: audio.currentTime, clock: performance.now(), running: true,
+  }
+  // Only playback counts: preload, loading errors and unplayed batch tails never enter history.
+  heard = rememberRadioTrack(heard, t.id, yandex.yaKey(t))
+  remember('radioHeard', heard)
+  if (radio) feedback(radio, 'trackStarted', t)
+  playReport(radioPlay)
+  checkpointPlay(true)
+}
+
+// A closed tab reports its final counters; a crashed tab leaves a checkpoint for the next visit.
+const interruptedPlay = stored<RadioPlay | null>('radioActivePlay', null)
+if (interruptedPlay?.track?.ya && interruptedPlay.uid) {
+  if (interruptedPlay.radio) feedback(interruptedPlay.radio, 'skip', interruptedPlay.track, Math.round(interruptedPlay.played), interruptedPlay.batchId)
+  playReport(interruptedPlay)
+  remember('radioActivePlay', null)
+}
+addEventListener('pagehide', () => radioTold(currentTrack(), 'skip'))
+addEventListener('pageshow', () => {
+  const t = currentTrack()
+  if (t && !audio.paused && loaded === t.id) radioHeard(t)
+})
+
+function batchExclusions(queued: () => string[]) {
+  return () => ({ history: heard, queued: queued(), disliked })
+}
+
+/** Tops the queue up from its radio when only a couple of tracks are left. */
+function refill(): Promise<void> {
   const radio = player.radio
-  if (radio?.kind === 'ya' && t.ya) yandex.radioFeedback(radio.sessionId, radio.batchOf[t.id], 'trackStarted', t)
+  if (!radio || player.index < player.queue.length - 3) return Promise.resolve()
+  const pending = refilling.get(radio)
+  if (pending) return pending
+  const filling = (async () => {
+    try {
+      let more: string[]
+      if (radio.kind === 'ya') {
+        await flushReports()
+        if (accounts.ya?.uid !== radio.uid || player.radio !== radio) return
+        const batch = await freshRadioTracks(null, () => yandex.radioMore(radio.sessionId, radioQueue(heard)), batchExclusions(() => player.queue))
+        more = batch.tracks
+        Object.assign(radio.batchOf, batch.batchOf)
+      } else {
+        const have = new Set(player.queue)
+        more = welcome(await live.relatedTo(trackOf(player.queue[player.queue.length - 1]))).filter((id) => !have.has(id))
+      }
+      if (more.length && player.radio === radio) {
+        player.queue = player.queue.concat(more)
+        saveQueue()
+      }
+    } catch (e) {
+      if (player.radio === radio) toast(tr('Радио не продолжилось: %s', reason(e)))
+    } finally {
+      refilling.delete(radio)
+    }
+  })()
+  refilling.set(radio, filling)
+  return filling
 }
 
 const waveSeeds = () => [
@@ -767,23 +963,33 @@ const waveSeeds = () => [
 ]
 
 /** «Моя волна»: Yandex's endless radio for this listener, tuned by the mood and mode picked. */
-export async function startWave() {
+export async function startWave(retune = false) {
+  if (!retune && player.wave && player.radio?.kind === 'ya') {
+    if (!player.playing) toggle()
+    return
+  }
+  const request = ++radioRequest
+  const uid = accounts.ya?.uid ?? 0
+  const seeds = waveSeeds()
   try {
     let batch: yandex.RadioBatch
     try {
-      batch = await yandex.radioStart(waveSeeds())
+      batch = await yandex.radioStart(seeds, radioQueue(heard))
     } catch (e) {
       // Some tunings are refused; the wave plays untuned rather than not at all.
-      if (waveSeeds().length === 1) throw e
-      batch = await yandex.radioStart(['user:onyourwave'])
+      if (seeds.length === 1 || request !== radioRequest) throw e
+      batch = await yandex.radioStart(['user:onyourwave'], radioQueue(heard))
     }
-    const tracks = welcome(batch.tracks)
-    if (!tracks.length) throw new Error(tr('волна ничего не предложила'))
-    const batchOf = Object.fromEntries(tracks.map((id) => [id, batch.batchId]))
-    yandex.radioFeedback(batch.sessionId, batch.batchId, 'radioStarted')
-    playQueue(tracks, 0, tr('Моя волна'), 'ya-wave', { kind: 'ya', sessionId: batch.sessionId, batchOf }, true)
+    if (request !== radioRequest || (accounts.ya?.uid ?? 0) !== uid) return
+    const radio: YaRadio = { kind: 'ya', sessionId: batch.sessionId, batchOf: {}, uid }
+    feedback(radio, 'radioStarted', undefined, undefined, batch.batchId)
+    const fresh = await freshRadioTracks(batch, () => yandex.radioMore(radio.sessionId, radioQueue(heard)), batchExclusions(() => player.queue.slice(player.index, player.index + 1)))
+    if (request !== radioRequest || (accounts.ya?.uid ?? 0) !== uid) return
+    if (!fresh.tracks.length) throw new Error(tr('волна ничего не предложила'))
+    radio.batchOf = fresh.batchOf
+    playQueue(fresh.tracks, 0, tr('Моя волна'), 'ya-wave', radio, true)
   } catch (e) {
-    toast(tr('Волна не запустилась: %s', reason(e)))
+    if (request === radioRequest) toast(tr('Волна не запустилась: %s', reason(e)))
   }
 }
 
@@ -792,7 +998,7 @@ export function tuneWave(key: 'mood' | 'mode', seed: string | null) {
   else app.waveMode = seed
   remember(key === 'mood' ? 'waveMood' : 'waveMode', seed)
   // A tuned wave is a session of its own: a wave playing starts over, tuned so.
-  if (player.wave) startWave()
+  if (player.wave) startWave(true)
 }
 
 export const WAVE = { moods: WAVE_MOODS, modes: WAVE_MODES }
@@ -800,23 +1006,29 @@ export const WAVE = { moods: WAVE_MOODS, modes: WAVE_MODES }
 /** Radio from [id]: Yandex's track radio, SoundCloud's related tracks after it. */
 export async function startRadio(id: string) {
   const t = trackOf(id)
+  const request = ++radioRequest
+  const uid = accounts.ya?.uid ?? 0
   try {
     if (t.ya) {
-      const batch = await yandex.radioStart([`track:${t.ya.trackId}`], [yandex.yaKey(t)])
-      const rest = welcome(batch.tracks).filter((x) => x !== id)
-      if (!rest.length) throw new Error(tr('радио ничего не предложило'))
-      const batchOf = Object.fromEntries(rest.map((x) => [x, batch.batchId]))
-      yandex.radioFeedback(batch.sessionId, batch.batchId, 'radioStarted')
-      playQueue([id, ...rest], 0, tr('Радио: %s', t.title), null, { kind: 'ya', sessionId: batch.sessionId, batchOf })
+      const batch = await yandex.radioStart([`track:${t.ya.trackId}`], radioQueue(heard))
+      if (request !== radioRequest || (accounts.ya?.uid ?? 0) !== uid) return
+      const radio: YaRadio = { kind: 'ya', sessionId: batch.sessionId, batchOf: batch.tracks.includes(id) ? { [id]: batch.batchId } : {}, uid }
+      feedback(radio, 'radioStarted', undefined, undefined, batch.batchId)
+      const fresh = await freshRadioTracks(batch, () => yandex.radioMore(radio.sessionId, radioQueue(heard)), batchExclusions(() => [id]))
+      if (request !== radioRequest || (accounts.ya?.uid ?? 0) !== uid) return
+      if (!fresh.tracks.length) throw new Error(tr('радио ничего не предложило'))
+      Object.assign(radio.batchOf, fresh.batchOf)
+      playQueue([id, ...fresh.tracks], 0, tr('Радио: %s', t.title), null, radio)
     } else if (t.sc || t.yt) {
       const rest = welcome(await live.relatedTo(t)).filter((x) => x !== id)
+      if (request !== radioRequest || (accounts.ya?.uid ?? 0) !== uid) return
       if (!rest.length) throw new Error(tr('похожих не нашлось'))
       playQueue([id, ...rest], 0, tr('Радио: %s', t.title), null, { kind: 'related' })
     } else {
       toast(tr('У этого трека нет радио'))
     }
   } catch (e) {
-    toast(tr('Радио не запустилось: %s', reason(e)))
+    if (request === radioRequest) toast(tr('Радио не запустилось: %s', reason(e)))
   }
 }
 
