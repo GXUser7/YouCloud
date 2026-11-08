@@ -454,11 +454,31 @@ export async function radioMore(sessionId: string, heard: string[]): Promise<Rad
   return batchOf(await yaPostJson<RotorAnswer>(`rotor/session/${sessionId}/tracks`, { queue: heard }))
 }
 
-export function radioFeedback(sessionId: string, batchId: string | undefined, type: string, track?: Track, played?: number) {
-  const event: Record<string, unknown> = { type, timestamp: new Date().toISOString() }
+// Web My Wave attribution used by session Rotor clients (yamusic-tui and YaMusic).
+export const WAVE_FROM = 'web-home-rup_main-radio-default'
+export type RadioEvent = 'radioStarted' | 'trackStarted' | 'trackFinished' | 'skip' | 'like' | 'unlike' | 'dislike'
+
+export function radioFeedback(sessionId: string, batchId: string | undefined, type: RadioEvent, track?: Track, played?: number, timestamp = new Date().toISOString()) {
+  const event: Record<string, unknown> = { type, timestamp }
   if (track) event.trackId = trackKey(track)
   if (played != null) event.totalPlayedSeconds = played
-  return yaPostJson(`rotor/session/${sessionId}/feedback`, { event, batchId }).catch(() => {})
+  return yaPostJson(`rotor/session/${sessionId}/feedback`, { event, batchId, from: WAVE_FROM })
+}
+
+export interface PlayReport {
+  trackId: string
+  albumId?: string
+  from: string
+  playId: string
+  timestamp: string
+  totalPlayedSeconds: number
+  endPositionSeconds: number
+  trackLengthSeconds: number
+}
+
+/** /plays is JSON/camelCase, unlike the older form-encoded /play-audio endpoint. */
+export async function plays(play: PlayReport): Promise<void> {
+  await postJson(apiUrl('plays', { 'client-now': new Date().toISOString() }), { plays: [{ ...play, fromCache: false }] }, { headers: auth() })
 }
 
 export const yaKey = (track: Track) => trackKey(track)
