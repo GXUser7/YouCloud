@@ -1,6 +1,8 @@
 <script lang="ts">
   import { coverColor } from './lib/coverColor'
   import { onHostEvent } from './lib/extension'
+  import { transparentInMasaki } from './lib/masaki.svelte'
+  import { observeHostGlass } from './lib/hostGlass'
   import { app, currentTrack } from './lib/state.svelte'
   import { applyTheme, DEFAULT_SEED } from './lib/theme'
   import Snackbar from './components/Snackbar.svelte'
@@ -28,9 +30,7 @@
     return () => media.removeEventListener('change', changed)
   })
 
-  // In Masaki the page has no background of its own — the browser's glass shows through — so it
-  // takes the browser's lightness, and its colour while no cover gives one.
-  const inMasaki = document.documentElement.dataset.host === 'masaki'
+  const transparent = $derived(transparentInMasaki())
   let browserTheme = $state<{ seed: string; dark: boolean } | null>(null)
   $effect(() =>
     onHostEvent((e) => {
@@ -38,7 +38,8 @@
     }),
   )
 
-  const dark = $derived(browserTheme ? browserTheme.dark : app.theme === 'system' ? systemDark : app.theme === 'dark')
+  const dark = $derived(transparent && browserTheme ? browserTheme.dark : app.theme === 'system' ? systemDark : app.theme === 'dark')
+  $effect(() => { if (transparent) return observeHostGlass() })
 
   // The page takes the playing cover's colour. The last one stays until the next is read, so a
   // change of track fades once rather than twice.
@@ -57,7 +58,7 @@
     coverColor(t.cover).then((c) => alive && (coverSeed = c ?? t.color))
     return () => (alive = false)
   })
-  const base = $derived(browserTheme?.seed || DEFAULT_SEED)
+  const base = $derived(transparent ? browserTheme?.seed || DEFAULT_SEED : DEFAULT_SEED)
   const seed = $derived(app.coverColors ? (coverSeed ?? base) : base)
   $effect(() => applyTheme(seed, dark))
 
@@ -65,13 +66,13 @@
   const pageKey = $derived(`${app.route.name}/${app.route.id ?? ''}/${app.route.name === 'home' ? app.service : ''}`)
 </script>
 
-{#if !inMasaki}<Backdrop />{/if}
+{#if !transparent}<Backdrop />{/if}
 
 <div class="shell" class:with-panel={app.panelOpen}>
   <main class="main">
     <TopBar />
     <div class="scroller">
-    {#if !inMasaki}<Backdrop mirror />{/if}
+    {#if !transparent}<Backdrop mirror />{/if}
     {#key pageKey}
       <div class="page">
         {#if app.route.name === 'home'}

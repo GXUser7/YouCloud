@@ -53,7 +53,7 @@
     <span class="ic"><Icon name={icon} fill size={xb ? 24 : size} /></span>
   </button>
   {#if open}
-    <div class="pop" class:end={align === 'end'}><VolumeControl /></div>
+    <div class="pop" data-host-glass class:end={align === 'end'}><VolumeControl /></div>
   {/if}
 </span>
 

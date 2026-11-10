@@ -18,7 +18,7 @@ let version: string | null = null
 /** Who answers: 'masaki' when the browser itself does, null for the extension. */
 let host: string | null = null
 const capabilities = new Set<string>()
-type HostEvent = { event?: string; service?: string; seed?: string; dark?: boolean }
+type HostEvent = { event?: string; service?: string; seed?: string; dark?: boolean; transparent?: boolean }
 const eventListeners = new Set<(e: HostEvent) => void>()
 let seq = 0
 const waiting = new Map<number, (answer: Answer) => void>()

@@ -198,12 +198,12 @@ p {
   backdrop-filter: var(--glass-blur);
 }
 
-/* In Masaki the browser supplies the wallpaper; surfaces still blur page content beneath them. */
-:root[data-host='masaki'],
-:root[data-host='masaki'] body {
+/* Transparent Masaki mode uses the browser's wallpaper; original mode keeps the site's own palette and shapes. */
+:root[data-host='masaki']:not([data-masaki-background='original']),
+:root[data-host='masaki']:not([data-masaki-background='original']) body {
   background: transparent;
 }
-:root[data-host='masaki'] {
+:root[data-host='masaki']:not([data-masaki-background='original']) {
   --glass: color-mix(in oklab, var(--surface-container) 62%, transparent);
   --glass-strong: color-mix(in oklab, var(--surface-container) 78%, transparent);
 }
@@ -690,7 +690,8 @@ button.chip:active {
   }
 }
 .rise {
-  animation: rise var(--d-slow) var(--spring) both;
+  /* forwards/both keeps an opacity backdrop root after the entrance, cutting glass off from the backdrop. */
+  animation: rise var(--d-slow) var(--spring) backwards;
 }
 
 @media (prefers-reduced-motion: reduce) {

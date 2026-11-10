@@ -1,5 +1,6 @@
 <script lang="ts">
   import { i18n, setLang, tr, type Lang } from '../lib/i18n.svelte'
+  import { transparentInMasaki } from '../lib/masaki.svelte'
   import { home, HOME_VARIANTS, setHomeVariant } from '../lib/home.svelte'
   import { plural } from '../lib/format'
   import { SERVICES, type Service } from '../lib/catalog'
@@ -101,7 +102,7 @@
     location.reload()
   }
 
-  const inMasaki = document.documentElement.dataset.host === 'masaki'
+  const transparent = $derived(transparentInMasaki())
 </script>
 
 <PageHeader title={tr('Настройки')} subtitle={tr('Аккаунты, оформление и сайт')} />
@@ -213,7 +214,7 @@
 
   <section class="card glass rise">
     <h2 class="headline title">{tr('Оформление')}</h2>
-    {#if inMasaki}
+    {#if transparent}
       <!-- In Masaki the page lies on the browser's glass: its lightness and colours are Masaki's. -->
       <p class="muted lead">{tr('Тема, палитра и фон — как в Masaki: сайт лежит на его стекле. Поменять их можно в настройках Masaki.')}</p>
     {:else}
@@ -267,7 +268,7 @@
         }}
       />
     </div>
-    {#if !inMasaki}
+    {#if !transparent}
     <div class="toggle">
       <div>
         <span class="t-name">{tr('Живой фон')}</span>

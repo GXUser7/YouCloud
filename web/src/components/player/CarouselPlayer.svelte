@@ -161,7 +161,7 @@
   </div>
 
   {#if lyrics}
-    <div class="panel" class:full={!wide}>
+    <div class="panel" data-host-glass class:full={!wide}>
       <Lyrics size="l" />
     </div>
   {/if}
