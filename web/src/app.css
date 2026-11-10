@@ -192,8 +192,7 @@ p {
   -webkit-backdrop-filter: blur(32px) saturate(1.3);
 }
 
-/* In Masaki: decorative surfaces tint the browser's already frosted wallpaper. Overlays use
-   their own recipe below: they must still blur the page content behind them. */
+/* In Masaki the browser supplies the wallpaper; surfaces still blur page content beneath them. */
 :root[data-host='masaki'],
 :root[data-host='masaki'] body {
   background: transparent;
@@ -202,14 +201,8 @@ p {
   --glass: color-mix(in oklab, var(--surface-container) 62%, transparent);
   --glass-strong: color-mix(in oklab, var(--surface-container) 78%, transparent);
 }
-:root[data-host='masaki'] .glass,
-:root[data-host='masaki'] .glass-strong {
-  backdrop-filter: none;
-  -webkit-backdrop-filter: none;
-}
 
-/* Overlays are separate from decorative glass so Masaki never removes their page blur.
-   Keep menus outside filtered or masked ancestors; a fixed position alone does not escape them. */
+/* Keep menus outside filtered or masked ancestors so their blur samples the page behind them. */
 :root {
   --overlay-panel-veil: var(--glass-strong);
   --overlay-menu-veil: var(--glass-strong);

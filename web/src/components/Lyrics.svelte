@@ -111,9 +111,9 @@
   .line {
     display: block;
     text-align: left;
-    width: 100%;
-    overflow-wrap: anywhere;
+    width: calc(100% / 1.04);
     padding: 6px 8px;
+    overflow-wrap: anywhere;
     border-radius: var(--r-s);
     font-family: var(--font-display);
     font-weight: 600;
@@ -151,6 +151,6 @@
   }
   .line.now {
     color: var(--primary);
-    transform: none;
+    transform: scale(1.04);
   }
 </style>

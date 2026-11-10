@@ -108,7 +108,7 @@
 
   <div class="lower" class:aside style:transform="translateX({shift}px)">
     {#key t.id}
-      <h1 class="title display" title={t.title} use:fit={{ text: t.title, max: 68, min: 14, height: () => 116 }}>{t.title}</h1>
+      <h1 class="title display" title={t.title} use:fit={{ text: t.title, max: 68, min: 12, height: () => 116 }}>{t.title}</h1>
     {/key}
     <div class="meta">
       {#each t.artists as a, i (a.id + i)}
@@ -169,6 +169,10 @@
 
 <style>
   .carousel {
+    --r-m: 14px;
+    --r-l: 16px;
+    --r-xl: 20px;
+    --r-2xl: 24px;
     position: fixed;
     inset: 0;
     z-index: 20;
@@ -274,7 +278,8 @@
     width: 100%;
     margin: 0;
     font-weight: 800;
-    line-height: 1.15;
+    line-height: 1.05;
+    padding-block: 0.08em;
     overflow-wrap: anywhere;
     animation: title-in 380ms var(--ease-in-place);
   }
@@ -389,23 +394,5 @@
     .acts .xgroup :global(.xb:not(.toggle)) {
       display: none;
     }
-  }
-  @media (max-width: 680px) {
-    .bar { grid-template-columns: 56px minmax(0, 1fr); gap: 12px; padding: 12px 16px; }
-    .mid { grid-column: 1 / -1; grid-row: 1; justify-self: center; }
-    .mid :global(.xgroup) { --w: 44px; --h: 44px; --play-w: 80px; --play-h: 64px; gap: 4px; }
-    .acts { gap: 8px; }
-    .bar > .icon-btn { grid-row: 2; }
-    .panel { bottom: 240px; }
-    .stage { min-height: 100px; }
-    .title { overflow-wrap: anywhere; }
-    .meta { gap: 6px; margin-top: 8px; }
-    .meta .chip { max-width: 100%; }
-    .album { max-width: 160px; }
-  }
-  @media (max-height: 650px) {
-    .carousel { overflow-y: auto; }
-    .stage { flex: none; height: 220px; min-height: 220px; }
-    .top, .lower, .bar { flex: none; }
   }
 </style>

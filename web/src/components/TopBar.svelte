@@ -2,6 +2,8 @@
   // The bar over the page, everything of the site in one row: YouCloud and the way back on the
   // left; in the middle the search, with the services inside it — which one is chosen is both what
   // the page shows and where the search looks; the listener's friends and menu on the right.
+  import { tick } from 'svelte'
+  import { portal } from '../lib/portal'
   import { tr } from '../lib/i18n.svelte'
   import { SERVICES, type Service } from '../lib/catalog'
   import { signedIn } from '../lib/live'
@@ -14,6 +16,41 @@
 
   let input = $state<HTMLInputElement>()
   let menu = $state(false)
+  let profileButton: HTMLButtonElement
+  let menuElement = $state<HTMLDivElement>()
+  let menuAt = $state({ top: 0, left: 0, ready: false })
+
+  function closeMenu(focus = false) {
+    menu = false
+    if (focus) profileButton.focus({ preventScroll: true })
+  }
+
+  async function toggleMenu() {
+    if (menu) return closeMenu()
+    menuAt = { top: 0, left: 0, ready: false }
+    menu = true
+    await tick()
+    if (!menu || !menuElement) return
+    const anchor = profileButton.getBoundingClientRect()
+    const rect = menuElement.getBoundingClientRect()
+    const below = anchor.bottom + 8
+    const top = below + rect.height <= innerHeight - 12 ? below : anchor.top - rect.height - 8
+    menuAt = {
+      top: Math.max(12, Math.min(top, innerHeight - rect.height - 12)),
+      left: Math.max(12, Math.min(anchor.right - rect.width, innerWidth - rect.width - 12)),
+      ready: true,
+    }
+    await tick()
+    menuElement?.querySelector<HTMLElement>('[role="menuitem"]')?.focus({ preventScroll: true })
+  }
+
+  $effect(() => {
+    const onScroll = (event: Event) => {
+      if (menu && !menuElement?.contains(event.target as Node)) closeMenu()
+    }
+    document.addEventListener('scroll', onScroll, true)
+    return () => document.removeEventListener('scroll', onScroll, true)
+  })
 
   const home = $derived(app.route.name === 'home')
 
@@ -47,16 +84,19 @@
       input?.focus()
       input?.select()
     }
-    if (e.key === 'Escape') menu = false
+    if (e.key === 'Escape' && menu) {
+      e.preventDefault()
+      closeMenu(true)
+    }
   }
 
   function place(route: string) {
-    menu = false
+    closeMenu()
     go(route)
   }
 </script>
 
-<svelte:window onkeydown={keys} />
+<svelte:window onkeydown={keys} onresize={() => closeMenu()} />
 
 <header class="topbar">
   <div class="start">
@@ -112,7 +152,7 @@
       <Icon name="group" size={22} />
     </button>
     <div class="me-wrap">
-      <button class="me" class:open={menu} onclick={() => (menu = !menu)} aria-haspopup="menu" aria-expanded={menu} title={tr('Профиль и настройки')}>
+      <button class="me" class:open={menu} bind:this={profileButton} onclick={toggleMenu} aria-haspopup="menu" aria-expanded={menu} title={tr('Профиль и настройки')}>
         {#if social.me}
           <Avatar name={shownName(social.me)} color={social.me.color} src={avatarUrl(social.me)} size={44} />
         {:else}
@@ -120,8 +160,8 @@
         {/if}
       </button>
       {#if menu}
-        <button class="scrim" aria-label={tr('Закрыть меню')} onclick={() => (menu = false)}></button>
-        <div class="menu glass-overlay glass-overlay-menu" role="menu">
+        <button use:portal class="scrim" aria-label={tr('Закрыть меню')} onclick={() => closeMenu()}></button>
+        <div use:portal bind:this={menuElement} class="menu glass-overlay glass-overlay-menu" style:top="{menuAt.top}px" style:left="{menuAt.left}px" style:visibility={menuAt.ready ? 'visible' : 'hidden'} role="menu">
           <div class="who">
             {#if social.me}
               <Avatar name={shownName(social.me)} color={social.me.color} src={avatarUrl(social.me)} size={44} />
@@ -343,15 +383,17 @@
   .scrim {
     position: fixed;
     inset: 0;
-    z-index: 6;
+    z-index: 98;
     cursor: default;
   }
   .menu {
-    position: absolute;
-    right: 0;
-    top: calc(100% + 8px);
-    z-index: 7;
+    position: fixed;
+    z-index: 99;
     width: 260px;
+    max-width: calc(100vw - 24px);
+    max-height: calc(100dvh - 24px);
+    overflow-y: auto;
+    overscroll-behavior: contain;
     padding: 8px;
     border-radius: var(--r-xl);
     transform-origin: top right;

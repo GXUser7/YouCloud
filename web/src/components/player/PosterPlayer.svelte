@@ -37,9 +37,11 @@
   }
 
   // A short title stays on one line under the cover's edge; a long one gets the whole width.
+  const tuck = $derived(t.title.length <= 12)
   let mainH = $state(0)
   let width = $state(innerWidth)
-  const art = $derived(Math.max(120, Math.min(mainH, width * 0.4)))
+  const TUCK = 0.07
+  const art = $derived(Math.max(120, Math.min(mainH + (tuck ? innerHeight * TUCK : 0), width * 0.4)))
 
   function leave(path: string) {
     onclose()
@@ -104,12 +106,12 @@
       </div>
     </div>
     {#key t.id}
-      <div class="art" bind:this={artEl} style:width="{art}px" style:height="{art}px"><Cover seed={t.id} color={t.color} src={t.cover} grain /></div>
+      <div class="art" class:tuck bind:this={artEl} style:width="{art}px" style:height="{art}px"><Cover seed={t.id} color={t.color} src={t.cover} grain /></div>
     {/key}
   </div>
 
   {#key t.id}
-    <h1 class="title" title={t.title} use:fit={{ text: t.title, max: 180, min: 16, height: () => Math.max(54, innerHeight * 0.22) }}>{t.title}</h1>
+    <h1 class="title" class:tuck title={t.title} use:fit={{ text: t.title, max: 420, min: 28, height: () => Math.max(72, innerHeight * 0.3) }}>{t.title}</h1>
   {/key}
 
   {#if player.live}
@@ -181,6 +183,10 @@
 
 <style>
   .poster {
+    --r-m: 14px;
+    --r-l: 16px;
+    --r-xl: 20px;
+    --r-2xl: 24px;
     --paper: var(--primary);
     --ink: var(--on-primary);
     /* What the shadows are cast in: the ink on paper; plain black on the wave, whose ink is light. */
@@ -256,7 +262,7 @@
 
   .main {
     flex: 1;
-    min-height: 120px;
+    min-height: 0;
     display: grid;
     grid-template-columns: minmax(0, 1fr) auto;
     align-items: start;
@@ -423,11 +429,12 @@
   .title {
     z-index: 1;
     width: 100%;
-    flex: none;
-    margin: 16px 0 0;
+    margin: 0.06em 0 0;
+    flex-shrink: 0;
+    padding-block: 0.15em;
     font-family: var(--font-display);
     font-weight: 900;
-    line-height: 1.12;
+    line-height: 0.88;
     letter-spacing: -0.045em;
     text-wrap: balance;
     overflow-wrap: anywhere;
@@ -468,14 +475,12 @@
 
   .bar {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
     align-items: center;
     gap: 16px;
     margin-top: clamp(8px, 1.4vh, 14px);
   }
   .next {
-    grid-column: 1;
-    grid-row: 2;
     justify-self: start;
     max-width: 100%;
     min-width: 0;
@@ -534,9 +539,6 @@
 
   /* The controls: an ink capsule, the paper's colour on it. */
   .capsule {
-    grid-row: 1;
-    grid-column: 1;
-    justify-self: center;
     --on-surface: var(--paper);
     --on-surface-variant: var(--paper);
     --primary: var(--paper);
@@ -564,8 +566,6 @@
   }
 
   .acts {
-    grid-row: 1;
-    grid-column: 2;
     justify-self: end;
     display: flex;
     gap: 8px;
@@ -647,19 +647,5 @@
     .art {
       display: none;
     }
-  }
-  @media (max-width: 680px) {
-    .poster { overflow-y: auto; }
-    .main { min-height: 180px; }
-    .bar { display: flex; flex-wrap: wrap; justify-content: center; gap: 12px; }
-    .next { display: none; }
-    .acts { justify-content: center; gap: 6px; flex-wrap: wrap; }
-    .capsule :global(.xgroup) { --w: 44px; --h: 44px; --play-w: 64px; --play-h: 48px; }
-    .title { margin-top: 12px; }
-  }
-  @media (max-height: 650px) {
-    .poster { overflow-y: auto; }
-    .main { flex: none; height: 200px; min-height: 200px; }
-    .title, .seek, .bar, .top, .rule { flex: none; }
   }
 </style>

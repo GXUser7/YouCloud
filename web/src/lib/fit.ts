@@ -54,7 +54,9 @@ export const fit: Action<HTMLElement, FitOptions> = (node, initial) => {
   return {
     update(next) {
       opts = next
-      measure()
+      // Svelte updates an action before the corresponding text node in this flush.
+      // Measure on the next frame, when the new title is actually in the DOM.
+      later()
     },
     destroy() {
       cancelAnimationFrame(frame)
