@@ -46,7 +46,9 @@
     if (open && !menu?.contains(e.target as Node) && !button.contains(e.target as Node)) close()
   }
   function scrolling(e: Event) {
-    if (open && !menu?.contains(e.target as Node)) close()
+    // Only an ancestor's scroll moves the anchor. Lyrics scroll themselves in a sibling panel.
+    const target = e.target
+    if (open && (target === document || target instanceof Element && target.contains(button))) close()
   }
   $effect(() => {
     id

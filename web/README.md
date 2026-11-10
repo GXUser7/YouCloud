@@ -91,6 +91,7 @@ dislike, Яндекс помечает трек «Не рекомендоват�
 npm install
 npm run dev      # http://localhost:5190 — сайт и Worker вместе
 npm run check    # типы сайта и Worker
+npm run test:menu # меню и автопрокрутка текста во всех видах плеера (Chromium для Playwright)
 ```
 
 ## Выложить на Cloudflare

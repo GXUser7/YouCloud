@@ -9,7 +9,7 @@
   import Icon from '../components/Icon.svelte'
   import LikedArt from '../components/LikedArt.svelte'
   import Loading from '../components/Loading.svelte'
-  import PlayButton from '../components/PlayButton.svelte'
+  import PlaybackActions from '../components/PlaybackActions.svelte'
   import Problem from '../components/Problem.svelte'
   import ServiceGlyph from '../components/ServiceGlyph.svelte'
   import TrackRow from '../components/TrackRow.svelte'
@@ -42,12 +42,6 @@
   {@const contextId = s.kind === 'liked' ? likedContext(s.id) : s.id}
   {@render head(s, shown)}
   <section class="list track-list glass rise">
-    <div class="list-head">
-      <span>#</span>
-      <span class="grow">{tr('Название')}</span>
-      {#if s.kind !== 'album' && s.kind !== 'single'}<span class="album-col">{tr('Альбом')}</span>{/if}
-      <Icon name="schedule" size={18} />
-    </div>
     {#each shown as t, i (t + i)}
       <TrackRow id={t} list={shown} context={s.title} contextId={contextId} number={i + 1} showAlbum={s.kind !== 'album' && s.kind !== 'single'} />
     {:else}
@@ -87,14 +81,14 @@
   </section>
 
   <div class="bar">
-    <PlayButton
+    <PlaybackActions
       playing={player.contextId === contextId && player.playing}
-      onclick={() => (player.contextId === contextId ? toggle() : ids ? playQueue(ids, 0, s.title, contextId) : playSet(s.id))}
-      size={72}
+      disabled={ids !== null && !ids.length}
+      onplay={() => (player.contextId === contextId ? toggle() : ids ? playQueue(ids, 0, s.title, contextId) : playSet(s.id))}
+      onshuffle={() => ids ? playQueue(shuffledTracks(ids), 0, s.title, contextId) : playSet(s.id, true)}
     />
-    <button class="icon-btn tonal l" onclick={() => ids ? playQueue(shuffledTracks(ids), 0, s.title, contextId) : playSet(s.id, true)} aria-label={tr('Перемешать')}><Icon name="shuffle" /></button>
     {#if s.link}
-      <a class="icon-btn glassy l" href={s.link} target="_blank" rel="noreferrer" aria-label={tr('Открыть в %s', serviceName(s.service))}>
+      <a class="icon-btn glassy service-link" href={s.link} target="_blank" rel="noreferrer" aria-label={tr('Открыть в %s', serviceName(s.service))} title={tr('Открыть в %s', serviceName(s.service))}>
         <Icon name="open_in_new" />
       </a>
     {/if}
@@ -154,33 +148,12 @@
   .bar {
     display: flex;
     align-items: center;
+    flex-wrap: wrap;
     gap: 12px;
     margin: 32px 0 20px;
   }
-  .list-head {
-    display: flex;
-    align-items: center;
-    gap: 14px;
-    padding: 0 22px 10px 18px;
-    margin-bottom: 6px;
-    border-bottom: 1px solid var(--glass-line);
-    font-size: 13px;
-    font-weight: 650;
-    color: var(--on-surface-variant);
-  }
-  .list-head > span:first-child {
-    width: 26px;
-    text-align: center;
-  }
-  .grow {
-    flex: 1;
-    padding-left: 66px;
-  }
-  .album-col {
-    flex: 0 1 26%;
-  }
-  .list-head :global(.icon) {
-    margin-right: 96px;
+  .service-link {
+    --s: 60px;
   }
   .empty {
     padding: 16px 4px;
@@ -191,6 +164,5 @@
     .info { width: 100%; }
     h1 { font-size: clamp(28px, 8cqw, 44px); overflow-wrap: anywhere; }
     .kind { flex-wrap: wrap; }
-    .list-head { display: none; }
   }
 </style>

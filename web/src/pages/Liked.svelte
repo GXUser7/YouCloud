@@ -10,9 +10,8 @@
   import { app, player, playQueue, toggle } from '../lib/state.svelte'
   import AccountForm from '../components/AccountForm.svelte'
   import LikedArt from '../components/LikedArt.svelte'
-  import Icon from '../components/Icon.svelte'
   import Loading from '../components/Loading.svelte'
-  import PlayButton from '../components/PlayButton.svelte'
+  import PlaybackActions from '../components/PlaybackActions.svelte'
   import Problem from '../components/Problem.svelte'
   import ServiceGlyph from '../components/ServiceGlyph.svelte'
   import TrackRow from '../components/TrackRow.svelte'
@@ -77,19 +76,19 @@
   <Loading text={tr('Загружаю «Любимое»…')} />
 {:else}
   <div class="bar">
-    <PlayButton
+    <PlaybackActions
       playing={player.contextId === contextId && player.playing}
-      onclick={() => (player.contextId === contextId ? toggle() : playQueue(shown, 0, tr('Любимое'), contextId))}
-      size={72}
+      disabled={!shown.length}
+      onplay={() => (player.contextId === contextId ? toggle() : playQueue(shown, 0, tr('Любимое'), contextId))}
+      onshuffle={shuffle}
     />
-    <button class="icon-btn tonal l" onclick={shuffle} disabled={!shown.length} aria-label={tr('Перемешать')} title={tr('Перемешать')}><Icon name="shuffle" /></button>
     <div class="filters" role="radiogroup" aria-label={tr('Сервис')}>
-      <button class="chip" class:on={!only} role="radio" aria-checked={!only} onclick={() => (only = null)}>{tr('Все')}</button>
+      <button class="category" class:on={!only} role="radio" aria-checked={!only} onclick={() => (only = null)}>{tr('Все')}</button>
       {#each SERVICES as s (s.id)}
         {@const n = count(s.id)}
         {#if n}
-          <button class="chip" class:on={only === s.id} role="radio" aria-checked={only === s.id} onclick={() => (only = only === s.id ? null : s.id)}>
-            <ServiceGlyph service={s.id} size={16} />{s.short}<span class="n">{n}</span>
+          <button class="category" class:on={only === s.id} role="radio" aria-checked={only === s.id} onclick={() => (only = only === s.id ? null : s.id)}>
+            <ServiceGlyph service={s.id} size={19} />{s.short}<span class="n">{n}</span>
           </button>
         {/if}
       {/each}
@@ -144,14 +143,53 @@
     margin: 32px 0 20px;
   }
   .filters {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 8px;
+    display: grid;
+    grid-auto-flow: column;
+    grid-auto-columns: max-content;
+    gap: 3px;
     margin-left: 8px;
+    max-width: 100%;
   }
-  .chip.on {
+  .category {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    min-height: 52px;
+    padding: 0 20px;
+    border-radius: 8px;
     background: var(--secondary-container);
     color: var(--on-secondary-container);
+    font-size: 14px;
+    font-weight: 650;
+    white-space: nowrap;
+    transition: background-color 220ms var(--ease-emph), color 220ms var(--ease-emph);
+  }
+  .category:first-child { border-radius: 26px 8px 8px 26px; }
+  .category:last-child { border-radius: 8px 26px 26px 8px; }
+  .category:only-child { border-radius: 26px; }
+  .category:hover { background: color-mix(in oklab, var(--secondary-container) 85%, var(--on-secondary-container)); }
+  .category.on {
+    border-radius: 26px;
+    background: var(--primary);
+    color: var(--on-primary);
+  }
+  .category:active { border-radius: 16px; }
+  @container page (max-width: 620px) {
+    .filters {
+      grid-auto-flow: row;
+      grid-auto-columns: auto;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      width: 100%;
+      margin-left: 0;
+    }
+    .category { padding: 0 12px; }
+    .category:first-child { border-radius: 26px 8px 8px 8px; }
+    .category:nth-child(2) { border-radius: 8px 26px 8px 8px; }
+    .category:nth-child(3) { border-radius: 8px 8px 8px 26px; }
+    .category:last-child { border-bottom-right-radius: 26px; }
+    .category:last-child:nth-child(odd) { grid-column: 1 / -1; border-radius: 8px 8px 26px 26px; }
+    .category.on, .category:only-child { border-radius: 26px; }
   }
   .n {
     font-variant-numeric: tabular-nums;

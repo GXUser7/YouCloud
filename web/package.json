@@ -11,6 +11,7 @@
     "deploy": "vite build && wrangler deploy",
     "test:helper": "node scripts/helper-test.mjs",
     "test:hearing": "node scripts/hearing-test.mjs",
+    "test:menu": "node scripts/track-menu-test.mjs",
     "test:regressions": "node scripts/artist-follow-test.mjs && node scripts/soundcloud-challenge-test.mjs && node scripts/bridge-capabilities-test.mjs && node scripts/library-live-test.mjs"
   },
   "dependencies": {

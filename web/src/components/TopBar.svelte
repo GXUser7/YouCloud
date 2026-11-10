@@ -101,7 +101,7 @@
 <header class="topbar">
   <div class="start">
     <button class="brand" onclick={() => go('home')} aria-label={tr('YouCloud — главная')} title="YouCloud">
-      <AppIcon size={44} />
+      <span class="brand-icon"><AppIcon size={58} /></span>
       <span class="wordmark">YouCloud</span>
     </button>
     {#if !home}
@@ -154,7 +154,7 @@
     <div class="me-wrap">
       <button class="me" class:open={menu} bind:this={profileButton} onclick={toggleMenu} aria-haspopup="menu" aria-expanded={menu} title={tr('Профиль и настройки')}>
         {#if social.me}
-          <Avatar name={shownName(social.me)} color={social.me.color} src={avatarUrl(social.me)} size={44} />
+          <span class="profile-avatar"><Avatar name={shownName(social.me)} color={social.me.color} src={avatarUrl(social.me)} size={58} /></span>
         {:else}
           <span class="no-me"><Icon name="person" size={22} /></span>
         {/if}
@@ -186,6 +186,7 @@
      narrower than the window, and it is the search that gives way, not the buttons, which
      otherwise spilled over it. */
   .topbar {
+    --topbar-control-size: 58px;
     position: relative;
     z-index: 5;
     flex: none;
@@ -209,18 +210,35 @@
   .end {
     justify-content: flex-end;
   }
+  .start > .icon-btn,
+  .end > .icon-btn {
+    --s: var(--topbar-control-size);
+  }
 
   .brand {
     display: flex;
     align-items: center;
     gap: 10px;
     min-width: 0;
+    height: var(--topbar-control-size);
     padding-right: 6px;
     border-radius: var(--r-l);
     transition: transform var(--d-fast) var(--spring-fast);
   }
   .brand:active {
     transform: scale(0.95);
+  }
+  .brand-icon,
+  .profile-avatar {
+    width: var(--topbar-control-size);
+    height: var(--topbar-control-size);
+    display: grid;
+    place-items: center;
+  }
+  .brand-icon :global(.app-icon),
+  .profile-avatar :global(.avatar) {
+    width: 100%;
+    height: 100%;
   }
   .wordmark {
     font-family: var(--font-display);
@@ -235,7 +253,7 @@
     display: flex;
     align-items: center;
     gap: 10px;
-    height: 58px;
+    height: var(--topbar-control-size);
     padding: 5px 8px 5px 5px;
     border-radius: var(--r-full);
     box-shadow: 0 10px 30px -18px color-mix(in oklab, #000 70%, transparent);
@@ -347,8 +365,8 @@
   .me {
     display: grid;
     place-items: center;
-    width: 48px;
-    height: 48px;
+    width: var(--topbar-control-size);
+    height: var(--topbar-control-size);
     border-radius: 50%;
     transition:
       transform var(--d-fast) var(--spring-fast),
@@ -364,8 +382,8 @@
   .no-me {
     display: grid;
     place-items: center;
-    width: 44px;
-    height: 44px;
+    width: var(--topbar-control-size);
+    height: var(--topbar-control-size);
     border-radius: 50%;
     background: var(--glass-strong);
     color: var(--on-surface);
@@ -462,8 +480,11 @@
      name. */
   @media (max-width: 680px) {
     .topbar {
+      --topbar-control-size: 52px;
       padding: 0 12px 10px;
     }
+    .search { padding: 3px 6px 3px 3px; gap: 6px; }
+    .services { padding: 0; }
     .end > .icon-btn,
     .lens,
     .start:has(> .icon-btn) .brand {
@@ -473,8 +494,8 @@
   @media (max-width: 400px) {
     .service,
     .service.on {
-      min-width: 40px;
-      padding: 0 9px;
+      min-width: 36px;
+      padding: 0 7px;
     }
   }
 </style>

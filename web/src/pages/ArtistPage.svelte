@@ -11,8 +11,8 @@
   import FollowArtist from '../components/FollowArtist.svelte'
   import Icon from '../components/Icon.svelte'
   import Loading from '../components/Loading.svelte'
-  import LoadingIndicator from '../components/LoadingIndicator.svelte'
   import LoadMoreRow from '../components/LoadMoreRow.svelte'
+  import PlaybackActions from '../components/PlaybackActions.svelte'
   import Problem from '../components/Problem.svelte'
   import ServiceGlyph from '../components/ServiceGlyph.svelte'
   import SetCard from '../components/SetCard.svelte'
@@ -164,42 +164,7 @@
   <Problem message={error} onretry={() => attempt++} />
 {:else if page}
   {@const a = artist(page.artist)}
-  {@const playingThis = player.contextId === ctx && player.playing}
   {@render hero(a.id)}
-
-  <div class="bar">
-    <div class="actions">
-      <button
-        class="btn filled large listen"
-        class:playing={playingThis}
-        disabled={preparing || (!top.length && !next)}
-        onclick={() => playPopular('listen')}
-      >
-        {#if preparing}
-          <LoadingIndicator size={24} contained={false} />
-        {:else}
-          <Icon name={playingThis ? 'pause' : 'play_arrow'} fill />
-        {/if}
-        {playingThis ? tr('Пауза') : tr('Слушать')}
-      </button>
-      <button class="icon-btn tonal l shuffle" disabled={preparing || (!top.length && !next)} onclick={() => playPopular('shuffle')} aria-label={tr('Перемешать')} title={tr('Перемешать')}>
-        <Icon name="shuffle" />
-      </button>
-    </div>
-    <FollowArtist id={a.id} />
-    {#if top[0]}
-      <button class="icon-btn glassy l" disabled={preparing} onclick={() => startRadio(top[0])} aria-label={tr('Радио по артисту')} title={tr('Радио по артисту')}><Icon name="radio" /></button>
-    {/if}
-    <span class="spacer"></span>
-    {#if a.link}
-      <a class="btn glassy service-link" href={a.link} target="_blank" rel="noreferrer" aria-label={tr('Открыть в %s', serviceName(a.service))}>
-        <Icon name="open_in_new" size={20} />{serviceName(a.service)}
-      </a>
-    {/if}
-  </div>
-  <div class="action-status muted" role="status" aria-live="polite">
-    {#if preparing}{tr('Готовлю все популярные треки…')}{/if}
-  </div>
 
   <section class="section popular">
     <div class="section-head">
@@ -251,6 +216,31 @@
       <h1 class="display">{a.name}</h1>
       {#if a.followers || a.albums}
         <p class="stats">{[a.followers, a.albums ? plural(a.albums, 'альбом', 'альбома', 'альбомов') : ''].filter(Boolean).join(' · ')}</p>
+      {/if}
+      {#if page && !loading && !error}
+        <div class="bar">
+          <PlaybackActions
+            playing={player.contextId === ctx && player.playing}
+            loading={preparing}
+            disabled={!top.length && !next}
+            onplay={() => playPopular('listen')}
+            onshuffle={() => playPopular('shuffle')}
+          />
+          <div class="artist-actions">
+            <FollowArtist id={a.id} />
+            {#if top[0]}
+              <button class="icon-btn glassy artist-action" disabled={preparing} onclick={() => startRadio(top[0])} aria-label={tr('Радио по артисту')} title={tr('Радио по артисту')}><Icon name="radio" /></button>
+            {/if}
+            {#if a.link}
+              <a class="icon-btn glassy artist-action" href={a.link} target="_blank" rel="noreferrer" aria-label={tr('Открыть в %s', serviceName(a.service))} title={tr('Открыть в %s', serviceName(a.service))}>
+                <Icon name="open_in_new" />
+              </a>
+            {/if}
+          </div>
+        </div>
+        <div class="action-status muted" role="status" aria-live="polite">
+          {#if preparing}{tr('Готовлю все популярные треки…')}{/if}
+        </div>
       {/if}
     </div>
   </section>
@@ -339,42 +329,28 @@
     align-items: center;
     flex-wrap: wrap;
     gap: 12px;
-    margin: 28px 0 0;
+    margin-top: 24px;
   }
-  .actions {
+  .artist-actions {
     display: flex;
-    gap: 3px;
+    align-items: center;
+    flex-wrap: wrap;
+    min-width: 0;
+    gap: 12px;
   }
-  .listen {
-    --h: 60px;
-    --r: 30px 10px 10px 30px;
-    padding: 0 28px 0 24px;
-    font-size: 17px;
-  }
-  .listen.playing {
-    --r: 20px 10px 10px 20px;
-  }
-  .listen :global(.loader path) {
-    fill: currentColor;
-  }
-  .shuffle {
+  .artist-action {
     --s: 60px;
-    --r: 10px 30px 30px 10px;
   }
   .bar button:disabled {
     opacity: 0.38;
     pointer-events: none;
   }
-  .spacer {
-    flex: 1;
-  }
   .action-status {
-    min-height: 24px;
-    padding-top: 8px;
     font-size: 13px;
   }
+  .action-status:not(:empty) { padding-top: 8px; }
   .popular {
-    margin-top: 20px;
+    margin-top: 32px;
   }
   .count {
     font-size: 13px;
@@ -415,14 +391,6 @@
     .bar {
       gap: 10px;
       margin-top: 20px;
-    }
-    .service-link {
-      --h: 40px;
-      padding: 0 16px;
-      font-size: 13px;
-    }
-    .spacer {
-      display: none;
     }
     .section-head {
       align-items: flex-start;

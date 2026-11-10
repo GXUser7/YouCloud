@@ -20,6 +20,7 @@
   let error = $state('')
   let retry = $state(0)
   let generation = 0
+  const label = $derived(error ? tr('Повторить') : loading ? tr('Проверяю подписку…') : following ? tr('Убрать исполнителя из любимого') : tr('Добавить исполнителя в любимое'))
 
   $effect(() => {
     const artistId = id
@@ -70,27 +71,29 @@
 {#if supported && !own}
   <div class="follow">
     <button
-      class="btn tonal"
+      class="icon-btn tonal follow-button"
       class:selected={following}
       disabled={loading || busy}
       onclick={toggle}
       aria-pressed={following ?? false}
+      aria-label={label}
       title={!connected ? tr('Войди в сервис в Настройках') : error || (following ? tr('Убрать исполнителя из любимого') : tr('Добавить исполнителя в любимое'))}
     >
       {#if loading || busy}
-        <LoadingIndicator size={22} contained={false} />
+        <LoadingIndicator size={24} contained={false} />
       {:else}
-        <Icon name={error ? 'refresh' : 'favorite'} fill={!!following} size={22} />
+        <Icon name={error ? 'refresh' : following ? 'how_to_reg' : 'person_add'} size={26} />
       {/if}
-      <span>{error ? tr('Повторить') : loading ? tr('Проверяю подписку…') : following ? (service === 'ya' ? tr('В любимом') : tr('Вы подписаны')) : service === 'ya' ? tr('Нравится') : tr('Подписаться')}</span>
     </button>
     {#if error}<span class="failure muted" role="status">{tr('Не удалось проверить подписку')}</span>{/if}
   </div>
 {/if}
 
 <style>
-  .follow { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
-  .selected { background: var(--primary-container); color: var(--on-primary-container); }
+  .follow { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; max-width: 100%; }
+  .follow-button { --s: 60px; }
+  .follow-button.selected { background: var(--primary); color: var(--on-primary); }
+  .follow-button:disabled { opacity: 0.38; pointer-events: none; }
   .failure { font-size: 12px; max-width: 24ch; }
   .follow :global(.loader path) { fill: currentColor; }
 </style>
