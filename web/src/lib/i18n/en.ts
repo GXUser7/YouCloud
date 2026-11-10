@@ -487,6 +487,7 @@ export const EN: Record<string, string> = {
   'Чарты': 'Charts',
   'SoundCloud не даёт этот трек': "SoundCloud doesn't give this track",
   '%s в избранном': '%s in favourites',
+  'в месяц': 'per month',
   'Собрано для тебя': 'Made for you',
   'Новые релизы': 'New releases',
   'Новые плейлисты': 'New playlists',

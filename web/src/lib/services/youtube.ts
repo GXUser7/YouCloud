@@ -9,7 +9,7 @@
 
 import { i18n, tr } from '../i18n.svelte'
 import type { Innertube } from 'youtubei.js/web'
-import { artists as artistIndex, colorFor, putArtist, putSet, putTrack, sets, tracks as catalogTracks, type SetKind, type Track, type TrackSet } from '../catalog'
+import { artists as artistIndex, colorFor, compact, countWords, putArtist, putSet, putTrack, sets, tracks as catalogTracks, type SetKind, type Track, type TrackSet } from '../catalog'
 import { accounts } from '../accounts.svelte'
 import { extension, extensionCall, extensionHost, hostStream, hostStreams, mediaRelay } from '../extension'
 import { at, getText, HttpError, postJson, request } from '../net'
@@ -63,7 +63,29 @@ async function ytFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Re
   // youtubei.js would report a refusal as "Request to  failed with status code 400": a Response
   // made from the extension's answer has no address, and the body saying why is dropped.
   if (!response.ok) throw new HttpError(response.status, await response.text().catch(() => ''), target)
+  catchArtistHeader(target, body, response)
   return response
+}
+
+/** Raw artist headers caught on their way through, keyed by channel: youtubei.js parses the page
+ *  into nodes that drop the counts (subscribers, monthly listeners), and the artist page wants them. */
+const artistHeaders = new Map<string, Promise<any>>()
+
+function catchArtistHeader(target: string, body: unknown, response: Response) {
+  try {
+    if (!target.endsWith('/youtubei/v1/browse')) return
+    const asked = typeof body === 'string' ? (at(JSON.parse(body), 'browseId') as string | undefined) : undefined
+    if (!asked?.startsWith('UC')) return
+    const probe = response.clone()
+    const read = probe.json().then((raw: any) =>
+      raw?.header?.musicImmersiveHeaderRenderer ?? raw?.header?.musicVisualHeaderRenderer ?? raw?.header?.musicHeaderRenderer ?? undefined,
+    ).catch(() => undefined)
+    // A few channels is all a visit needs; older ones are dropped rather than kept forever.
+    if (artistHeaders.size > 40) artistHeaders.clear()
+    artistHeaders.set(asked, read)
+  } catch {
+    // A missed header costs only a stat line, never the page.
+  }
 }
 
 /** Runs the player script's unscrambling in a Worker with nothing of the page in it. */
@@ -431,6 +453,35 @@ type ArtistSubscription = { account: string; following: boolean | null; subscrib
 const artistSubscriptions = new Map<string, ArtistSubscription>()
 const artistAccountKey = () => `${accounts.yt}:${accounts.ytName}`
 
+/** The first text of a raw InnerTube field: { runs: [...] } or { simpleText } or a plain string. */
+const rawText = (t: any): string | undefined =>
+  typeof t === 'string' ? t
+    : typeof t?.simpleText === 'string' ? t.simpleText
+    : Array.isArray(t?.runs) ? t.runs.map((r: any) => r.text ?? '').join('') || undefined
+    : undefined
+
+/** "1,2 млн подписчиков", "411 тыс. слушателей в месяц", "1.2M subscribers" → a count, null if none. */
+function parseCount(text: string | undefined): number | null {
+  const m = text?.replace(/\u00a0/g, ' ').match(/([\d]+(?:[.,]\d+)?)\s*(тыс|млн|млрд|k|m|b)?/i)
+  const n = m ? Number(m[1].replace(',', '.')) : NaN
+  if (!Number.isFinite(n)) return null
+  const scale = m?.[2] ? ({ тыс: 1e3, млн: 1e6, млрд: 1e9, k: 1e3, m: 1e6, b: 1e9 } as Record<string, number>)[m[2].toLowerCase()] ?? 1 : 1
+  return Math.round(n * scale)
+}
+
+/** How many follow the artist: subscribers, or YouTube's monthly listeners where it only tells
+ *  those. YouTube hands the counts out only in the raw header (see catchArtistHeader). */
+function artistFollowers(hdr: any): string | undefined {
+  if (!hdr) return undefined
+  const subscribers = parseCount(rawText(hdr.subscriptionButton?.subscribeButtonRenderer?.subscriberCountText))
+  const listeners = parseCount(rawText(hdr.monthlyListenerCount ?? hdr.monthlyListenerCountText))
+  const parts = [
+    subscribers != null ? `${compact(subscribers)} ${countWords(subscribers, 'подписчик', 'подписчика', 'подписчиков')}` : '',
+    listeners != null ? `${compact(listeners)} ${countWords(listeners, 'слушатель', 'слушателя', 'слушателей')} ${tr('в месяц')}` : '',
+  ].filter(Boolean)
+  return parts.join(' · ') || undefined
+}
+
 function subscriptionParams(button: any, name: 'subscribe' | 'unsubscribe'): string {
   const endpoints = [...(button?.service_endpoints ?? []), ...(button?.on_subscribe_endpoints ?? []), ...(button?.on_unsubscribe_endpoints ?? [])]
   const endpoint = endpoints.find((e: any) => e.metadata?.api_url === `/subscription/${name}` || e.name === `${name}Endpoint`)
@@ -482,9 +533,7 @@ export async function loadArtist(id: string): Promise<ArtistPage> {
     service: 'yt',
     image: picture([...thumbsOf(header?.thumbnail), ...thumbsOf(header?.foreground_thumbnail)], 1000),
     color: colorFor(id),
-    followers: header?.subscription_button?.subscriber_count?.toString?.()
-      ? tr('%s подписчиков', header.subscription_button.subscriber_count)
-      : undefined,
+    followers: artistFollowers(await artistHeaders.get(channelId)),
     link: `https://music.youtube.com/channel/${channelId}`,
   })
   const top: string[] = []
