@@ -223,9 +223,7 @@
     border-radius: var(--r-m);
     background: color-mix(in oklab, var(--on-surface) 6%, transparent);
     text-align: left;
-    transition:
-      background-color 200ms,
-      border-radius var(--d-fast) var(--spring-fast);
+    transition: background-color 200ms;
   }
   .np:hover {
     background: color-mix(in oklab, var(--on-surface) 11%, transparent);

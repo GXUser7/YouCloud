@@ -52,6 +52,23 @@ export interface Library {
 
 export const signedIn = (svc: Service) => (svc === 'sc' ? !!accounts.sc : svc === 'ya' ? !!accounts.ya : accounts.yt)
 
+export async function artistFollowing(id: string): Promise<boolean> {
+  if (id.startsWith('sc:u:')) return soundcloud.artistFollowing(id)
+  if (id.startsWith('ya:a:')) return yandex.artistFollowing(id)
+  if (id.startsWith('yt:a:')) return youtube.artistFollowing(id)
+  throw new Error(tr('У этого исполнителя нет страницы в сервисе'))
+}
+
+export async function setArtistFollowing(id: string, following: boolean): Promise<void> {
+  const svc = serviceOf(id)
+  if (!svc || !signedIn(svc)) throw new Error(tr('Войди в сервис в Настройках'))
+  if (id.startsWith('sc:u:')) await soundcloud.setArtistFollowing(id, following)
+  else if (id.startsWith('ya:a:')) await yandex.setArtistFollowing(id, following)
+  else if (id.startsWith('yt:a:')) await youtube.setArtistFollowing(id, following)
+  else throw new Error(tr('У этого исполнителя нет страницы в сервисе'))
+  window.dispatchEvent(new CustomEvent('yc-artist-follow-changed', { detail: { id, following } }))
+}
+
 const unique = <T>(list: T[]): T[] => [...new Set(list)]
 
 /**

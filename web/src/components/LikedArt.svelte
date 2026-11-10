@@ -55,9 +55,7 @@
     min-width: 0;
     min-height: 0;
     overflow: hidden;
-    transition:
-      border-radius var(--d-fast) var(--spring-fast),
-      transform var(--d-spatial) var(--spring);
+    transition: transform var(--d-spatial) var(--spring);
   }
   .tile :global(.cover) {
     transition: transform var(--d-slow) var(--spring);

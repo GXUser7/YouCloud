@@ -225,7 +225,7 @@
     padding: 0 8px 0 18px;
     border-radius: var(--r-full);
     color: var(--on-surface-variant);
-    transition: border-radius var(--d-spatial) var(--spring);
+    transition: none;
   }
   .add:focus-within {
     border-radius: var(--r-l);
@@ -263,7 +263,7 @@
     display: flex;
     flex-direction: column;
     gap: 14px;
-    transition: border-radius var(--d-spatial) var(--spring);
+    transition: none;
   }
   .card:hover {
     border-radius: var(--r-xl);

@@ -44,7 +44,7 @@
     font-weight: 750;
     font-size: calc(var(--size) * 0.42);
     object-fit: cover;
-    transition: border-radius var(--d-spatial) var(--spring);
+    transition: none;
   }
   .live .face {
     border-radius: 34%;

@@ -286,6 +286,10 @@
 
 <style>
   .shape {
+    --r-m: 14px;
+    --r-l: 16px;
+    --r-xl: 20px;
+    --r-2xl: 24px;
     position: fixed;
     inset: 0;
     z-index: 20;
@@ -674,11 +678,7 @@
     flex: none;
     background: color-mix(in oklab, var(--on-surface) 10%, transparent);
     color: var(--on-surface);
-    transition:
-      border-radius var(--d-fast) var(--spring-fast),
-      background-color 250ms var(--ease-emph),
-      color 250ms var(--ease-emph),
-      transform var(--d-fast) var(--spring-fast);
+    transition: background-color 250ms var(--ease-emph), color 250ms var(--ease-emph), transform var(--d-fast) var(--spring-fast);
   }
   .sb:hover {
     background: color-mix(in oklab, var(--on-surface) 15%, transparent);
@@ -804,10 +804,7 @@
     border-radius: 30px;
     text-align: left;
     background: color-mix(in oklab, var(--on-surface) 8%, transparent);
-    transition:
-      background-color 250ms var(--ease-emph),
-      color 250ms var(--ease-emph),
-      border-radius var(--d-fast) var(--spring-fast);
+    transition: background-color 250ms var(--ease-emph), color 250ms var(--ease-emph);
   }
   .next-card:hover {
     background: color-mix(in oklab, var(--on-surface) 13%, transparent);
@@ -867,10 +864,7 @@
     font-weight: 800;
     background: color-mix(in oklab, var(--on-surface) 10%, transparent);
     color: var(--on-surface);
-    transition:
-      border-radius var(--d-fast) var(--spring-fast),
-      background-color 250ms var(--ease-emph),
-      color 250ms var(--ease-emph);
+    transition: background-color 250ms var(--ease-emph), color 250ms var(--ease-emph);
   }
   .pill-btn.round {
     width: 44px;

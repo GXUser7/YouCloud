@@ -31,10 +31,7 @@
     color: var(--on-primary);
     position: relative;
     box-shadow: 0 10px 30px -12px color-mix(in oklab, var(--primary) 70%, transparent);
-    transition:
-      border-radius 320ms var(--ease-emph),
-      transform 160ms var(--ease-emph),
-      background-color 400ms var(--ease-emph);
+    transition: transform 160ms var(--ease-emph), background-color 400ms var(--ease-emph);
   }
   .play::after {
     content: '';

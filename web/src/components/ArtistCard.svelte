@@ -29,7 +29,7 @@
     border-radius: 50%;
     overflow: hidden;
     box-shadow: var(--shadow);
-    transition: border-radius var(--d-spatial) var(--spring);
+    transition: none;
   }
   .artist:hover .pic {
     border-radius: 36%;

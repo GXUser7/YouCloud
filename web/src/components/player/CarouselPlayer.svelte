@@ -169,6 +169,10 @@
 
 <style>
   .carousel {
+    --r-m: 14px;
+    --r-l: 16px;
+    --r-xl: 20px;
+    --r-2xl: 24px;
     position: fixed;
     inset: 0;
     z-index: 20;
@@ -228,12 +232,7 @@
     opacity: var(--seen);
     filter: saturate(0.8) brightness(0.8);
     box-shadow: 0 30px 60px -34px #000c;
-    transition:
-      transform 700ms var(--spring),
-      opacity 450ms var(--ease-emph),
-      filter 450ms var(--ease-emph),
-      border-radius 600ms var(--spring),
-      box-shadow 600ms var(--ease-emph);
+    transition: transform 700ms var(--spring), opacity 450ms var(--ease-emph), filter 450ms var(--ease-emph), box-shadow 600ms var(--ease-emph);
     animation: cv-in 480ms var(--ease-in-place);
   }
   @keyframes cv-in {
@@ -368,8 +367,8 @@
     padding: 0 12px;
     border-radius: 32px;
     background: color-mix(in oklab, var(--on-surface) 7%, transparent);
-    backdrop-filter: blur(30px) saturate(1.3);
-    -webkit-backdrop-filter: blur(30px) saturate(1.3);
+    -webkit-backdrop-filter: var(--glass-blur);
+    backdrop-filter: var(--glass-blur);
     animation: panel-in 520ms var(--ease-in-place);
   }
   .panel.full {

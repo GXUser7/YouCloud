@@ -43,6 +43,68 @@ const EDGES = Array.from({ length: BANDS + 1 }, (_, i) => 40 * Math.pow(14000 / 
 const clamp = (v: number) => Math.max(0, Math.min(1, v))
 const ease = (v: number, to: number, dt: number, up: number, down: number) => v + (to - v) * (1 - Math.exp(-dt * (to > v ? up : down)))
 
+// — The spectrum into the wave's levels —
+// Each band's power in dBFS is set beside its own slow average: a band at its average reads
+// CENTER, SPAN dBFS above reach full. So a verse against the drop, a hat against a pad and a
+// bass line's beat move the wave — the track's master volume does not. Below the floor a band
+// is the noise's own and stays down.
+const CENTER = 0.45
+const SPAN = 12 // dBFS above the band's own average that reaches full
+const ABS_FLOOR = -50 // dBFS: the fixed axis — the track's master volume shows through as well
+const ABS_SPAN = 25 // dBFS from the floor to full
+const REL_WEIGHT = 0.45 // the rest rides on the absolute
+const SLOW_TAU = 4 // seconds the band's own average follows
+const SILENT_DB = -80 // band power under this is not music
+const LEVELS_FLOOR_DB = -70
+const BANDS_FLOOR_DB = -78
+const slowLevels = { bass: { v: NaN }, mid: { v: NaN }, high: { v: NaN } }
+const slowBands = new Float32Array(BANDS)
+const levelsSpectrum = new Float32Array(BANDS)
+
+/** The mean band power in dBFS across the bins of [from..to) Hz; [bins] are linear magnitudes. */
+function bandPowerDb(bins: Float32Array, from: number, to: number, hz: number): number {
+  const a = Math.max(1, Math.floor(from / hz))
+  const z = Math.max(a, Math.min(bins.length - 1, Math.ceil(to / hz) - 1))
+  let sum = 0
+  for (let i = a; i <= z; i++) sum += bins[i] * bins[i]
+  return 10 * Math.log10(sum / (z - a + 1) + 1e-12)
+}
+
+/** The band's watchable level, beside its own slow average ([ref.v], NaN-initialized): part
+ *  absolute (how loud the band is outright), part relative (beside the band's own average). */
+function levelOf(db: number, ref: { v: number }, dt: number, floorDb: number): number {
+  ref.v = Number.isFinite(ref.v) ? ref.v + (db - ref.v) * (1 - Math.exp(-dt / SLOW_TAU)) : db
+  if (db < floorDb) return 0
+  const abs = clamp((db - ABS_FLOOR) / ABS_SPAN)
+  const rel = clamp(CENTER + (db - ref.v) / SPAN)
+  return clamp((1 - REL_WEIGHT) * abs + REL_WEIGHT * rel)
+}
+
+export type LevelsFrame = { bass: number; mid: number; high: number; bands: Float32Array; heard: boolean }
+
+/** One linear-magnitude FFT frame into the wave's levels: honest to the track's own dynamics. */
+export function processLevelsFrame(fft: Float32Array, hz: number, dt: number, fresh = false): LevelsFrame {
+  if (fresh) {
+    slowLevels.bass.v = slowLevels.mid.v = slowLevels.high.v = NaN
+    slowBands.fill(NaN)
+  }
+  const b = bandPowerDb(fft, 30, 160, hz)
+  const m = bandPowerDb(fft, 300, 2000, hz)
+  const h = bandPowerDb(fft, 4000, 12000, hz)
+  for (let j = 0; j < BANDS; j++) {
+    const db = bandPowerDb(fft, EDGES[j], EDGES[j + 1], hz)
+    slowBands[j] = Number.isFinite(slowBands[j]) ? slowBands[j] + (db - slowBands[j]) * (1 - Math.exp(-dt / SLOW_TAU)) : db
+    levelsSpectrum[j] = db < BANDS_FLOOR_DB ? 0 : clamp(CENTER + (db - slowBands[j]) / SPAN)
+  }
+  return {
+    bass: levelOf(b, slowLevels.bass, dt, LEVELS_FLOOR_DB),
+    mid: levelOf(m, slowLevels.mid, dt, LEVELS_FLOOR_DB),
+    high: levelOf(h, slowLevels.high, dt, LEVELS_FLOOR_DB),
+    bands: levelsSpectrum,
+    heard: b > SILENT_DB || m > SILENT_DB || h > SILENT_DB,
+  }
+}
+
 export type HearingFrame = {
   punch: number
   kick: boolean
@@ -117,9 +179,11 @@ export function processHearingFrame(frame: Float32Array, dt: number, sampleRate 
   return result
 }
 
-const peak = { bass: 0.015, mid: 0.02, high: 0.01, bands: 0.02 }
 const spectrum = new Float32Array(BANDS)
 const hearingState = createHearingState()
+
+/** Set until the next frame is mapped: a new capture or track makes the slow averages start over. */
+let fresh = true
 
 type Capturable = HTMLAudioElement & { captureStream?: () => MediaStream }
 
@@ -135,10 +199,6 @@ let trackId = ''
 let triedAt = -Infinity
 
 function resetState() {
-  peak.bass = 0.015
-  peak.mid = 0.02
-  peak.high = 0.01
-  peak.bands = 0.02
   hearingState.previous = null
   hearingState.fluxMean = 0
   hearingState.fluxDeviation = 0
@@ -148,6 +208,7 @@ function resetState() {
   hearingState.punch = 0
   hearingState.result.punch = 0
   hearingState.result.kick = false
+  fresh = true
 }
 
 function release() {
@@ -205,17 +266,6 @@ function connect(now: number): boolean {
   return !!first
 }
 
-function part(from: number, to: number): number {
-  const hz = ctx!.sampleRate / analyser!.fftSize
-  const a = Math.max(1, Math.floor(from / hz))
-  const b = Math.max(a, Math.min(bins!.length - 1, Math.ceil(to / hz) - 1))
-  let sum = 0
-  for (let i = a; i <= b; i++) sum += bins![i]
-  return sum / (b - a + 1)
-}
-
-const remembered = (key: keyof typeof peak, v: number, dt: number) => (peak[key] = Math.max(v, peak[key] * Math.exp(-dt / 6), 0.0001))
-
 /** Where the wave stands now, [dt] seconds after it was asked last. [listen] keeps the setting «Под музыку». */
 export function hear(now: number, dt: number, listen: boolean): Levels {
   const playing = player.playing && !player.loading
@@ -230,25 +280,15 @@ export function hear(now: number, dt: number, listen: boolean): Levels {
     for (let i = 0; i < bins.length; i++) bins[i] = Number.isFinite(bins[i]) ? Math.pow(10, bins[i] / 20) : 0
     for (let i = 0; i < onsetBins.length; i++) onsetBins[i] = Number.isFinite(onsetBins[i]) ? Math.pow(10, onsetBins[i] / 20) : 0
     const sampleRate = ctx!.sampleRate
-    const b = part(30, 160), m = part(300, 2000), h = part(4000, 12000)
-    heard = b + m + h > 0.00004
     const onset = processHearingFrame(onsetBins, dt, sampleRate, hearingState)
+    const frame = processLevelsFrame(bins, sampleRate / analyser.fftSize, dt, fresh)
+    fresh = false
+    heard = frame.heard
     if (heard) {
-      bass = clamp(Math.pow(b / remembered('bass', b, dt), 0.7))
-      bass = Math.max(bass, onset.bass)
-      mid = clamp(m / remembered('mid', m, dt))
-      high = clamp((h / remembered('high', h, dt) - 0.16) / 0.84)
-      let loudest = 0
-      for (let j = 0; j < BANDS; j++) {
-        const a = Math.max(1, Math.floor(EDGES[j] / (sampleRate / analyser.fftSize)))
-        const z = Math.max(a, Math.min(bins.length - 1, Math.ceil(EDGES[j + 1] / (sampleRate / analyser.fftSize)) - 1))
-        let sum = 0
-        for (let i = a; i <= z; i++) sum += bins[i]
-        const value = sum / (z - a + 1)
-        loudest = Math.max(loudest, spectrum[j] = value)
-      }
-      const top = remembered('bands', loudest, dt)
-      for (let j = 0; j < BANDS; j++) spectrum[j] = clamp(Math.pow(spectrum[j] / top, 1.25))
+      bass = Math.max(frame.bass, onset.bass)
+      mid = frame.mid
+      high = frame.high
+      spectrum.set(frame.bands)
       punch = onset.punch
       kick = onset.kick
     }

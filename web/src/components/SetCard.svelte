@@ -50,9 +50,7 @@
     border-radius: var(--r-xl);
     overflow: hidden;
     box-shadow: var(--shadow);
-    transition:
-      border-radius var(--d-spatial) var(--spring),
-      transform var(--d-spatial) var(--spring);
+    transition: transform var(--d-spatial) var(--spring);
   }
   .art.round {
     border-radius: 50%;
@@ -81,10 +79,7 @@
     box-shadow: 0 10px 24px -8px color-mix(in oklab, #000 60%, transparent);
     opacity: 0;
     transform: translateY(10px) scale(0.6) rotate(-20deg);
-    transition:
-      opacity 200ms var(--ease-emph),
-      transform var(--d-spatial) var(--spring-fast),
-      border-radius var(--d-fast) var(--spring-fast);
+    transition: opacity 200ms var(--ease-emph), transform var(--d-spatial) var(--spring-fast);
   }
   .card:hover .play,
   .play.active,

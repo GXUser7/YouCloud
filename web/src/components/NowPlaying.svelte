@@ -103,7 +103,7 @@
   }
 </script>
 
-<svelte:window onkeydown={(e) => e.key === 'Escape' && close()} />
+<svelte:window onkeydown={(e) => e.key === 'Escape' && !e.defaultPrevented && close()} />
 
 {#if app.playerLook === 'poster'}
   <PosterPlayer onclose={close} />
@@ -260,6 +260,10 @@
 
 <style>
   .np {
+    --r-m: 14px;
+    --r-l: 16px;
+    --r-xl: 20px;
+    --r-2xl: 24px;
     position: fixed;
     inset: 0;
     z-index: 20;
@@ -433,11 +437,7 @@
     isolation: isolate;
     background: color-mix(in oklab, var(--on-surface) 10%, transparent);
     color: var(--on-surface);
-    transition:
-      border-radius var(--d-fast) var(--spring-fast),
-      background-color 250ms var(--ease-emph),
-      color 250ms var(--ease-emph),
-      transform var(--d-fast) var(--spring-fast);
+    transition: background-color 250ms var(--ease-emph), color 250ms var(--ease-emph), transform var(--d-fast) var(--spring-fast);
   }
   .next-card::before {
     content: '';
@@ -479,7 +479,7 @@
     flex: none;
     display: grid;
     place-items: center;
-    transition: border-radius var(--d-spatial) var(--spring);
+    transition: none;
     animation: next-in 420ms var(--ease-in-place);
   }
   @keyframes next-in {

@@ -182,9 +182,7 @@
     background: color-mix(in oklab, var(--on-surface) 6%, transparent);
     font-size: 14px;
     line-height: 1.45;
-    transition:
-      background-color 300ms var(--ease-emph),
-      border-radius var(--d-spatial) var(--spring);
+    transition: background-color 300ms var(--ease-emph);
   }
   .steps li.on {
     background: color-mix(in oklab, var(--primary) 16%, transparent);

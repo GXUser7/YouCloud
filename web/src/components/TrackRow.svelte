@@ -44,8 +44,8 @@
   class:unavailable
   role="button"
   tabindex="0"
-  ondblclick={play}
-  onkeydown={(e) => e.key === 'Enter' && play()}
+  ondblclick={(e) => { if (!(e.target as HTMLElement).closest('button, a')) play() }}
+  onkeydown={(e) => e.target === e.currentTarget && e.key === 'Enter' && play()}
 >
   {#if number !== undefined}
     <span class="num">{number}</span>
@@ -63,7 +63,7 @@
   </button>
   <div class="text">
     <div class="title ellipsis">
-      {t.title}
+      <span class="title-text ellipsis" title={t.title}>{t.title}</span>
       {#if t.explicit}<span class="e" title={tr('Есть ненормативная лексика')}>E</span>{/if}
     </div>
     <div class="artists ellipsis">
@@ -84,16 +84,16 @@
   <button class="icon-btn s heart" class:on={liked} class:keep={liked} onclick={() => like(id)} aria-label={tr('Нравится')}>
     <Icon name="favorite" fill={liked} size={22} />
   </button>
-  {#if !compact}
-    <span class="more"><TrackMenu {id} /></span>
-  {/if}
+  <span class="more"><TrackMenu {id} /></span>
 </div>
 
 <style>
   .row {
     display: flex;
     align-items: center;
-    gap: 14px;
+    gap: 12px;
+    min-width: 0;
+    min-height: 72px;
     padding: 8px 10px 8px 8px;
     border-radius: var(--r-l);
     transition: background-color 200ms var(--ease-emph);
@@ -130,12 +130,11 @@
     overflow: hidden;
     flex: none;
     position: relative;
-    transition: border-radius var(--d-spatial) var(--spring);
+    transition: none;
   }
   .compact .art {
-    width: 44px;
-    height: 44px;
-    border-radius: var(--r-s);
+    width: 52px;
+    height: 52px;
   }
   .current .art {
     border-radius: 50%;
@@ -158,6 +157,8 @@
     opacity: 1;
   }
   .pause {
+    display: grid;
+    place-items: center;
     opacity: 0;
     transition: opacity 150ms;
   }
@@ -178,6 +179,8 @@
     align-items: center;
     gap: 6px;
   }
+  .title-text { min-width: 0; }
+  .eq-wrap { display: grid; place-items: center; }
   .current .title {
     color: var(--primary);
   }
@@ -217,10 +220,8 @@
     font-size: 14px;
     flex: none;
   }
-  .heart,
-  .more {
-    opacity: 0;
-  }
+  .more { display: grid; place-items: center; flex: none; }
+  .heart { opacity: 0.65; }
   .heart.keep,
   .row:hover .heart,
   .row:hover .more,
@@ -228,4 +229,11 @@
   .row:focus-within .more {
     opacity: 1;
   }
+  @container page (max-width: 600px) {
+    .row { gap: 8px; padding-inline: 8px; }
+    .num { display: none; }
+    .album, .dur, .heart { display: none; }
+    .title { font-size: 15px; }
+  }
+  @media (hover: none) { .heart { opacity: 1; } }
 </style>

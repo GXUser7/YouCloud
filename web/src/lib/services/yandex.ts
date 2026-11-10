@@ -3,7 +3,7 @@
 // (lib/net.ts routes them). Answers become catalog items (lib/catalog.ts).
 
 import { tr } from '../i18n.svelte'
-import { yaToken } from '../accounts.svelte'
+import { accounts, yaToken } from '../accounts.svelte'
 import {
   colorFor,
   compact,
@@ -378,10 +378,20 @@ export async function account(token = yaToken()): Promise<AccountStatus> {
   return { uid: a.uid, name: a.displayName || a.fullName || a.login || tr('Яндекс'), plus: !!r.result.plus?.hasPlus }
 }
 
-let uidCache: number | null = null
 async function myUid(): Promise<number> {
-  uidCache ??= (await account()).uid
-  return uidCache
+  // An account may change without reloading the site.
+  return accounts.ya?.uid ?? (await account()).uid
+}
+
+/** The same artist-like endpoints the Android app uses. */
+export async function artistFollowing(id: string): Promise<boolean> {
+  const native = id.slice('ya:a:'.length)
+  const result = await yaGet<(YaArtist | { artist: YaArtist })[]>(`users/${await myUid()}/likes/artists`, { 'with-timestamps': false })
+  return result.some((entry) => String('artist' in entry ? entry.artist.id : entry.id) === native)
+}
+
+export async function setArtistFollowing(id: string, following: boolean): Promise<void> {
+  await yaPostForm(`users/${await myUid()}/likes/artists/${following ? 'add-multiple' : 'remove'}`, { 'artist-ids': id.slice('ya:a:'.length) })
 }
 
 export interface Library {

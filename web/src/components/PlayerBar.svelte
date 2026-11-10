@@ -136,9 +136,7 @@
     position: relative;
     flex: none;
     display: grid;
-    transition:
-      border-radius var(--d-slow) var(--spring),
-      transform var(--d-fast) var(--spring-fast);
+    transition: transform var(--d-fast) var(--spring-fast);
   }
   .cover > * {
     grid-area: 1 / 1;
@@ -248,10 +246,7 @@
     height: 26px;
     padding: 0 6px;
     border-radius: var(--r-full);
-    transition:
-      background-color 200ms var(--ease-emph),
-      color 200ms var(--ease-emph),
-      border-radius var(--d-fast) var(--spring-fast);
+    transition: background-color 200ms var(--ease-emph), color 200ms var(--ease-emph);
   }
   .end-time:hover {
     background: var(--state-hover);
@@ -298,11 +293,7 @@
     color: var(--on-surface);
     background: color-mix(in oklab, var(--on-surface) 8%, transparent);
     border-radius: 6px;
-    transition:
-      border-radius var(--d-spatial) var(--spring-fast),
-      background-color 250ms var(--ease-emph),
-      color 250ms var(--ease-emph),
-      width var(--d-spatial) var(--spring-fast);
+    transition: background-color 250ms var(--ease-emph), color 250ms var(--ease-emph), width var(--d-spatial) var(--spring-fast);
   }
   .seg:first-child {
     border-radius: 20px 6px 6px 20px;

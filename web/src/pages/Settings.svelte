@@ -198,6 +198,20 @@
   </section>
 
   <section class="card glass rise">
+    <h2 class="headline title">{tr('Медиатека')}</h2>
+    <div class="toggle">
+      <div>
+        <span class="t-name">{tr('Трансляции в «Любимом»')}</span>
+        <span class="muted t-sub">{tr('Показывать эфиры в списках любимых треков и включать их при воспроизведении списка')}</span>
+      </div>
+      <Switch checked={app.showLiveInLiked} label={tr('Трансляции в «Любимом»')} onchange={(v) => {
+        app.showLiveInLiked = v
+        remember('showLiveInLiked', v)
+      }} />
+    </div>
+  </section>
+
+  <section class="card glass rise">
     <h2 class="headline title">{tr('Оформление')}</h2>
     {#if inMasaki}
       <!-- In Masaki the page lies on the browser's glass: its lightness and colours are Masaki's. -->
@@ -345,7 +359,7 @@
   .grid {
     margin-top: 32px;
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(420px, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 420px), 1fr));
     gap: 20px;
     align-items: start;
   }
@@ -409,9 +423,7 @@
   }
   button.tile {
     text-align: left;
-    transition:
-      background-color 200ms,
-      border-radius var(--d-fast) var(--spring-fast);
+    transition: background-color 200ms;
   }
   button.tile:not(:disabled):hover {
     background: color-mix(in oklab, var(--on-surface) 10%, transparent);
@@ -444,9 +456,7 @@
     background: color-mix(in oklab, var(--on-surface) 8%, transparent);
     color: var(--on-surface-variant);
     flex: none;
-    transition:
-      border-radius var(--d-spatial) var(--spring),
-      background-color 300ms;
+    transition: background-color 300ms;
   }
   .glyph.on {
     background: var(--primary-container);

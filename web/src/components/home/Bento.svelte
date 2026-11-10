@@ -5,7 +5,7 @@
   import { tr } from '../../lib/i18n.svelte'
   import { serviceName, set, type Service } from '../../lib/catalog'
   import type { Library } from '../../lib/live'
-  import { go, player, playQueue, playSet, toggle } from '../../lib/state.svelte'
+  import { go, likedContext, likedTracks, player, playQueue, playSet, toggle } from '../../lib/state.svelte'
   import { tracksCount } from '../../lib/format'
   import type { Snippet } from 'svelte'
   import Cover from '../Cover.svelte'
@@ -33,6 +33,8 @@
   const first = $derived(lead[0])
   const smalls = $derived(lead.slice(main ? 0 : 1, main ? 2 : 3))
   const liked = $derived(lib ? set(lib.liked) : null)
+  const likedIds = $derived(liked ? likedTracks(liked.tracks) : [])
+  const likedCtx = $derived(liked ? likedContext(liked.id) : '')
 
   function play(id: string) {
     if (player.contextId === id) toggle()
@@ -40,8 +42,8 @@
   }
   function playLiked() {
     if (!liked) return
-    if (player.contextId === liked.id) toggle()
-    else playQueue(liked.tracks, 0, liked.title, liked.id)
+    if (player.contextId === likedCtx) toggle()
+    else playQueue(likedIds, 0, liked.title, likedCtx)
   }
 </script>
 
@@ -70,15 +72,15 @@
   <div class="tile liked">
     {#if liked}
       <button class="liked-art" onclick={() => go('set/' + liked.id)} aria-label={liked.title}>
-        <LikedArt ids={liked.tracks} seed={liked.id} color={liked.color} />
+        <LikedArt ids={likedIds} seed={liked.id} color={liked.color} />
       </button>
       <div class="liked-info by-play">
         <span class="overline">{tr('Любимое')}</span>
         <span class="liked-title">{liked.title}</span>
-        <span class="muted count">{tracksCount(liked.tracks.length)}</span>
+        <span class="muted count">{tracksCount(likedIds.length)}</span>
       </div>
       <div class="liked-play">
-        <PlayButton playing={player.contextId === liked.id && player.playing} onclick={playLiked} size={52} />
+        <PlayButton playing={player.contextId === likedCtx && player.playing} onclick={playLiked} size={52} />
       </div>
     {:else}
       <span class="liked-art blank"><LikedArt seed="liked-{service}" color="#d81b60" /></span>
@@ -128,10 +130,7 @@
     border-radius: var(--r-2xl);
     isolation: isolate;
     background: var(--glass);
-    transition:
-      border-radius var(--d-spatial) var(--spring),
-      transform var(--d-spatial) var(--spring),
-      box-shadow 300ms var(--ease-emph);
+    transition: transform var(--d-spatial) var(--spring), box-shadow 300ms var(--ease-emph);
   }
   .tile:hover {
     border-radius: 40px;
@@ -209,9 +208,7 @@
     gap: 10px;
   }
   .actions :global(.play) {
-    transition:
-      border-radius 320ms var(--ease-emph),
-      transform var(--d-fast) var(--spring-fast);
+    transition: transform var(--d-fast) var(--spring-fast);
   }
   .main:hover .actions :global(.play) {
     transform: scale(1.08);
@@ -229,7 +226,7 @@
     border-radius: var(--r-xl);
     overflow: hidden;
     display: block;
-    transition: border-radius var(--d-spatial) var(--spring);
+    transition: none;
   }
   .liked:hover .liked-art {
     border-radius: 28px;
@@ -298,10 +295,7 @@
     box-shadow: 0 10px 24px -8px color-mix(in oklab, #000 60%, transparent);
     opacity: 0;
     transform: translateY(14px) scale(0.6) rotate(-25deg);
-    transition:
-      opacity 200ms var(--ease-emph),
-      transform var(--d-spatial) var(--spring-fast),
-      border-radius var(--d-fast) var(--spring-fast);
+    transition: opacity 200ms var(--ease-emph), transform var(--d-spatial) var(--spring-fast);
   }
   .small:hover .pop,
   .pop:focus-visible {

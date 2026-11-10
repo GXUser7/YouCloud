@@ -200,9 +200,9 @@
         {#if r.tracks.length || r.more?.tracks}
           <div class="top-tracks">
             <div class="section-head"><h2>{tr('Треки')}</h2></div>
-            <div class="result-group glass">
+            <div class="result-group glass track-list">
               {#each r.tracks.slice(0, visible.tracks) as id (id)}
-                <TrackRow {id} list={r.tracks} context={tr('Поиск: %s', app.query)} contextId={'search:' + app.query} compact />
+                <TrackRow {id} list={r.tracks} context={tr('Поиск: %s', app.query)} contextId={'search:' + app.query} />
               {/each}
               {@render moreRow('tracks', r)}
             </div>
@@ -213,7 +213,7 @@
       {#if r.artists.length || r.more?.artists}
         <section class="section">
           <div class="section-head"><h2>{tr('Артисты')}</h2></div>
-          <div class="result-group glass">
+          <div class="result-group glass track-list">
             <div class="card-grid artists">
               {#each r.artists.slice(0, visible.artists) as id (id)}<ArtistCard {id} size={156} />{/each}
             </div>
@@ -224,7 +224,7 @@
       {#if r.albums.length || r.more?.albums}
         <section class="section">
           <div class="section-head"><h2>{tr('Альбомы')}</h2></div>
-          <div class="result-group glass">
+          <div class="result-group glass track-list">
             <div class="card-grid">
               {#each r.albums.slice(0, visible.albums) as id (id)}
                 {@const s = set(id)}
@@ -238,7 +238,7 @@
       {#if r.playlists.length || r.more?.playlists}
         <section class="section">
           <div class="section-head"><h2>{tr('Плейлисты')}</h2></div>
-          <div class="result-group glass">
+          <div class="result-group glass track-list">
             <div class="card-grid">
               {#each r.playlists.slice(0, visible.playlists) as id (id)}<SetCard {id} size={170} />{/each}
             </div>
@@ -259,25 +259,6 @@
 {/snippet}
 
 <style>
-  .result-group {
-    border-radius: var(--r-2xl);
-    overflow: hidden;
-  }
-  .result-group :global(.row) {
-    border-radius: 0;
-  }
-  .result-group :global(.row.current) {
-    border-radius: var(--r-l);
-  }
-  .result-group :global(.row + .row)::before {
-    content: '';
-    position: absolute;
-    top: 0;
-    left: 66px;
-    right: 18px;
-    height: 1px;
-    background: var(--glass-line);
-  }
   .card-grid {
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
@@ -302,8 +283,8 @@
   .results {
     margin-top: 32px;
     display: grid;
-    grid-template-columns: minmax(280px, 380px) minmax(0, 1fr);
-    gap: 28px;
+    grid-template-columns: minmax(240px, 320px) minmax(0, 1fr);
+    gap: 24px;
   }
   .results.without-best {
     grid-template-columns: minmax(0, 1fr);
@@ -318,9 +299,7 @@
     border-radius: var(--r-2xl);
     text-align: left;
     position: relative;
-    transition:
-      border-radius var(--d-spatial) var(--spring),
-      background-color 200ms;
+    transition: background-color 200ms;
   }
   .top-card:hover {
     background: var(--glass-strong);
@@ -363,10 +342,7 @@
     box-shadow: 0 10px 24px -8px #0009;
     opacity: 0;
     transform: translateY(10px) scale(0.7);
-    transition:
-      opacity 200ms,
-      transform var(--d-spatial) var(--spring-fast),
-      border-radius var(--d-fast) var(--spring-fast);
+    transition: opacity 200ms, transform var(--d-spatial) var(--spring-fast);
   }
   .top-card:hover .top-play {
     opacity: 1;

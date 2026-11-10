@@ -183,6 +183,10 @@
 
 <style>
   .poster {
+    --r-m: 14px;
+    --r-l: 16px;
+    --r-xl: 20px;
+    --r-2xl: 24px;
     --paper: var(--primary);
     --ink: var(--on-primary);
     /* What the shadows are cast in: the ink on paper; plain black on the wave, whose ink is light. */
@@ -303,9 +307,7 @@
     background: color-mix(in oklab, var(--ink) 12%, transparent);
     font-size: 13px;
     font-weight: 700;
-    transition:
-      background-color 200ms var(--ease-emph),
-      border-radius var(--d-fast) var(--spring-fast);
+    transition: background-color 200ms var(--ease-emph);
   }
   button.tag:hover {
     background: color-mix(in oklab, var(--ink) 18%, transparent);
@@ -484,9 +486,7 @@
     padding: 4px 16px 4px 4px;
     border-radius: 18px;
     text-align: left;
-    transition:
-      background-color 200ms var(--ease-emph),
-      border-radius var(--d-fast) var(--spring-fast);
+    transition: background-color 200ms var(--ease-emph);
   }
   .next:hover,
   .next.on {
@@ -573,11 +573,7 @@
     border-radius: 24px;
     background: color-mix(in oklab, var(--ink) 12%, transparent);
     color: var(--ink);
-    transition:
-      border-radius var(--d-fast) var(--spring-fast),
-      background-color 200ms var(--ease-emph),
-      color 200ms var(--ease-emph),
-      transform var(--d-fast) var(--spring-fast);
+    transition: background-color 200ms var(--ease-emph), color 200ms var(--ease-emph), transform var(--d-fast) var(--spring-fast);
   }
   .pb:hover {
     background: color-mix(in oklab, var(--ink) 18%, transparent);

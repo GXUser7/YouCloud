@@ -19,7 +19,11 @@
     line-height: 1;
     letter-spacing: normal;
     text-transform: none;
-    display: inline-block;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    vertical-align: middle;
+    text-align: center;
     white-space: nowrap;
     direction: ltr;
     flex: none;

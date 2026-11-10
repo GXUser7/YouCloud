@@ -3,7 +3,7 @@
   import { serviceName, sets, track } from '../lib/catalog'
   import { totalMinutes, tracksCount } from '../lib/format'
   import * as live from '../lib/live'
-  import { go, player, playQueue, playSet, toggle } from '../lib/state.svelte'
+  import { app, go, likedContext, player, shuffledTracks, playQueue, playSet, toggle } from '../lib/state.svelte'
   import { reason } from '../lib/toast.svelte'
   import Cover from '../components/Cover.svelte'
   import Icon from '../components/Icon.svelte'
@@ -38,16 +38,18 @@
   {/if}
   <Loading text={tr('Загружаю треки…')} tall={!known} />
 {:then s}
-  {@render head(s, s.tracks)}
-  <section class="list rise">
+  {@const shown = s.kind === 'liked' && !app.showLiveInLiked ? s.tracks.filter((id) => !track(id).live) : s.tracks}
+  {@const contextId = s.kind === 'liked' ? likedContext(s.id) : s.id}
+  {@render head(s, shown)}
+  <section class="list track-list glass rise">
     <div class="list-head">
       <span>#</span>
       <span class="grow">{tr('Название')}</span>
       {#if s.kind !== 'album' && s.kind !== 'single'}<span class="album-col">{tr('Альбом')}</span>{/if}
       <Icon name="schedule" size={18} />
     </div>
-    {#each s.tracks as t, i (t + i)}
-      <TrackRow id={t} list={s.tracks} context={s.title} contextId={s.id} number={i + 1} showAlbum={s.kind !== 'album' && s.kind !== 'single'} />
+    {#each shown as t, i (t + i)}
+      <TrackRow id={t} list={shown} context={s.title} contextId={contextId} number={i + 1} showAlbum={s.kind !== 'album' && s.kind !== 'single'} />
     {:else}
       <p class="muted empty">{tr('Здесь пока пусто.')}</p>
     {/each}
@@ -57,6 +59,7 @@
 {/await}
 
 {#snippet head(s: import('../lib/catalog').TrackSet, ids: string[] | null)}
+  {@const contextId = s.kind === 'liked' ? likedContext(s.id) : s.id}
   {@const duration = ids ? ids.reduce((sum, t) => sum + track(t).duration, 0) : 0}
 
   <section class="head">
@@ -85,11 +88,11 @@
 
   <div class="bar">
     <PlayButton
-      playing={player.contextId === s.id && player.playing}
-      onclick={() => (player.contextId === s.id ? toggle() : ids ? playQueue(ids, 0, s.title, s.id) : playSet(s.id))}
+      playing={player.contextId === contextId && player.playing}
+      onclick={() => (player.contextId === contextId ? toggle() : ids ? playQueue(ids, 0, s.title, contextId) : playSet(s.id))}
       size={72}
     />
-    <button class="icon-btn tonal l" onclick={() => playSet(s.id, true)} aria-label={tr('Перемешать')}><Icon name="shuffle" /></button>
+    <button class="icon-btn tonal l" onclick={() => ids ? playQueue(shuffledTracks(ids), 0, s.title, contextId) : playSet(s.id, true)} aria-label={tr('Перемешать')}><Icon name="shuffle" /></button>
     {#if s.link}
       <a class="icon-btn glassy l" href={s.link} target="_blank" rel="noreferrer" aria-label={tr('Открыть в %s', serviceName(s.service))}>
         <Icon name="open_in_new" />
@@ -181,5 +184,13 @@
   }
   .empty {
     padding: 16px 4px;
+  }
+  @container page (max-width: 600px) {
+    .head { flex-direction: column; align-items: flex-start; gap: 20px; padding-top: 16px; }
+    .art { width: min(60cqw, 240px); }
+    .info { width: 100%; }
+    h1 { font-size: clamp(28px, 8cqw, 44px); overflow-wrap: anywhere; }
+    .kind { flex-wrap: wrap; }
+    .list-head { display: none; }
   }
 </style>
