@@ -195,7 +195,7 @@
         {/if}
       </div>
       {#key t.id}
-        <h1 class="title" use:fit={{ text: t.title, max: 180, min: 20, height: () => Math.max(48, Math.min(innerWidth / 1280, innerHeight / 720) * 114) }}>{t.title}</h1>
+        <h1 class="title" title={t.title} use:fit={{ text: t.title, max: 100, min: 14, height: () => Math.max(48, Math.min(innerWidth / 1280, innerHeight / 720) * 114) }}>{t.title}</h1>
       {/key}
       <div class="artists">
         {#each t.artists as a, i (a.id + i)}
@@ -545,12 +545,10 @@
   .title {
     width: 100%;
     min-height: 0;
-    max-height: calc(114 * var(--unit));
     margin: calc(18 * var(--unit)) 0 0;
-    overflow: hidden;
     font-family: var(--font-display);
     font-weight: 900;
-    line-height: 0.95;
+    line-height: 1.12;
     letter-spacing: -0.04em;
     text-wrap: balance;
     overflow-wrap: anywhere;
@@ -916,9 +914,6 @@
       margin: 0;
       grid-template-rows: auto auto auto minmax(100px, 1fr) auto;
     }
-    .title {
-      max-height: 114px;
-    }
     .ctrls {
       justify-content: center;
     }
@@ -954,5 +949,9 @@
       justify-content: flex-end;
       gap: 4px;
     }
+  }
+  @media (max-height: 650px) and (min-width: 901px) {
+    .shape { overflow-y: auto; grid-template-rows: 56px minmax(400px, 1fr) auto; --unit: 0.85px; }
+    .main { padding-bottom: 24px; }
   }
 </style>

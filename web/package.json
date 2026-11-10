@@ -10,7 +10,8 @@
     "check": "svelte-check --tsconfig ./tsconfig.json && tsc -p worker",
     "deploy": "vite build && wrangler deploy",
     "test:helper": "node scripts/helper-test.mjs",
-    "test:hearing": "node scripts/hearing-test.mjs"
+    "test:hearing": "node scripts/hearing-test.mjs",
+    "test:regressions": "node scripts/artist-follow-test.mjs && node scripts/soundcloud-challenge-test.mjs && node scripts/library-live-test.mjs"
   },
   "dependencies": {
     "@material/material-color-utilities": "^0.4.0",

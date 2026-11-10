@@ -137,10 +137,27 @@ const thumbsOf = (item: any): Thumb[] =>
 
 const text = (t: any): string => (t == null ? '' : typeof t === 'string' ? t : (t.text ?? t.toString?.() ?? ''))
 
+/** A current-broadcast signal, from parsed youtubei.js nodes or raw queue renderers.
+ * Missing duration is common on music shelves and does not mean live. */
+function liveStatus(item: any): boolean | undefined {
+  const badges = item.badges ?? item.subtitle_badges ?? []
+  const marked = Array.isArray(badges) && badges.some((badge: any) => {
+    const b = badge.metadataBadgeRenderer ?? badge
+    return badge.liveBadge || badge.liveBadgeRenderer || b.style === 'BADGE_STYLE_TYPE_LIVE_NOW' || b.label === 'LIVE' || b.icon_type === 'LIVE' || b.icon?.iconType === 'LIVE'
+  })
+  const overlays = item.thumbnail_overlays ?? item.thumbnailOverlays ?? []
+  const overlayLive = Array.isArray(overlays) && overlays.some((overlay: any) => (overlay.thumbnailOverlayTimeStatusRenderer ?? overlay).style === 'LIVE')
+  if (marked || overlayLive) return true
+  for (const flag of [item.is_live, item.isLive]) if (typeof flag === 'boolean') return flag
+  return undefined
+}
+
 function putYtTrack(item: any, fallback?: { cover?: string | null; artist?: { id: string; name: string }; album?: { id: string; title: string } }): string | null {
   const videoId: string | undefined = item.video_id ?? item.id ?? item.endpoint?.payload?.videoId
   if (!videoId || videoId.length !== 11) return null
   const id = `yt:t:${videoId}`
+  const known = catalogTracks.get(id)
+  const live = liveStatus(item) ?? known?.live
   const people = (item.artists ?? item.authors ?? (item.author && typeof item.author === 'object' ? [item.author] : [])) as { name: string; channel_id?: string }[]
   const artists = people.length
     ? people.map((a) => ({ id: a.channel_id ? `yt:a:${a.channel_id}` : `yt:n:${a.name}`, name: a.name }))
@@ -152,7 +169,8 @@ function putYtTrack(item: any, fallback?: { cover?: string | null; artist?: { id
     service: 'yt',
     title: text(item.title) || tr('Без названия'),
     artists,
-    duration: item.duration?.seconds ?? 0,
+    duration: live ? 0 : item.duration?.seconds ?? known?.duration ?? 0,
+    live,
     cover: picture(thumbsOf(item), 400) ?? fallback?.cover ?? `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,
     color: colorFor(id),
     album: item.album?.id ? { id: `yt:al:${item.album.id}`, title: item.album.name } : fallback?.album,
@@ -321,9 +339,6 @@ function lengthOf(text: string | undefined): number | null {
   return parts.reduce((sum, n) => sum * 60 + n, 0)
 }
 
-/** Longer than any song: a broadcast's running time (one 24/7 stream's ran past 33 000 hours). */
-const LIVE_AFTER_S = 24 * 3600
-
 /**
  * The lengths of [ids] that have none — home's songs, which YouTube Music shows without one — as
  * its player asks for a queue, fifty at a time. A broadcast is marked live instead: the queue
@@ -345,14 +360,16 @@ async function fillLengths(ids: string[]): Promise<void> {
         const v = q.content?.playlistPanelVideoRenderer ?? q.content?.playlistPanelVideoWrapperRenderer?.primaryRenderer?.playlistPanelVideoRenderer
         const t = v?.videoId && catalogTracks.get(`yt:t:${v.videoId}`)
         if (!t) continue
-        if ((v.badges ?? []).some((b: any) => b.liveBadge || b.liveBadgeRenderer)) {
+        const live = liveStatus(v)
+        if (live === true) {
           t.live = true
+          t.duration = 0
           continue
         }
+        if (live === false) t.live = false
         const seconds = lengthOf(v.lengthText?.runs?.[0]?.text ?? v.lengthText?.simpleText)
         if (seconds == null) continue
-        if (seconds > LIVE_AFTER_S) t.live = true
-        else t.duration = seconds
+        t.duration = seconds
       }
     }),
   )
@@ -388,12 +405,15 @@ export async function loadSet(id: string): Promise<TrackSet> {
     items.push(...(playlist.items ?? []))
   }
   const header = playlist.header
-  if (!sets.has(id)) putSet({ id, kind: 'playlist', service: 'yt', title: text(header?.title), subtitle: text(header?.subtitle), color: colorFor(id), tracks: [], cover: picture(thumbsOf(header?.thumbnail)) })
+  if (!sets.has(id)) putSet({ id, kind: playlistId === 'LM' ? 'liked' : 'playlist', service: 'yt', title: text(header?.title), subtitle: text(header?.subtitle), color: colorFor(id), tracks: [], cover: picture(thumbsOf(header?.thumbnail)) })
   const tracks = items.flatMap((item) => {
     const t = putYtTrack(item)
     return t ? [t] : []
   })
-  return finish(id, tracks)
+  // Liked-song shelves often omit both duration and the live badge. Resolve their queue metadata
+  // before the page applies its hide-live setting or creates a playback queue.
+  if (playlistId === 'LM') await fillLengths(tracks).catch(() => {})
+  return finish(id, tracks, playlistId === 'LM' ? { kind: 'liked' } : {})
 }
 
 async function artistSongPage(playlist: any, artist: { id: string; name: string }): Promise<ResultPage> {
@@ -407,11 +427,55 @@ async function artistSongPage(playlist: any, artist: { id: string; name: string 
   }
 }
 
+type ArtistSubscription = { account: string; following: boolean | null; subscribe: string; unsubscribe: string }
+const artistSubscriptions = new Map<string, ArtistSubscription>()
+const artistAccountKey = () => `${accounts.yt}:${accounts.ytName}`
+
+function subscriptionParams(button: any, name: 'subscribe' | 'unsubscribe'): string {
+  const endpoints = [...(button?.service_endpoints ?? []), ...(button?.on_subscribe_endpoints ?? []), ...(button?.on_unsubscribe_endpoints ?? [])]
+  const endpoint = endpoints.find((e: any) => e.metadata?.api_url === `/subscription/${name}` || e.name === `${name}Endpoint`)
+  // The same music-artist source params used by the app if the button omits them.
+  return endpoint?.payload?.params?.replace(/%3D/g, '=') ?? (name === 'subscribe' ? 'EgIIGxgA' : 'CgIIGxgA')
+}
+
+export async function artistFollowing(id: string): Promise<boolean> {
+  let state = artistSubscriptions.get(id)
+  if (!state || state.account !== artistAccountKey() || state.following == null && accounts.yt) {
+    await loadArtist(id)
+    state = artistSubscriptions.get(id)
+  }
+  if (state?.following == null || state.account !== artistAccountKey()) throw new Error(tr('YouTube не отдал состояние подписки'))
+  return state.following
+}
+
+export async function setArtistFollowing(id: string, following: boolean): Promise<void> {
+  if (!accounts.yt) throw new Error(tr('Войди в сервис в Настройках'))
+  const account = artistAccountKey()
+  await artistFollowing(id)
+  const state = artistSubscriptions.get(id)!
+  const client = await yt()
+  if (account !== artistAccountKey()) throw new Error(tr('Аккаунт изменился: повтори действие'))
+  await client.actions.execute(following ? '/subscription/subscribe' : '/subscription/unsubscribe', {
+    channelIds: [id.slice('yt:a:'.length)],
+    params: following ? state.subscribe : state.unsubscribe,
+    client: 'YTMUSIC',
+  })
+  state.following = following
+}
+
 export async function loadArtist(id: string): Promise<ArtistPage> {
   const channelId = id.slice('yt:a:'.length)
+  const account = artistAccountKey()
   const client = await yt()
   const page: any = await client.music.getArtist(channelId)
   const header = page.header
+  const subscription = header?.subscription_button
+  artistSubscriptions.set(id, {
+    account,
+    following: accounts.yt && typeof subscription?.subscribed === 'boolean' ? subscription.subscribed : null,
+    subscribe: subscriptionParams(subscription, 'subscribe'),
+    unsubscribe: subscriptionParams(subscription, 'unsubscribe'),
+  })
   putArtist({
     id,
     name: text(header?.title) || tr('Артист'),

@@ -6,7 +6,7 @@
   import { tr } from '../../lib/i18n.svelte'
   import { set, track as trackOf, type Service, serviceName } from '../../lib/catalog'
   import type { Library } from '../../lib/live'
-  import { go, player, playQueue, playSet, playTrack, toggle } from '../../lib/state.svelte'
+  import { go, likedContext, likedTracks, player, playQueue, playSet, playTrack, toggle } from '../../lib/state.svelte'
   import { tracksCount } from '../../lib/format'
   import type { Snippet } from 'svelte'
   import Cover from '../Cover.svelte'
@@ -35,6 +35,8 @@
   let focus = $state(0)
   const current = $derived(items[focus] ? set(items[focus]) : null)
   const liked = $derived(lib ? set(lib.liked) : null)
+  const likedIds = $derived(liked ? likedTracks(liked.tracks) : [])
+  const likedCtx = $derived(liked ? likedContext(liked.id) : '')
 
   /** How much of the row each one takes: the large, the half, two strips; one strip of the last. */
   function weight(i: number): number {
@@ -67,8 +69,8 @@
   }
   function playLiked() {
     if (!liked) return
-    if (player.contextId === liked.id) toggle()
-    else playQueue(liked.tracks, 0, liked.title, liked.id)
+    if (player.contextId === likedCtx) toggle()
+    else playQueue(likedIds, 0, liked.title, likedCtx)
   }
 </script>
 
@@ -110,21 +112,21 @@
   <div class="liked glass">
     {#if liked}
       <button class="liked-art" onclick={() => go('set/' + liked.id)} aria-label={liked.title}>
-        <LikedArt ids={liked.tracks} seed={liked.id} color={liked.color} />
+        <LikedArt ids={likedIds} seed={liked.id} color={liked.color} />
       </button>
       <div class="liked-main">
         <div class="liked-head">
           <div>
             <span class="overline">{tr('Любимое')}</span>
             <h3 class="headline">{liked.title}</h3>
-            <span class="muted count-s">{tracksCount(liked.tracks.length)}</span>
+            <span class="muted count-s">{tracksCount(likedIds.length)}</span>
           </div>
-          <PlayButton playing={player.contextId === liked.id && player.playing} onclick={playLiked} size={52} />
+          <PlayButton playing={player.contextId === likedCtx && player.playing} onclick={playLiked} size={52} />
         </div>
         <div class="rows">
-          {#each liked.tracks.slice(0, 3) as id, i (id)}
+          {#each likedIds.slice(0, 3) as id, i (id)}
             {@const t = trackOf(id)}
-            <button class="row" onclick={() => playTrack(id, liked.tracks, liked.title, liked.id)}>
+            <button class="row" onclick={() => playTrack(id, likedIds, liked.title, likedCtx)}>
               <span class="mini"><Cover seed={t.id} color={t.color} src={t.cover} /></span>
               <span class="row-text"><span class="ellipsis t">{t.title}</span><span class="ellipsis a">{t.artists.map((a) => a.name).join(', ')}</span></span>
               <Icon name="play_arrow" fill size={20} />

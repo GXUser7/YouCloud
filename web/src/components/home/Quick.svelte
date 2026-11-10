@@ -6,7 +6,7 @@
   import { serviceName, set, type Service } from '../../lib/catalog'
   import type { Library } from '../../lib/live'
   import { greeting } from '../../lib/home.svelte'
-  import { go, player, playQueue, playSet, toggle } from '../../lib/state.svelte'
+  import { go, likedContext, likedTracks, player, playQueue, playSet, toggle } from '../../lib/state.svelte'
   import { tracksCount } from '../../lib/format'
   import type { Snippet } from 'svelte'
   import Cover from '../Cover.svelte'
@@ -31,6 +31,8 @@
   } = $props()
 
   const liked = $derived(lib ? set(lib.liked) : null)
+  const likedIds = $derived(liked ? likedTracks(liked.tracks) : [])
+  const likedCtx = $derived(liked ? likedContext(liked.id) : '')
   const tiles = $derived(lead.slice(0, first ? 6 : 7))
 
   function play(id: string) {
@@ -39,8 +41,8 @@
   }
   function playLiked() {
     if (!liked) return
-    if (player.contextId === liked.id) toggle()
-    else playQueue(liked.tracks, 0, liked.title, liked.id)
+    if (player.contextId === likedCtx) toggle()
+    else playQueue(likedIds, 0, liked.title, likedCtx)
   }
   const playingIcon = (id: string) => (player.contextId === id && player.playing ? 'pause' : 'play_arrow')
 </script>
@@ -54,10 +56,10 @@
   {#if liked}
     <div class="tile liked-tile">
       <button class="open" onclick={() => go('set/' + liked.id)}>
-        <span class="art"><LikedArt ids={liked.tracks} seed={liked.id} color={liked.color} /></span>
-        <span class="text"><span class="ellipsis title">{tr('Любимое')}</span><span class="ellipsis sub">{tracksCount(liked.tracks.length)}</span></span>
+        <span class="art"><LikedArt ids={likedIds} seed={liked.id} color={liked.color} /></span>
+        <span class="text"><span class="ellipsis title">{tr('Любимое')}</span><span class="ellipsis sub">{tracksCount(likedIds.length)}</span></span>
       </button>
-      <button class="go" onclick={playLiked} aria-label={tr('Играть любимое')}><Icon name={playingIcon(liked.id)} fill size={24} /></button>
+      <button class="go" onclick={playLiked} aria-label={tr('Играть любимое')}><Icon name={playingIcon(likedCtx)} fill size={24} /></button>
     </div>
   {:else}
     <div class="tile liked-tile">

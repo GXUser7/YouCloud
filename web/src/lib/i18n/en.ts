@@ -2,6 +2,44 @@
 // English wants them in another order, %1$s, %2$s.
 
 export const EN: Record<string, string> = {
+  'Аккаунт изменился: повтори действие': 'The account changed: try again',
+  'Медиатека': 'Library',
+  'Трансляции в «Любимом»': 'Live streams in favorites',
+  'Показывать эфиры в списках любимых треков и включать их при воспроизведении списка': 'Show live streams in favorite tracks and include them when playing the list',
+  'Действия с треком': 'Track actions',
+  // SoundCloud verification
+  "Лайки в SoundCloud": "Likes on SoundCloud",
+  "Проверка SoundCloud": "SoundCloud verification",
+  "Для лайков и подписок с проверкой SoundCloud нужно расширение YouCloud 0.9 или новее в Chrome или Firefox. В Masaki пока можно выполнить действие на странице SoundCloud.": "Likes and follows with SoundCloud verification need YouCloud extension 0.9 or newer in Chrome or Firefox. In Masaki, use the SoundCloud page for now.",
+  "Открыть настройки": "Open settings",
+  "SoundCloud просит пройти капчу. Открой проверку, пройди её сам во вкладке SoundCloud и вернись сюда. Лайк или подписка отправится после нажатия «Повторить».": "SoundCloud asks for a CAPTCHA. Open verification, complete it yourself in the SoundCloud tab, then return here. Your like or follow will be sent when you press Retry.",
+  "Открыть проверку": "Open verification",
+  "Открываю…": "Opening…",
+  "Я прошёл проверку — повторить": "Verification completed — retry",
+  "Не удалось открыть проверку": "Could not open verification",
+  "Для лайков и подписок SoundCloud обнови расширение YouCloud до 0.9 или новее. В Masaki выполни действие на странице SoundCloud.": "For SoundCloud likes and follows, update the YouCloud extension to 0.9 or newer. In Masaki, use the SoundCloud page.",
+  "SoundCloud не ответил": "SoundCloud did not respond",
+  "SoundCloud заблокировал этот сетевой адрес. Открой SoundCloud или попробуй другую сеть.": "SoundCloud blocked this network address. Open SoundCloud or try a different network.",
+  "SoundCloud снова просит проверку. Повтори действие после её прохождения.": "SoundCloud still requires verification. Try the action again after completing it.",
+  "Проверка SoundCloud отменена": "SoundCloud verification cancelled",
+
+  // Artist favorites and subscriptions
+  "У этого исполнителя нет страницы в сервисе": "This artist has no page on the service",
+  "Войди в сервис в Настройках": "Sign in to this service in Settings",
+  "SoundCloud вернул неверную страницу подписок": "SoundCloud returned an invalid following page",
+  "SoundCloud повторяет страницу подписок": "SoundCloud repeated a following page",
+  "YouTube не отдал состояние подписки": "YouTube did not return the subscription status",
+  "Исполнитель добавлен в любимое": "Artist added to your favorites",
+  "Исполнитель убран из любимого": "Artist removed from your favorites",
+  "Не удалось изменить подписку: %s": "Could not change the subscription: %s",
+  "Убрать исполнителя из любимого": "Remove artist from favorites",
+  "Добавить исполнителя в любимое": "Add artist to favorites",
+  "Проверяю подписку…": "Checking subscription…",
+  "В любимом": "In favorites",
+  "Вы подписаны": "Following",
+  "Подписаться": "Follow",
+  "Не удалось проверить подписку": "Could not check subscription",
+
   // Account
   'Код восстановления': 'Recovery code',
   'Почты у аккаунта нет — без этого кода забытый пароль не вернуть. Сохрани его, он показывается один раз.':
@@ -490,4 +528,5 @@ export const EN_PLURALS: Record<string, [string, string]> = {
   слушатель: ['listener', 'listeners'],
   друг: ['friend', 'friends'],
   альбом: ['album', 'albums'],
+
 }

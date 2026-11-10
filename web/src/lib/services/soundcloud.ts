@@ -4,7 +4,8 @@
 
 import { tr } from '../i18n.svelte'
 import { accounts, scToken, setSoundCloud } from '../accounts.svelte'
-import { extension, extensionCall } from '../extension'
+import { extension, extensionCall, soundCloudWrites } from '../extension'
+import { challengeUrl, solveSoundCloud, soundCloudSetup } from '../soundcloudChallenge.svelte'
 import {
   colorFor,
   compact,
@@ -133,11 +134,38 @@ const refused = (e: unknown, ...statuses: number[]): e is HttpError =>
  */
 async function scCall(method: string, path: string, params: Params = {}, token?: string): Promise<Response> {
   const own = token === undefined
+  let challenged = false
   const send = async (id: string, auth: string | undefined) => {
-    const response = await request(apiUrl(path, params, id), {
-      method,
-      headers: auth ? { authorization: `OAuth ${auth}` } : {},
-    })
+    const url = apiUrl(path, params, id)
+    let response: Response
+    if (method !== 'GET') {
+      await extension()
+      const browserPage = soundCloudWrites()
+      const write = async () => {
+        if (!browserPage) return request(url, { method, headers: auth ? { authorization: `OAuth ${auth}` } : {} })
+        const answer = await extensionCall<{ status: number; body: string }>('sc-request', 55_000, { url, method, token: auth ?? '' })
+        if (!answer || !Number.isInteger(answer.status) || typeof answer.body !== 'string') throw new Error(tr('SoundCloud не ответил'))
+        return new Response([204, 205, 304].includes(answer.status) ? null : answer.body, { status: answer.status })
+      }
+      response = await write()
+      const captcha = challengeUrl(response.status, response.status === 403 ? await response.clone().text() : '')
+      if (captcha) {
+        if (!browserPage) {
+          soundCloudSetup()
+          throw new Error(tr('Для лайков и подписок SoundCloud обнови расширение YouCloud до 0.9 или новее. В Masaki выполни действие на странице SoundCloud.'))
+        }
+        // A blocked network (t=bv) has no solvable challenge. Never spin indefinitely, nor retry
+        // automatically while the listener is still working on the CAPTCHA.
+        if (new URL(captcha).searchParams.get('t') === 'bv') throw new Error(tr('SoundCloud заблокировал этот сетевой адрес. Открой SoundCloud или попробуй другую сеть.'))
+        if (challenged) throw new Error(tr('SoundCloud снова просит проверку. Повтори действие после её прохождения.'))
+        challenged = true
+        if (!await solveSoundCloud(captcha)) throw new Error(tr('Проверка SoundCloud отменена'))
+        response = await write()
+        if (challengeUrl(response.status, response.status === 403 ? await response.clone().text() : '')) throw new Error(tr('SoundCloud снова просит проверку. Повтори действие после её прохождения.'))
+      }
+    } else {
+      response = await request(url, { method, headers: auth ? { authorization: `OAuth ${auth}` } : {} })
+    }
     if (!response.ok) throw new HttpError(response.status, await response.text().catch(() => ''), apiUrl(path, {}, ''))
     return response
   }
@@ -610,4 +638,28 @@ export async function resolve(url: string): Promise<{ kind: 'track' | 'set' | 'a
 export async function searchTracks(q: string, limit = 20): Promise<ScTrack[]> {
   const page = await scGet<{ collection: ScTrack[] }>('search/tracks', { q, limit })
   return page.collection
+}
+
+
+/** Whether the signed-in listener follows this artist (the app's canonical ids endpoint). */
+export async function artistFollowing(id: string): Promise<boolean> {
+  const native = id.slice('sc:u:'.length)
+  let path = 'me/followings/ids'
+  let params: Params = { limit: 5000 }
+  const seen = new Set<string>()
+  while (!seen.has(path)) {
+    seen.add(path)
+    const page = await scGet<{ collection: (number | string)[]; next_href?: string }>(path, params)
+    if (page.collection.some((entry) => String(entry) === native)) return true
+    if (!page.next_href) return false
+    const next = new URL(page.next_href)
+    if (next.origin !== new URL(API).origin) throw new Error(tr('SoundCloud вернул неверную страницу подписок'))
+    path = next.href
+    params = {}
+  }
+  throw new Error(tr('SoundCloud повторяет страницу подписок'))
+}
+
+export async function setArtistFollowing(id: string, following: boolean): Promise<void> {
+  await scCall(following ? 'POST' : 'DELETE', `me/followings/${id.slice('sc:u:'.length)}`, { app_version: APP_VERSION, app_locale: 'en' })
 }

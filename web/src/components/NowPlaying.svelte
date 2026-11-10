@@ -10,6 +10,7 @@
   import { tr } from '../lib/i18n.svelte'
   import { serviceName, track } from '../lib/catalog'
   import { app, currentTrack, cycleRepeat, go, jump, player, remember, seek, startRadio } from '../lib/state.svelte'
+  import { fit } from '../lib/fit'
   import { time } from '../lib/format'
   import { queueWindow, revealNow } from '../lib/queueView'
   import Cover from './Cover.svelte'
@@ -103,7 +104,7 @@
   }
 </script>
 
-<svelte:window onkeydown={(e) => e.key === 'Escape' && close()} />
+<svelte:window onkeydown={(e) => e.key === 'Escape' && !e.defaultPrevented && close()} />
 
 {#if app.playerLook === 'poster'}
   <PosterPlayer onclose={close} />
@@ -145,7 +146,7 @@
         {/if}
       </div>
       {#key t.id}
-        <h1 class="display title">{t.title}</h1>
+        <h1 class="display title" title={t.title} use:fit={{ text: t.title, max: 50, min: 16, height: () => Math.min(150, innerHeight * 0.22) }}>{t.title}</h1>
       {/key}
       <div class="artists">
         {#each t.artists as a, i (a.id + i)}
@@ -361,11 +362,8 @@
   .title {
     font-size: clamp(32px, 3.4vw, 50px);
     margin: 18px 0 16px;
-    display: -webkit-box;
-    -webkit-line-clamp: 2;
-    line-clamp: 2;
-    -webkit-box-orient: vertical;
-    overflow: hidden;
+    line-height: 1.15;
+    overflow-wrap: anywhere;
     animation: title-in 360ms var(--ease-in-place);
   }
   @keyframes title-in {
@@ -555,5 +553,23 @@
       width: min(52vh, 30vw, 540px);
       height: min(70vh, 640px);
     }
+  }
+  @media (max-width: 760px) {
+    .np { overflow-y: auto; }
+    header { padding: 12px 16px; }
+    .stage, .stage.solo { display: flex; flex-direction: column; padding: 12px 20px 28px; gap: 24px; }
+    .art, .solo .art { width: min(62vw, 34vh, 320px); }
+    .info { width: min(100%, 520px); }
+    .stage.swapped .words { width: 100%; height: 32vh; }
+    .title { margin-block: 12px; }
+    .main-row :global(.xgroup.xl) { --w: 48px; --h: 48px; --play-w: 88px; --play-h: 72px; gap: 4px; }
+    .next-row { flex-wrap: wrap; }
+    .next-card { flex: 1 0 100%; }
+    .next-row > .xgroup { width: 100%; justify-content: center; }
+  }
+  @media (max-height: 650px) {
+    .np { overflow-y: auto; }
+    .stage, .stage.solo { flex: none; min-height: 440px; padding-bottom: 24px; }
+    .art, .solo .art { width: min(42vw, 300px); }
   }
 </style>

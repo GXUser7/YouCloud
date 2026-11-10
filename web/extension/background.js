@@ -372,8 +372,146 @@ api.tabs.onRemoved.addListener(() => {
   if (native) letHelperGo()
 })
 
+// SoundCloud mutations run in its own page, not the service worker. A DataDome cookie is bound
+// to the browser that earned it; the listener solves the challenge in this very same tab.
+let soundCloudWriteTab = null
+let lastSoundCloudChallenge = null
+let soundCloudWrites = Promise.resolve()
+
+function safeSoundCloudChallenge(value) {
+  try {
+    const url = new URL(value)
+    return url.protocol === 'https:' && !url.username && !url.password && !url.port &&
+      (url.hostname === 'captcha-delivery.com' || url.hostname.endsWith('.captcha-delivery.com')) ? url.href : null
+  } catch { return null }
+}
+
+function validateSoundCloudWrite(args) {
+  const url = new URL(String(args?.url ?? ''))
+  const method = String(args?.method ?? '')
+  const like = /^\/users\/\d+\/track_likes\/\d+$/.test(url.pathname) && ['PUT', 'DELETE'].includes(method)
+  const follow = /^\/me\/followings\/\d+$/.test(url.pathname) && ['POST', 'DELETE'].includes(method)
+  if (url.origin !== 'https://api-v2.soundcloud.com' || url.username || url.password || url.hash || !(like || follow)) throw new Error('SoundCloud write not allowed')
+  const token = String(args?.token ?? '')
+  if (!token || token.length > 4096 || /[\r\n]/.test(token)) throw new Error('SoundCloud session missing')
+  return { url: url.href, method, token }
+}
+
+async function soundCloudPage() {
+  if (soundCloudWriteTab != null) {
+    const existing = await api.tabs.get(soundCloudWriteTab).catch(() => null)
+    if (existing?.url && new URL(existing.url).origin === 'https://soundcloud.com') return existing.id
+  }
+  const tab = await api.tabs.create({ url: 'https://soundcloud.com/', active: false })
+  soundCloudWriteTab = tab.id
+  const deadline = Date.now() + 25_000
+  while (Date.now() < deadline) {
+    const current = await api.tabs.get(tab.id)
+    if (current.status === 'complete') {
+      if (new URL(current.url).origin !== 'https://soundcloud.com') throw new Error('SoundCloud page changed')
+      // Give SoundCloud's own scripts, including its DataDome tag, time to start.
+      await new Promise((resolve) => setTimeout(resolve, 1500))
+      return tab.id
+    }
+    await new Promise((resolve) => setTimeout(resolve, 200))
+  }
+  throw new Error('SoundCloud page did not load')
+}
+
+async function soundCloudWrite(args) {
+  const request = validateSoundCloudWrite(args)
+  const task = soundCloudWrites.catch(() => {}).then(async () => {
+    const tabId = await soundCloudPage()
+    const result = await api.scripting.executeScript({
+      target: { tabId }, world: 'MAIN', args: [request],
+      func: async ({ url, method, token }) => {
+        if (location.origin !== 'https://soundcloud.com') throw new Error('SoundCloud page changed')
+        const headers = { Authorization: `OAuth ${token}`, Accept: 'application/json, text/javascript, */*; q=0.1' }
+        const cookie = document.cookie.match(/(?:^|;\s*)datadome=([^;]+)/)
+        if (cookie) headers['X-Datadome-ClientId'] = decodeURIComponent(cookie[1])
+        // A tag may abort the fetch while showing its challenge. Return that challenge rather
+        // than losing it behind a generic network error. No challenge is ever solved by code.
+        const displayedChallenge = () => {
+          for (const frame of document.querySelectorAll('iframe[src]')) {
+            try {
+              const u = new URL(frame.src)
+              if (u.protocol === 'https:' && (u.hostname === 'captcha-delivery.com' || u.hostname.endsWith('.captcha-delivery.com'))) return u.href
+            } catch { /* Not a challenge frame. */ }
+          }
+          return null
+        }
+        try {
+          const response = await fetch(url, { method, headers, credentials: 'include', signal: AbortSignal.timeout(20_000) })
+          return { status: response.status, body: await response.text() }
+        } catch (e) {
+          const challenge = displayedChallenge()
+          if (challenge) return { status: 403, body: JSON.stringify({ url: challenge }) }
+          throw new Error(String(e?.message ?? e))
+        }
+      },
+    })
+    const response = result[0]?.result
+    if (!response || !Number.isInteger(response.status) || typeof response.body !== 'string') throw new Error('SoundCloud did not answer')
+    if (response.status === 403) {
+      try { lastSoundCloudChallenge = safeSoundCloudChallenge(JSON.parse(response.body).url) } catch { lastSoundCloudChallenge = null }
+    }
+    return { value: response }
+  })
+  soundCloudWrites = task
+  return task
+}
+
+async function showSoundCloudChallenge(args) {
+  const url = safeSoundCloudChallenge(args?.url)
+  if (!url || url !== lastSoundCloudChallenge || soundCloudWriteTab == null) throw new Error('SoundCloud challenge expired: retry the action')
+  const tabId = await soundCloudPage()
+  await api.scripting.executeScript({
+    target: { tabId }, world: 'MAIN', args: [url],
+    func: (url) => {
+      if (location.origin !== 'https://soundcloud.com') throw new Error('SoundCloud page changed')
+      // Its own tag may already have opened the matching frame.
+      if ([...document.querySelectorAll('iframe[src]')].some((f) => f.src === url)) return
+      document.getElementById('youcloud-soundcloud-challenge')?.remove()
+      const host = document.createElement('div')
+      host.id = 'youcloud-soundcloud-challenge'
+      host.style.cssText = 'position:fixed;inset:0;z-index:2147483647;background:#fff;display:flex;flex-direction:column'
+      const close = document.createElement('button')
+      close.textContent = 'Закрыть проверку SoundCloud'
+      close.style.cssText = 'height:52px;padding:12px 24px;border:0;background:#f2f2f2;color:#222;font:600 16px system-ui;cursor:pointer'
+      const frame = document.createElement('iframe')
+      frame.title = 'Проверка SoundCloud'
+      frame.src = url
+      frame.style.cssText = 'width:100%;flex:1;border:0'
+      const origin = new URL(url).origin
+      const cleanup = () => { host.remove(); removeEventListener('message', solved) }
+      // The challenge hands its cookie to its SoundCloud parent, as DataDome's web tag does.
+      // Keep all original attributes; never expose the cookie to the YouCloud page.
+      const solved = (event) => {
+        if (event.origin !== origin || event.source !== frame.contentWindow) return
+        let data = event.data
+        try { if (typeof data === 'string') data = JSON.parse(data) } catch { return }
+        const cookie = data?.cookie
+        if (typeof cookie !== 'string' || !/^datadome=[^;\r\n]+(?:;|$)/.test(cookie) || cookie.length > 4096) return
+        const domain = /;\s*domain=([^;]+)/i.exec(cookie)?.[1]?.toLowerCase()
+        if (domain && domain !== 'soundcloud.com' && domain !== '.soundcloud.com') return
+        document.cookie = cookie
+        cleanup()
+      }
+      addEventListener('message', solved)
+      close.onclick = cleanup
+      host.append(close, frame)
+      document.documentElement.append(host)
+      close.focus()
+    },
+  })
+  await api.tabs.update(tabId, { active: true })
+  return { value: true }
+}
+
 /** The site's other asks: who is signed in where, and a Yandex login. */
 async function call(name, args) {
+  if (name === 'sc-request') return soundCloudWrite(args)
+  if (name === 'sc-captcha') return showSoundCloudChallenge(args)
   if (name === 'helper') return helperHello()
   if (name === 'sc-token') {
     return { value: await soundCloudCookie() }

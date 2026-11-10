@@ -153,7 +153,7 @@ function explain(error: string): string {
 /** One of the extension's own asks: 'sc-token' (SoundCloud's session cookie), 'sc-renew' (a token
  *  other than [args].stale, soundcloud.com's session renewed), 'sc-login', 'ya-login'. */
 export async function extensionCall<T = unknown>(
-  name: 'sc-token' | 'sc-renew' | 'sc-login' | 'ya-login' | 'yt-account' | 'yt-login' | 'yt-cookies' | 'helper',
+  name: 'sc-token' | 'sc-renew' | 'sc-login' | 'sc-request' | 'sc-captcha' | 'ya-login' | 'yt-account' | 'yt-login' | 'yt-cookies' | 'helper',
   timeoutMs = 10_000,
   args?: Record<string, string>,
 ): Promise<T> {
@@ -176,6 +176,9 @@ export async function extensionCall<T = unknown>(
     post({ kind: 'call', id, name, args })
   })
 }
+
+/** SoundCloud writes must share the browser page and cookies in which its CAPTCHA was solved. */
+export const soundCloudWrites = () => !!version && host !== 'masaki' && !older(version, [0, 9, 0])
 
 /** Masaki from 0.7 finds YouTube's sound itself, with yt-dlp, as the Android app does. */
 const HOST_STREAM_VERSION = [0, 7, 0]

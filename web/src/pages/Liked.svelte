@@ -7,7 +7,7 @@
   import { favorites, retry } from '../lib/favorites.svelte'
   import { totalMinutes, tracksCount } from '../lib/format'
   import { social } from '../lib/social.svelte'
-  import { player, playQueue, toggle } from '../lib/state.svelte'
+  import { app, player, playQueue, toggle } from '../lib/state.svelte'
   import AccountForm from '../components/AccountForm.svelte'
   import LikedArt from '../components/LikedArt.svelte'
   import Icon from '../components/Icon.svelte'
@@ -22,11 +22,12 @@
 
   let only = $state<Service | null>(null)
 
-  const shown = $derived(only ? favorites.ids.filter((id) => track(id).service === only) : favorites.ids)
+  const visibleIds = $derived(favorites.ids.filter((id) => app.showLiveInLiked || !track(id).live))
+  const shown = $derived(only ? visibleIds.filter((id) => track(id).service === only) : visibleIds)
   const duration = $derived(shown.reduce((sum, id) => sum + (track(id).duration || 0), 0))
-  const count = (svc: Service) => favorites.ids.filter((id) => track(id).service === svc).length
+  const count = (svc: Service) => visibleIds.filter((id) => track(id).service === svc).length
   // Each filter its own queue: playing the Yandex ones isn't playing them all.
-  const contextId = $derived(only ? `${ID}:${only}` : ID)
+  const contextId = $derived(`${ID}:${only ?? 'all'}:${app.showLiveInLiked ? 'live' : 'songs'}`)
 
   function shuffle() {
     const ids = [...shown]
@@ -40,7 +41,7 @@
 
 <section class="head">
   <div class="art">
-    <LikedArt ids={favorites.ids} seed={ID} color={COLOR} />
+    <LikedArt ids={shown} seed={ID} color={COLOR} />
   </div>
   <div class="info">
     <span class="overline">{tr('YouCloud · приложение и сайт')}</span>
@@ -95,7 +96,7 @@
     </div>
   </div>
 
-  <section class="list rise">
+  <section class="list track-list glass rise">
     {#each shown as id, i (id)}
       <TrackRow {id} list={shown} context={tr('Любимое')} {contextId} number={i + 1} />
     {:else}

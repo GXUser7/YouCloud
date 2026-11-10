@@ -8,6 +8,7 @@
   import { reason } from '../lib/toast.svelte'
   import ArtistCard from '../components/ArtistCard.svelte'
   import Cover from '../components/Cover.svelte'
+  import FollowArtist from '../components/FollowArtist.svelte'
   import Icon from '../components/Icon.svelte'
   import Loading from '../components/Loading.svelte'
   import LoadingIndicator from '../components/LoadingIndicator.svelte'
@@ -185,6 +186,7 @@
         <Icon name="shuffle" />
       </button>
     </div>
+    <FollowArtist id={a.id} />
     {#if top[0]}
       <button class="icon-btn glassy l" disabled={preparing} onclick={() => startRadio(top[0])} aria-label={tr('Радио по артисту')} title={tr('Радио по артисту')}><Icon name="radio" /></button>
     {/if}
@@ -204,11 +206,9 @@
       <h2>{tr('Популярные треки')}</h2>
       {#if top.length && !next}<span class="muted count">{tracksCount(top.length)}</span>{/if}
     </div>
-    <div class="tracks glass" aria-busy={paging || preparing}>
+    <div class="track-list glass" aria-busy={paging || preparing}>
       {#each top.slice(0, visible) as t, i (t)}
-        <div class="track-item">
-          <TrackRow id={t} list={top} context={a.name} contextId={ctx} number={i + 1} />
-        </div>
+        <TrackRow id={t} list={top} context={a.name} contextId={ctx} number={i + 1} />
       {:else}
         {#if !next && !paging}<p class="muted empty">{tr('Здесь пока пусто.')}</p>{/if}
       {/each}
@@ -380,29 +380,6 @@
     font-size: 13px;
     white-space: nowrap;
   }
-  .tracks {
-    border-radius: var(--r-xl);
-    overflow: hidden;
-    padding: 4px;
-  }
-  .track-item {
-    position: relative;
-  }
-  .track-item + .track-item::before {
-    content: '';
-    position: absolute;
-    top: 0;
-    left: 106px;
-    right: 18px;
-    height: 1px;
-    background: var(--glass-line);
-  }
-  .track-item :global(.row) {
-    border-radius: 0;
-  }
-  .track-item :global(.row.current) {
-    border-radius: var(--r-l);
-  }
   .empty {
     padding: 28px 24px;
     font-size: 14px;
@@ -454,24 +431,6 @@
     }
     .section-head h2 {
       font-size: 19px;
-    }
-    .track-item :global(.row) {
-      gap: 10px;
-      padding-right: 6px;
-    }
-    .track-item :global(.num) {
-      width: 20px;
-      font-size: 12px;
-    }
-    .track-item :global(.heart),
-    .track-item :global(.dur) {
-      display: none;
-    }
-    .track-item :global(.more) {
-      opacity: 1;
-    }
-    .track-item + .track-item::before {
-      left: 94px;
     }
   }
 </style>

@@ -15,14 +15,13 @@
   --font-display: 'Unbounded', 'Onest', system-ui, sans-serif;
   --font-body: 'Onest', system-ui, sans-serif;
 
-  /* Corners on Masaki's scale (the browser the site lives in): 24 for panels and big cards — as
-     Masaki's own panel and page — 16 for what sits inside them, 12 for chips. */
+  /* Shared M3 corner scale: controls, rows, groups and page panels. */
   --r-xs: 8px;
   --r-s: 12px;
-  --r-m: 14px;
-  --r-l: 16px;
-  --r-xl: 20px;
-  --r-2xl: 24px;
+  --r-m: 16px;
+  --r-l: 24px;
+  --r-xl: 28px;
+  --r-2xl: 32px;
   --r-full: 999px;
 
   /* Material 3 Expressive motion: springs, as CSS easing curves (stiffness / damping). */
@@ -57,7 +56,7 @@
   --outline-variant: #52443b;
 
   --glass: color-mix(in oklab, var(--surface-container) 56%, transparent);
-  --glass-strong: color-mix(in oklab, var(--surface-container-high) 74%, transparent);
+  --glass-strong: color-mix(in oklab, var(--surface-container) 78%, transparent);
   --glass-line: color-mix(in oklab, var(--on-surface) 9%, transparent);
   --state-hover: color-mix(in oklab, var(--on-surface) 7%, transparent);
   --state-press: color-mix(in oklab, var(--on-surface) 12%, transparent);
@@ -75,7 +74,7 @@
 
 :root[data-theme='light'] {
   --glass: color-mix(in oklab, var(--surface-container-lowest) 58%, transparent);
-  --glass-strong: color-mix(in oklab, var(--surface-container-low) 80%, transparent);
+  --glass-strong: color-mix(in oklab, var(--surface-container-lowest) 82%, transparent);
   --glass-line: color-mix(in oklab, var(--on-surface) 8%, transparent);
   --shadow: 0 18px 50px -24px color-mix(in oklab, var(--on-surface) 40%, transparent);
 }
@@ -201,7 +200,7 @@ p {
 }
 :root[data-host='masaki'] {
   --glass: color-mix(in oklab, var(--surface-container) 62%, transparent);
-  --glass-strong: color-mix(in oklab, var(--surface-container-high) 80%, transparent);
+  --glass-strong: color-mix(in oklab, var(--surface-container) 78%, transparent);
 }
 :root[data-host='masaki'] .glass,
 :root[data-host='masaki'] .glass-strong {
@@ -212,13 +211,13 @@ p {
 /* Overlays are separate from decorative glass so Masaki never removes their page blur.
    Keep menus outside filtered or masked ancestors; a fixed position alone does not escape them. */
 :root {
-  --overlay-panel-veil: color-mix(in oklab, var(--surface-container) 74%, transparent);
-  --overlay-menu-veil: color-mix(in oklab, var(--surface-container-high) 82%, transparent);
+  --overlay-panel-veil: var(--glass-strong);
+  --overlay-menu-veil: var(--glass-strong);
   --overlay-shadow: 0 18px 48px -20px color-mix(in oklab, var(--surface-container-lowest) 78%, transparent);
 }
 :root[data-theme='light'] {
-  --overlay-panel-veil: color-mix(in oklab, var(--surface-container-lowest) 80%, transparent);
-  --overlay-menu-veil: color-mix(in oklab, var(--surface-container-low) 85%, transparent);
+  --overlay-panel-veil: var(--glass-strong);
+  --overlay-menu-veil: var(--glass-strong);
   --overlay-shadow: 0 18px 48px -22px color-mix(in oklab, var(--on-surface) 28%, transparent);
 }
 .glass-overlay {
@@ -331,6 +330,7 @@ p {
   flex: none;
   display: inline-grid;
   place-items: center;
+  line-height: 1;
   border-radius: var(--r);
   color: var(--on-surface-variant);
   position: relative;
@@ -674,6 +674,28 @@ button.chip:active {
   font-size: 22px;
   font-weight: 650;
   letter-spacing: -0.02em;
+}
+
+/* One grouped list on search, collections, artists and favorites. */
+.track-list {
+  border-radius: var(--r-xl);
+  overflow: hidden;
+  padding: 4px;
+}
+.track-list .row { border-radius: 0; }
+.track-list .row.current { border-radius: var(--r-l); background: var(--state-hover); }
+.track-list .row + .row::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 72px;
+  right: 12px;
+  height: 1px;
+  background: var(--glass-line);
+}
+.track-list .row:has(.num) + .row::before { left: 110px; }
+@container page (max-width: 600px) {
+  .track-list .row:has(.num) + .row::before { left: 68px; }
 }
 
 @keyframes rise {

@@ -86,6 +86,7 @@ export const app = $state({
   waveLook: stored<WaveLook>('waveLook', 'dunes'),
   waveHears: stored('waveHears', true),
   playerLook: stored<PlayerLook>('playerLook', 'classic'),
+  showLiveInLiked: stored('showLiveInLiked', true),
   query: '',
   waveMood: stored<string | null>('waveMood', null),
   waveMode: stored<string | null>('waveMode', null),
@@ -1039,13 +1040,27 @@ export async function startRadio(id: string) {
   }
 }
 
+/** The same preference drives a favorite list, its preview, and every play entry point. */
+export const likedTracks = (ids: string[]) => app.showLiveInLiked ? ids : ids.filter((id) => !trackOf(id)?.live)
+export const likedContext = (id: string) => `${id}:${app.showLiveInLiked ? 'live' : 'songs'}`
+
+export function shuffledTracks(ids: string[]) {
+  const copy = [...ids]
+  for (let i = copy.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1))
+    ;[copy[i], copy[j]] = [copy[j], copy[i]]
+  }
+  return copy
+}
+
 /** Opens and plays a set; its tracks are fetched first when the set came without them. */
 export async function playSet(id: string, shuffled = false) {
   try {
     const s = await live.loadSet(id)
-    if (!s.tracks.length) throw new Error(tr('он пустой'))
-    const ids = shuffled ? [...s.tracks].sort(() => Math.random() - 0.5) : s.tracks
-    playQueue(ids, 0, s.title, s.id, s.kind === 'mix' || s.kind === 'station' ? radioForSet(ids) : null)
+    const shown = s.kind === 'liked' ? likedTracks(s.tracks) : s.tracks
+    if (!shown.length) throw new Error(tr('он пустой'))
+    const ids = shuffled ? shuffledTracks(shown) : shown
+    playQueue(ids, 0, s.title, s.kind === 'liked' ? likedContext(s.id) : s.id, s.kind === 'mix' || s.kind === 'station' ? radioForSet(ids) : null)
   } catch (e) {
     toast(tr('Не получилось включить: %s', reason(e)))
   }

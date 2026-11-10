@@ -18,6 +18,7 @@
   import Search from './pages/Search.svelte'
   import SetPage from './pages/SetPage.svelte'
   import Settings from './pages/Settings.svelte'
+  import SoundCloudChallenge from './components/SoundCloudChallenge.svelte'
 
   const media = matchMedia('(prefers-color-scheme: dark)')
   let systemDark = $state(media.matches)
@@ -97,6 +98,7 @@
 
 {#if app.nowPlaying && currentTrack()}<NowPlaying />{/if}
 <Snackbar />
+<SoundCloudChallenge />
 
 <style>
   .shell {
@@ -180,5 +182,13 @@
       width: 340px;
       box-shadow: var(--shadow);
     }
+  }
+  @media (max-width: 1100px) {
+    .scroller { padding-inline: 20px; }
+  }
+  @media (max-width: 680px) {
+    .shell { padding: 8px; gap: 8px; }
+    .main { padding-top: 8px; }
+    .scroller { padding-inline: 12px; padding-bottom: 28px; }
   }
 </style>

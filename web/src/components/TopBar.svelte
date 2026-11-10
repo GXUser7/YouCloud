@@ -65,7 +65,7 @@
       <span class="wordmark">YouCloud</span>
     </button>
     {#if !home}
-      <button class="icon-btn glassy" onclick={back} aria-label={tr('Назад')} title={tr('Назад')}>
+      <button class="icon-btn glass-strong" onclick={back} aria-label={tr('Назад')} title={tr('Назад')}>
         <Icon name="arrow_back" size={22} />
       </button>
     {/if}
@@ -105,10 +105,10 @@
   </div>
 
   <div class="end">
-    <button class="icon-btn glassy" class:active={app.route.name === 'liked'} onclick={() => go('liked')} aria-label={tr('Любимое')} title={tr('Любимое')}>
+    <button class="icon-btn glass-strong" class:active={app.route.name === 'liked'} onclick={() => go('liked')} aria-label={tr('Любимое')} title={tr('Любимое')}>
       <Icon name="favorite" fill={app.route.name === 'liked'} size={22} />
     </button>
-    <button class="icon-btn glassy" class:active={app.route.name === 'friends'} onclick={() => go('friends')} aria-label={tr('Друзья')} title={tr('Друзья')}>
+    <button class="icon-btn glass-strong" class:active={app.route.name === 'friends'} onclick={() => go('friends')} aria-label={tr('Друзья')} title={tr('Друзья')}>
       <Icon name="group" size={22} />
     </button>
     <div class="me-wrap">
@@ -333,8 +333,8 @@
     width: 44px;
     height: 44px;
     border-radius: 50%;
-    background: var(--secondary-container);
-    color: var(--on-secondary-container);
+    background: var(--glass-strong);
+    color: var(--on-surface);
   }
   .no-me.big {
     width: 44px;

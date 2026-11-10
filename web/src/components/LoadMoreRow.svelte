@@ -13,7 +13,7 @@
       <LoadingIndicator size={28} contained={false} />
       <span>{tr('Загрузка')}</span>
     {:else}
-      <Icon name={error ? 'refresh' : 'expand_more'} size={22} />
+      <Icon name={error ? 'refresh' : 'keyboard_arrow_down'} size={22} />
       <span>{error ? tr('Повторить') : tr('Показать ещё')}</span>
     {/if}
   </button>

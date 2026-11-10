@@ -80,7 +80,8 @@ function coverOf(svc: Service, url: string | null | undefined): string | null {
 /** The track a row names: the one the site has met already, or one made of the row. */
 function put(r: Row): string {
   const id = idOf(r)
-  if (tracks.has(id)) return id
+  const known = tracks.get(id)
+  if (known) return putTrack({ ...known, live: r.live ?? known.live })
   const svc = SERVICE[r.service]
   const artists = (r.artists ?? []).filter((a) => a?.name).map((a) => ({ id: artistId(svc, a), name: a.name }))
   return putTrack({
@@ -92,6 +93,7 @@ function put(r: Row): string {
     cover: coverOf(svc, r.cover),
     color: colorFor(id),
     link: r.link ?? undefined,
+    live: r.live ?? false,
     // SoundCloud's ways to play it are asked for when it plays (services/soundcloud.ts stream).
     ...(svc === 'sc'
       ? { sc: { transcodings: [] } }
@@ -115,6 +117,7 @@ function rowOf(t: Track, liked: boolean): Row | null {
     cover: t.cover ?? null,
     duration_ms: t.duration ? t.duration * 1000 : null,
     link: t.link ?? null,
+    live: t.live ?? false,
   }
 }
 
