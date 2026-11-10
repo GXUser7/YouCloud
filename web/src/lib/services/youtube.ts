@@ -73,7 +73,7 @@ const artistHeaders = new Map<string, Promise<any>>()
 
 function catchArtistHeader(target: string, body: unknown, response: Response) {
   try {
-    if (!target.endsWith('/youtubei/v1/browse')) return
+    if (!target.includes('/youtubei/v1/browse')) return
     const asked = typeof body === 'string' ? (at(JSON.parse(body), 'browseId') as string | undefined) : undefined
     if (!asked?.startsWith('UC')) return
     const probe = response.clone()
