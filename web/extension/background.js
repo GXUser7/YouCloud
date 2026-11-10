@@ -398,12 +398,19 @@ function validateSoundCloudWrite(args) {
 }
 
 async function soundCloudPage() {
+  // MV3 backgrounds sleep between the refusal and the listener opening its challenge.
+  // Keep the owned tab in session storage so a resumed worker reuses the same browser page.
+  if (soundCloudWriteTab == null) {
+    const saved = await api.storage.session.get('scWriteTab')
+    soundCloudWriteTab = saved.scWriteTab ?? null
+  }
   if (soundCloudWriteTab != null) {
     const existing = await api.tabs.get(soundCloudWriteTab).catch(() => null)
     if (existing?.url && new URL(existing.url).origin === 'https://soundcloud.com') return existing.id
   }
   const tab = await api.tabs.create({ url: 'https://soundcloud.com/', active: false })
   soundCloudWriteTab = tab.id
+  await api.storage.session.set({ scWriteTab: tab.id })
   const deadline = Date.now() + 25_000
   while (Date.now() < deadline) {
     const current = await api.tabs.get(tab.id)
@@ -452,9 +459,11 @@ async function soundCloudWrite(args) {
     })
     const response = result[0]?.result
     if (!response || !Number.isInteger(response.status) || typeof response.body !== 'string') throw new Error('SoundCloud did not answer')
+    lastSoundCloudChallenge = null
     if (response.status === 403) {
-      try { lastSoundCloudChallenge = safeSoundCloudChallenge(JSON.parse(response.body).url) } catch { lastSoundCloudChallenge = null }
+      try { lastSoundCloudChallenge = safeSoundCloudChallenge(JSON.parse(response.body).url) } catch { /* Not a JSON challenge. */ }
     }
+    await api.storage.session.set({ scWriteChallenge: lastSoundCloudChallenge })
     return { value: response }
   })
   soundCloudWrites = task
@@ -462,6 +471,9 @@ async function soundCloudWrite(args) {
 }
 
 async function showSoundCloudChallenge(args) {
+  const saved = await api.storage.session.get(['scWriteTab', 'scWriteChallenge'])
+  soundCloudWriteTab ??= saved.scWriteTab ?? null
+  lastSoundCloudChallenge ??= saved.scWriteChallenge ?? null
   const url = safeSoundCloudChallenge(args?.url)
   if (!url || url !== lastSoundCloudChallenge || soundCloudWriteTab == null) throw new Error('SoundCloud challenge expired: retry the action')
   const tabId = await soundCloudPage()

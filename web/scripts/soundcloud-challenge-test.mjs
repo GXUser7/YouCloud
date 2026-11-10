@@ -10,7 +10,9 @@ const noEvent = { addListener() {}, removeListener() {} }
 const tabs = []
 const scripts = []
 let response = { status: 204, body: '' }
+const session = {}
 const api = {
+  storage: { session: { get: async () => ({ ...session }), set: async (value) => Object.assign(session, value) } },
   runtime: { id: 'test-extension', onMessage: noEvent, onInstalled: noEvent, onConnect: noEvent },
   declarativeNetRequest: { getSessionRules: async () => [], updateSessionRules: async () => {} },
   webRequest: { onBeforeSendHeaders: noEvent },
@@ -67,6 +69,13 @@ assert.equal(scripts.at(-1).world, 'MAIN')
 
 // Run the actual injected request function in a SoundCloud page double.
 let sent
+// Simulate an MV3 worker sleeping while the listener reads the verification dialog.
+assert.equal(session.scWriteTab, 1)
+evaluate('soundCloudWriteTab = null; lastSoundCloudChallenge = null')
+await evaluate('showSoundCloudChallenge({url: ' + JSON.stringify(captcha) + '})')
+assert.equal(scripts.at(-1).target.tabId, 1, 'resumed background must open the challenge in its owned tab')
+assert.equal(tabs.filter(t => t.url).length, 1, 'resuming must not create another SoundCloud tab')
+
 const pageContext = vm.createContext({
   location: { origin: 'https://soundcloud.com' },
   document: { cookie: 'datadome=proof%2Bvalue', querySelectorAll: () => [] },

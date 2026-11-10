@@ -31,7 +31,7 @@ assert.equal(set.kind,'liked','direct liked-list URLs must use favorite filterin
 assert.equal(catalog.tracks.get('yt:t:song1234567').duration,192,'metadata fills before liked-list resolves')
 assert.notEqual(catalog.tracks.get('yt:t:noLen123456').live,true,'unknown duration remains a song')
 const favorite=moduleFrom('../src/lib/favorites.svelte.ts',{
- '../i18n.svelte':{tr},'../catalog':catalog,'./supabase':{},'./catalog':catalog,'./i18n.svelte':{tr},'./supabase':{supabase:{auth:{onAuthStateChange(){}}}},
+ './catalog':catalog,'./i18n.svelte':{tr},'./supabase':{supabase:{auth:{onAuthStateChange(){}}}},
 },'export {put as testPut, rowOf as testRow}',{$state:x=>x,addEventListener(){}})
 favorite.testPut({service:'youtube',track_id:'song1234567',live:true})
 assert.equal(catalog.tracks.get('yt:t:song1234567').live,true,'phone favorite metadata updates an existing search track')
