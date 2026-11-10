@@ -195,7 +195,7 @@
         {/if}
       </div>
       {#key t.id}
-        <h1 class="title" title={t.title} use:fit={{ text: t.title, max: 180, min: 12, height: () => innerWidth <= 900 ? 114 : Math.min(innerWidth / 1280, innerHeight / 720) * 114 }}>{t.title}</h1>
+        <h1 class="title" use:fit={{ text: t.title, max: 180, min: 20, height: () => Math.max(48, Math.min(innerWidth / 1280, innerHeight / 720) * 114) }}>{t.title}</h1>
       {/key}
       <div class="artists">
         {#each t.artists as a, i (a.id + i)}
@@ -550,8 +550,8 @@
     width: 100%;
     min-height: 0;
     max-height: calc(114 * var(--unit));
-    padding-block: 0.08em;
     margin: calc(18 * var(--unit)) 0 0;
+    overflow: hidden;
     font-family: var(--font-display);
     font-weight: 900;
     line-height: 0.95;
@@ -678,11 +678,7 @@
     flex: none;
     background: color-mix(in oklab, var(--on-surface) 10%, transparent);
     color: var(--on-surface);
-    transition:
-      border-radius var(--d-fast) var(--spring-fast),
-      background-color 250ms var(--ease-emph),
-      color 250ms var(--ease-emph),
-      transform var(--d-fast) var(--spring-fast);
+    transition: background-color 250ms var(--ease-emph), color 250ms var(--ease-emph), transform var(--d-fast) var(--spring-fast);
   }
   .sb:hover {
     background: color-mix(in oklab, var(--on-surface) 15%, transparent);
@@ -808,10 +804,7 @@
     border-radius: 30px;
     text-align: left;
     background: color-mix(in oklab, var(--on-surface) 8%, transparent);
-    transition:
-      background-color 250ms var(--ease-emph),
-      color 250ms var(--ease-emph),
-      border-radius var(--d-fast) var(--spring-fast);
+    transition: background-color 250ms var(--ease-emph), color 250ms var(--ease-emph);
   }
   .next-card:hover {
     background: color-mix(in oklab, var(--on-surface) 13%, transparent);
@@ -871,10 +864,7 @@
     font-weight: 800;
     background: color-mix(in oklab, var(--on-surface) 10%, transparent);
     color: var(--on-surface);
-    transition:
-      border-radius var(--d-fast) var(--spring-fast),
-      background-color 250ms var(--ease-emph),
-      color 250ms var(--ease-emph);
+    transition: background-color 250ms var(--ease-emph), color 250ms var(--ease-emph);
   }
   .pill-btn.round {
     width: 44px;

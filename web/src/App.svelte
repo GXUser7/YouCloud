@@ -71,6 +71,7 @@
   <main class="main">
     <TopBar />
     <div class="scroller">
+    {#if !inMasaki}<Backdrop mirror />{/if}
     {#key pageKey}
       <div class="page">
         {#if app.route.name === 'home'}
@@ -133,12 +134,20 @@
     isolation: isolate;
   }
   .scroller {
+    --page-gutter: 36px;
+    --edge-fade-height: 32px;
     flex: 1;
     min-height: 0;
     overflow-y: auto;
     overflow-x: hidden;
-    padding: 6px 36px 56px;
-    mask-image: linear-gradient(to bottom, transparent 0, #000 18px);
+    padding: calc(var(--edge-fade-height) + 6px) var(--page-gutter) 56px;
+    /* Фон внутри маски даёт карточкам настоящий backdrop; снаружи остаётся
+       его синхронная копия, поэтому прозрачный край растворяется без шва. */
+    mask-image: linear-gradient(to bottom,
+      transparent, #0001 calc(var(--edge-fade-height) * .2), #0008 calc(var(--edge-fade-height) * .5),
+      #000e calc(var(--edge-fade-height) * .8), #000 var(--edge-fade-height),
+      #000 calc(100% - var(--edge-fade-height)), #000e calc(100% - var(--edge-fade-height) * .8),
+      #0008 calc(100% - var(--edge-fade-height) * .5), #0001 calc(100% - var(--edge-fade-height) * .2), transparent);
   }
   /* Pages size themselves to their column (@container page), not to the window: the side panel
      takes a share of it. */
@@ -184,11 +193,11 @@
     }
   }
   @media (max-width: 1100px) {
-    .scroller { padding-inline: 20px; }
+    .scroller { --page-gutter: 20px; }
   }
   @media (max-width: 680px) {
     .shell { padding: 8px; gap: 8px; }
     .main { padding-top: 8px; }
-    .scroller { padding-inline: 12px; padding-bottom: 28px; }
+    .scroller { --page-gutter: 12px; --edge-fade-height: 24px; padding-bottom: 28px; }
   }
 </style>

@@ -117,9 +117,9 @@
     border-radius: var(--r-full);
     border: 1px solid var(--outline-variant);
     color: var(--on-surface-variant);
-    transition:
-      border-color 200ms,
-      border-radius var(--d-spatial) var(--spring);
+    /* No border-radius transition here: the form sits on a glass card, and in Chromium
+       an animating corner anywhere inside such a card switches off its backdrop blur. */
+    transition: border-color 200ms;
   }
   .field:focus-within {
     border-color: var(--primary);
@@ -155,7 +155,7 @@
     height: 32px;
     border-radius: 50%;
     background: var(--c);
-    transition: border-radius var(--d-fast) var(--spring-fast);
+    transition: outline-color 200ms;
   }
   .swatch.on {
     border-radius: 30%;

@@ -110,11 +110,7 @@
     overflow: hidden;
     isolation: isolate;
     background: color-mix(in oklab, var(--on-surface) 7%, var(--glass));
-    transition:
-      border-radius var(--d-spatial) var(--spring),
-      background-color 250ms var(--ease-emph),
-      transform var(--d-fast) var(--spring-fast),
-      box-shadow 300ms var(--ease-emph);
+    transition: background-color 250ms var(--ease-emph), transform var(--d-fast) var(--spring-fast), box-shadow 300ms var(--ease-emph);
   }
   .tile:hover {
     border-radius: 32px;
@@ -146,7 +142,7 @@
     flex: none;
     overflow: hidden;
     display: block;
-    transition: border-radius var(--d-spatial) var(--spring);
+    transition: none;
   }
   .art :global(.cover) {
     transition: transform var(--d-slow) var(--spring);
@@ -185,10 +181,7 @@
     box-shadow: 0 8px 20px -8px color-mix(in oklab, #000 60%, transparent);
     opacity: 0;
     transform: translateX(10px) scale(0.5) rotate(-40deg);
-    transition:
-      opacity 180ms var(--ease-emph),
-      transform var(--d-spatial) var(--spring-fast),
-      border-radius var(--d-fast) var(--spring-fast);
+    transition: opacity 180ms var(--ease-emph), transform var(--d-spatial) var(--spring-fast);
   }
   .tile:hover .go,
   .go:focus-visible {

@@ -40,10 +40,7 @@
     border-radius: var(--r-l);
     color: var(--primary);
     font-weight: 650;
-    transition:
-      background-color var(--d-fast),
-      border-radius var(--d-spatial) var(--spring-fast),
-      transform var(--d-spatial) var(--spring-fast);
+    transition: background-color var(--d-fast), transform var(--d-spatial) var(--spring-fast);
   }
   button:hover:not(:disabled) {
     background: color-mix(in oklab, var(--primary) 8%, transparent);

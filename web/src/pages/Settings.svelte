@@ -423,9 +423,7 @@
   }
   button.tile {
     text-align: left;
-    transition:
-      background-color 200ms,
-      border-radius var(--d-fast) var(--spring-fast);
+    transition: background-color 200ms;
   }
   button.tile:not(:disabled):hover {
     background: color-mix(in oklab, var(--on-surface) 10%, transparent);
@@ -458,9 +456,7 @@
     background: color-mix(in oklab, var(--on-surface) 8%, transparent);
     color: var(--on-surface-variant);
     flex: none;
-    transition:
-      border-radius var(--d-spatial) var(--spring),
-      background-color 300ms;
+    transition: background-color 300ms;
   }
   .glyph.on {
     background: var(--primary-container);

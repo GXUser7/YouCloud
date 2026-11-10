@@ -239,9 +239,7 @@
     padding: 5px 8px 5px 5px;
     border-radius: var(--r-full);
     box-shadow: 0 10px 30px -18px color-mix(in oklab, #000 70%, transparent);
-    transition:
-      border-radius var(--d-fast) var(--spring-fast),
-      box-shadow 200ms var(--ease-emph);
+    transition: box-shadow 200ms var(--ease-emph);
   }
   .search:focus-within,
   .search.on {
@@ -269,11 +267,7 @@
     font-size: 15px;
     font-weight: 700;
     white-space: nowrap;
-    transition:
-      border-radius var(--d-spatial) var(--spring),
-      background-color 220ms var(--ease-emph),
-      color 220ms var(--ease-emph),
-      transform var(--d-fast) var(--spring-fast);
+    transition: background-color 220ms var(--ease-emph), color 220ms var(--ease-emph), transform var(--d-fast) var(--spring-fast);
   }
   .service:hover:not(.on) {
     background: var(--state-hover);
@@ -428,9 +422,7 @@
     padding: 0 14px;
     border-radius: var(--r-l);
     font-weight: 600;
-    transition:
-      background-color 150ms var(--ease-emph),
-      border-radius var(--d-fast) var(--spring-fast);
+    transition: background-color 150ms var(--ease-emph);
   }
   .item:hover {
     background: var(--state-hover);

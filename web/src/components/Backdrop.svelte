@@ -4,7 +4,11 @@
   // away from the mouse instead of the phone's tilt.
   import { onMount } from 'svelte'
   import { app } from '../lib/state.svelte'
+  import { backdropMotion } from '../lib/backdrop.svelte'
   import { shapePath, type ShapeName } from '../lib/shapes'
+
+  let { mirror = false }: { mirror?: boolean } = $props()
+  const gradientPrefix = $derived(mirror ? 'bd-page-light' : 'bd-light')
 
   const shapes: { shape: ShapeName; x: number; y: number; size: number; depth: number; spin: number }[] = [
     { shape: 'softBurst', x: 0.92, y: 0.78, size: 0.5, depth: 0.25, spin: 90 },
@@ -24,21 +28,19 @@
   // The share of the way to the mouse covered each step: most of it within a second, easing in as
   // the transition the shapes had did.
   const FOLLOW = 1 - Math.exp(-STEP_MS / 300)
-  let turned = $state(0)
-  let mx = $state(0)
-  let my = $state(0)
   let towardX = 0
   let towardY = 0
 
   onMount(() => {
+    if (mirror) return
     let last = performance.now()
     const timer = setInterval(() => {
       const now = performance.now()
       if (app.liveBackdrop && !document.hidden) {
-        turned += (now - last) / 1000
-        if (Math.abs(towardX - mx) > 0.0005 || Math.abs(towardY - my) > 0.0005) {
-          mx += (towardX - mx) * FOLLOW
-          my += (towardY - my) * FOLLOW
+        backdropMotion.turned += (now - last) / 1000
+        if (Math.abs(towardX - backdropMotion.mx) > 0.0005 || Math.abs(towardY - backdropMotion.my) > 0.0005) {
+          backdropMotion.mx += (towardX - backdropMotion.mx) * FOLLOW
+          backdropMotion.my += (towardY - backdropMotion.my) * FOLLOW
         }
       }
       last = now
@@ -52,9 +54,9 @@
   }
 </script>
 
-<svelte:window onpointermove={app.liveBackdrop ? onmove : undefined} />
+<svelte:window onpointermove={!mirror && app.liveBackdrop ? onmove : undefined} />
 
-<div class="backdrop" aria-hidden="true">
+<div class="backdrop" class:mirror aria-hidden="true">
   {#each shapes as s, i}
     <div
       class="shape"
@@ -62,20 +64,20 @@
       style:top="{s.y * 100}%"
       style:width="{s.size * 100}vmax"
       style:--depth={s.depth}
-      style:translate="{-mx * 40 * s.depth}px {-my * 40 * s.depth}px"
+      style:translate="{-backdropMotion.mx * 40 * s.depth}px {-backdropMotion.my * 40 * s.depth}px"
     >
       <!-- The turning layer holds the shape already blurred: the blur is drawn once, and the GPU only
            turns the picture. A blur over turning content would be drawn again every frame. -->
-      <div class="spin" style:transform="rotate({((turned / s.spin) * 360) % 360}deg)">
+      <div class="spin" style:transform="rotate({((backdropMotion.turned / s.spin) * 360) % 360}deg)">
       <svg viewBox="0 0 100 100" style:filter="blur({18 - s.depth * 10}px)">
         <defs>
-          <radialGradient id="bd-light-{i}" cx=".3" cy=".25" r=".85">
+          <radialGradient id="{gradientPrefix}-{i}" cx=".3" cy=".25" r=".85">
             <stop offset="0" style="stop-color: var(--on-surface); stop-opacity: .09" />
             <stop offset="1" style="stop-color: var(--on-surface); stop-opacity: 0" />
           </radialGradient>
         </defs>
         <path d={shapePath(s.shape)} class="body" />
-        <path d={shapePath(s.shape)} fill="url(#bd-light-{i})" />
+        <path d={shapePath(s.shape)} fill="url(#{gradientPrefix}-{i})" />
       </svg>
       </div>
     </div>
@@ -92,6 +94,9 @@
     z-index: 0;
     pointer-events: none;
   }
+  /* Фон остаётся внутри маски, под контентом. Отдельный z-index на .page
+     ограничивал область, которую Chromium даёт размывать карточкам. */
+  .backdrop.mirror { z-index: -1; }
   .shape {
     position: absolute;
     aspect-ratio: 1;

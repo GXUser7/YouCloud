@@ -189,11 +189,7 @@
     overflow: hidden;
     border-radius: 28px;
     isolation: isolate;
-    transition:
-      flex-grow var(--d-slow) var(--spring),
-      margin var(--d-slow) var(--spring),
-      border-radius var(--d-spatial) var(--spring),
-      opacity 300ms var(--ease-emph);
+    transition: flex-grow var(--d-slow) var(--spring), margin var(--d-slow) var(--spring), opacity 300ms var(--ease-emph);
   }
   .item.gone {
     margin-right: 0;
@@ -329,7 +325,7 @@
     border-radius: var(--r-xl);
     overflow: hidden;
     display: block;
-    transition: border-radius var(--d-spatial) var(--spring);
+    transition: none;
   }
   .liked-art:hover {
     border-radius: 32px;
@@ -372,9 +368,7 @@
     border-radius: var(--r-s);
     text-align: left;
     color: var(--on-surface-variant);
-    transition:
-      background-color 200ms var(--ease-emph),
-      border-radius var(--d-fast) var(--spring-fast);
+    transition: background-color 200ms var(--ease-emph);
   }
   .row:hover {
     background: var(--state-hover);

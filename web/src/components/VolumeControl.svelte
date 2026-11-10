@@ -108,9 +108,7 @@
     touch-action: none;
     flex: none;
     overflow: hidden;
-    transition:
-      border-radius var(--d-spatial) var(--spring-fast),
-      background-color 200ms;
+    transition: background-color 200ms;
   }
   .volume:hover {
     background: color-mix(in oklab, var(--on-surface) 14%, transparent);

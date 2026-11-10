@@ -40,13 +40,6 @@ export const fit: Action<HTMLElement, FitOptions> = (node, initial) => {
     frame = requestAnimationFrame(measure)
   }
 
-  let lastWidth = -1
-  const observer = new ResizeObserver(([entry]) => {
-    if (Math.abs(entry.contentRect.width - lastWidth) < 0.5) return
-    lastWidth = entry.contentRect.width
-    later()
-  })
-  observer.observe(node)
   measure()
   document.fonts?.ready.then(later)
   addEventListener('resize', later)
@@ -54,13 +47,10 @@ export const fit: Action<HTMLElement, FitOptions> = (node, initial) => {
   return {
     update(next) {
       opts = next
-      // Svelte updates an action before the corresponding text node in this flush.
-      // Measure on the next frame, when the new title is actually in the DOM.
-      later()
+      measure()
     },
     destroy() {
       cancelAnimationFrame(frame)
-      observer.disconnect()
       removeEventListener('resize', later)
     },
   }

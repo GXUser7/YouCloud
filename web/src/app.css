@@ -179,17 +179,23 @@ p {
   animation-timing-function: cubic-bezier(0.2, 0, 0, 1);
 }
 
-/* ---- Surfaces ---- */
+/* ---- Surfaces ----
+   Keep the standard declaration last: Lightning CSS otherwise retains only the WebKit alias. */
 
+:root {
+  /* One blur for every translucent surface, so a card, a bar and a menu all
+     soften the page behind them the same way. */
+  --glass-blur: blur(32px) saturate(1.25);
+}
 .glass {
   background: var(--glass);
-  backdrop-filter: blur(28px) saturate(1.25);
-  -webkit-backdrop-filter: blur(28px) saturate(1.25);
+  -webkit-backdrop-filter: var(--glass-blur);
+  backdrop-filter: var(--glass-blur);
 }
 .glass-strong {
   background: var(--glass-strong);
-  backdrop-filter: blur(32px) saturate(1.3);
-  -webkit-backdrop-filter: blur(32px) saturate(1.3);
+  -webkit-backdrop-filter: var(--glass-blur);
+  backdrop-filter: var(--glass-blur);
 }
 
 /* In Masaki the browser supplies the wallpaper; surfaces still blur page content beneath them. */
@@ -217,8 +223,8 @@ p {
   background: var(--overlay-panel-veil);
   color: var(--on-surface);
   border: 0;
-  backdrop-filter: blur(32px) saturate(1.15);
-  -webkit-backdrop-filter: blur(32px) saturate(1.15);
+  -webkit-backdrop-filter: var(--glass-blur);
+  backdrop-filter: var(--glass-blur);
   box-shadow: var(--overlay-shadow);
 }
 .glass-overlay-menu {
@@ -234,8 +240,9 @@ p {
 }
 
 /* ---- Buttons ----
-   Expressive buttons change shape when pressed: the corners tighten under the finger and spring
-   back. Every button here does it, from the icon buttons to the big play button. */
+   Expressive buttons tighten their corners under the finger. The corners snap rather than
+   spring: a border-radius transition anywhere inside a glass surface switches off that
+   surface's backdrop blur in Chromium, and every button lives on glass. */
 
 .btn {
   --h: 48px;
@@ -253,11 +260,7 @@ p {
   position: relative;
   isolation: isolate;
   white-space: nowrap;
-  transition:
-    border-radius var(--d-fast) var(--spring-fast),
-    background-color 200ms var(--ease-emph),
-    color 200ms var(--ease-emph),
-    transform var(--d-fast) var(--spring-fast);
+  transition: background-color 200ms var(--ease-emph), color 200ms var(--ease-emph), transform var(--d-fast) var(--spring-fast);
 }
 .btn::after {
   content: '';
@@ -328,11 +331,7 @@ p {
   color: var(--on-surface-variant);
   position: relative;
   isolation: isolate;
-  transition:
-    border-radius var(--d-fast) var(--spring-fast),
-    background-color 200ms var(--ease-emph),
-    color 200ms var(--ease-emph),
-    transform var(--d-fast) var(--spring-fast);
+  transition: background-color 200ms var(--ease-emph), color 200ms var(--ease-emph), transform var(--d-fast) var(--spring-fast);
 }
 .icon-btn::after {
   content: '';
@@ -441,9 +440,7 @@ p {
   isolation: isolate;
   border-radius: var(--r);
   color: var(--on-surface-variant);
-  transition:
-    border-radius var(--d-fast) var(--spring-fast),
-    color 250ms var(--ease-emph);
+  transition: color 250ms var(--ease-emph);
 }
 .xb > * {
   grid-area: 1 / 1;
@@ -590,10 +587,7 @@ p {
   margin: 0 4px;
   color: var(--on-surface);
   box-shadow: 0 10px 26px -10px transparent;
-  transition:
-    border-radius var(--d-spatial) var(--spring),
-    color 250ms var(--ease-emph),
-    box-shadow 300ms var(--ease-emph);
+  transition: color 250ms var(--ease-emph), box-shadow 300ms var(--ease-emph);
 }
 .xb.play.playing {
   --fill: var(--primary);
@@ -626,9 +620,7 @@ p {
   background: color-mix(in oklab, var(--on-surface) 9%, transparent);
   font-weight: 600;
   font-size: 14px;
-  transition:
-    background-color 200ms var(--ease-emph),
-    border-radius var(--d-fast) var(--spring-fast);
+  transition: background-color 200ms var(--ease-emph);
 }
 button.chip:hover {
   background: color-mix(in oklab, var(--on-surface) 14%, transparent);

@@ -299,9 +299,7 @@
     border-radius: var(--r-2xl);
     text-align: left;
     position: relative;
-    transition:
-      border-radius var(--d-spatial) var(--spring),
-      background-color 200ms;
+    transition: background-color 200ms;
   }
   .top-card:hover {
     background: var(--glass-strong);
@@ -344,10 +342,7 @@
     box-shadow: 0 10px 24px -8px #0009;
     opacity: 0;
     transform: translateY(10px) scale(0.7);
-    transition:
-      opacity 200ms,
-      transform var(--d-spatial) var(--spring-fast),
-      border-radius var(--d-fast) var(--spring-fast);
+    transition: opacity 200ms, transform var(--d-spatial) var(--spring-fast);
   }
   .top-card:hover .top-play {
     opacity: 1;

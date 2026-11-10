@@ -111,7 +111,7 @@
   </div>
 
   {#key t.id}
-    <h1 class="title" class:tuck title={t.title} use:fit={{ text: t.title, max: 420, min: 28, height: () => Math.max(72, innerHeight * 0.3) }}>{t.title}</h1>
+    <h1 class="title" class:tuck use:fit={{ text: t.title, max: 420, min: 28, height: () => Math.max(72, innerHeight * 0.3) }}>{t.title}</h1>
   {/key}
 
   {#if player.live}
@@ -307,9 +307,7 @@
     background: color-mix(in oklab, var(--ink) 12%, transparent);
     font-size: 13px;
     font-weight: 700;
-    transition:
-      background-color 200ms var(--ease-emph),
-      border-radius var(--d-fast) var(--spring-fast);
+    transition: background-color 200ms var(--ease-emph);
   }
   button.tag:hover {
     background: color-mix(in oklab, var(--ink) 18%, transparent);
@@ -430,14 +428,12 @@
     z-index: 1;
     width: 100%;
     margin: 0.06em 0 0;
-    flex-shrink: 0;
-    padding-block: 0.15em;
     font-family: var(--font-display);
     font-weight: 900;
     line-height: 0.88;
     letter-spacing: -0.045em;
     text-wrap: balance;
-    overflow-wrap: anywhere;
+    overflow-wrap: normal;
     animation: title-in 420ms var(--ease-in-place);
   }
   @keyframes title-in {
@@ -490,9 +486,7 @@
     padding: 4px 16px 4px 4px;
     border-radius: 18px;
     text-align: left;
-    transition:
-      background-color 200ms var(--ease-emph),
-      border-radius var(--d-fast) var(--spring-fast);
+    transition: background-color 200ms var(--ease-emph);
   }
   .next:hover,
   .next.on {
@@ -579,11 +573,7 @@
     border-radius: 24px;
     background: color-mix(in oklab, var(--ink) 12%, transparent);
     color: var(--ink);
-    transition:
-      border-radius var(--d-fast) var(--spring-fast),
-      background-color 200ms var(--ease-emph),
-      color 200ms var(--ease-emph),
-      transform var(--d-fast) var(--spring-fast);
+    transition: background-color 200ms var(--ease-emph), color 200ms var(--ease-emph), transform var(--d-fast) var(--spring-fast);
   }
   .pb:hover {
     background: color-mix(in oklab, var(--ink) 18%, transparent);

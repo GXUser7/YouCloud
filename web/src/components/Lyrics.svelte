@@ -2,6 +2,7 @@
   // Synced lyrics: the line being sung stands out and stays in the middle; a line clicked jumps
   // the track to it. Yandex's own for its tracks, LRCLIB's for the rest.
   import { tr } from '../lib/i18n.svelte'
+  import { tick } from 'svelte'
   import { lyricsFor, type Line } from '../lib/lyrics'
   import { lyrics as designLyrics } from '../lib/mock'
   import { currentTrack, player, seek } from '../lib/state.svelte'
@@ -48,6 +49,7 @@
 
   let box = $state<HTMLDivElement>()
   let height = $state(0)
+  let width = $state(0)
   const current = $derived.by(() => {
     if (!synced) return -1
     let index = 0
@@ -56,9 +58,22 @@
   })
 
   $effect(() => {
-    const line = box?.children[current] as HTMLElement | undefined
-    if (!line || !box || !height) return
-    box.scrollTo({ top: line.offsetTop - height / 2 + line.clientHeight / 2, behavior: 'smooth' })
+    const node = box
+    const index = current
+    if (!node || !height || !width || !lines.length) return
+    let alive = true
+    const center = () => {
+      if (!alive) return
+      const line = node.children[index] as HTMLElement | undefined
+      if (line) node.scrollTo({ top: line.offsetTop - node.clientHeight / 2 + line.clientHeight / 2, behavior: 'smooth' })
+    }
+    // Сначала применяются новые строки и отступы. Иначе центр считается по
+    // прежней высоте строки и длинный текст остаётся под нижним затуханием.
+    void tick().then(() => {
+      center()
+      void document.fonts?.ready.then(center)
+    })
+    return () => { alive = false }
   })
 </script>
 
@@ -69,7 +84,7 @@
     <p class="none">{player.live ? tr('У прямого эфира нет текста') : tr('У этого трека нет текста')}</p>
   </div>
 {:else}
-  <div class="lyrics {size}" class:plain={!synced} bind:this={box} bind:clientHeight={height} style:--lyrics-padding="{height / 2}px">
+  <div class="lyrics {size}" class:plain={!synced} bind:this={box} bind:clientHeight={height} bind:clientWidth={width} style:--lyrics-padding="{height / 2}px">
     {#each lines as line, i (i)}
       {#if synced}
         <button class="line" class:past={i < current} class:now={i === current} onclick={() => seek(line.at)}>{line.text || '♪'}</button>

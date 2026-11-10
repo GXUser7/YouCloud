@@ -120,9 +120,7 @@
     flex: none;
     background: color-mix(in oklab, var(--on-surface) 8%, transparent);
     color: var(--on-surface-variant);
-    transition:
-      border-radius var(--d-spatial) var(--spring),
-      background-color 300ms;
+    transition: background-color 300ms;
   }
   [data-state='ok'] .glyph {
     background: var(--primary-container);

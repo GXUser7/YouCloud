@@ -60,9 +60,33 @@ function helperFiles(): Plugin {
   }
 }
 
+// Check the emitted CSS, not only source/dev styles: a prefixed-only blur leaves Chromium panels clear.
+function verifyBackdropBlur(): Plugin {
+  return {
+    name: 'youcloud-verify-backdrop-blur',
+    enforce: 'post',
+    generateBundle(_options, bundle) {
+      if (this.environment.name !== 'client') return
+      const css = Object.values(bundle).flatMap((output) =>
+        output.type === 'asset' && output.fileName.endsWith('.css') ? [Buffer.from(output.source).toString()] : [],
+      ).join('\n')
+      const rules = [...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)]
+      const sharedBlur = /(?:^|[;{])\s*--glass-blur\s*:\s*blur\(/.test(css)
+      for (const selector of ['.glass', '.glass-strong', '.glass-overlay']) {
+        const hasBlur = rules.some(([, selectors, declarations]) =>
+          selectors.split(',').some((item) => item.trim() === selector) &&
+          (/(?:^|;)\s*backdrop-filter\s*:\s*blur\(/.test(declarations) ||
+            sharedBlur && /(?:^|;)\s*backdrop-filter\s*:\s*var\(--glass-blur\)/.test(declarations)),
+        )
+        if (!hasBlur) this.error(`Production CSS lost the standard backdrop-filter blur for ${selector}`)
+      }
+    },
+  }
+}
+
 // The Cloudflare plugin runs the Worker inside the dev server, so `/x/` works locally on the same
 // origin as the site, exactly as it will on Cloudflare.
 export default defineConfig({
-  plugins: [svelte(), cloudflare(), extensionZip(), helperFiles()],
+  plugins: [svelte(), cloudflare(), extensionZip(), helperFiles(), verifyBackdropBlur()],
   server: { port: 5190, strictPort: true },
 })

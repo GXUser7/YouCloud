@@ -73,11 +73,7 @@
     color: var(--on-surface);
     border-radius: var(--r-xs);
     position: relative;
-    transition:
-      border-radius var(--d-spatial) var(--spring-fast),
-      background-color 250ms var(--ease-emph),
-      color 250ms var(--ease-emph),
-      padding var(--d-spatial) var(--spring);
+    transition: background-color 250ms var(--ease-emph), color 250ms var(--ease-emph), padding var(--d-spatial) var(--spring);
   }
   .s .segment {
     padding: 0 14px;
@@ -119,11 +115,7 @@
     padding-inline: clamp(10px, 1.2vw, 22px);
     font-size: 15px;
     background: color-mix(in oklab, var(--on-surface) 11%, transparent);
-    transition:
-      border-radius var(--d-spatial) var(--spring),
-      transform var(--d-fast) var(--spring-fast),
-      background-color 250ms var(--ease-emph),
-      color 250ms var(--ease-emph);
+    transition: transform var(--d-fast) var(--spring-fast), background-color 250ms var(--ease-emph), color 250ms var(--ease-emph);
   }
   .expressive .segment:hover {
     background: color-mix(in oklab, var(--on-surface) 18%, transparent);

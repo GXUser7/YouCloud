@@ -130,7 +130,7 @@
     overflow: hidden;
     flex: none;
     position: relative;
-    transition: border-radius var(--d-spatial) var(--spring);
+    transition: none;
   }
   .compact .art {
     width: 52px;

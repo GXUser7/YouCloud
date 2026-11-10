@@ -108,7 +108,7 @@
 
   <div class="lower" class:aside style:transform="translateX({shift}px)">
     {#key t.id}
-      <h1 class="title display" title={t.title} use:fit={{ text: t.title, max: 68, min: 12, height: () => 116 }}>{t.title}</h1>
+      <h1 class="title display" use:fit={{ text: t.title, max: 68, min: 22, height: () => 116 }}>{t.title}</h1>
     {/key}
     <div class="meta">
       {#each t.artists as a, i (a.id + i)}
@@ -232,12 +232,7 @@
     opacity: var(--seen);
     filter: saturate(0.8) brightness(0.8);
     box-shadow: 0 30px 60px -34px #000c;
-    transition:
-      transform 700ms var(--spring),
-      opacity 450ms var(--ease-emph),
-      filter 450ms var(--ease-emph),
-      border-radius 600ms var(--spring),
-      box-shadow 600ms var(--ease-emph);
+    transition: transform 700ms var(--spring), opacity 450ms var(--ease-emph), filter 450ms var(--ease-emph), box-shadow 600ms var(--ease-emph);
     animation: cv-in 480ms var(--ease-in-place);
   }
   @keyframes cv-in {
@@ -279,8 +274,6 @@
     margin: 0;
     font-weight: 800;
     line-height: 1.05;
-    padding-block: 0.08em;
-    overflow-wrap: anywhere;
     animation: title-in 380ms var(--ease-in-place);
   }
   @keyframes title-in {
@@ -374,8 +367,8 @@
     padding: 0 12px;
     border-radius: 32px;
     background: color-mix(in oklab, var(--on-surface) 7%, transparent);
-    backdrop-filter: blur(30px) saturate(1.3);
-    -webkit-backdrop-filter: blur(30px) saturate(1.3);
+    -webkit-backdrop-filter: var(--glass-blur);
+    backdrop-filter: var(--glass-blur);
     animation: panel-in 520ms var(--ease-in-place);
   }
   .panel.full {

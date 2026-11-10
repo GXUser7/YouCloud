@@ -10,7 +10,6 @@
   import { tr } from '../lib/i18n.svelte'
   import { serviceName, track } from '../lib/catalog'
   import { app, currentTrack, cycleRepeat, go, jump, player, remember, seek, startRadio } from '../lib/state.svelte'
-  import { fit } from '../lib/fit'
   import { time } from '../lib/format'
   import { queueWindow, revealNow } from '../lib/queueView'
   import Cover from './Cover.svelte'
@@ -146,7 +145,7 @@
         {/if}
       </div>
       {#key t.id}
-        <h1 class="display title" title={t.title} use:fit={{ text: t.title, max: Math.min(50, Math.max(32, innerWidth * 0.034)), min: 12, height: () => Math.min(50, Math.max(32, innerWidth * 0.034)) * 2.2 }}>{t.title}</h1>
+        <h1 class="display title">{t.title}</h1>
       {/key}
       <div class="artists">
         {#each t.artists as a, i (a.id + i)}
@@ -366,8 +365,11 @@
   .title {
     font-size: clamp(32px, 3.4vw, 50px);
     margin: 18px 0 16px;
-    padding-block: 0.08em;
-    overflow-wrap: anywhere;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
     animation: title-in 360ms var(--ease-in-place);
   }
   @keyframes title-in {
@@ -435,11 +437,7 @@
     isolation: isolate;
     background: color-mix(in oklab, var(--on-surface) 10%, transparent);
     color: var(--on-surface);
-    transition:
-      border-radius var(--d-fast) var(--spring-fast),
-      background-color 250ms var(--ease-emph),
-      color 250ms var(--ease-emph),
-      transform var(--d-fast) var(--spring-fast);
+    transition: background-color 250ms var(--ease-emph), color 250ms var(--ease-emph), transform var(--d-fast) var(--spring-fast);
   }
   .next-card::before {
     content: '';
@@ -481,7 +479,7 @@
     flex: none;
     display: grid;
     place-items: center;
-    transition: border-radius var(--d-spatial) var(--spring);
+    transition: none;
     animation: next-in 420ms var(--ease-in-place);
   }
   @keyframes next-in {

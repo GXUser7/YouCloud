@@ -71,11 +71,7 @@
     border-radius: 24px;
     background: color-mix(in oklab, var(--on-surface) 10%, transparent);
     color: var(--on-surface);
-    transition:
-      border-radius var(--d-fast) var(--spring-fast),
-      background-color 200ms var(--ease-emph),
-      color 200ms var(--ease-emph),
-      transform var(--d-fast) var(--spring-fast);
+    transition: background-color 200ms var(--ease-emph), color 200ms var(--ease-emph), transform var(--d-fast) var(--spring-fast);
   }
   /* As an inline span the wrapper grows a line box (the inherited font's line-height) and the
      glyph, seated on its baseline, drifts off the circle; a grid keeps the box glyph-sized. */
@@ -105,8 +101,8 @@
     padding: 6px;
     border-radius: 26px;
     background: var(--vb-pop, color-mix(in oklab, var(--surface-container-high) 86%, transparent));
-    backdrop-filter: blur(24px) saturate(1.4);
-    -webkit-backdrop-filter: blur(24px) saturate(1.4);
+    -webkit-backdrop-filter: var(--glass-blur);
+    backdrop-filter: var(--glass-blur);
     box-shadow: 0 18px 40px -16px #000a;
     translate: -50% 0;
     transform-origin: 50% 100%;

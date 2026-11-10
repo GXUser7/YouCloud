@@ -130,10 +130,7 @@
     border-radius: var(--r-2xl);
     isolation: isolate;
     background: var(--glass);
-    transition:
-      border-radius var(--d-spatial) var(--spring),
-      transform var(--d-spatial) var(--spring),
-      box-shadow 300ms var(--ease-emph);
+    transition: transform var(--d-spatial) var(--spring), box-shadow 300ms var(--ease-emph);
   }
   .tile:hover {
     border-radius: 40px;
@@ -211,9 +208,7 @@
     gap: 10px;
   }
   .actions :global(.play) {
-    transition:
-      border-radius 320ms var(--ease-emph),
-      transform var(--d-fast) var(--spring-fast);
+    transition: transform var(--d-fast) var(--spring-fast);
   }
   .main:hover .actions :global(.play) {
     transform: scale(1.08);
@@ -231,7 +226,7 @@
     border-radius: var(--r-xl);
     overflow: hidden;
     display: block;
-    transition: border-radius var(--d-spatial) var(--spring);
+    transition: none;
   }
   .liked:hover .liked-art {
     border-radius: 28px;
@@ -300,10 +295,7 @@
     box-shadow: 0 10px 24px -8px color-mix(in oklab, #000 60%, transparent);
     opacity: 0;
     transform: translateY(14px) scale(0.6) rotate(-25deg);
-    transition:
-      opacity 200ms var(--ease-emph),
-      transform var(--d-spatial) var(--spring-fast),
-      border-radius var(--d-fast) var(--spring-fast);
+    transition: opacity 200ms var(--ease-emph), transform var(--d-spatial) var(--spring-fast);
   }
   .small:hover .pop,
   .pop:focus-visible {
