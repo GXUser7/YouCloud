@@ -152,7 +152,7 @@ async function scCall(method: string, path: string, params: Params = {}, token?:
       if (captcha) {
         if (!browserPage) {
           soundCloudSetup()
-          throw new Error(tr('Для лайков и подписок SoundCloud обнови расширение YouCloud до 0.9 или новее. В Masaki выполни действие на странице SoundCloud.'))
+          throw new Error(tr('Для проверки SoundCloud обнови расширение YouCloud или Masaki. Можно выполнить действие на странице SoundCloud.'))
         }
         // A blocked network (t=bv) has no solvable challenge. Never spin indefinitely, nor retry
         // automatically while the listener is still working on the CAPTCHA.

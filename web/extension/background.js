@@ -25,6 +25,7 @@ const PROFILES = [
 const MEDIA = ['googlevideo.com']
 const ALLOWED = PROFILES.flatMap((p) => p.domains)
 const SITE_TABS = ['https://youcloud.inkerror67.workers.dev/*', 'http://localhost:5190/*']
+const SITE_ORIGINS = new Set(SITE_TABS.map((pattern) => new URL(pattern).origin))
 /** The same pages, as a rule names where a request comes from. */
 const SITE_DOMAINS = ['youcloud.inkerror67.workers.dev', 'localhost']
 
@@ -376,6 +377,7 @@ api.tabs.onRemoved.addListener(() => {
 // to the browser that earned it; the listener solves the challenge in this very same tab.
 let soundCloudWriteTab = null
 let lastSoundCloudChallenge = null
+let soundCloudChallengePage = null
 let soundCloudWrites = Promise.resolve()
 
 function safeSoundCloudChallenge(value) {
@@ -397,20 +399,26 @@ function validateSoundCloudWrite(args) {
   return { url: url.href, method, token }
 }
 
-async function soundCloudPage() {
+async function soundCloudPage(create = true) {
   // MV3 backgrounds sleep between the refusal and the listener opening its challenge.
   // Keep the owned tab in session storage so a resumed worker reuses the same browser page.
   if (soundCloudWriteTab == null) {
     const saved = await api.storage.session.get('scWriteTab')
     soundCloudWriteTab = saved.scWriteTab ?? null
   }
-  if (soundCloudWriteTab != null) {
-    const existing = await api.tabs.get(soundCloudWriteTab).catch(() => null)
-    if (existing?.url && new URL(existing.url).origin === 'https://soundcloud.com') return existing.id
-  }
-  const tab = await api.tabs.create({ url: 'https://soundcloud.com/', active: false })
+  const existing = soundCloudWriteTab == null ? null : await api.tabs.get(soundCloudWriteTab).catch(() => null)
+  const samePage = existing?.url && new URL(existing.url).origin === 'https://soundcloud.com'
+  if (samePage && existing.status === 'complete') return existing.id
+  // A challenge belongs to the page which received it. Closing or navigating that page
+  // invalidates the challenge; only a new write may create a replacement SoundCloud tab.
+  if (!samePage && !create) throw new Error('SoundCloud challenge expired: retry the action')
+  const tab = samePage ? existing : await api.tabs.create({ url: 'https://soundcloud.com/', active: false })
   soundCloudWriteTab = tab.id
-  await api.storage.session.set({ scWriteTab: tab.id })
+  if (!samePage) {
+    lastSoundCloudChallenge = null
+    soundCloudChallengePage = null
+    await api.storage.session.set({ scWriteTab: tab.id, scWriteChallenge: null, scWriteChallengePage: null })
+  }
   const deadline = Date.now() + 25_000
   while (Date.now() < deadline) {
     const current = await api.tabs.get(tab.id)
@@ -427,15 +435,22 @@ async function soundCloudPage() {
 
 async function soundCloudWrite(args) {
   const request = validateSoundCloudWrite(args)
+  const expiresAt = Date.now() + 50_000
   const task = soundCloudWrites.catch(() => {}).then(async () => {
+    if (Date.now() >= expiresAt) throw new Error('SoundCloud request expired: retry the action')
     const tabId = await soundCloudPage()
+    const page = crypto.randomUUID()
     const result = await api.scripting.executeScript({
-      target: { tabId }, world: 'MAIN', args: [request],
-      func: async ({ url, method, token }) => {
+      target: { tabId }, world: 'MAIN', args: [{ ...request, page, expiresAt }],
+      func: async ({ url, method, token, page, expiresAt }) => {
         if (location.origin !== 'https://soundcloud.com') throw new Error('SoundCloud page changed')
+        // Unlike a tab id, this marker cannot survive a reload into a different document.
+        globalThis.__youcloudSoundCloudWritePage = page
         const headers = { Authorization: `OAuth ${token}`, Accept: 'application/json, text/javascript, */*; q=0.1' }
         const cookie = document.cookie.match(/(?:^|;\s*)datadome=([^;]+)/)
         if (cookie) headers['X-Datadome-ClientId'] = decodeURIComponent(cookie[1])
+        const remaining = expiresAt - Date.now()
+        if (remaining <= 0) throw new Error('SoundCloud request expired: retry the action')
         // A tag may abort the fetch while showing its challenge. Return that challenge rather
         // than losing it behind a generic network error. No challenge is ever solved by code.
         const displayedChallenge = () => {
@@ -448,7 +463,7 @@ async function soundCloudWrite(args) {
           return null
         }
         try {
-          const response = await fetch(url, { method, headers, credentials: 'include', signal: AbortSignal.timeout(20_000) })
+          const response = await fetch(url, { method, headers, credentials: 'include', signal: AbortSignal.timeout(Math.min(20_000, remaining)) })
           return { status: response.status, body: await response.text() }
         } catch (e) {
           const challenge = displayedChallenge()
@@ -460,10 +475,12 @@ async function soundCloudWrite(args) {
     const response = result[0]?.result
     if (!response || !Number.isInteger(response.status) || typeof response.body !== 'string') throw new Error('SoundCloud did not answer')
     lastSoundCloudChallenge = null
+    soundCloudChallengePage = null
     if (response.status === 403) {
       try { lastSoundCloudChallenge = safeSoundCloudChallenge(JSON.parse(response.body).url) } catch { /* Not a JSON challenge. */ }
+      if (lastSoundCloudChallenge) soundCloudChallengePage = page
     }
-    await api.storage.session.set({ scWriteChallenge: lastSoundCloudChallenge })
+    await api.storage.session.set({ scWriteChallenge: lastSoundCloudChallenge, scWriteChallengePage: soundCloudChallengePage })
     return { value: response }
   })
   soundCloudWrites = task
@@ -471,18 +488,19 @@ async function soundCloudWrite(args) {
 }
 
 async function showSoundCloudChallenge(args) {
-  const saved = await api.storage.session.get(['scWriteTab', 'scWriteChallenge'])
+  const saved = await api.storage.session.get(['scWriteTab', 'scWriteChallenge', 'scWriteChallengePage'])
   soundCloudWriteTab ??= saved.scWriteTab ?? null
   lastSoundCloudChallenge ??= saved.scWriteChallenge ?? null
+  soundCloudChallengePage ??= saved.scWriteChallengePage ?? null
   const url = safeSoundCloudChallenge(args?.url)
-  if (!url || url !== lastSoundCloudChallenge || soundCloudWriteTab == null) throw new Error('SoundCloud challenge expired: retry the action')
-  const tabId = await soundCloudPage()
-  await api.scripting.executeScript({
-    target: { tabId }, world: 'MAIN', args: [url],
-    func: (url) => {
-      if (location.origin !== 'https://soundcloud.com') throw new Error('SoundCloud page changed')
+  if (!url || url !== lastSoundCloudChallenge || soundCloudWriteTab == null || !soundCloudChallengePage) throw new Error('SoundCloud challenge expired: retry the action')
+  const tabId = await soundCloudPage(false)
+  const opened = await api.scripting.executeScript({
+    target: { tabId }, world: 'MAIN', args: [url, soundCloudChallengePage],
+    func: (url, page) => {
+      if (location.origin !== 'https://soundcloud.com' || globalThis.__youcloudSoundCloudWritePage !== page) return false
       // Its own tag may already have opened the matching frame.
-      if ([...document.querySelectorAll('iframe[src]')].some((f) => f.src === url)) return
+      if ([...document.querySelectorAll('iframe[src]')].some((f) => f.src === url)) return true
       document.getElementById('youcloud-soundcloud-challenge')?.remove()
       const host = document.createElement('div')
       host.id = 'youcloud-soundcloud-challenge'
@@ -503,7 +521,7 @@ async function showSoundCloudChallenge(args) {
         let data = event.data
         try { if (typeof data === 'string') data = JSON.parse(data) } catch { return }
         const cookie = data?.cookie
-        if (typeof cookie !== 'string' || !/^datadome=[^;\r\n]+(?:;|$)/.test(cookie) || cookie.length > 4096) return
+        if (typeof cookie !== 'string' || /[\r\n]/.test(cookie) || !/^datadome=[^;]+(?:;|$)/.test(cookie) || cookie.length > 4096) return
         const domain = /;\s*domain=([^;]+)/i.exec(cookie)?.[1]?.toLowerCase()
         if (domain && domain !== 'soundcloud.com' && domain !== '.soundcloud.com') return
         document.cookie = cookie
@@ -514,8 +532,10 @@ async function showSoundCloudChallenge(args) {
       host.append(close, frame)
       document.documentElement.append(host)
       close.focus()
+      return true
     },
   })
+  if (opened[0]?.result !== true) throw new Error('SoundCloud challenge expired: retry the action')
   await api.tabs.update(tabId, { active: true })
   return { value: true }
 }
@@ -656,6 +676,14 @@ try {
 
 api.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (sender.id !== api.runtime.id) return
+  if (['yc-fetch', 'yc-call', 'yc-yt-stream'].includes(message?.type)) {
+    let trusted = false
+    try { trusted = SITE_ORIGINS.has(new URL(sender.url ?? sender.tab?.url).origin) && (sender.frameId == null || sender.frameId === 0) } catch { /* No trustworthy page address. */ }
+    if (!trusted) {
+      sendResponse({ error: 'YouCloud page required' })
+      return
+    }
+  }
   if (message?.type === 'yc-fetch') {
     relay(message).then(sendResponse)
     return true

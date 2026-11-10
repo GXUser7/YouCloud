@@ -21,7 +21,7 @@
   </div>
   <h2 id="sc-challenge-title" class="headline">{challenge.setup ? tr('Лайки в SoundCloud') : tr('Проверка SoundCloud')}</h2>
   {#if challenge.setup}
-    <p class="muted">{tr('Для лайков и подписок с проверкой SoundCloud нужно расширение YouCloud 0.9 или новее в Chrome или Firefox. В Masaki пока можно выполнить действие на странице SoundCloud.')}</p>
+    <p class="muted">{tr('Для лайков и подписок с проверкой SoundCloud обнови расширение YouCloud или Masaki. Пока можно выполнить действие на странице SoundCloud.')}</p>
     <div class="actions">
       <a class="btn glassy" href="https://soundcloud.com/you/likes" target="_blank" rel="noreferrer">SoundCloud<Icon name="open_in_new" size={18} /></a>
       <button class="btn filled" onclick={() => { finishSoundCloud(false); go('settings') }}>{tr('Открыть настройки')}</button>

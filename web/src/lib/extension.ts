@@ -17,6 +17,7 @@ type Answer = { status?: number; statusText?: string; headers?: [string, string]
 let version: string | null = null
 /** Who answers: 'masaki' when the browser itself does, null for the extension. */
 let host: string | null = null
+const capabilities = new Set<string>()
 type HostEvent = { event?: string; service?: string; seed?: string; dark?: boolean }
 const eventListeners = new Set<(e: HostEvent) => void>()
 let seq = 0
@@ -32,6 +33,10 @@ addEventListener('message', (event) => {
   if (!data || typeof data !== 'object' || data.yc !== 'ext') return
   if (data.kind === 'hello') {
     version = data.version
+    capabilities.clear()
+    if (Array.isArray(data.capabilities)) for (const capability of data.capabilities) {
+      if (typeof capability === 'string') capabilities.add(capability)
+    }
     if (typeof data.host === 'string' && data.host !== host) {
       host = data.host
       document.documentElement.dataset.host = data.host
@@ -178,7 +183,7 @@ export async function extensionCall<T = unknown>(
 }
 
 /** SoundCloud writes must share the browser page and cookies in which its CAPTCHA was solved. */
-export const soundCloudWrites = () => !!version && host !== 'masaki' && !older(version, [0, 9, 0])
+export const soundCloudWrites = () => !!version && (host === 'masaki' ? capabilities.has('sc-page-writes') : !older(version, [0, 9, 0]))
 
 /** Masaki from 0.7 finds YouTube's sound itself, with yt-dlp, as the Android app does. */
 const HOST_STREAM_VERSION = [0, 7, 0]
