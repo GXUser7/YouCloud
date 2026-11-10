@@ -29,8 +29,12 @@
     following = null
     busy = false
     error = ''
-    loading = connected && supported && !own
-    if (loading) live.artistFollowing(artistId).then((value) => {
+    // Written, never read here: reading `loading` in the same effect that writes it makes the
+    // effect its own dependency, and every settled check flips it back to true — the check runs
+    // forever. The template is the only reader.
+    const check = connected && supported && !own
+    loading = check
+    if (check) live.artistFollowing(artistId).then((value) => {
       if (run === generation) following = value
     }).catch((e) => {
       if (run === generation) error = reason(e)
