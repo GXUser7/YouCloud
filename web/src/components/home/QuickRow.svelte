@@ -67,11 +67,13 @@
 </section>
 
 <style>
+  /* On the page grid (app.css): --tiles across, three columns each at full width, the grid's gap
+     between them and above. */
   .quick {
-    margin-top: 16px;
+    margin-top: var(--gap);
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(min(100%, 260px), 1fr));
-    gap: 10px;
+    grid-template-columns: repeat(var(--tiles), minmax(0, 1fr));
+    gap: var(--gap);
   }
   .tile {
     position: relative;

@@ -11,7 +11,7 @@
   const a = $derived(artist(id))
 </script>
 
-<button class="artist" style:--w="{size}px" onclick={() => go('artist/' + id)}>
+<button class="artist" style:--size="{size}px" onclick={() => go('artist/' + id)}>
   <span class="lift">
     <span class="pic"><span class="img"><Cover seed={'artist-' + a.id} color={a.color} src={a.image} kind="artist" /></span></span>
   </span>
@@ -20,9 +20,11 @@
 </button>
 
 <style>
+  /* As wide as the page grid's card where a row sets it (--w), else its own size. */
   .artist {
-    width: var(--w);
+    width: var(--w, var(--size));
     flex: none;
+    scroll-snap-align: start;
     display: flex;
     flex-direction: column;
     align-items: center;
@@ -31,6 +33,7 @@
   /* The lift and the shadow: the shadow follows the shape, so it sits on this, outside the clip. */
   .lift {
     display: block;
+    width: 100%;
     filter: drop-shadow(0 12px 18px color-mix(in oklab, #000 34%, transparent));
     transition:
       transform var(--d-spatial) var(--spring),
@@ -38,8 +41,8 @@
   }
   .pic {
     display: block;
-    width: var(--w);
-    height: var(--w);
+    width: 100%;
+    aspect-ratio: 1;
     clip-path: var(--shape-circle);
     transition: clip-path var(--d-slow) var(--spring);
   }

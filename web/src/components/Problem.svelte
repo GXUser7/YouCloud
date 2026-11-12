@@ -30,7 +30,7 @@
 
 <style>
   .problem {
-    margin-top: 32px;
+    margin-top: var(--gap, 24px);
     border-radius: var(--r-2xl);
     padding: 24px 28px;
     display: flex;
