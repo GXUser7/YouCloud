@@ -11,7 +11,6 @@
   const mood = $derived(WAVE.moods.find((m) => m.seed === app.waveMood))
   const shape = $derived(pathFromRadii(waveRadii(mood?.lobes ?? 8, mood?.depth ?? 0.13)))
   const orbitShape = $derived(pathFromRadii(waveRadii(mood?.lobes ?? 8, Math.min((mood?.depth ?? 0.13) + 0.08, 0.26))))
-  const orbitSoftShape = $derived(pathFromRadii(waveRadii(mood?.lobes ?? 8, Math.max((mood?.depth ?? 0.13) - 0.03, 0.04))))
   const on = $derived(player.wave && player.playing)
   async function wave() {
     if (starting) return
@@ -26,7 +25,7 @@
     <h2 class="display">{tr('Моя волна')}</h2>
   </div>
   <div class="invitation">
-    <svg class="orbit" viewBox="0 0 100 100" aria-hidden="true" style:--orbit-rest={`path('${orbitShape}')`} style:--orbit-soft={`path('${orbitSoftShape}')`}><path d={orbitShape} /></svg>
+    <svg class="orbit" viewBox="0 0 100 100" aria-hidden="true"><path d={orbitShape} /></svg>
     <button class="play" onclick={wave} disabled={starting} aria-busy={starting} aria-label={on ? tr('Пауза') : tr('Включить волну')}>
       <span class="play-face">
         <svg viewBox="0 0 100 100" aria-hidden="true"><path d={shape} /></svg>
@@ -61,11 +60,11 @@
   .copy { min-width: 0; align-self: center; }
   h2 { font-size: clamp(36px, 5.6cqw, 76px); line-height: 1.12; margin: 0; overflow-wrap: anywhere; }
   .invitation { position: relative; grid-column: 2; grid-row: 1 / 3; display: grid; place-items: center; min-height: 280px; }
-  .orbit { position: absolute; width: min(100%, 280px); height: auto; aspect-ratio: 1; fill: var(--primary); opacity: 0.08; animation: orbit-idle 18s ease-in-out infinite; pointer-events: none; }
-  .orbit > path { animation: orbit-morph 10s ease-in-out infinite; }
+  .orbit { position: absolute; width: min(100%, 280px); height: auto; aspect-ratio: 1; fill: var(--primary); opacity: 0.08; animation: wave-turn 60s linear infinite reverse; pointer-events: none; }
+  .orbit > path { transition: d var(--d-slow) var(--spring); }
   .play { width: min(80%, 196px); aspect-ratio: 1; position: relative; display: grid; place-items: center; color: var(--on-primary); border-radius: 50%; transition: transform var(--d-spatial) var(--spring); }
-  .play-face { position: relative; display: grid; place-items: center; width: 100%; height: 100%; animation: play-idle 6s ease-in-out infinite; pointer-events: none; }
-  .play-face > svg { position: absolute; inset: 0; width: 100%; height: 100%; fill: var(--primary); overflow: visible; }
+  .play-face { position: relative; display: grid; place-items: center; width: 100%; height: 100%; pointer-events: none; }
+  .play-face > svg { position: absolute; inset: 0; width: 100%; height: 100%; fill: var(--primary); overflow: visible; animation: wave-turn 60s linear infinite; }
   .play-face > svg > path { transform-origin: 50px 50px; transition: rotate var(--d-spatial) var(--spring), d var(--d-slow) var(--spring), fill 220ms var(--ease-emph); }
   .play:enabled:hover, .play:focus-visible { transform: translateY(-3px) scale(1.09); }
   .play:enabled:hover .play-face > svg > path, .play:focus-visible .play-face > svg > path { rotate: 24deg; fill: color-mix(in oklab, var(--primary) 88%, var(--on-surface)); }
@@ -73,17 +72,8 @@
   .playing .play-face > svg > path { rotate: 22deg; }
   .glyph { position: relative; display: grid; place-items: center; }
   .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
-  @keyframes play-idle {
-    0%, 100% { transform: translateY(0) scale(0.98); }
-    50% { transform: translateY(-6px) scale(1.03); }
-  }
-  @keyframes orbit-idle {
-    0%, 100% { transform: rotate(0deg) scale(0.96); }
-    50% { transform: rotate(-24deg) scale(1.04); }
-  }
-  @keyframes orbit-morph {
-    0%, 100% { d: var(--orbit-rest); }
-    50% { d: var(--orbit-soft); }
+  @keyframes wave-turn {
+    to { transform: rotate(1turn); }
   }
   .tuning { display: flex; flex-wrap: wrap; gap: 24px; min-width: 0; align-self: end; }
   .tuning-row { display: flex; flex-direction: column; gap: 10px; min-width: 0; max-width: 100%; }
@@ -103,7 +93,7 @@
     h2 { font-size: clamp(32px, 10cqw, 52px); }
   }
   @media (prefers-reduced-motion: reduce) {
-    .orbit, .orbit > path, .play-face { animation: none; }
-    .play, .play-face > svg > path { transition: none; }
+    .orbit, .play-face > svg { animation: none; }
+    .play, .play-face > svg > path, .orbit > path { transition: none; }
   }
 </style>
