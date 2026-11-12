@@ -156,8 +156,17 @@
   .current .over {
     opacity: 1;
   }
-  /* On the page (not in the full player, which keeps its own feel): under the pointer the cover
+  /* On the page (not in the full player, which keeps its own feel): the cover is a rounded square
+     that morphs into a cookie for the track playing, as the bar's does; under the pointer it
      drifts in a little and the play mark springs up, and gives under the finger. */
+  :global(.shell) .art {
+    border-radius: 0;
+    clip-path: var(--shape-row);
+    transition: clip-path var(--d-slow) var(--spring);
+  }
+  :global(.shell) .current .art {
+    clip-path: var(--shape-cookie9);
+  }
   :global(.shell) .art > :global(.cover) {
     transition: transform var(--d-spatial) var(--spring);
   }

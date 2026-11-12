@@ -241,6 +241,8 @@ export const EN: Record<string, string> = {
   'Здесь будут твои лайки': 'Your likes will be here',
   'Войти в %s': 'Sign in to %s',
   'Войди в %s': 'Sign in to %s',
+  'Войди в %s, чтобы видеть свои лайки и плейлисты': 'Sign in to %s to see your likes and playlists',
+  'Открыть': 'Open',
   'Жду вход…': 'Waiting for sign-in…',
   'Твои плейлисты': 'Your playlists',
   'Твои артисты': 'Your artists',

@@ -1,40 +1,13 @@
-// What every service's home is made of, whatever its layout: the sets to lead with, songs to
-// play in place, the listener's library on the service — and which of the three layouts draws
-// it, as picked in Settings.
+// What every service's home is made of: the sets to lead with, songs to play in place, the
+// listener's library on the service.
 
 import type { Service } from './catalog'
 import { tr } from './i18n.svelte'
 import * as live from './live'
 import { markLiked } from './state.svelte'
 
-export type HomeVariant = 'bento' | 'stage' | 'quick'
-
-/** The layouts, named in the listener's language. */
-export const HOME_VARIANTS: { value: HomeVariant; label: string; hint: string }[] = [
-  { value: 'bento', label: tr('Бенто'), hint: tr('Плитки разного размера: главное крупно, рядом «Любимое»') },
-  { value: 'stage', label: tr('Сцена'), hint: tr('Большая карусель, страница в цветах обложки') },
-  { value: 'quick', label: tr('Для тебя'), hint: tr('Приветствие и плитки, чтобы сразу включить') },
-]
-
-function storedVariant(): HomeVariant {
-  try {
-    const v = localStorage.getItem('yc.homeVariant')
-    return HOME_VARIANTS.some((x) => x.value === v) ? (v as HomeVariant) : 'bento'
-  } catch {
-    return 'bento'
-  }
-}
-
-export const home = $state({ variant: storedVariant() })
-
-export function setHomeVariant(v: HomeVariant) {
-  home.variant = v
-  try {
-    localStorage.setItem('yc.homeVariant', v)
-  } catch {
-    // the choice just isn't kept
-  }
-}
+/** How many of the listener's playlists home shows as tiles up top; the rest are a row of cards. */
+export const QUICK_PLAYLISTS = 7
 
 /** The row home leads with: the listener's own (made for them, mixes) before what everyone gets. */
 export function leading(sections: live.Section[]): live.Section | undefined {

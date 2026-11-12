@@ -717,13 +717,38 @@ button.chip:active {
 @keyframes rise {
   from {
     opacity: 0;
-    transform: translateY(14px) scale(0.985);
+    transform: translateY(18px);
   }
 }
 .rise {
   /* forwards/both keeps an opacity backdrop root after the entrance, cutting glass off from the backdrop. */
-  animation: rise var(--d-slow) var(--spring) backwards;
+  animation: rise 640ms var(--ease-in-place) backwards;
 }
+/* A page's parts come in one after another, top to bottom, rather than all at once. */
+.page > .rise:nth-child(2) { animation-delay: 50ms; }
+.page > .rise:nth-child(3) { animation-delay: 100ms; }
+.page > .rise:nth-child(4) { animation-delay: 150ms; }
+.page > .rise:nth-child(5) { animation-delay: 200ms; }
+.page > .rise:nth-child(6) { animation-delay: 240ms; }
+.page > .rise:nth-child(n + 7) { animation-delay: 280ms; }
+
+/* The cards of a row follow it in, each a beat after the one before. */
+@keyframes card-in {
+  from {
+    opacity: 0;
+    transform: translateY(14px) scale(0.96);
+  }
+}
+.shelf .track > * {
+  animation: card-in 560ms var(--ease-in-place) backwards;
+}
+.shelf .track > :nth-child(2) { animation-delay: 40ms; }
+.shelf .track > :nth-child(3) { animation-delay: 80ms; }
+.shelf .track > :nth-child(4) { animation-delay: 120ms; }
+.shelf .track > :nth-child(5) { animation-delay: 160ms; }
+.shelf .track > :nth-child(6) { animation-delay: 200ms; }
+.shelf .track > :nth-child(7) { animation-delay: 240ms; }
+.shelf .track > :nth-child(n + 8) { animation-delay: 280ms; }
 
 @media (prefers-reduced-motion: reduce) {
   *,

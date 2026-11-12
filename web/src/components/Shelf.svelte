@@ -28,7 +28,7 @@
   })
 </script>
 
-<section class="section shelf">
+<section class="section shelf rise">
   <div class="section-head">
     <div>
       <h2>{title}</h2>
