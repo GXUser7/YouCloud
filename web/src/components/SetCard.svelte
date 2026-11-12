@@ -17,8 +17,9 @@
   const s = $derived(setOf(id))
   const playingThis = $derived(player.contextId === id)
   const round = $derived(s.kind === 'station')
-  const rest = $derived(round ? CIRCLE_POLYGON : roundedSquarePolygon(28 / (size / 2)))
-  const hover = $derived(round ? clipPolygon('cookie9', 1.03) : roundedSquarePolygon(44 / (size / 2)))
+  // Corners as a share of the half-width, so they keep their look at any width the grid gives.
+  const rest = $derived(round ? CIRCLE_POLYGON : roundedSquarePolygon(0.26))
+  const hover = $derived(round ? clipPolygon('cookie9', 1.03) : roundedSquarePolygon(0.42))
 
   function play(e: MouseEvent) {
     e.stopPropagation()
@@ -27,7 +28,8 @@
   }
 </script>
 
-<div class="card" style:--w="{size}px" style:--rest={rest} style:--hover={hover}>
+<div class="card" style:--size="{size}px" style:--rest={rest} style:--hover={hover}>
+  <div class="media">
   <button class="art" onclick={() => go('set/' + id)} aria-label={s.title}>
     <span class="frame">
       <span class="img">
@@ -42,6 +44,7 @@
   <button class="play" class:active={playingThis} onclick={play} aria-label={tr('Играть %s', s.title)}>
     <Icon name={playingThis && player.playing ? 'pause' : 'play_arrow'} fill size={28} />
   </button>
+  </div>
   <button class="meta" onclick={() => go('set/' + id)}>
     <span class="title ellipsis">{s.title}</span>
     <span class="sub ellipsis">{subtitle ?? s.subtitle}</span>
@@ -49,16 +52,20 @@
 </div>
 
 <style>
+  /* As wide as the page grid's card where a row sets it (--w), else its own size. */
   .card {
-    width: var(--w);
+    width: var(--w, var(--size));
     flex: none;
+    scroll-snap-align: start;
+  }
+  .media {
     position: relative;
   }
   /* The lift and the shadow: the shadow follows the frame's shape, so it sits outside the clip. */
   .art {
     display: block;
-    width: var(--w);
-    height: var(--w);
+    width: 100%;
+    aspect-ratio: 1;
     filter: drop-shadow(0 14px 20px color-mix(in oklab, #000 32%, transparent));
     transition:
       transform var(--d-spatial) var(--spring),
@@ -101,8 +108,8 @@
   /* Play: rises out of the corner on a spring; a squircle that rounds under the finger. */
   .play {
     position: absolute;
-    top: calc(var(--w) - 64px);
-    right: 10px;
+    right: 12px;
+    bottom: 12px;
     width: 54px;
     height: 54px;
     border-radius: var(--r-l);

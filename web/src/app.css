@@ -666,10 +666,51 @@ button.chip:active {
   letter-spacing: 0.04em;
 }
 
-/* ---- Page rhythm ---- */
+/* ---- Page grid and rhythm ----
+   Every page lays out on one grid: 12 columns with --gap between them, the same --gap between
+   blocks that belong together, --section between sections, 16 px from a section's head to what
+   it holds — all on the 8 px scale. A row of cards shows --per-view whole cards, each --card
+   wide (two columns at full width), so their edges fall on the columns the tiles above use
+   (--tiles, three columns each) and the last card ends at the page's edge instead of being cut.
+   The values step down with the page's width (its container, not the window's: the side panel
+   takes a share of it). */
+
+.page > * {
+  --gap: 24px;
+  --section: 48px;
+  --pad: 32px;
+  --per-view: 6;
+  --tiles: 4;
+  --picks: 3;
+  --card: calc((100cqw - (var(--per-view) - 1) * var(--gap)) / var(--per-view));
+}
+@container page (max-width: 1100px) {
+  .page > * {
+    --per-view: 5;
+    --tiles: 3;
+    --picks: 2;
+  }
+}
+@container page (max-width: 860px) {
+  .page > * {
+    --per-view: 4;
+    --tiles: 2;
+  }
+}
+@container page (max-width: 600px) {
+  .page > * {
+    --gap: 16px;
+    --section: 40px;
+    --pad: 20px;
+    /* On a phone the row lets the next card peek in, so it reads as one to swipe. */
+    --per-view: 2.4;
+    --tiles: 1;
+    --picks: 1;
+  }
+}
 
 .section {
-  margin-top: 44px;
+  margin-top: var(--section, 48px);
 }
 .section-head {
   display: flex;

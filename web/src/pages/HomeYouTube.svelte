@@ -93,9 +93,10 @@
 {/await}
 
 <style>
+  /* On the page grid (app.css): --picks columns of rows, the grid's gap between them. */
   .grid {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(min(100%, 340px), 1fr));
-    gap: 2px 12px;
+    grid-template-columns: repeat(var(--picks), minmax(0, 1fr));
+    gap: 2px var(--gap);
   }
 </style>

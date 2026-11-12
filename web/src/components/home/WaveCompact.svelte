@@ -65,7 +65,6 @@
 
 <style>
   .wave {
-    --pad: clamp(24px, 3cqw, 40px);
     position: relative;
     isolation: isolate;
     display: grid;
@@ -76,10 +75,10 @@
     /* The words and the tuning sit together in the middle, not pushed apart by the shape's height. */
     grid-template-rows: auto auto;
     align-content: center;
-    column-gap: clamp(24px, 4cqw, 56px);
-    row-gap: 24px;
+    column-gap: var(--gap);
+    row-gap: var(--gap);
     padding: var(--pad);
-    margin-top: 24px;
+    margin-top: var(--gap);
     border-radius: var(--r-2xl);
     overflow: clip;
   }
@@ -241,14 +240,12 @@
 
   @container page (max-width: 760px) {
     .wave {
-      --pad: 22px;
       grid-template-columns: minmax(0, 1fr);
       grid-template-areas:
         'copy'
         'invitation'
         'tuning';
       grid-template-rows: auto;
-      row-gap: 20px;
     }
     .glow {
       width: 110%;

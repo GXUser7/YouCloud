@@ -114,7 +114,7 @@
 
 <style>
   .ext {
-    margin-top: var(--ext-gap, 28px);
+    margin-top: var(--ext-gap, var(--gap, 24px));
     border-radius: var(--r-2xl);
     padding: 24px 28px;
     display: flex;

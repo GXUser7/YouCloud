@@ -12,11 +12,15 @@
   import LoadMoreRow from '../components/LoadMoreRow.svelte'
   import Problem from '../components/Problem.svelte'
   import SetCard from '../components/SetCard.svelte'
+  import Shelf from '../components/Shelf.svelte'
   import TrackRow from '../components/TrackRow.svelte'
 
   let results = $state<Promise<live.SearchResult> | null>(null)
   let found = $state<live.SearchResult | null>(null)
-  let visible = $state<Record<live.SearchSection, number>>({ tracks: 8, artists: 10, albums: 12, playlists: 12 })
+  // Tracks show a few at first, more on «Показать ещё»; the cards are rows (Shelf) that show all
+  // they have and ask for the next page as they are scrolled to their end.
+  const FIRST_TRACKS = 5
+  let visible = $state<Record<live.SearchSection, number>>({ tracks: FIRST_TRACKS, artists: Infinity, albums: Infinity, playlists: Infinity })
   let loadingMore = $state<Partial<Record<live.SearchSection, boolean>>>({})
   let errors = $state<Partial<Record<live.SearchSection, string>>>({})
   let generation = 0
@@ -74,7 +78,7 @@
     searchedQuery = q
     searchedService = svc
     found = null
-    visible = { tracks: 8, artists: 10, albums: 12, playlists: 12 }
+    visible = { tracks: FIRST_TRACKS, artists: Infinity, albums: Infinity, playlists: Infinity }
     loadingMore = {}
     errors = {}
     results = q ? live.search(svc, q).then((r) => {
@@ -216,41 +220,23 @@
         {/if}
       </section>
 
-      {#if r.artists.length || r.more?.artists}
-        <section class="section">
-          <div class="section-head"><h2>{tr('Артисты')}</h2></div>
-          <div class="result-group glass track-list">
-            <div class="card-grid artists">
-              {#each r.artists.slice(0, visible.artists) as id (id)}<ArtistCard {id} size={156} />{/each}
-            </div>
-            {@render moreRow('artists', r)}
-          </div>
-        </section>
+      {#if r.artists.length}
+        <Shelf title={tr('Артисты')} more={r.more?.artists ? () => more('artists') : undefined} loading={loadingMore.artists} error={errors.artists}>
+          {#each r.artists as id (id)}<ArtistCard {id} />{/each}
+        </Shelf>
       {/if}
-      {#if r.albums.length || r.more?.albums}
-        <section class="section">
-          <div class="section-head"><h2>{tr('Альбомы')}</h2></div>
-          <div class="result-group glass track-list">
-            <div class="card-grid">
-              {#each r.albums.slice(0, visible.albums) as id (id)}
-                {@const s = set(id)}
-                <SetCard {id} size={170} subtitle="{s.kind === 'single' ? tr('Сингл') : tr('Альбом')}{s.year ? ` · ${s.year}` : ''} · {s.subtitle}" />
-              {/each}
-            </div>
-            {@render moreRow('albums', r)}
-          </div>
-        </section>
+      {#if r.albums.length}
+        <Shelf title={tr('Альбомы')} more={r.more?.albums ? () => more('albums') : undefined} loading={loadingMore.albums} error={errors.albums}>
+          {#each r.albums as id (id)}
+            {@const s = set(id)}
+            <SetCard {id} subtitle="{s.kind === 'single' ? tr('Сингл') : tr('Альбом')}{s.year ? ` · ${s.year}` : ''} · {s.subtitle}" />
+          {/each}
+        </Shelf>
       {/if}
-      {#if r.playlists.length || r.more?.playlists}
-        <section class="section">
-          <div class="section-head"><h2>{tr('Плейлисты')}</h2></div>
-          <div class="result-group glass track-list">
-            <div class="card-grid">
-              {#each r.playlists.slice(0, visible.playlists) as id (id)}<SetCard {id} size={170} />{/each}
-            </div>
-            {@render moreRow('playlists', r)}
-          </div>
-        </section>
+      {#if r.playlists.length}
+        <Shelf title={tr('Плейлисты')} more={r.more?.playlists ? () => more('playlists') : undefined} loading={loadingMore.playlists} error={errors.playlists}>
+          {#each r.playlists as id (id)}<SetCard {id} />{/each}
+        </Shelf>
       {/if}
     {/if}
   {:catch e}
@@ -265,18 +251,6 @@
 {/snippet}
 
 <style>
-  .card-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
-    gap: 24px 20px;
-    padding: 22px;
-  }
-  .card-grid.artists {
-    grid-template-columns: repeat(auto-fill, minmax(156px, 1fr));
-  }
-  .card-grid > :global(*) {
-    justify-self: center;
-  }
   .chips {
     display: flex;
     flex-wrap: wrap;
@@ -314,22 +288,35 @@
       transform: translateY(-6px) rotate(-4deg);
     }
   }
+  /* On the page grid (app.css): the best result two cards wide, the tracks over the rest; both
+     columns as tall as each other, so neither ends in a gap beside the other. */
   .results {
-    margin-top: 32px;
+    margin-top: 8px;
     display: grid;
-    grid-template-columns: minmax(240px, 320px) minmax(0, 1fr);
-    gap: 24px;
+    grid-template-columns: calc(var(--card) * 2 + var(--gap)) minmax(0, 1fr);
+    gap: var(--gap);
+    align-items: stretch;
+  }
+  .top-result,
+  .top-tracks {
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+  }
+  .top-tracks .result-group {
+    flex: 1;
   }
   .results.without-best {
     grid-template-columns: minmax(0, 1fr);
   }
   .top-card {
     width: 100%;
+    flex: 1;
     display: flex;
     flex-direction: column;
     align-items: flex-start;
-    gap: 10px;
-    padding: 22px;
+    gap: 12px;
+    padding: var(--pad);
     border-radius: var(--r-2xl);
     text-align: left;
     position: relative;
@@ -339,8 +326,8 @@
     background: var(--glass-strong);
   }
   .top-pic {
-    width: 120px;
-    height: 120px;
+    width: min(208px, 58%);
+    aspect-ratio: 1;
     border-radius: var(--r-xl);
     overflow: hidden;
     box-shadow: var(--shadow);
@@ -385,26 +372,9 @@
   .top-play:active {
     border-radius: 30%;
   }
-  .top-tracks {
-    min-width: 0;
-  }
-  @container page (max-width: 760px) {
+  @container page (max-width: 860px) {
     .results {
       grid-template-columns: minmax(0, 1fr);
-    }
-    .card-grid {
-      padding: 18px;
-      gap: 20px 12px;
-      grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
-    }
-    .card-grid :global(.card) {
-      --w: 140px !important;
-    }
-    .card-grid.artists {
-      grid-template-columns: repeat(auto-fill, minmax(132px, 1fr));
-    }
-    .card-grid.artists :global(.artist) {
-      --w: 132px !important;
     }
   }
 </style>

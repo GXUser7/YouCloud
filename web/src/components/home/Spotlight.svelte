@@ -1,8 +1,8 @@
 <script lang="ts">
   // What a service's home leads with, one set at a time, on matte glass: the set's cover large on
-  // the left, its name and what to do with it on the right, and behind both the cover again,
-  // blurred into a glow of its own colours. Under them the other sets of the row as small covers;
-  // picking one brings it into the light. The picked cover takes a cookie's shape, the rest stay
+  // the left, its name and what to do with it on the right, the other sets of the row as small
+  // covers under them; picking one brings it into the light. The glass stays the same whatever
+  // set is picked — only the cover and the words change. The picked cover takes a cookie's shape, the rest stay
   // rounded squares — morphed (lib/shapes), never by animating border-radius.
   import { tr } from '../../lib/i18n.svelte'
   import { set } from '../../lib/catalog'
@@ -42,11 +42,6 @@
 
 {#if picks.length}
   <section class="spotlight glass rise" style:--rest={COVER_REST} style:--hover={COVER_HOVER} aria-label={title}>
-    {#key s.id}
-      <span class="ambient" aria-hidden="true"><Cover seed={s.id} color={s.color} src={s.cover} kind={s.kind} /></span>
-    {/key}
-    <span class="veil" aria-hidden="true"></span>
-
     <button class="cover" onclick={() => go('set/' + s.id)} aria-label={s.title}>
       {#key s.id}
         <span class="cover-art"><Cover seed={s.id} color={s.color} src={s.cover} kind={s.kind} label={s.label} /></span>
@@ -102,51 +97,25 @@
     position: relative;
     isolation: isolate;
     overflow: clip;
-    margin-top: 24px;
+    margin-top: var(--gap);
     border-radius: var(--r-2xl);
-    padding: clamp(20px, 2.4cqw, 32px);
+    padding: var(--pad);
     display: grid;
     grid-template-columns: auto minmax(0, 1fr);
     grid-template-areas:
       'cover info'
       'cover thumbs';
     grid-template-rows: 1fr auto;
-    column-gap: clamp(20px, 3cqw, 40px);
-    row-gap: 20px;
-  }
-
-  /* The cover again, blurred into the panel's own light. */
-  .ambient {
-    position: absolute;
-    inset: -20%;
-    z-index: -2;
-    filter: blur(64px) saturate(1.5);
-    opacity: 0.55;
-    animation: ambient-in var(--d-slow) var(--ease-emph) backwards;
-  }
-  .ambient :global(.cover) {
-    width: 100%;
-    height: 100%;
-  }
-  @keyframes ambient-in {
-    from {
-      opacity: 0;
-    }
-  }
-  .veil {
-    position: absolute;
-    inset: 0;
-    z-index: -1;
-    background: linear-gradient(100deg, color-mix(in oklab, var(--surface) 30%, transparent), color-mix(in oklab, var(--surface) 62%, transparent) 55%);
-  }
-  :global(:root[data-theme='light']) .veil {
-    background: linear-gradient(100deg, color-mix(in oklab, var(--surface) 20%, transparent), color-mix(in oklab, var(--surface) 55%, transparent) 55%);
+    column-gap: var(--gap);
+    row-gap: var(--gap);
   }
 
   /* ---- The cover ---- */
+  /* Two of the grid's cards wide, less the panel's padding: the words then start on the page's
+     fifth column, the edge of the third card in the rows below. */
   .cover {
     grid-area: cover;
-    width: clamp(180px, 17cqw, 240px);
+    width: calc(var(--card) * 2 + var(--gap) - var(--pad));
     aspect-ratio: 1;
     align-self: center;
     filter: drop-shadow(0 22px 32px color-mix(in oklab, #000 45%, transparent));
@@ -178,12 +147,15 @@
   }
 
   /* ---- What it is, and what to do with it ---- */
+  /* The words from the cover's top edge, the small covers on its bottom edge: both lines of the
+     panel are the cover's. */
   .info {
     grid-area: info;
     min-width: 0;
     display: flex;
     flex-direction: column;
-    justify-content: center;
+    justify-content: flex-start;
+    padding-top: 4px;
     align-items: flex-start;
     gap: 14px;
   }
@@ -245,8 +217,9 @@
   /* ---- The other sets of the row ---- */
   .thumbs {
     grid-area: thumbs;
+    align-self: end;
     display: flex;
-    gap: 10px;
+    gap: 12px;
     min-width: 0;
     overflow-x: auto;
     padding: 6px;
@@ -297,9 +270,6 @@
       width: min(240px, 70cqw);
       justify-self: center;
     }
-    .veil {
-      background: color-mix(in oklab, var(--surface) 50%, transparent);
-    }
     .thumb {
       width: 48px;
       height: 48px;
@@ -307,8 +277,7 @@
   }
   @media (prefers-reduced-motion: reduce) {
     .cover-art,
-    .words,
-    .ambient {
+    .words {
       animation: none;
     }
   }
