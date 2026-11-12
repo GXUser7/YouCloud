@@ -44,6 +44,7 @@ import com.example.myapplication.data.SoundCloudMixesRepository
 import com.example.myapplication.data.SoundCloudPlaybackResolver
 import com.example.myapplication.data.SoundCloudSessionRefresher
 import com.example.myapplication.data.SoundCloudTrack
+import com.example.myapplication.data.soundCloudPlaysWhole
 import com.example.myapplication.data.SoundCloudWebRequests
 import com.example.myapplication.data.SoundCloudPlaylist
 import com.example.myapplication.data.SoundCloudMeResponse
@@ -1941,6 +1942,8 @@ class MusicViewModel(
         }
         viewModelScope.launch {
             together.state.collect { state ->
+                com.example.myapplication.player.SessionBridge.followingHost.value =
+                    state is com.example.myapplication.together.TogetherState.Joined
                 if (state !is com.example.myapplication.together.TogetherState.Joined) {
                     followFailures.clear()
                     warnedFailures.clear()
@@ -2694,7 +2697,7 @@ class MusicViewModel(
                             }
                         }
                         
-                        _currentArtistTracks.value = tracksList
+                        _currentArtistTracks.value = tracksList.filter(::isPlayableTrack)
                         _currentArtistPlaylists.value = playlistsList
                     } else {
                         _artistError.value = tr("Не удалось определить ID артиста")
@@ -3740,13 +3743,9 @@ class MusicViewModel(
         if (track.urn?.startsWith("yandex:track:") == true || track.youTubeVideoId != null) {
             return track.streamable == true
         }
-        return track.kind == "track" &&
-            track.streamable == true &&
-            track.policy != "BLOCK" &&
-            track.policy != "SNIP" &&
-            track.policy != "SNIPPET" &&
-            track.policy != "PREVIEW" &&
-            track.media?.transcodings?.isNotEmpty() == true
+        // Blocked here, a Go+ preview, or a label's track with only DRM streams: listed, it would
+        // only fail to play.
+        return track.kind == "track" && soundCloudPlaysWhole(track)
     }
     // The network come back: what failed to come for want of it — home's rows of a service, said
     // as not loaded — comes now, without a tap on its note. Only what failed or never came; what is
@@ -4488,7 +4487,8 @@ class MusicViewModel(
 
             try {
                 if (source == LikesSyncSource.SOUNDCLOUD) {
-                    allTracks.addAll(fetchSoundCloudLikes(userId, clientId))
+                    // What SoundCloud won't play here can't be downloaded either.
+                    allTracks.addAll(fetchSoundCloudLikes(userId, clientId).filter(::isPlayableTrack))
                 } else {
                     val yandexUid = getYandexUid()
                     if (yandexUid != null) {
@@ -5353,7 +5353,7 @@ class MusicViewModel(
                         val numericUserId = artistId.toLongOrNull() ?: 0L
                         if (numericUserId != 0L) {
                             val response = service.getUserTracks(numericUserId, clientIdVal, limit = 100)
-                            _currentArtistTracks.value = response.collection
+                            _currentArtistTracks.value = response.collection.filter(::isPlayableTrack)
                             _isAllArtistTracksLoaded.value = true
                         }
                     }

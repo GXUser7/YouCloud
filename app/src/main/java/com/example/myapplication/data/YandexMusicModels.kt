@@ -75,8 +75,8 @@ data class YandexTrack(
                 )
             },
             duration = durationMs,
-            streamable = true,
-            policy = "ALLOW",
+            streamable = available != false,
+            policy = if (available == false) "BLOCK" else "ALLOW",
             trackAuthorization = null,
             media = null
         )
