@@ -21,9 +21,7 @@
 
 <section class="wave glass rise {size}" class:playing={on} aria-label={tr('Моя волна')}>
   <div class="copy">
-    <span class="overline">{tr('Яндекс Музыка')} · {tr('Для тебя')}</span>
     <h2 class="display">{tr('Моя волна')}</h2>
-    <p class="muted">{tr('Подстраивается под «Нравится» и пропуски')}</p>
   </div>
   <div class="invitation">
     <svg class="orbit" viewBox="0 0 100 100" aria-hidden="true"><path d={shapePath('sunny')} /></svg>
@@ -31,16 +29,16 @@
       <svg viewBox="0 0 100 100" aria-hidden="true"><path d={shape} /></svg>
       <span class="glyph">{#if starting}<LoadingIndicator size={40} contained={false} />{:else}<Icon name={on ? 'pause' : 'play_arrow'} fill size={48} />{/if}</span>
     </button>
-    <span class="play-label" role="status">{starting ? tr('Волна подбирает треки…') : on ? tr('Сейчас играет') : tr('Включить волну')}</span>
+    <span class="sr-only" role="status">{starting ? tr('Волна подбирает треки…') : on ? tr('Сейчас играет') : ''}</span>
   </div>
   <div class="tuning">
     <div class="tuning-row">
       <span class="overline">{tr('Настроение')}</span>
-      <ButtonGroup expressive label={tr('Настроение')} options={WAVE.moods.map((m) => ({ value: m.seed, label: m.title }))} value={app.waveMood} allowNone onchange={(v) => tuneWave('mood', v)} />
+      <ButtonGroup variant="category" label={tr('Настроение')} options={WAVE.moods.map((m) => ({ value: m.seed, label: m.title }))} value={app.waveMood} allowNone onchange={(v) => tuneWave('mood', v)} />
     </div>
     <div class="tuning-row">
       <span class="overline">{tr('Знакомство')}</span>
-      <ButtonGroup expressive label={tr('Знакомство')} options={WAVE.modes.map((m) => ({ value: m.seed, label: m.title }))} value={app.waveMode} allowNone onchange={(v) => tuneWave('mode', v)} />
+      <ButtonGroup variant="category" label={tr('Знакомство')} options={WAVE.modes.map((m) => ({ value: m.seed, label: m.title }))} value={app.waveMode} allowNone onchange={(v) => tuneWave('mode', v)} />
     </div>
   </div>
 </section>
@@ -57,37 +55,43 @@
     overflow: clip;
   }
   .copy { min-width: 0; align-self: center; }
-  h2 { font-size: clamp(36px, 5.6cqw, 76px); line-height: 1.12; margin: 16px 0; overflow-wrap: anywhere; }
-  p { max-width: 42ch; font-size: 17px; }
-  .invitation { position: relative; grid-column: 2; grid-row: 1 / 3; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 24px; min-height: 240px; }
-  .orbit { position: absolute; width: 240px; height: 240px; top: calc(50% - 140px); fill: var(--primary); opacity: 0.08; }
-  .play { width: 144px; height: 144px; position: relative; display: grid; place-items: center; color: var(--on-primary); border-radius: 50%; transition: transform var(--d-fast) var(--spring); }
-  .play > svg { position: absolute; inset: 0; width: 100%; height: 100%; fill: var(--primary); transition: rotate var(--d-slow) var(--spring), d var(--d-slow) var(--spring); }
-  .play:hover { transform: scale(1.04); }
-  .play:active { transform: scale(0.94); }
-  .playing .play > svg { rotate: 22deg; }
-  .glyph { position: relative; display: grid; place-items: center; }
-  .play-label { font-size: 14px; font-weight: 650; text-align: center; }
+  h2 { font-size: clamp(36px, 5.6cqw, 76px); line-height: 1.12; margin: 0; overflow-wrap: anywhere; }
+  .invitation { position: relative; grid-column: 2; grid-row: 1 / 3; display: grid; place-items: center; min-height: 240px; }
+  .orbit { position: absolute; width: 240px; height: 240px; fill: var(--primary); opacity: 0.08; animation: orbit-idle 18s ease-in-out infinite; pointer-events: none; }
+  .play { width: 144px; height: 144px; position: relative; display: grid; place-items: center; color: var(--on-primary); border-radius: 50%; transition: transform var(--d-spatial) var(--spring); }
+  .play > svg { position: absolute; inset: 0; width: 100%; height: 100%; fill: var(--primary); overflow: visible; animation: play-idle 6s ease-in-out infinite; pointer-events: none; }
+  .play > svg > path { transform-origin: 50px 50px; transition: rotate var(--d-spatial) var(--spring), d var(--d-slow) var(--spring), fill 220ms var(--ease-emph); }
+  .play:enabled:hover, .play:focus-visible { transform: translateY(-3px) scale(1.09); }
+  .play:enabled:hover > svg > path, .play:focus-visible > svg > path { rotate: 24deg; fill: color-mix(in oklab, var(--primary) 88%, var(--on-surface)); }
+  .play:enabled:active { transform: scale(0.94); }
+  .playing .play > svg > path { rotate: 22deg; }
+  .glyph { position: relative; display: grid; place-items: center; transition: transform var(--d-spatial) var(--spring); }
+  .play:enabled:hover .glyph { transform: scale(1.06); }
+  .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+  @keyframes play-idle {
+    0%, 100% { transform: translateY(0) rotate(-6deg) scale(0.98); }
+    50% { transform: translateY(-5px) rotate(8deg) scale(1.03); }
+  }
+  @keyframes orbit-idle {
+    0%, 100% { transform: rotate(0deg) scale(0.96); }
+    50% { transform: rotate(-24deg) scale(1.04); }
+  }
   .tuning { display: flex; flex-wrap: wrap; gap: 24px; min-width: 0; align-self: end; }
   .tuning-row { display: flex; flex-direction: column; gap: 10px; min-width: 0; max-width: 100%; }
   .tuning-row .overline { font-size: 11px; letter-spacing: 0.1em; }
-  .tuning :global(.segment) { padding-inline: 16px; }
-  .tuning :global(.segment.selected) { background: var(--secondary-container); color: var(--on-secondary-container); }
   @container page (max-width: 1000px) {
     .wave { grid-template-columns: minmax(0, 1fr) 180px; gap: 24px; }
-    .orbit { width: 180px; height: 180px; top: calc(50% - 110px); }
+    .orbit { width: 180px; height: 180px; }
     .play { width: 128px; height: 128px; }
   }
   @container page (max-width: 600px) {
     .wave { grid-template-columns: minmax(0, 1fr); gap: 24px; padding: 24px; }
-    .invitation { grid-column: 1; grid-row: 2; min-height: 190px; gap: 16px; }
+    .invitation { grid-column: 1; grid-row: 2; min-height: 190px; }
     .tuning { flex-direction: column; gap: 20px; }
-    .tuning :global(.group) { display: flex; width: 100%; }
-    .tuning :global(.segment) { flex: 1; padding-inline: 6px; font-size: 13px; }
     h2 { font-size: clamp(32px, 10cqw, 52px); }
   }
-  @container page (max-width: 420px) {
-    .tuning-row:first-child :global(.group) { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px; }
-    .tuning-row:first-child :global(.segment) { border-radius: var(--r-m); }
+  @media (prefers-reduced-motion: reduce) {
+    .orbit, .play > svg { animation: none; }
+    .play, .play > svg > path, .glyph { transition: none; }
   }
 </style>

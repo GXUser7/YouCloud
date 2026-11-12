@@ -12,6 +12,7 @@
     stretch = false,
     allowNone = false,
     expressive = false,
+    variant = 'default',
     label,
   }: {
     options: { value: T; label: string }[]
@@ -22,11 +23,12 @@
     stretch?: boolean
     allowNone?: boolean
     expressive?: boolean
+    variant?: 'default' | 'category'
     label?: string
   } = $props()
 </script>
 
-<div class="group {size}" class:stretch class:expressive role="radiogroup" aria-label={label}>
+<div class="group {size}" class:stretch class:expressive class:category={variant === 'category'} role="radiogroup" aria-label={label}>
   {#each options as option (option.value)}
     {@const selected = option.value === value}
     <button
@@ -127,6 +129,46 @@
   .expressive .segment:active {
     transform: scale(0.96);
     border-radius: var(--r-full);
+  }
+  .category {
+    display: grid;
+    grid-auto-flow: column;
+    grid-auto-columns: max-content;
+    gap: 3px;
+    max-width: 100%;
+    --h: 52px;
+  }
+  .category .segment {
+    padding: 0 20px;
+    border-radius: 8px;
+    background: var(--secondary-container);
+    color: var(--on-secondary-container);
+    transition: background-color 220ms var(--ease-emph), color 220ms var(--ease-emph);
+  }
+  .category .segment:first-child { border-radius: 26px 8px 8px 26px; }
+  .category .segment:last-child { border-radius: 8px 26px 26px 8px; }
+  .category .segment:only-child { border-radius: 26px; }
+  .category .segment:hover { background: color-mix(in oklab, var(--secondary-container) 85%, var(--on-secondary-container)); }
+  .category .segment.selected {
+    border-radius: 26px;
+    background: var(--primary);
+    color: var(--on-primary);
+  }
+  .category .segment:active { border-radius: 16px; }
+  @container page (max-width: 620px) {
+    .category {
+      grid-auto-flow: row;
+      grid-auto-columns: auto;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      width: 100%;
+    }
+    .category .segment { padding: 0 12px; }
+    .category .segment:first-child { border-radius: 26px 8px 8px 8px; }
+    .category .segment:nth-child(2) { border-radius: 8px 26px 8px 8px; }
+    .category .segment:nth-child(3) { border-radius: 8px 8px 8px 26px; }
+    .category .segment:last-child { border-bottom-right-radius: 26px; }
+    .category .segment:last-child:nth-child(odd) { grid-column: 1 / -1; border-radius: 8px 8px 26px 26px; }
+    .category .segment.selected, .category .segment:only-child { border-radius: 26px; }
   }
   @media (prefers-reduced-motion: reduce) {
     .expressive .segment {

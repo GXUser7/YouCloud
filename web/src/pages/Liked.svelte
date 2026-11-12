@@ -9,6 +9,7 @@
   import { social } from '../lib/social.svelte'
   import { app, player, playQueue, toggle } from '../lib/state.svelte'
   import AccountForm from '../components/AccountForm.svelte'
+  import ButtonGroup from '../components/ButtonGroup.svelte'
   import LikedArt from '../components/LikedArt.svelte'
   import Loading from '../components/Loading.svelte'
   import PlaybackActions from '../components/PlaybackActions.svelte'
@@ -25,6 +26,10 @@
   const shown = $derived(only ? visibleIds.filter((id) => track(id).service === only) : visibleIds)
   const duration = $derived(shown.reduce((sum, id) => sum + (track(id).duration || 0), 0))
   const count = (svc: Service) => visibleIds.filter((id) => track(id).service === svc).length
+  const filters = $derived([
+    { value: 'all' as const, label: tr('Все') },
+    ...SERVICES.filter((s) => count(s.id)).map((s) => ({ value: s.id, label: s.short })),
+  ])
   // Each filter its own queue: playing the Yandex ones isn't playing them all.
   const contextId = $derived(`${ID}:${only ?? 'all'}:${app.showLiveInLiked ? 'live' : 'songs'}`)
 
@@ -82,16 +87,14 @@
       onplay={() => (player.contextId === contextId ? toggle() : playQueue(shown, 0, tr('Любимое'), contextId))}
       onshuffle={shuffle}
     />
-    <div class="filters" role="radiogroup" aria-label={tr('Сервис')}>
-      <button class="category" class:on={!only} role="radio" aria-checked={!only} onclick={() => (only = null)}>{tr('Все')}</button>
-      {#each SERVICES as s (s.id)}
-        {@const n = count(s.id)}
-        {#if n}
-          <button class="category" class:on={only === s.id} role="radio" aria-checked={only === s.id} onclick={() => (only = only === s.id ? null : s.id)}>
-            <ServiceGlyph service={s.id} size={19} />{s.short}<span class="n">{n}</span>
-          </button>
-        {/if}
-      {/each}
+    <div class="filters">
+      <ButtonGroup variant="category" label={tr('Сервис')} options={filters} value={only ?? 'all'} allowNone onchange={(value) => (only = value === 'all' ? null : value)}>
+        {#snippet item(option)}
+          {#if option.value === 'all'}{option.label}{:else}
+            <ServiceGlyph service={option.value} size={19} />{option.label}<span class="n">{count(option.value)}</span>
+          {/if}
+        {/snippet}
+      </ButtonGroup>
     </div>
   </div>
 
@@ -143,53 +146,14 @@
     margin: 32px 0 20px;
   }
   .filters {
-    display: grid;
-    grid-auto-flow: column;
-    grid-auto-columns: max-content;
-    gap: 3px;
     margin-left: 8px;
     max-width: 100%;
   }
-  .category {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    gap: 8px;
-    min-height: 52px;
-    padding: 0 20px;
-    border-radius: 8px;
-    background: var(--secondary-container);
-    color: var(--on-secondary-container);
-    font-size: 14px;
-    font-weight: 650;
-    white-space: nowrap;
-    transition: background-color 220ms var(--ease-emph), color 220ms var(--ease-emph);
-  }
-  .category:first-child { border-radius: 26px 8px 8px 26px; }
-  .category:last-child { border-radius: 8px 26px 26px 8px; }
-  .category:only-child { border-radius: 26px; }
-  .category:hover { background: color-mix(in oklab, var(--secondary-container) 85%, var(--on-secondary-container)); }
-  .category.on {
-    border-radius: 26px;
-    background: var(--primary);
-    color: var(--on-primary);
-  }
-  .category:active { border-radius: 16px; }
   @container page (max-width: 620px) {
     .filters {
-      grid-auto-flow: row;
-      grid-auto-columns: auto;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
       width: 100%;
       margin-left: 0;
     }
-    .category { padding: 0 12px; }
-    .category:first-child { border-radius: 26px 8px 8px 8px; }
-    .category:nth-child(2) { border-radius: 8px 26px 8px 8px; }
-    .category:nth-child(3) { border-radius: 8px 8px 8px 26px; }
-    .category:last-child { border-bottom-right-radius: 26px; }
-    .category:last-child:nth-child(odd) { grid-column: 1 / -1; border-radius: 8px 8px 26px 26px; }
-    .category.on, .category:only-child { border-radius: 26px; }
   }
   .n {
     font-variant-numeric: tabular-nums;
