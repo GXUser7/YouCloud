@@ -5,6 +5,10 @@
   import { tracks } from '../lib/catalog'
   import Cover from './Cover.svelte'
   import Icon from './Icon.svelte'
+  import { roundedSquarePolygon } from '../lib/shapes'
+
+  const TILE_REST = roundedSquarePolygon(0)
+  const TILE_HOVER = roundedSquarePolygon(0.36)
 
   let { ids = [], seed, color }: { ids?: string[]; seed: string; color: string } = $props()
 
@@ -23,7 +27,7 @@
   })
 </script>
 
-<span class="liked-art" class:grid={covers.length === 4} class:empty={!covers.length} style:--c={color}>
+<span class="liked-art" class:grid={covers.length === 4} class:empty={!covers.length} style:--c={color} style:--tile-rest={TILE_REST} style:--tile-hover={TILE_HOVER}>
   {#if covers.length === 4}
     {#each covers as c (c.id)}
       <span class="tile"><Cover seed={c.id} color={c.color} src={c.cover} /></span>
@@ -63,12 +67,18 @@
   .one {
     grid-area: 1 / 1;
   }
-  /* A gap in percent: the art's own width (a container unit here would be the page's). */
+  /* Under the pointer the four part and each rounds its corners — morphed as a polygon, not by
+     animating border-radius (lib/shapes). A gap in percent: the art's own width (a container
+     unit here would be the page's). */
+  .grid .tile {
+    clip-path: var(--tile-rest);
+    transition: transform var(--d-spatial) var(--spring), clip-path var(--d-slow) var(--spring);
+  }
   .grid:hover {
     gap: 3%;
   }
   .grid:hover .tile {
-    border-radius: 18%;
+    clip-path: var(--tile-hover);
   }
   .liked-art:hover .tile :global(.cover) {
     transform: scale(1.06);

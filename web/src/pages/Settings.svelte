@@ -1,7 +1,6 @@
 <script lang="ts">
   import { i18n, setLang, tr, type Lang } from '../lib/i18n.svelte'
   import { transparentInMasaki } from '../lib/masaki.svelte'
-  import { home, HOME_VARIANTS, setHomeVariant } from '../lib/home.svelte'
   import { plural } from '../lib/format'
   import { SERVICES, type Service } from '../lib/catalog'
   import { openLink } from '../lib/links'
@@ -234,14 +233,6 @@
       }}
     />
     {/if}
-    <p class="overline label">{tr('Главная страница')}</p>
-    <ButtonGroup
-      options={HOME_VARIANTS.map((v) => ({ value: v.value, label: v.label }))}
-      value={home.variant}
-      stretch
-      onchange={(v) => v && setHomeVariant(v)}
-    />
-    <p class="muted t-sub layout-hint">{HOME_VARIANTS.find((v) => v.value === home.variant)?.hint}</p>
     <p class="overline label">{tr('Полноэкранный плеер')}</p>
     <ButtonGroup
       options={PLAYER_LOOKS.map((v) => ({ value: v.value, label: v.label }))}

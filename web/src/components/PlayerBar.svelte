@@ -10,8 +10,14 @@
   import Cover from './Cover.svelte'
   import Icon from './Icon.svelte'
   import ServiceGlyph from './ServiceGlyph.svelte'
-  import BarVolume from './BarVolume.svelte'
+  import VolumeControl from './VolumeControl.svelte'
   import WavyProgress from './WavyProgress.svelte'
+  import { clipPolygon, roundedSquarePolygon } from '../lib/shapes'
+
+  // The cover's shapes: a rounded square at rest, a cookie while it plays — morphed between, as
+  // Expressive's shapes are (see polygonFromRadii in lib/shapes).
+  const COVER_REST = roundedSquarePolygon(16 / 24)
+  const COVER_PLAYING = clipPolygon('cookie9', 1.04)
 
   const t = $derived(currentTrack())
   const duration = $derived(player.duration || t?.duration || 0)
@@ -38,7 +44,7 @@
   ]
 </script>
 
-<footer class="bar glass-strong">
+<footer class="bar glass-strong" style:--cover-rest={COVER_REST} style:--cover-playing={COVER_PLAYING}>
   <section class="now">
     {#if t}
       <button class="cover" class:spinning={player.playing} onclick={() => (app.nowPlaying = true)} aria-label={tr('Открыть плеер')} title={tr('Открыть плеер')}>
@@ -63,8 +69,8 @@
     {:else}
       <span class="cover empty"><Icon name="music_note" size={22} /></span>
       <div class="text">
-        <span class="title">{tr('Ничего не играет')}</span>
-        <span class="sub">{tr('Найди трек или включи подборку')}</span>
+        <span class="title ellipsis">{tr('Ничего не играет')}</span>
+        <span class="sub ellipsis">{tr('Найди трек или включи подборку')}</span>
       </div>
     {/if}
   </section>
@@ -94,7 +100,7 @@
         </button>
       {/each}
     </div>
-    <div class="vol"><BarVolume /></div>
+    <div class="vol"><VolumeControl /></div>
   </div>
 </footer>
 
@@ -131,26 +137,23 @@
   .cover {
     width: 48px;
     height: 48px;
-    border-radius: var(--r-m);
-    overflow: hidden;
+    clip-path: var(--cover-rest);
     position: relative;
     flex: none;
     display: grid;
-    box-shadow: 0 6px 16px -8px color-mix(in oklab, #000 70%, transparent);
-    transition: transform var(--d-fast) var(--spring-fast), box-shadow 250ms var(--ease-emph);
+    transition: transform var(--d-fast) var(--spring-fast), clip-path var(--d-slow) var(--spring);
   }
   button.cover:hover {
     transform: scale(1.06);
-    box-shadow: 0 10px 22px -8px color-mix(in oklab, #000 75%, transparent);
   }
   .cover > * {
     grid-area: 1 / 1;
   }
-  /* Playing, the cover rounds into a disc: the shape says it plays before the button does. */
+  /* Playing, the cover morphs into a cookie: the shape says it plays before the button does. */
   .cover.spinning {
-    border-radius: 50%;
+    clip-path: var(--cover-playing);
   }
-  button.cover:active {
+  .cover:active {
     transform: scale(0.94);
   }
   .cover.empty {
@@ -216,13 +219,8 @@
     line-height: 1.3;
     color: var(--on-surface-variant);
   }
-  .link {
-    border-radius: 4px;
-    transition: color 150ms var(--ease-emph);
-  }
   .link:hover {
     text-decoration: underline;
-    text-underline-offset: 2px;
     color: var(--on-surface);
   }
   /* Where it plays from, after the artists: the playlist, the wave, the service. */
@@ -235,25 +233,6 @@
     font-weight: 650;
     color: var(--primary);
     vertical-align: -1px;
-  }
-
-  /* ---- The controls, as the bar has them ----
-     The group's own look (app.css, .xb) — play tonal while paused and in the accent while it
-     plays, a toggle that is on filled and squarer, a pressed button widening — with, in the bar,
-     a veil that grows out of the middle under the pointer and an icon that gives a little under
-     the finger. */
-  .bar :global(.controls .xb:not(.play)::before) {
-    transform: scaleX(var(--sx)) scale(var(--layer, 0.55));
-  }
-  .bar :global(.controls .xb:not(.play):hover) {
-    --layer: 1;
-  }
-  .bar :global(.controls .xb:not(.play):hover::before) {
-    opacity: 0.1;
-  }
-  .bar :global(.controls .xb.opt:active .ic),
-  .bar :global(.controls .xb.like:active .ic) {
-    transform: scale(0.86);
   }
 
   /* ---- Progress ---- */
@@ -321,61 +300,50 @@
   }
   .group {
     display: flex;
-    gap: 2px;
+    gap: 3px;
   }
-  /* The panels, as the bar's other buttons: round and quiet, a veil growing out of the middle
-     under the pointer; open, filled in the accent and squarer, as a toggle that is on — at the
-     same size, so the row doesn't shift when a panel opens. */
   .seg {
     width: 40px;
     height: 40px;
     display: grid;
     place-items: center;
-    position: relative;
-    isolation: isolate;
-    border-radius: 50%;
-    color: var(--on-surface-variant);
-    transition: color 300ms var(--ease-emph), background-color 300ms var(--ease-emph);
+    color: var(--on-surface);
+    background: color-mix(in oklab, var(--on-surface) 8%, transparent);
+    border-radius: 6px;
+    transition: background-color 250ms var(--ease-emph), color 250ms var(--ease-emph), width var(--d-spatial) var(--spring);
   }
-  .seg::before {
-    content: '';
-    position: absolute;
-    inset: 0;
-    z-index: -1;
-    border-radius: inherit;
-    background: currentColor;
-    opacity: 0;
-    transform: scale(0.55);
-    transition: opacity 180ms var(--ease-emph), transform var(--d-fast) var(--spring-fast);
+  .seg:first-child {
+    border-radius: 20px 6px 6px 20px;
   }
-  .seg > :global(*) {
-    transition: transform var(--d-fast) var(--spring-fast);
+  .seg:last-child {
+    border-radius: 6px 20px 20px 6px;
   }
   .seg:hover {
-    color: var(--on-surface);
+    background: color-mix(in oklab, var(--on-surface) 14%, transparent);
   }
-  .seg:hover::before {
-    opacity: 0.1;
-    transform: none;
-  }
+  /* Pressed, a connected group's inner corners sharpen; the outer ones stay round. */
   .seg:active {
-    border-radius: 12px;
+    border-radius: 2px;
   }
-  .seg:active::before {
-    opacity: 0.16;
-    transform: scale(0.9);
+  .seg:first-child:active {
+    border-radius: 20px 2px 2px 20px;
   }
-  .seg:active > :global(*) {
+  .seg:last-child:active {
+    border-radius: 2px 20px 20px 2px;
+  }
+  .seg > :global(.icon) {
+    transition: transform var(--d-fast) var(--spring-fast);
+  }
+  .seg:active > :global(.icon) {
     transform: scale(0.86);
   }
+  /* Selected, it rounds into a pill of its own and takes a little more room. */
   .seg.on,
-  .seg.on:hover {
-    border-radius: 12px;
+  .seg.on:active {
     background: var(--primary);
     color: var(--on-primary);
-  }
-  .seg.on:active {
-    border-radius: 50%;
+    border-radius: 20px;
+    width: 52px;
   }
   .vol {
     display: flex;

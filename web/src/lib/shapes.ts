@@ -120,15 +120,53 @@ export function clipPath(name: ShapeName, size: number): string {
 }
 
 /** For `clip-path: polygon()` on an element of any size: the shape in percentages of its box. */
-export function clipPolygon(name: ShapeName): string {
-  const values = radii(name)
+export function clipPolygon(name: ShapeName, scale = 1): string {
+  return polygonFromRadii(radii(name), scale)
+}
+
+/**
+ * Radii, as [polygonFromRadii] takes them, in a `clip-path: polygon()`. Every shape here has the
+ * same [SAMPLES] points at the same angles, so CSS morphs one into another smoothly — a cover
+ * rounding into a cookie, a circle into a sunny — without animating `border-radius`, which turns
+ * off the blur of the glass around it in Chromium.
+ */
+export function polygonFromRadii(values: number[], scale = 1): string {
   const points: string[] = []
   for (let i = 0; i < values.length; i++) {
     const a = (TAU * i) / values.length - Math.PI / 2
-    points.push(`${(50 + 50 * values[i] * Math.cos(a)).toFixed(2)}% ${(50 + 50 * values[i] * Math.sin(a)).toFixed(2)}%`)
+    points.push(`${(50 + 50 * scale * values[i] * Math.cos(a)).toFixed(2)}% ${(50 + 50 * scale * values[i] * Math.sin(a)).toFixed(2)}%`)
   }
   return `polygon(${points.join(',')})`
 }
+
+const roundedCache = new Map<number, string>()
+
+/**
+ * A square filling its box with corners rounded by [corner] (a share of half its side: 0 is
+ * square, 1 a circle), as a polygon that morphs into the shapes here.
+ */
+export function roundedSquarePolygon(corner: number): string {
+  const key = Math.round(corner * 1000)
+  const cached = roundedCache.get(key)
+  if (cached) return cached
+  const k = 1 - corner
+  const values = Array.from({ length: SAMPLES }, (_, i) => {
+    const a = (TAU * i) / SAMPLES
+    const c = Math.abs(Math.cos(a))
+    const s = Math.abs(Math.sin(a))
+    // Along the ray, the straight edge it meets, unless that point lies in a rounded corner.
+    const edge = 1 / Math.max(c, s)
+    if (Math.min(c, s) * edge <= k) return edge
+    const b = k * (c + s)
+    return b + Math.sqrt(Math.max(0, b * b - 2 * k * k + corner * corner))
+  })
+  const polygon = polygonFromRadii(values)
+  roundedCache.set(key, polygon)
+  return polygon
+}
+
+/** A circle as a polygon, to morph from and into the shapes here. */
+export const CIRCLE_POLYGON = polygonFromRadii(Array.from({ length: SAMPLES }, () => 1))
 
 export const COVER_SHAPES: ShapeName[] = [
   'cookie9',
@@ -144,3 +182,18 @@ export const COVER_SHAPES: ShapeName[] = [
   'cookie4',
   'triangle',
 ]
+
+/**
+ * The shapes the page morphs between, once, as custom properties on the root: a row of a hundred
+ * tracks then names them instead of carrying the polygons itself.
+ *   --shape-circle, --shape-cookie9, --shape-cookie12, --shape-sunny: as named;
+ *   --shape-row: a 52 px track cover's rounded square (14 px corners).
+ */
+export function installShapes(root: HTMLElement = document.documentElement) {
+  const set = (name: string, value: string) => root.style.setProperty(name, value)
+  set('--shape-circle', CIRCLE_POLYGON)
+  set('--shape-cookie9', clipPolygon('cookie9', 1.04))
+  set('--shape-cookie12', clipPolygon('cookie12', 1.02))
+  set('--shape-sunny', clipPolygon('sunny', 1.04))
+  set('--shape-row', roundedSquarePolygon(14 / 26))
+}
