@@ -34,7 +34,7 @@
     color: var(--on-surface-variant);
   }
   h1 {
-    font-size: clamp(36px, 4.2cqw, 60px);
+    font-size: clamp(30px, 3.4cqw, 46px);
   }
   .note {
     font-size: 16px;

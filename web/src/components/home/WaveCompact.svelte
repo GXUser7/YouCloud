@@ -2,8 +2,8 @@
   // «Моя волна» at the top of Yandex's home: its name and what it is on the left, its tuning under
   // them — the mood, and how familiar the music is; on the right the wave itself, a shape that
   // turns, morphs to the mood and plays it. What it plays now is the bar's to say, not repeated
-  // here. All in the scheme's colours (docs/DESIGN.md): the accent marks the shape and what is
-  // picked, and nothing has a rim.
+  // here. All in the scheme's colours (docs/DESIGN.md): the accent is the shape's alone, a picked
+  // chip is tonal, and nothing has a rim.
   import { tr } from '../../lib/i18n.svelte'
   import { pathFromRadii, waveRadii } from '../../lib/shapes'
   import { app, player, startWave, toggle, tuneWave, WAVE } from '../../lib/state.svelte'
@@ -53,7 +53,9 @@
         <div class="chips" role="radiogroup" aria-label={group.label}>
           {#each group.options as m (m.seed)}
             {@const picked = group.value === m.seed}
-            <button class="chip" class:picked role="radio" aria-checked={picked} onclick={() => pick(group.key, m.seed, group.value)}>{m.title}</button>
+            <button class="chip" class:picked role="radio" aria-checked={picked} onclick={() => pick(group.key, m.seed, group.value)}>
+              {#if picked}<span class="check" aria-hidden="true"><Icon name="check" size={18} weight={600} /></span>{/if}{m.title}
+            </button>
           {/each}
         </div>
       </div>
@@ -71,9 +73,11 @@
     grid-template-areas:
       'copy invitation'
       'tuning invitation';
-    grid-template-rows: auto 1fr;
+    /* The words and the tuning sit together in the middle, not pushed apart by the shape's height. */
+    grid-template-rows: auto auto;
+    align-content: center;
     column-gap: clamp(24px, 4cqw, 56px);
-    row-gap: 28px;
+    row-gap: 24px;
     padding: var(--pad);
     margin-top: 24px;
     border-radius: var(--r-2xl);
@@ -113,18 +117,20 @@
     min-width: 0;
     display: flex;
     flex-direction: column;
-    gap: 12px;
+    gap: 8px;
   }
+  /* A headline, not a second display title: the page's greeting above stays the largest words. */
   h2 {
-    font-size: clamp(40px, 5.4cqw, 76px);
-    line-height: 1;
+    font-size: clamp(28px, 2.8cqw, 38px);
+    line-height: 1.1;
     margin: 0;
     overflow-wrap: anywhere;
   }
   .about {
-    max-width: 36ch;
-    font-size: 15.5px;
+    max-width: 52ch;
+    font-size: 15px;
     color: var(--on-surface-variant);
+    text-wrap: pretty;
   }
 
   /* ---- The wave: a shape that plays ---- */
@@ -132,7 +138,7 @@
     grid-area: invitation;
     position: relative;
     align-self: center;
-    width: clamp(220px, 21cqw, 280px);
+    width: clamp(180px, 15cqw, 220px);
     aspect-ratio: 1;
     display: grid;
     place-items: center;
@@ -157,11 +163,11 @@
   /* ---- Tuning: tonal chips; the picked one in the accent, squarer, as a toggle that is on ---- */
   .tuning {
     grid-area: tuning;
-    align-self: end;
+    align-self: start;
     min-width: 0;
     display: flex;
     flex-wrap: wrap;
-    gap: 20px 32px;
+    gap: 18px 32px;
   }
   .tuning-row {
     display: flex;
@@ -202,16 +208,35 @@
     border-radius: var(--r-s);
     transform: scale(0.95);
   }
+  /* Picked, as Material's filter chips are: a check in front, a tint of the scheme's colour and
+     squarer corners — marked, but quieter than the play shape, whose accent stays its own. */
+  .chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+  }
   .chip.picked {
+    padding-left: 12px;
     border-radius: var(--r-s);
-    background: var(--primary);
-    color: var(--on-primary);
+    background: color-mix(in oklab, var(--primary) 24%, transparent);
+    color: var(--on-surface);
   }
   .chip.picked:hover {
-    background: color-mix(in oklab, var(--primary) 90%, var(--on-primary));
+    background: color-mix(in oklab, var(--primary) 32%, transparent);
   }
   .chip.picked:active {
     border-radius: var(--r-full);
+  }
+  .check {
+    display: grid;
+    color: var(--primary);
+    animation: check-in var(--d-fast) var(--spring-fast);
+  }
+  @keyframes check-in {
+    from {
+      transform: scale(0.4) rotate(-30deg);
+      opacity: 0;
+    }
   }
 
   @container page (max-width: 760px) {
@@ -232,14 +257,14 @@
     }
     .invitation {
       justify-self: center;
-      width: min(240px, 72cqw);
+      width: min(200px, 60cqw);
     }
     .tuning {
       flex-direction: column;
       gap: 18px;
     }
     h2 {
-      font-size: clamp(34px, 11cqw, 52px);
+      font-size: clamp(26px, 8cqw, 34px);
     }
     .about {
       font-size: 14.5px;

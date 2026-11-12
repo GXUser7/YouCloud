@@ -67,11 +67,13 @@
 </section>
 
 <style>
+  /* The tiles share the row out among themselves: four of them fill it, rather than leaving the
+     space of a fifth empty at its end. */
   .quick {
-    margin-top: 16px;
+    margin-top: 24px;
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(min(100%, 260px), 1fr));
-    gap: 10px;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr));
+    gap: 12px;
   }
   .tile {
     position: relative;

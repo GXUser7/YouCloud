@@ -102,7 +102,7 @@
     position: relative;
     isolation: isolate;
     overflow: clip;
-    margin-top: 28px;
+    margin-top: 24px;
     border-radius: var(--r-2xl);
     padding: clamp(20px, 2.4cqw, 32px);
     display: grid;
@@ -146,7 +146,7 @@
   /* ---- The cover ---- */
   .cover {
     grid-area: cover;
-    width: clamp(200px, 20cqw, 280px);
+    width: clamp(180px, 17cqw, 240px);
     aspect-ratio: 1;
     align-self: center;
     filter: drop-shadow(0 22px 32px color-mix(in oklab, #000 45%, transparent));
@@ -203,7 +203,7 @@
     animation: words-in var(--d-spatial) var(--ease-in-place) backwards;
   }
   h2 {
-    font-size: clamp(30px, 3.6cqw, 54px);
+    font-size: clamp(26px, 2.8cqw, 40px);
     display: -webkit-box;
     -webkit-line-clamp: 2;
     line-clamp: 2;
