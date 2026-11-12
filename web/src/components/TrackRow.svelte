@@ -156,6 +156,23 @@
   .current .over {
     opacity: 1;
   }
+  /* On the page (not in the full player, which keeps its own feel): under the pointer the cover
+     drifts in a little and the play mark springs up, and gives under the finger. */
+  :global(.shell) .art > :global(.cover) {
+    transition: transform var(--d-spatial) var(--spring);
+  }
+  :global(.shell) .row:hover .art > :global(.cover) {
+    transform: scale(1.08);
+  }
+  :global(.shell) .over > :global(.icon) {
+    transition: transform var(--d-fast) var(--spring-fast);
+  }
+  :global(.shell) .row:not(.current):not(:hover) .over > :global(.icon) {
+    transform: scale(0.6);
+  }
+  :global(.shell) .art:active .over > :global(.icon) {
+    transform: scale(0.85);
+  }
   .pause {
     display: grid;
     place-items: center;

@@ -10,7 +10,7 @@
   import Cover from './Cover.svelte'
   import Icon from './Icon.svelte'
   import ServiceGlyph from './ServiceGlyph.svelte'
-  import VolumeControl from './VolumeControl.svelte'
+  import BarVolume from './BarVolume.svelte'
   import WavyProgress from './WavyProgress.svelte'
 
   const t = $derived(currentTrack())
@@ -94,7 +94,7 @@
         </button>
       {/each}
     </div>
-    <div class="vol"><VolumeControl /></div>
+    <div class="vol"><BarVolume /></div>
   </div>
 </footer>
 
@@ -136,7 +136,12 @@
     position: relative;
     flex: none;
     display: grid;
-    transition: transform var(--d-fast) var(--spring-fast);
+    box-shadow: 0 6px 16px -8px color-mix(in oklab, #000 70%, transparent);
+    transition: transform var(--d-fast) var(--spring-fast), box-shadow 250ms var(--ease-emph);
+  }
+  button.cover:hover {
+    transform: scale(1.06);
+    box-shadow: 0 10px 22px -8px color-mix(in oklab, #000 75%, transparent);
   }
   .cover > * {
     grid-area: 1 / 1;
@@ -145,7 +150,7 @@
   .cover.spinning {
     border-radius: 50%;
   }
-  .cover:active {
+  button.cover:active {
     transform: scale(0.94);
   }
   .cover.empty {
@@ -171,10 +176,19 @@
     background: color-mix(in oklab, #000 40%, transparent);
     color: #fff;
     opacity: 0;
-    transition: opacity 150ms;
+    transition: opacity 180ms var(--ease-emph);
   }
-  .cover:hover .open {
+  .open > :global(*) {
+    transform: scale(0.6);
+    transition: transform var(--d-fast) var(--spring-fast);
+  }
+  .cover:hover .open,
+  .cover:focus-visible .open {
     opacity: 1;
+  }
+  .cover:hover .open > :global(*),
+  .cover:focus-visible .open > :global(*) {
+    transform: none;
   }
   .text {
     min-width: 0;
@@ -202,8 +216,13 @@
     line-height: 1.3;
     color: var(--on-surface-variant);
   }
+  .link {
+    border-radius: 4px;
+    transition: color 150ms var(--ease-emph);
+  }
   .link:hover {
     text-decoration: underline;
+    text-underline-offset: 2px;
     color: var(--on-surface);
   }
   /* Where it plays from, after the artists: the playlist, the wave, the service. */
@@ -216,6 +235,25 @@
     font-weight: 650;
     color: var(--primary);
     vertical-align: -1px;
+  }
+
+  /* ---- The controls, as the bar has them ----
+     The group's own look (app.css, .xb) — play tonal while paused and in the accent while it
+     plays, a toggle that is on filled and squarer, a pressed button widening — with, in the bar,
+     a veil that grows out of the middle under the pointer and an icon that gives a little under
+     the finger. */
+  .bar :global(.controls .xb:not(.play)::before) {
+    transform: scaleX(var(--sx)) scale(var(--layer, 0.55));
+  }
+  .bar :global(.controls .xb:not(.play):hover) {
+    --layer: 1;
+  }
+  .bar :global(.controls .xb:not(.play):hover::before) {
+    opacity: 0.1;
+  }
+  .bar :global(.controls .xb.opt:active .ic),
+  .bar :global(.controls .xb.like:active .ic) {
+    transform: scale(0.86);
   }
 
   /* ---- Progress ---- */
@@ -283,35 +321,61 @@
   }
   .group {
     display: flex;
-    gap: 3px;
+    gap: 2px;
   }
+  /* The panels, as the bar's other buttons: round and quiet, a veil growing out of the middle
+     under the pointer; open, filled in the accent and squarer, as a toggle that is on — at the
+     same size, so the row doesn't shift when a panel opens. */
   .seg {
     width: 40px;
     height: 40px;
     display: grid;
     place-items: center;
-    color: var(--on-surface);
-    background: color-mix(in oklab, var(--on-surface) 8%, transparent);
-    border-radius: 6px;
-    transition: background-color 250ms var(--ease-emph), color 250ms var(--ease-emph), width var(--d-spatial) var(--spring-fast);
+    position: relative;
+    isolation: isolate;
+    border-radius: 50%;
+    color: var(--on-surface-variant);
+    transition: color 300ms var(--ease-emph), background-color 300ms var(--ease-emph);
   }
-  .seg:first-child {
-    border-radius: 20px 6px 6px 20px;
+  .seg::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    z-index: -1;
+    border-radius: inherit;
+    background: currentColor;
+    opacity: 0;
+    transform: scale(0.55);
+    transition: opacity 180ms var(--ease-emph), transform var(--d-fast) var(--spring-fast);
   }
-  .seg:last-child {
-    border-radius: 6px 20px 20px 6px;
+  .seg > :global(*) {
+    transition: transform var(--d-fast) var(--spring-fast);
   }
   .seg:hover {
-    background: color-mix(in oklab, var(--on-surface) 14%, transparent);
+    color: var(--on-surface);
+  }
+  .seg:hover::before {
+    opacity: 0.1;
+    transform: none;
   }
   .seg:active {
-    border-radius: 6px;
+    border-radius: 12px;
   }
-  .seg.on {
+  .seg:active::before {
+    opacity: 0.16;
+    transform: scale(0.9);
+  }
+  .seg:active > :global(*) {
+    transform: scale(0.86);
+  }
+  .seg.on,
+  .seg.on:hover {
+    border-radius: 12px;
     background: var(--primary);
     color: var(--on-primary);
-    border-radius: 20px;
-    width: 48px;
+  }
+  .seg.on:active {
+    border-radius: 50%;
   }
   .vol {
     display: flex;

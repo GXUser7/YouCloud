@@ -1,7 +1,8 @@
 <script lang="ts">
   // The bar over the page, everything of the site in one row: YouCloud and the way back on the
   // left; in the middle the search, with the services inside it — which one is chosen is both what
-  // the page shows and where the search looks; the listener's friends and menu on the right.
+  // the page shows and where the search looks; the likes and the listener's menu on the right.
+  // Friends are in that menu and in the bar's panel, not a button of their own up here.
   import { tick } from 'svelte'
   import { portal } from '../lib/portal'
   import { tr } from '../lib/i18n.svelte'
@@ -147,9 +148,6 @@
   <div class="end">
     <button class="icon-btn glass-strong" class:active={app.route.name === 'liked'} onclick={() => go('liked')} aria-label={tr('Любимое')} title={tr('Любимое')}>
       <Icon name="favorite" fill={app.route.name === 'liked'} size={22} />
-    </button>
-    <button class="icon-btn glass-strong" class:active={app.route.name === 'friends'} onclick={() => go('friends')} aria-label={tr('Друзья')} title={tr('Друзья')}>
-      <Icon name="group" size={22} />
     </button>
     <div class="me-wrap">
       <button class="me" class:open={menu} bind:this={profileButton} onclick={toggleMenu} aria-haspopup="menu" aria-expanded={menu} title={tr('Профиль и настройки')}>
@@ -475,7 +473,7 @@
       padding: 0 11px;
     }
   }
-  /* Narrowest — beside a browser's panel, on a phone: the likes and friends wait in the profile's
+  /* Narrowest — beside a browser's panel, on a phone: the likes wait in the profile's
      menu, the lens leaves its width to the field, and away from home the way back stands for the
      name. */
   @media (max-width: 680px) {

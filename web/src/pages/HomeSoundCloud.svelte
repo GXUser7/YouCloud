@@ -50,7 +50,7 @@
     </Shelf>
   {/each}
   {#if !sections.length}
-    <Problem title={tr('Пусто')} message={tr('SoundCloud ничего не предложил. Попробуй позже.')} onretry={() => (data = live.home('sc'))} />
+    <Problem empty title={tr('Пусто')} message={tr('SoundCloud ничего не предложил. Попробуй позже.')} onretry={() => (data = live.home('sc'))} />
   {/if}
 {:catch e}
   <Problem message={reason(e)} onretry={() => (data = live.home('sc'))} />

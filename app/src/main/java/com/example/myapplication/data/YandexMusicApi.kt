@@ -237,7 +237,12 @@ object YandexMusicApi {
         return Retrofit.Builder()
             .baseUrl(BASE_URL)
             .client(client)
-            .addConverterFactory(GsonConverterFactory.create())
+            // Tracks Yandex won't play here are left out of every answer (see YandexAvailability).
+            .addConverterFactory(
+                GsonConverterFactory.create(
+                    com.google.gson.GsonBuilder().registerTypeAdapterFactory(YandexAvailability).create()
+                )
+            )
             .build()
             .create(YandexMusicService::class.java)
     }

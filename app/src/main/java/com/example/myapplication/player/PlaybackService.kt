@@ -334,6 +334,22 @@ class PlaybackService : MediaLibraryService() {
             private val handler = android.os.Handler(android.os.Looper.getMainLooper())
 
             override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
+                // A track its service won't play (blocked, withdrawn, DRM only): on to the next
+                // one at once, as if it weren't in the queue. Not for a guest listening together,
+                // whose queue is the host's to move.
+                if (com.example.myapplication.data.isTrackUnavailable(error) && !SessionBridge.followingHost.value) {
+                    retries = 0
+                    Log.w("PlaybackService", "Skipping a track that can't be played: ${error.cause?.message}")
+                    handler.post {
+                        if (player.playerError == null) return@post
+                        if (player.hasNextMediaItem()) {
+                            player.seekToNextMediaItem()
+                            player.prepare()
+                            player.play()
+                        }
+                    }
+                    return
+                }
                 if (error.errorCode !in RETRIED_ERRORS || retries >= RETRY_DELAYS_MS.size) {
                     retries = 0
                     return
@@ -729,12 +745,26 @@ class PlaybackService : MediaLibraryService() {
                 )
                 val playbackResolver = com.example.myapplication.data.SoundCloudPlaybackResolver(service)
                 val currentClientId = preferences.getString("soundcloud_client_id", "") ?: clientId
-                val track = service.getTrack(trackId, currentClientId)
+                val track = try {
+                    service.getTrack(trackId, currentClientId)
+                } catch (e: retrofit2.HttpException) {
+                    // Taken down, or hidden from this country.
+                    if (e.code() == 404 || e.code() == 451) {
+                        throw com.example.myapplication.data.TrackUnavailableException("SoundCloud track $trackId: HTTP ${e.code()}")
+                    }
+                    throw e
+                }
+                // Blocked here, a Go+ preview, or DRM streams only: there is nothing to play.
+                if (!com.example.myapplication.data.soundCloudPlaysWhole(track)) {
+                    throw com.example.myapplication.data.TrackUnavailableException("SoundCloud track $trackId isn't playable here (${track.policy})")
+                }
                 playbackResolver.resolve(
                     track,
                     preferences.getString("soundcloud_client_id", "") ?: currentClientId,
                     progressiveFirst = forCast
                 )
+            } catch (e: com.example.myapplication.data.TrackUnavailableException) {
+                throw e
             } catch (e: Exception) {
                 Log.e("PlaybackService", "Error resolving track online: $trackId", e)
                 null
@@ -828,9 +858,32 @@ class PlaybackService : MediaLibraryService() {
                 Log.e("PlaybackService", "Error resolving Yandex track: $trackId", e)
                 null
             }
+            } ?: run {
+                if (yandexTrackUnavailable(rawTrackId, token)) {
+                    throw com.example.myapplication.data.TrackUnavailableException("Yandex track $trackId isn't available")
+                }
+                null
             }
         }
     }
+
+    /**
+     * Whether Yandex itself says [rawTrackId] can't be played (withdrawn, not licensed here): its
+     * details come back without it (see YandexAvailability). False when that couldn't be asked —
+     * no network is no reason to skip a track.
+     */
+    private suspend fun yandexTrackUnavailable(rawTrackId: String, token: String): Boolean =
+        try {
+            kotlinx.coroutines.withTimeout(8_000L) {
+                com.example.myapplication.data.YandexMusicApi.createService { token }
+                    .getTracksDetails(rawTrackId)
+                    .result
+                    .orEmpty()
+                    .none { it.id.substringBefore(':') == rawTrackId }
+            }
+        } catch (e: Exception) {
+            false
+        }
 
     /**
      * Whether lossy tracks are restored, and by which model: the strong one once it is downloaded

@@ -142,6 +142,7 @@ class MusicPlayer(context: Context) {
 
         val items = tracks.map(::toMediaItem)
         player.setMediaItems(items, safeIndex, startPositionMs.coerceAtLeast(0L))
+        expect(tracks)
         player.prepare()
         if (playWhenReady) player.play() else player.pause()
         syncState()
@@ -185,32 +186,48 @@ class MusicPlayer(context: Context) {
         val playingId = player.currentMediaItem?.mediaId ?: return false
         if (tracks[safeIndex].id.toString() != playingId) return false
 
-        // Strip the timeline down to just the playing item, then rebuild around it. Order matters:
-        // trailing items go first so the leading removal does not shift the indices we still need.
+        // Rebuilt around the playing item in an order that a TV's queue takes too: the Cast player
+        // places a change by the item it finds at that index in the queue it last heard of from
+        // the TV, which lags behind what was just asked of it. So every index below still points
+        // at the item it means there — the ones after go, then the ones before are put in ahead of
+        // the playing one (still at currentIndex), then the old ones before it go (still 0 until
+        // currentIndex), and the ones after are added at the end, by no index at all. Done the
+        // other way round, a radio started from the track playing on the TV lost all it added,
+        // and the track couldn't be skipped.
         if (currentIndex + 1 < count) player.removeMediaItems(currentIndex + 1, count)
-        if (currentIndex > 0) player.removeMediaItems(0, currentIndex)
 
         val before = tracks.subList(0, safeIndex).map(::toMediaItem)
         val after = tracks.subList(safeIndex + 1, tracks.size).map(::toMediaItem)
-        if (before.isNotEmpty()) player.addMediaItems(0, before)
-        if (after.isNotEmpty()) player.addMediaItems(player.mediaItemCount, after)
+        if (before.isNotEmpty()) player.addMediaItems(currentIndex, before)
+        if (currentIndex > 0) player.removeMediaItems(0, currentIndex)
+        if (after.isNotEmpty()) player.addMediaItems(after)
 
+        expect(tracks)
         syncState()
         return true
     }
 
     fun updateQueue(tracks: List<QueueTrack>) {
         val player = controller ?: return
-        
+        // The track playing, and the one a crossfade is bringing in, are left as they are: an item
+        // swapped for another (its download done, its address found) starts again from nought — a
+        // track liked in the wave was heard over again once it ended. The service finds a
+        // downloaded file for them by itself. On a TV nothing is swapped: the Cast player swaps
+        // by an index that may point at another item by then.
+        val playing = player.currentMediaItemIndex
+        val shown = shownIndex(player)
+        val casting = AudioOutputs.castingTo.value != null
+
         tracks.forEachIndexed { index, track ->
             if (index < player.mediaItemCount) {
+                if (casting || index == playing || index == shown) return@forEachIndexed
                 val oldItem = player.getMediaItemAt(index)
                 val newUri = track.url
                 if (newUri.isNotEmpty()) {
                     val oldUriStr = oldItem.localConfiguration?.uri?.toString() ?: ""
                     val normOld = if (oldUriStr.startsWith("file://")) oldUriStr.substring(7) else oldUriStr
                     val normNew = if (newUri.startsWith("file://")) newUri.substring(7) else newUri
-                    if (normOld != normNew) {
+                    if (normOld != normNew || oldItem.mediaId != track.id.toString()) {
                         val newItem = toMediaItem(track)
                         player.replaceMediaItem(index, newItem)
                     }
@@ -220,8 +237,43 @@ class MusicPlayer(context: Context) {
             }
         }
         // Remove excess tail items if new list is shorter than old queue
-        while (player.mediaItemCount > tracks.size) {
+        while (player.mediaItemCount > tracks.size && player.mediaItemCount - 1 != playing) {
             player.removeMediaItem(player.mediaItemCount - 1)
+        }
+        expect(tracks)
+    }
+
+    // The queue as the app last laid it out, and how many times it has been put right since.
+    private var expected: List<QueueTrack> = emptyList()
+    private var mendings = 0
+    private var mending: kotlinx.coroutines.Job? = null
+
+    private fun expect(tracks: List<QueueTrack>) {
+        expected = tracks
+        mendings = 0
+    }
+
+    /**
+     * On a TV, puts back the tracks missing from the end of the queue: the TV drops what is added
+     * to its queue before it has loaded the queue itself (a radio's next tracks, asked for the
+     * moment it starts), and says so only by the queue it then reports. Looked at once the TV's
+     * queue has stood still a moment, so a change still on its way isn't taken for one lost. A
+     * queue that differs other than by a missing end is left alone — it was changed on purpose.
+     */
+    private fun mendQueueSoon() {
+        mending?.cancel()
+        if (AudioOutputs.castingTo.value == null) return
+        mending = scope.launch {
+            delay(MEND_AFTER_MS)
+            val player = controller ?: return@launch
+            val wanted = expected
+            val count = player.mediaItemCount
+            if (count == 0 || count >= wanted.size || mendings >= MAX_MENDINGS) return@launch
+            for (i in 0 until count) {
+                if (player.getMediaItemAt(i).mediaId != wanted[i].id.toString()) return@launch
+            }
+            mendings++
+            player.addMediaItems(wanted.drop(count).map(::toMediaItem))
         }
     }
 
@@ -233,6 +285,8 @@ class MusicPlayer(context: Context) {
     fun replaceUpcoming(next: List<QueueTrack>): Boolean {
         val player = controller ?: return false
         if (player.mediaItemCount == 0) return false
+        // The host's queue, not this one's to put right.
+        expect(emptyList())
         val current = player.currentMediaItemIndex
         if (current > 0) player.removeMediaItems(0, current)
         val queued = (1 until player.mediaItemCount).map { player.getMediaItemAt(it).mediaId }
@@ -390,6 +444,9 @@ class MusicPlayer(context: Context) {
 
     fun moveMediaItem(fromIndex: Int, toIndex: Int) {
         controller?.moveMediaItem(fromIndex, toIndex)
+        if (fromIndex in expected.indices && toIndex in expected.indices) {
+            expected = expected.toMutableList().apply { add(toIndex, removeAt(fromIndex)) }
+        }
     }
 
     fun getNextMediaItemIndex(): Int {
@@ -497,6 +554,10 @@ class MusicPlayer(context: Context) {
         override fun onRepeatModeChanged(repeatMode: Int) {
             _repeatMode.value = repeatMode
         }
+
+        override fun onTimelineChanged(timeline: androidx.media3.common.Timeline, reason: Int) {
+            mendQueueSoon()
+        }
     }
 
     data class QueueTrack(
@@ -519,6 +580,12 @@ class MusicPlayer(context: Context) {
         val artist: String?,
         val artworkUrl: String?
     )
+
+    private companion object {
+        // Tries at putting the end of one queue back: a TV that keeps refusing is left as it is.
+        const val MAX_MENDINGS = 4
+        const val MEND_AFTER_MS = 2_500L
+    }
 
     private data class QueueRequest(
         val tracks: List<QueueTrack>,

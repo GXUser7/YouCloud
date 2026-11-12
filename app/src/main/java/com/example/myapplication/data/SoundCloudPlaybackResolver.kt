@@ -5,14 +5,12 @@ class SoundCloudPlaybackResolver(
 ) {
     /** [progressiveFirst]: a single file over a segmented stream, when there is one — for a TV, which can seek in it. */
     suspend fun resolve(track: SoundCloudTrack, clientId: String, progressiveFirst: Boolean = false): String? {
-        if (track.streamable != true || track.policy == "BLOCK" || track.policy == "SNIP") {
-            return null
-        }
+        if (!soundCloudPlaysWhole(track)) return null
 
         val authorization = track.trackAuthorization ?: return null
         val transcoding = track.media
             ?.transcodings
-            ?.filter(::isPlayable)
+            ?.filter(::isWholeStream)
             ?.minByOrNull { if (progressiveFirst && it.format?.protocol == "progressive") -1 else priority(it) }
             ?: return null
 
@@ -21,11 +19,6 @@ class SoundCloudPlaybackResolver(
             clientId = clientId,
             trackAuthorization = authorization
         ).url
-    }
-
-    private fun isPlayable(transcoding: SoundCloudTranscoding): Boolean {
-        val protocol = transcoding.format?.protocol.orEmpty()
-        return !transcoding.snipped && !protocol.contains("encrypted", ignoreCase = true)
     }
 
     private fun priority(transcoding: SoundCloudTranscoding): Int {

@@ -32,6 +32,12 @@ object SessionBridge {
     val crossfadeOverride = MutableStateFlow<Int?>(null)
 
     /**
+     * Listening together as a guest: the host moves the queue, so a track that won't play here
+     * isn't skipped by this phone on its own.
+     */
+    val followingHost = MutableStateFlow(false)
+
+    /**
      * The end of a crossfade: the main player finding its place in the new track, unheard, while
      * the crossfade's other player plays it. It may stop to load meanwhile; the app goes on showing
      * it playing, which, to the ear, it is.

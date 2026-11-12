@@ -50,14 +50,22 @@
     border-radius: var(--r-xl);
     overflow: hidden;
     box-shadow: var(--shadow);
-    transition: transform var(--d-spatial) var(--spring);
+    transition: transform var(--d-spatial) var(--spring), box-shadow 300ms var(--ease-emph);
   }
   .art.round {
     border-radius: 50%;
   }
   .card:hover .art {
     border-radius: var(--r-2xl);
-    transform: translateY(-3px);
+    transform: translateY(-4px);
+    box-shadow: 0 22px 44px -22px color-mix(in oklab, #000 80%, transparent);
+  }
+  /* Under the pointer the cover drifts in a little behind its frame, as the bento's tiles do. */
+  .art > :global(*) {
+    transition: transform var(--d-slow) var(--spring);
+  }
+  .card:hover .art > :global(*) {
+    transform: scale(1.06);
   }
   .card:hover .art.round {
     border-radius: 38%;
@@ -87,8 +95,12 @@
     opacity: 1;
     transform: none;
   }
+  .play:hover {
+    box-shadow: 0 14px 28px -10px color-mix(in oklab, var(--primary) 70%, transparent);
+  }
   .play:active {
     border-radius: 50%;
+    transform: scale(0.92);
   }
   .play.active {
     border-radius: 50%;

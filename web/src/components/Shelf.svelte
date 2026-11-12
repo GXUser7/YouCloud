@@ -36,12 +36,16 @@
     </div>
     <div class="tools">
       {@render action?.()}
-      <button class="icon-btn s glassy" disabled={!canBack} onclick={() => page(-1)} aria-label={tr('Назад')}>
-        <Icon name="chevron_left" />
-      </button>
-      <button class="icon-btn s glassy" disabled={!canForward} onclick={() => page(1)} aria-label={tr('Дальше')}>
-        <Icon name="chevron_right" />
-      </button>
+      <!-- Only when there is more than fits: two dimmed arrows over a row that doesn't scroll
+           pointed at nothing. -->
+      {#if canBack || canForward}
+        <button class="icon-btn s glassy nav" disabled={!canBack} onclick={() => page(-1)} aria-label={tr('Назад')}>
+          <Icon name="chevron_left" />
+        </button>
+        <button class="icon-btn s glassy nav" disabled={!canForward} onclick={() => page(1)} aria-label={tr('Дальше')}>
+          <Icon name="chevron_right" />
+        </button>
+      {/if}
     </div>
   </div>
   <div class="track" bind:this={track} onscroll={update}>
@@ -62,6 +66,15 @@
   .tools button:disabled {
     opacity: 0.3;
     pointer-events: none;
+  }
+  .nav :global(.icon) {
+    transition: transform var(--d-fast) var(--spring-fast);
+  }
+  .nav:first-of-type:hover :global(.icon) {
+    transform: translateX(-2px);
+  }
+  .nav:last-of-type:hover :global(.icon) {
+    transform: translateX(2px);
   }
   .track {
     display: flex;

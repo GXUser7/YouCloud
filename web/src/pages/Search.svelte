@@ -144,7 +144,13 @@
       </div>
     </section>
   {:else}
-    <p class="hint muted rise">{tr('Ищи в %s: трек, артиста или альбом. Сервис выбирается в строке поиска.', serviceName(app.service))}</p>
+    <!-- Nothing asked yet: what search does, said once in the middle of the page rather than as
+         a line lost at its top. -->
+    <section class="hint rise">
+      <span class="hint-mark" aria-hidden="true"><Icon name="search" size={34} /></span>
+      <h2 class="headline">{tr('Поиск')}</h2>
+      <p class="muted">{tr('Ищи в %s: трек, артиста или альбом. Сервис выбирается в строке поиска.', serviceName(app.service))}</p>
+    </section>
   {/if}
 {:else}
   {#await results}
@@ -152,7 +158,7 @@
   {:then initial}
     {@const r = found ?? initial}
     {#if !r.tracks.length && !r.artists.length && !r.albums.length && !r.playlists.length && !Object.values(r.more ?? {}).some(Boolean)}
-      <Problem title={tr('Ничего не нашлось')} message={tr('«%s» в %s не находится. Попробуй написать иначе или поискать в другом сервисе.', app.query, serviceName(app.service))} />
+      <Problem empty title={tr('Ничего не нашлось')} message={tr('«%s» в %s не находится. Попробуй написать иначе или поискать в другом сервисе.', app.query, serviceName(app.service))} />
     {:else}
       <section class="results rise" class:without-best={!r.best}>
         {#if r.best}
@@ -277,8 +283,36 @@
     gap: 8px;
   }
   .hint {
-    margin-top: 32px;
-    font-size: 16px;
+    margin: 12vh auto 0;
+    max-width: 440px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 10px;
+    text-align: center;
+  }
+  .hint h2 {
+    font-size: 26px;
+    margin-top: 8px;
+  }
+  .hint p {
+    font-size: 15.5px;
+    text-wrap: balance;
+  }
+  .hint-mark {
+    width: 88px;
+    height: 88px;
+    display: grid;
+    place-items: center;
+    border-radius: 34%;
+    background: var(--secondary-container);
+    color: var(--on-secondary-container);
+    animation: hint-float 6s ease-in-out infinite;
+  }
+  @keyframes hint-float {
+    50% {
+      transform: translateY(-6px) rotate(-4deg);
+    }
   }
   .results {
     margin-top: 32px;
