@@ -238,28 +238,12 @@
   }
 
   /* ---- The controls, as the bar has them ----
-     The group's own look (app.css, .xb) is the full player's, large buttons on the cover's colours
-     that stretch under the finger. In the bar they are a size smaller and quieter: round, a veil
-     growing out of the middle under the pointer, the icon giving a little as it is pressed; a
-     toggle that is on lights its icon in the theme's colour with a dot under it; play is the one
-     filled button, round whether it plays or not, and glows while it plays. */
-  .bar :global(.controls) {
-    --play-w: 44px;
-    --play-h: 44px;
-    gap: 2px;
-  }
-  .bar :global(.controls .xb) {
-    --press: 1;
-    --squeeze: 1;
-  }
-  .bar :global(.controls .xb:not(.play)),
-  .bar :global(.controls .xb:not(.play):active),
-  .bar :global(.controls .xb.toggle.on),
-  .bar :global(.controls .xb.toggle.on:active) {
-    --r: calc(var(--h) / 2);
-  }
+     The group's own look (app.css, .xb) — play tonal while paused and in the accent while it
+     plays, a toggle that is on filled and squarer, a pressed button widening — with, in the bar,
+     a veil that grows out of the middle under the pointer and an icon that gives a little under
+     the finger. */
   .bar :global(.controls .xb:not(.play)::before) {
-    transform: scale(var(--layer, 0.55));
+    transform: scaleX(var(--sx)) scale(var(--layer, 0.55));
   }
   .bar :global(.controls .xb:not(.play):hover) {
     --layer: 1;
@@ -267,59 +251,9 @@
   .bar :global(.controls .xb:not(.play):hover::before) {
     opacity: 0.1;
   }
-  .bar :global(.controls .xb:not(.play):active) {
-    --layer: 0.9;
-  }
-  .bar :global(.controls .xb:not(.play):active::before) {
-    opacity: 0.16;
-  }
   .bar :global(.controls .xb.opt:active .ic),
   .bar :global(.controls .xb.like:active .ic) {
     transform: scale(0.86);
-  }
-  .bar :global(.controls .xb.toggle.on),
-  .bar :global(.controls .xb.toggle.on:hover) {
-    --fill: transparent;
-    color: var(--primary);
-  }
-  .bar :global(.controls .xb.toggle:not(.like)::after) {
-    inset: auto auto 1px calc(50% - 2px);
-    width: 4px;
-    height: 4px;
-    border-radius: 50%;
-    background: var(--primary);
-    opacity: 0;
-    transform: scale(0);
-  }
-  .bar :global(.controls .xb.toggle.on:not(.like)::after) {
-    opacity: 1;
-    transform: none;
-  }
-  .bar :global(.controls .xb.play),
-  .bar :global(.controls .xb.play.playing),
-  .bar :global(.controls .xb.play:active) {
-    --fill: var(--primary);
-    --r: calc(var(--play-h) / 2);
-    color: var(--on-primary);
-  }
-  .bar :global(.controls .xb.play) {
-    margin: 0 6px;
-    box-shadow: 0 6px 16px -10px color-mix(in oklab, #000 80%, transparent);
-    transition:
-      color 250ms var(--ease-emph),
-      box-shadow 300ms var(--ease-emph),
-      transform var(--d-fast) var(--spring-fast);
-  }
-  .bar :global(.controls .xb.play.playing) {
-    box-shadow: 0 8px 22px -8px color-mix(in oklab, var(--primary) 80%, transparent);
-  }
-  .bar :global(.controls .xb.play:hover) {
-    color: var(--on-primary);
-    transform: scale(1.07);
-    box-shadow: 0 10px 26px -8px color-mix(in oklab, var(--primary) 85%, transparent);
-  }
-  .bar :global(.controls .xb.play:active) {
-    transform: scale(0.92);
   }
 
   /* ---- Progress ---- */
@@ -389,9 +323,9 @@
     display: flex;
     gap: 2px;
   }
-  /* The panels, as the bar's other buttons: round and quiet; under the pointer a veil grows out of
-     the middle; open, a tone of the theme's colour behind a filled icon, at the same size — the
-     row doesn't shift when a panel opens. */
+  /* The panels, as the bar's other buttons: round and quiet, a veil growing out of the middle
+     under the pointer; open, filled in the accent and squarer, as a toggle that is on — at the
+     same size, so the row doesn't shift when a panel opens. */
   .seg {
     width: 40px;
     height: 40px;
@@ -401,7 +335,7 @@
     isolation: isolate;
     border-radius: 50%;
     color: var(--on-surface-variant);
-    transition: color 200ms var(--ease-emph);
+    transition: color 300ms var(--ease-emph), background-color 300ms var(--ease-emph);
   }
   .seg::before {
     content: '';
@@ -412,7 +346,7 @@
     background: currentColor;
     opacity: 0;
     transform: scale(0.55);
-    transition: opacity 180ms var(--ease-emph), transform var(--d-fast) var(--spring-fast), background-color 200ms var(--ease-emph);
+    transition: opacity 180ms var(--ease-emph), transform var(--d-fast) var(--spring-fast);
   }
   .seg > :global(*) {
     transition: transform var(--d-fast) var(--spring-fast);
@@ -424,23 +358,24 @@
     opacity: 0.1;
     transform: none;
   }
+  .seg:active {
+    border-radius: 12px;
+  }
   .seg:active::before {
     opacity: 0.16;
     transform: scale(0.9);
   }
   .seg:active > :global(*) {
-    transform: scale(0.88);
+    transform: scale(0.86);
   }
-  .seg.on {
-    color: var(--primary);
-  }
-  .seg.on::before {
+  .seg.on,
+  .seg.on:hover {
+    border-radius: 12px;
     background: var(--primary);
-    opacity: 0.18;
-    transform: none;
+    color: var(--on-primary);
   }
-  .seg.on:hover::before {
-    opacity: 0.24;
+  .seg.on:active {
+    border-radius: 50%;
   }
   .vol {
     display: flex;

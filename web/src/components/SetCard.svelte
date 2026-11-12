@@ -118,10 +118,6 @@
     max-width: 100%;
     font-weight: 700;
     font-size: 15.5px;
-    transition: color 200ms var(--ease-emph);
-  }
-  .card:hover .title {
-    color: var(--primary);
   }
   .sub {
     max-width: 100%;
