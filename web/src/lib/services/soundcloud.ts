@@ -312,6 +312,16 @@ export const art = (url: string | null | undefined, size = 't500x500') => (url ?
 
 const hasDetails = (t: ScTrack) => !!t.title
 
+/** Blocked here, or a label's track with only DRM streams, which no player outside SoundCloud's
+ *  own opens. Known only once its streams are; a track listed by its id alone counts as playable
+ *  until then. */
+function scPlayable(t: ScTrack): boolean {
+  if (t.streamable === false || t.policy === 'BLOCK') return false
+  const streams = t.media?.transcodings
+  if (!streams?.length) return true
+  return streams.some((x) => !x.format.protocol.includes('encrypted'))
+}
+
 export function putScTrack(t: ScTrack): string {
   const id = `sc:t:${t.id}`
   const artistName = t.publisher_metadata?.artist?.trim() || t.user?.username || 'SoundCloud'
@@ -325,7 +335,7 @@ export function putScTrack(t: ScTrack): string {
     color: colorFor(id),
     explicit: !!t.publisher_metadata?.explicit,
     link: t.permalink_url,
-    playable: t.streamable !== false && t.policy !== 'BLOCK',
+    playable: scPlayable(t),
     sc: { transcodings: t.media?.transcodings ?? [], auth: t.track_authorization },
   })
 }

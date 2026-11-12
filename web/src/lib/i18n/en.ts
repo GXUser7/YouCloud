@@ -96,6 +96,8 @@ export const EN: Record<string, string> = {
   'Перемотка': 'Seek',
   '%s из %s': '%s of %s',
   'Громкость': 'Volume',
+  'Без звука': 'Mute',
+  'Включить звук': 'Unmute',
   'Громкость: колёсико или перетаскивание, клик по значку — без звука': 'Volume: scroll or drag, click the icon to mute',
   'Сейчас играет': 'Now playing',
   'Свернуть': 'Collapse',

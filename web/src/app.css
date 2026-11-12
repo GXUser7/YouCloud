@@ -608,6 +608,24 @@ p {
   fill: currentColor;
 }
 
+/* A filled or tonal button that can't be pressed yet (a form not filled in) goes grey, as
+   Material's disabled buttons do, rather than fading its colour into a muddy brown on the glass. */
+.shell .btn.filled:disabled,
+.shell .btn.tonal:disabled {
+  opacity: 1;
+  background: color-mix(in oklab, var(--on-surface) 10%, transparent);
+  color: color-mix(in oklab, var(--on-surface) 42%, transparent);
+}
+
+/* Pressed, the page's buttons give a little under the finger. Only the page's (.shell): the full
+   player sits outside it and has its own feel. */
+.shell .btn:active {
+  transform: scale(0.97);
+}
+.shell .icon-btn:active {
+  transform: scale(0.9);
+}
+
 /* ---- Chips ---- */
 
 .chip {
@@ -624,6 +642,12 @@ p {
 }
 button.chip:hover {
   background: color-mix(in oklab, var(--on-surface) 14%, transparent);
+}
+.shell button.chip {
+  transition: background-color 200ms var(--ease-emph), transform var(--d-fast) var(--spring-fast);
+}
+.shell button.chip:active {
+  transform: scale(0.95);
 }
 button.chip:active {
   border-radius: var(--r-xs);
@@ -667,8 +691,8 @@ button.chip:active {
   overflow: hidden;
   padding: 4px;
 }
-.track-list .row { border-radius: 0; }
-.track-list .row.current { border-radius: var(--r-l); background: var(--state-hover); }
+.track-list .row { border-radius: var(--r-l); }
+.track-list .row.current { background: var(--state-hover); }
 .track-list .row + .row::before {
   content: '';
   position: absolute;
@@ -677,6 +701,13 @@ button.chip:active {
   right: 12px;
   height: 1px;
   background: var(--glass-line);
+  transition: opacity 150ms var(--ease-emph);
+}
+/* A row lit up (under the pointer, or playing) is a rounded tile of its own: the lines on its
+   edges step aside rather than cut across its corners. */
+.track-list .row:is(:hover, :focus-within, .current)::before,
+.track-list .row:is(:hover, :focus-within, .current) + .row::before {
+  opacity: 0;
 }
 .track-list .row:has(.num) + .row::before { left: 110px; }
 @container page (max-width: 600px) {

@@ -95,7 +95,7 @@
       </Shelf>
     {/if}
   {:else}
-    <Problem title={tr('Пусто')} message={tr('YouTube Music ничего не предложил.')} onretry={() => (data = live.home('yt'))} />
+    <Problem empty title={tr('Пусто')} message={tr('YouTube Music ничего не предложил.')} onretry={() => (data = live.home('yt'))} />
   {/each}
 {:catch e}
   <Problem message={reason(e)} onretry={() => (data = live.home('yt'))} />

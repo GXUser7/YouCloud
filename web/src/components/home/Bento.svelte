@@ -47,7 +47,7 @@
   }
 </script>
 
-<section class="bento rise" class:two={!smalls.length}>
+<section class="bento rise" class:two={!smalls.length} class:solo={!main && !first}>
   {#if main}
     <div class="tile main custom">{@render main()}</div>
   {:else if first}
@@ -304,6 +304,29 @@
   }
   .pop:active {
     border-radius: 50%;
+  }
+
+  /* Nothing from the service to lead with (it suggested nothing, or hasn't yet): the likes alone,
+     across the whole row, rather than stranded in the second column beside an empty first. */
+  .bento.solo {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto;
+    height: auto;
+  }
+  .bento.solo .liked {
+    grid-column: 1;
+    grid-row: 1;
+    flex-direction: row;
+    align-items: center;
+    gap: 22px;
+  }
+  .bento.solo .liked-art {
+    flex: none;
+    width: 168px;
+    height: 168px;
+  }
+  .bento.solo .liked-info {
+    flex: 1;
   }
 
   @container page (max-width: 980px) {
