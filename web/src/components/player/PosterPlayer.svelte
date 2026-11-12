@@ -189,6 +189,9 @@
     --r-2xl: 24px;
     --paper: var(--primary);
     --ink: var(--on-primary);
+    /* The scheme's accent, kept under its own name: parts of the poster take --primary for ink. */
+    --accent: var(--primary);
+    --on-accent: var(--on-primary);
     /* What the shadows are cast in: the ink on paper; plain black on the wave, whose ink is light. */
     --shade: var(--ink);
     position: fixed;
@@ -605,6 +608,25 @@
   .vol-host :global(.round.on) {
     border-radius: 15px;
     background: var(--ink);
+  }
+  /* On the wave the paper is the page's own surface, not the accent: what is on — play while it
+     plays, a toggle, the words or the queue open, the volume's button — takes the cover's accent,
+     as it does everywhere else, rather than the ink. */
+  .waved .capsule {
+    --primary: var(--accent);
+    --on-primary: var(--on-accent);
+  }
+  .waved .pb.on {
+    background: var(--accent);
+    color: var(--on-accent);
+  }
+  .waved .vol-host {
+    --primary: var(--accent);
+    --on-primary: var(--on-accent);
+  }
+  .waved .vol-host :global(.round.on) {
+    background: var(--accent);
+    color: var(--on-accent);
   }
   /* The track's menu: its button in ink like the rest; the menu itself keeps the page's colours. */
   .menu-host {
