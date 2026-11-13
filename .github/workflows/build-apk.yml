@@ -1,12 +1,15 @@
 name: Build APK
 
-# A signed release APK for every commit, on any branch. It is kept as this run's artifact only:
-# nothing is published, so the in-app updater (which reads GitHub releases) never sees these builds.
-# Releases are still made by hand.
+# Every branch push produces a signed APK artifact. Pushing a version tag also publishes that
+# APK to GitHub Releases, where the app's updater can find it. Annotated tags supply release notes.
 on:
   workflow_dispatch:
   push:
     branches: ["**"]
+    tags: ["v*"]
+
+permissions:
+  contents: read
 
 # A newer push to the same branch makes the build still running for it pointless.
 concurrency:
@@ -16,6 +19,8 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
+    outputs:
+      artifact_name: ${{ steps.apk.outputs.name }}
     steps:
       - uses: actions/checkout@v7
 
@@ -73,3 +78,36 @@ jobs:
           name: ${{ steps.apk.outputs.name }}
           path: app/build/outputs/apk/release/*.apk
           retention-days: 30
+
+  publish:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v7
+        with:
+          name: ${{ needs.build.outputs.artifact_name }}
+          path: release-apk
+
+      - name: Publish signed APK to GitHub Releases
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          apk="release-apk/YouCloud.${GITHUB_REF_NAME#v}.apk"
+          if [ ! -f "$apk" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match the built APK version"
+            exit 1
+          fi
+          if gh release view "$GITHUB_REF_NAME" --json assets --jq '.assets[].name' > release-assets.txt; then
+            # A rerun keeps an already published APK; an interrupted upload can be completed.
+            if ! grep -Fxq "$(basename "$apk")" release-assets.txt; then
+              gh release upload "$GITHUB_REF_NAME" "$apk"
+            fi
+          else
+            gh release create "$GITHUB_REF_NAME" "$apk" \
+              --verify-tag --title "YouCloud ${GITHUB_REF_NAME#v}" --notes-from-tag --latest
+          fi
