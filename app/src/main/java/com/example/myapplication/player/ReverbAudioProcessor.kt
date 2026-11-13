@@ -22,6 +22,7 @@ class ReverbAudioProcessor : BaseAudioProcessor() {
     var amount: Int = 0
 
     private var channels = 0
+    private var sampleRate = 0
     private var combs: Array<Array<Comb>> = emptyArray()
     private var allPasses: Array<Array<AllPass>> = emptyArray()
     // Whether the filters hold anything: a reverb turned off rings out once, then is passed over.
@@ -34,15 +35,7 @@ class ReverbAudioProcessor : BaseAudioProcessor() {
         if (inputAudioFormat.encoding != C.ENCODING_PCM_16BIT || inputAudioFormat.channelCount !in 1..2) {
             return AudioFormat.NOT_SET
         }
-        channels = inputAudioFormat.channelCount
-        val scale = inputAudioFormat.sampleRate / 44_100f
-        combs = Array(channels) { channel ->
-            Array(COMB_TUNING.size) { Comb(((COMB_TUNING[it] + channel * STEREO_SPREAD) * scale).toInt().coerceAtLeast(1)) }
-        }
-        allPasses = Array(channels) { channel ->
-            Array(ALLPASS_TUNING.size) { AllPass(((ALLPASS_TUNING[it] + channel * STEREO_SPREAD) * scale).toInt().coerceAtLeast(1)) }
-        }
-        ringing = false
+        // The current stream may still have samples to process until the next flush.
         return inputAudioFormat
     }
 
@@ -85,6 +78,19 @@ class ReverbAudioProcessor : BaseAudioProcessor() {
     }
 
     override fun onFlush() {
+        if (outputAudioFormat != AudioFormat.NOT_SET &&
+            (channels != inputAudioFormat.channelCount || sampleRate != inputAudioFormat.sampleRate)
+        ) {
+            channels = inputAudioFormat.channelCount
+            sampleRate = inputAudioFormat.sampleRate
+            val scale = sampleRate / 44_100f
+            combs = Array(channels) { channel ->
+                Array(COMB_TUNING.size) { Comb(((COMB_TUNING[it] + channel * STEREO_SPREAD) * scale).toInt().coerceAtLeast(1)) }
+            }
+            allPasses = Array(channels) { channel ->
+                Array(ALLPASS_TUNING.size) { AllPass(((ALLPASS_TUNING[it] + channel * STEREO_SPREAD) * scale).toInt().coerceAtLeast(1)) }
+            }
+        }
         combs.forEach { row -> row.forEach(Comb::clear) }
         allPasses.forEach { row -> row.forEach(AllPass::clear) }
         ringing = false
@@ -94,6 +100,7 @@ class ReverbAudioProcessor : BaseAudioProcessor() {
         combs = emptyArray()
         allPasses = emptyArray()
         channels = 0
+        sampleRate = 0
         ringing = false
     }
 

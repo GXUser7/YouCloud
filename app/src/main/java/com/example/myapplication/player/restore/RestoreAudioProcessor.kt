@@ -85,6 +85,7 @@ class RestoreAudioProcessor(
 
     private var channels = 0
     private var rate = 0
+    private var reconfigureOnFlush = false
     private val fft = Fft(frame)
 
     // The last frame of input, per channel, as it came; and what is made over the cutoff, added up
@@ -154,6 +155,9 @@ class RestoreAudioProcessor(
     private var warmFrames = 0L
 
     override fun onConfigure(inputAudioFormat: AudioFormat): AudioFormat {
+        // Media3 configures the next track before draining the current one. Its channels,
+        // buffered samples and end-of-stream state must stay intact until flush applies it.
+        reconfigureOnFlush = true
         // Plain 16-bit sound in one or two channels, at a rate whose top reaches over 18 kHz.
         if (inputAudioFormat.encoding != C.ENCODING_PCM_16BIT ||
             inputAudioFormat.channelCount !in 1..2 ||
@@ -161,9 +165,6 @@ class RestoreAudioProcessor(
         ) {
             return AudioFormat.NOT_SET
         }
-        channels = inputAudioFormat.channelCount
-        rate = inputAudioFormat.sampleRate
-        forgetSound()
         return inputAudioFormat
     }
 
@@ -186,6 +187,9 @@ class RestoreAudioProcessor(
     }
 
     override fun onQueueEndOfStream() {
+        // The pipeline may repeat this signal while the preceding processor is ended. Do not
+        // clear the output buffer it is still consuming, or produce the same tail again.
+        if (limit != Long.MAX_VALUE) return
         // What is still held back, let out by silence after it.
         limit = received
         val out = replaceOutputBuffer((frame + hop) * 2 * channels).order(ByteOrder.nativeOrder())
@@ -607,7 +611,14 @@ class RestoreAudioProcessor(
     }
 
     override fun onFlush() {
-        restart()
+        if (reconfigureOnFlush) {
+            channels = if (outputAudioFormat == AudioFormat.NOT_SET) 0 else inputAudioFormat.channelCount
+            rate = if (outputAudioFormat == AudioFormat.NOT_SET) 0 else inputAudioFormat.sampleRate
+            forgetSound()
+            reconfigureOnFlush = false
+        } else {
+            restart()
+        }
     }
 
     private companion object {
@@ -654,6 +665,7 @@ class RestoreAudioProcessor(
         forgetSound()
         channels = 0
         rate = 0
+        reconfigureOnFlush = false
         level = Level.Model
     }
 }

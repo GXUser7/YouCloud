@@ -40,10 +40,7 @@ class GainAudioProcessor : BaseAudioProcessor() {
         if (inputAudioFormat.encoding != C.ENCODING_PCM_16BIT || inputAudioFormat.channelCount !in 1..2) {
             return AudioFormat.NOT_SET
         }
-        channels = inputAudioFormat.channelCount
-        val rate = inputAudioFormat.sampleRate.toFloat()
-        glide = 1f - exp(-1f / (GLIDE_SECONDS * rate))
-        release = 1f - exp(-1f / (RELEASE_SECONDS * rate))
+        // The next track's format takes effect on flush, after the current one has drained.
         return inputAudioFormat
     }
 
@@ -82,6 +79,12 @@ class GainAudioProcessor : BaseAudioProcessor() {
     }
 
     override fun onFlush() {
+        if (outputAudioFormat != AudioFormat.NOT_SET) {
+            channels = inputAudioFormat.channelCount
+            val rate = inputAudioFormat.sampleRate.toFloat()
+            glide = 1f - exp(-1f / (GLIDE_SECONDS * rate))
+            release = 1f - exp(-1f / (RELEASE_SECONDS * rate))
+        }
         reduction = 1f
         gain = percent.coerceIn(10, 1_000) / 100f
     }
