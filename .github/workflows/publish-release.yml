@@ -1,0 +1,53 @@
+name: Publish existing release APK
+
+# Retry publication without rebuilding or changing the immutable version tag. For example,
+# push publish-v7.3.1, or dispatch this workflow with tag v7.3.1 in GitHub Actions.
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing version tag, for example v7.3.1
+        required: true
+        type: string
+  push:
+    tags: ["publish-v*"]
+
+concurrency:
+  group: publish-release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+permissions:
+  actions: read
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Publish the APK built for the version tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          tag="${INPUT_TAG:-${GITHUB_REF_NAME#publish-}}"
+          if [[ ! "$tag" =~ ^v[0-9]+(\.[0-9]+){1,2}$ ]]; then
+            echo "::error::Expected a version tag such as v7.3.1"
+            exit 1
+          fi
+          commit=$(git rev-parse --verify "refs/tags/$tag^{commit}")
+          # A run whose publication failed can still have a successfully signed APK artifact.
+          run_id=$(gh run list --workflow build-apk.yml --event push --branch "$tag" \
+            --commit "$commit" --limit 1 --json databaseId --jq '.[0].databaseId')
+          if [ -z "$run_id" ] || [ "$run_id" = null ]; then
+            echo "::error::No APK build found for $tag at $commit"
+            exit 1
+          fi
+          artifact="YouCloud.${tag#v}-${commit:0:7}"
+          gh run download "$run_id" --name "$artifact" --dir release-apk
+          bash .github/scripts/publish-release.sh "$tag" release-apk

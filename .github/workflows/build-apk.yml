@@ -86,6 +86,11 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v7
+        with:
+          # gh --notes-from-tag reads the local annotated tag, not only its remote metadata.
+          fetch-depth: 0
+
       - uses: actions/download-artifact@v7
         with:
           name: ${{ needs.build.outputs.artifact_name }}
@@ -95,19 +100,4 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-        run: |
-          set -euo pipefail
-          apk="release-apk/YouCloud.${GITHUB_REF_NAME#v}.apk"
-          if [ ! -f "$apk" ]; then
-            echo "::error::Tag $GITHUB_REF_NAME does not match the built APK version"
-            exit 1
-          fi
-          if gh release view "$GITHUB_REF_NAME" --json assets --jq '.assets[].name' > release-assets.txt; then
-            # A rerun keeps an already published APK; an interrupted upload can be completed.
-            if ! grep -Fxq "$(basename "$apk")" release-assets.txt; then
-              gh release upload "$GITHUB_REF_NAME" "$apk"
-            fi
-          else
-            gh release create "$GITHUB_REF_NAME" "$apk" \
-              --verify-tag --title "YouCloud ${GITHUB_REF_NAME#v}" --notes-from-tag --latest
-          fi
+        run: bash .github/scripts/publish-release.sh "$GITHUB_REF_NAME" release-apk
