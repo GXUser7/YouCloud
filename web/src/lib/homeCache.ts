@@ -275,12 +275,29 @@ function isPlainObject(v: unknown): v is Record<string, unknown> {
   return !!v && typeof v === 'object' && !Array.isArray(v)
 }
 
-function isEntityMap(v: unknown): boolean {
+function hasOwnPlain(map: Record<string, Record<string, unknown>>, id: string): boolean {
+  return Object.hasOwn(map, id) && isPlainObject(map[id])
+}
+
+function isEntityMap(
+  v: unknown,
+  checkEntry?: (entry: Record<string, unknown>) => boolean,
+): v is Record<string, Record<string, unknown>> {
   if (!isPlainObject(v)) return false
   for (const entry of Object.values(v)) {
     if (!isPlainObject(entry) || typeof entry.id !== 'string') return false
+    if (checkEntry && !checkEntry(entry)) return false
   }
   return true
+}
+
+function isValidTrack(entry: Record<string, unknown>): boolean {
+  if (!Array.isArray(entry.artists)) return false
+  return entry.artists.every((a) => isPlainObject(a) && typeof a.id === 'string' && typeof a.name === 'string')
+}
+
+function isValidSet(entry: Record<string, unknown>): boolean {
+  return Array.isArray(entry.tracks) && entry.tracks.every((id) => typeof id === 'string')
 }
 
 function isValidSection(sec: unknown): boolean {
@@ -307,18 +324,39 @@ function isValidSnapshot(raw: unknown): raw is HomeSnapshot {
   ) {
     return false
   }
+  const tracks = raw.tracks
+  const sets = raw.sets
+  const artists = raw.artists
+  if (!isEntityMap(tracks, isValidTrack) || !isEntityMap(sets, isValidSet) || !isEntityMap(artists)) {
+    return false
+  }
+
+  for (const sec of s.sections) {
+    if (!sec.sets.every((id) => typeof id === 'string' && hasOwnPlain(sets, id))) return false
+    if (sec.tracks !== undefined && !sec.tracks.every((id) => typeof id === 'string' && hasOwnPlain(tracks, id))) {
+      return false
+    }
+  }
+
   if (s.lib !== null) {
     if (
       !isPlainObject(s.lib) ||
       typeof s.lib.liked !== 'string' ||
+      !hasOwnPlain(sets, s.lib.liked) ||
       !Array.isArray(s.lib.likedIds) ||
       !Array.isArray(s.lib.playlists) ||
       !Array.isArray(s.lib.artists)
     ) {
       return false
     }
+    const likedLoaded = sets[s.lib.liked].loaded === true
+    if (!s.lib.likedIds.every((id) => typeof id === 'string' && (!likedLoaded || hasOwnPlain(tracks, id)))) {
+      return false
+    }
+    if (!s.lib.playlists.every((id) => typeof id === 'string' && hasOwnPlain(sets, id))) return false
+    if (!s.lib.artists.every((id) => typeof id === 'string' && hasOwnPlain(artists, id))) return false
   }
-  return isEntityMap(s.tracks) && isEntityMap(s.sets) && isEntityMap(s.artists)
+  return true
 }
 
 function withTimeout<T>(work: Promise<T>, fallback: T): Promise<T> {
@@ -366,6 +404,8 @@ async function idbGet(key: string): Promise<HomeSnapshot | null> {
       new Promise<HomeSnapshot | null>((resolve) => {
         try {
           const tx = db.transaction(STORE_NAME, 'readonly')
+          tx.onabort = () => resolve(null)
+          tx.onerror = () => resolve(null)
           const req = tx.objectStore(STORE_NAME).get(key)
           req.onsuccess = () => {
             const rec = req.result as StoredRecord | undefined
@@ -387,10 +427,12 @@ async function idbGet(key: string): Promise<HomeSnapshot | null> {
   }
 }
 
-async function idbPut(key: string, snapshot: HomeSnapshot): Promise<boolean> {
+async function idbPut(key: string, snapshot: HomeSnapshot, shouldAbort?: () => boolean): Promise<boolean> {
+  if (shouldAbort?.()) return false
   const db = await openCacheDb()
   if (!db) return false
   try {
+    if (shouldAbort?.()) return false
     return await withTimeout(
       new Promise<boolean>((resolve) => {
         try {
@@ -415,14 +457,18 @@ async function idbPut(key: string, snapshot: HomeSnapshot): Promise<boolean> {
   }
 }
 
-async function idbDelete(key: string): Promise<void> {
+async function idbDelete(key: string, shouldAbort?: () => boolean): Promise<void> {
+  if (shouldAbort?.()) return
   const db = await openCacheDb()
   if (!db) return
   try {
+    if (shouldAbort?.()) return
     await withTimeout(
       new Promise<void>((resolve) => {
         try {
           const tx = db.transaction(STORE_NAME, 'readwrite')
+          tx.onabort = () => resolve()
+          tx.onerror = () => resolve()
           const req = tx.objectStore(STORE_NAME).delete(key)
           req.onsuccess = () => resolve()
           req.onerror = () => resolve()
@@ -449,6 +495,8 @@ async function idbDeletePrefix(prefix: string): Promise<void> {
       new Promise<void>((resolve) => {
         try {
           const tx = db.transaction(STORE_NAME, 'readwrite')
+          tx.onabort = () => resolve()
+          tx.onerror = () => resolve()
           const store = tx.objectStore(STORE_NAME)
           const range = typeof IDBKeyRange !== 'undefined' ? IDBKeyRange.bound(prefix, prefix + '\uffff') : undefined
           const req = range ? store.delete(range) : store.openCursor()
@@ -502,6 +550,7 @@ export async function purgeHomeCacheEntry(svc: Service, accountKey: string, lang
 }
 
 export async function readHomeCache(svc: Service, accountKey: string, lang: Lang): Promise<HomeSnapshot | null> {
+  const gen = cacheGenerationFor(svc)
   const key = homeCacheKey(svc, accountKey, lang)
   const mem = l1.get(key)
   if (mem) {
@@ -509,7 +558,7 @@ export async function readHomeCache(svc: Service, accountKey: string, lang: Lang
     l1.delete(key)
   }
   const raw = await idbGet(key)
-  if (!raw) return null
+  if (!raw || cacheGenerationFor(svc) !== gen) return null
   if (!isValidSnapshot(raw) || raw.service !== svc || raw.accountKey !== accountKey || raw.lang !== lang) {
     l1.delete(key)
     await idbDelete(key)
@@ -537,9 +586,18 @@ export async function writeHomeCacheIfChanged(snapshot: HomeSnapshot): Promise<b
   if (cacheGenerationFor(snapshot.service) !== gen) return false
   const clean = plainClone(snapshot)
   l1.set(key, clean)
-  await idbPut(key, clean)
+  const wroteIdb = await idbPut(key, clean, () => cacheGenerationFor(snapshot.service) !== gen)
   if (cacheGenerationFor(snapshot.service) !== gen) {
     if (l1.get(key) === clean) l1.delete(key)
+    const current = l1.get(key)
+    if (current) {
+      const curGen = cacheGenerationFor(snapshot.service)
+      if (wroteIdb) {
+        await idbPut(key, current, () => cacheGenerationFor(snapshot.service) !== curGen)
+      }
+    } else {
+      await idbDelete(key, () => l1.has(key))
+    }
     return false
   }
   return true

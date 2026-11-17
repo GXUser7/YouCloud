@@ -569,6 +569,8 @@ async function testCorruptIdbAndWaiter(browser, origin) {
     ['array tracks', { schema: 1, service: 'sc', accountKey: 'anon', lang: 'ru', signedIn: false, sections: [{ title: 'Row', sets: [] }], lib: null, tracks: [], sets: {}, artists: {}, hash: 'corrupt-2', updatedAt: 1 }],
     ['null section', { schema: 1, service: 'sc', accountKey: 'anon', lang: 'ru', signedIn: false, sections: [null], lib: null, tracks: {}, sets: {}, artists: {}, hash: 'corrupt-3', updatedAt: 1 }],
     ['lib missing arrays', { schema: 1, service: 'sc', accountKey: 'anon', lang: 'ru', signedIn: false, sections: [{ title: 'Row', sets: [] }], lib: { liked: 'sc:likes', likedIds: [] }, tracks: {}, sets: {}, artists: {}, hash: 'corrupt-4', updatedAt: 1 }],
+    ['null section set ref', { schema: 1, service: 'sc', accountKey: 'anon', lang: 'ru', signedIn: false, sections: [{ title: 'Row', sets: [null] }], lib: null, tracks: {}, sets: {}, artists: {}, hash: 'corrupt-5', updatedAt: 1 }],
+    ['dangling section set ref', { schema: 1, service: 'sc', accountKey: 'anon', lang: 'ru', signedIn: false, sections: [{ title: 'Row', sets: ['sc:pl:missing'] }], lib: null, tracks: {}, sets: {}, artists: {}, hash: 'corrupt-6', updatedAt: 1 }],
   ]
 
   for (const [label, payload] of corruptPayloads) {

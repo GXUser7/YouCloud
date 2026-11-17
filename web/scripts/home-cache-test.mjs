@@ -23,19 +23,21 @@ function makeStorage() {
   }
 }
 
-function makeFakeIdb({ failOpen = false, corruptKey = null, corruptRecords = null, onGet = null, failPutTx = false } = {}) {
+function makeFakeIdb({ failOpen = false, corruptKey = null, corruptRecords = null, onGet = null, onOpen = null, onPut = null, failPutTx = false } = {}) {
   const store = new Map()
   const makeReq = (fn) => {
     const req = { result: undefined, onsuccess: null, onerror: null, onupgradeneeded: null, onblocked: null }
     queueMicrotask(() => fn(req))
     return req
   }
+  let openCount = 0
   const api = {
     _store: store,
     open: () => {
       if (failOpen) throw new Error('IDB blocked')
+      const callIndex = ++openCount
       const req = { result: null, onsuccess: null, onerror: null, onupgradeneeded: null, onblocked: null }
-      queueMicrotask(() => {
+      const finishOpen = () => {
         const db = {
           objectStoreNames: { contains: () => true },
           createObjectStore: () => ({}),
@@ -61,15 +63,20 @@ function makeFakeIdb({ failOpen = false, corruptKey = null, corruptRecords = nul
                   else queueMicrotask(finish)
                   return r
                 },
-                put: (rec) =>
-                  makeReq((r) => {
+                put: (rec) => {
+                  const r = { result: undefined, onsuccess: null, onerror: null }
+                  const finish = () => {
                     if (failPutTx) {
                       tx.onabort?.()
                       return
                     }
                     store.set(rec.key, structuredClone(rec))
                     r.onsuccess?.()
-                  }),
+                  }
+                  if (onPut) onPut(rec, finish)
+                  else queueMicrotask(finish)
+                  return r
+                },
                 delete: (arg) =>
                   makeReq((r) => {
                     if (typeof arg === 'string') store.delete(arg)
@@ -88,7 +95,9 @@ function makeFakeIdb({ failOpen = false, corruptKey = null, corruptRecords = nul
         req.result = db
         req.onupgradeneeded?.()
         req.onsuccess?.()
-      })
+      }
+      if (onOpen) onOpen(callIndex, finishOpen)
+      else queueMicrotask(finishOpen)
       return req
     },
   }
@@ -446,10 +455,24 @@ function loadStack({ idb, scAuth = null, yaAuth = null, lang = 'ru' } = {}) {
   validCat.putArtist({ id: 'sc:u:1', name: 'A', service: 'sc', color: '#111' })
   validCat.putTrack({ id: 'sc:t:1', service: 'sc', title: 'T', artists: [{ id: 'sc:u:1', name: 'A' }], duration: 60, color: '#111' })
   validCat.putSet({ id: 'sc:pl:1', kind: 'playlist', service: 'sc', title: 'P', subtitle: '', color: '#111', tracks: [] })
+  validCat.putSet({ id: 'sc:likes', kind: 'liked', service: 'sc', title: 'Likes', subtitle: '', color: '#f00', tracks: ['sc:t:1'], loaded: true })
   const baseSnap = loadStack({ idb: makeFakeIdb() }).homeCacheMod.buildHomeSnapshot({
     service: 'sc', accountKey: 'anon', lang: 'ru', signedIn: false,
     sections: [{ title: 'Row', sets: ['sc:pl:1'] }], lib: null, cat: validCat,
   })
+  const signedSnap = loadStack({ idb: makeFakeIdb() }).homeCacheMod.buildHomeSnapshot({
+    service: 'sc', accountKey: 'user:1', lang: 'ru', signedIn: true,
+    sections: [{ title: 'Row', sets: ['sc:pl:1'], tracks: ['sc:t:1'] }],
+    lib: { liked: 'sc:likes', likedIds: ['sc:t:1'], playlists: ['sc:pl:1'], artists: ['sc:u:1'] },
+    cat: validCat,
+  })
+  {
+    const idbOk = makeFakeIdb()
+    const envOk = loadStack({ idb: idbOk })
+    assert.equal(await envOk.homeCacheMod.writeHomeCacheIfChanged(signedSnap), true)
+    envOk.homeCacheMod.clearHomeCacheMemory()
+    assert.equal((await envOk.homeCacheMod.readHomeCache('sc', 'user:1', 'ru'))?.hash, signedSnap.hash)
+  }
 
   const corruptVariants = [
     ['null track entry', { ...baseSnap, tracks: { 'sc:t:1': null } }],
@@ -457,7 +480,16 @@ function loadStack({ idb, scAuth = null, yaAuth = null, lang = 'ru' } = {}) {
     ['array sets', { ...baseSnap, sets: [] }],
     ['null section item', { ...baseSnap, sections: [null] }],
     ['bad section sets', { ...baseSnap, sections: [{ title: 'Row', sets: 'bad' }] }],
+    ['null section set ref', { ...baseSnap, sections: [{ title: 'Row', sets: [null] }] }],
+    ['missing section set ref', { ...baseSnap, sections: [{ title: 'Row', sets: ['sc:pl:missing'] }] }],
+    ['null section track ref', { ...baseSnap, sections: [{ title: 'Row', sets: [], tracks: [null] }] }],
+    ['missing section track ref', { ...baseSnap, sections: [{ title: 'Row', sets: [], tracks: ['sc:t:missing'] }] }],
+    ['track missing artists array', { ...baseSnap, tracks: { 'sc:t:1': { id: 'sc:t:1', service: 'sc', title: 'X' } } }],
     ['lib missing playlists/artists', { ...baseSnap, lib: { liked: 'sc:likes', likedIds: [] } }],
+    ['lib missing liked set', { ...signedSnap, accountKey: 'anon', signedIn: false, lib: { liked: 'sc:likes:missing', likedIds: [], playlists: [], artists: [] } }],
+    ['lib missing liked track', { ...signedSnap, accountKey: 'anon', signedIn: false, lib: { liked: 'sc:likes', likedIds: ['sc:t:missing'], playlists: [], artists: [] } }],
+    ['lib missing playlist set', { ...signedSnap, accountKey: 'anon', signedIn: false, lib: { liked: 'sc:likes', likedIds: [], playlists: ['sc:pl:missing'], artists: [] } }],
+    ['lib missing artist', { ...signedSnap, accountKey: 'anon', signedIn: false, lib: { liked: 'sc:likes', likedIds: [], playlists: [], artists: ['sc:u:missing'] } }],
   ]
   for (const [label, payload] of corruptVariants) {
     const key = '1:sc:anon:ru'
@@ -499,6 +531,66 @@ function loadStack({ idb, scAuth = null, yaAuth = null, lang = 'ru' } = {}) {
   assert.equal(await writePromise, false, 'writeHomeCacheIfChanged must abort when generation bumps mid-idbGet')
   assert.equal(env.homeCacheMod.peekHomeCacheL1('sc', 'user:1', 'ru'), null, 'L1 must not resurrect invalidated snapshot')
   assert.equal(idb._store.has('1:sc:user:1:ru'), false, 'IDB must not resurrect invalidated snapshot')
+
+  // idbPut-paused (indexedDB.open) race vs invalidateServiceHomeCache
+  {
+    let releasePutOpen
+    const idbPutOpen = makeFakeIdb({
+      onOpen: (callIndex, finish) => {
+        // Call 1 = idbGet inside writeHomeCacheIfChanged, Call 2 = idbPut's openCacheDb()
+        if (callIndex === 2) releasePutOpen = finish
+        else queueMicrotask(finish)
+      },
+    })
+    const envOpen = loadStack({ idb: idbPutOpen, scAuth: { id: 101, token: 'tok-101' } })
+    const catOpen = envOpen.catalogMod.createCatalog()
+    catOpen.putSet({ id: 'sc:pl:101', kind: 'playlist', service: 'sc', title: 'Secret 101', subtitle: '', color: '#111', tracks: [] })
+    const snapOpen = envOpen.homeCacheMod.buildHomeSnapshot({
+      service: 'sc', accountKey: 'user:101', lang: 'ru', signedIn: true,
+      sections: [{ title: 'S', sets: ['sc:pl:101'] }], lib: null, cat: catOpen,
+    })
+
+    const writeP = envOpen.homeCacheMod.writeHomeCacheIfChanged(snapOpen)
+    await new Promise((r) => setTimeout(r, 10))
+    assert.ok(releasePutOpen, 'writeHomeCacheIfChanged must be awaiting openCacheDb inside idbPut')
+    await envOpen.homeCacheMod.invalidateServiceHomeCache('sc')
+    releasePutOpen()
+    const wrote = await writeP
+    assert.equal(wrote, false, 'idbPut(open)-paused write must return false after invalidation')
+    assert.equal(idbPutOpen._store.has('1:sc:user:101:ru'), false, 'idbPut(open)-paused write must not resurrect in IDB')
+    envOpen.homeCacheMod.clearHomeCacheMemory()
+    assert.equal(await envOpen.homeCacheMod.readHomeCache('sc', 'user:101', 'ru'), null, 'readHomeCache must return null after idbPut(open) race')
+  }
+
+  // idbPut-paused (objectStore.put) race vs invalidateServiceHomeCache
+  {
+    let releasePut
+    const idbPutStore = makeFakeIdb({
+      onPut: (rec, finish) => {
+        if (rec.key === '1:sc:user:101:ru') releasePut = finish
+        else queueMicrotask(finish)
+      },
+    })
+    const envPut = loadStack({ idb: idbPutStore, scAuth: { id: 101, token: 'tok-101' } })
+    const catPut = envPut.catalogMod.createCatalog()
+    catPut.putSet({ id: 'sc:pl:101', kind: 'playlist', service: 'sc', title: 'Secret 101', subtitle: '', color: '#111', tracks: [] })
+    const snapPut = envPut.homeCacheMod.buildHomeSnapshot({
+      service: 'sc', accountKey: 'user:101', lang: 'ru', signedIn: true,
+      sections: [{ title: 'S', sets: ['sc:pl:101'] }], lib: null, cat: catPut,
+    })
+
+    const writeP = envPut.homeCacheMod.writeHomeCacheIfChanged(snapPut)
+    await new Promise((r) => setTimeout(r, 10))
+    assert.ok(releasePut, 'writeHomeCacheIfChanged must be awaiting objectStore.put inside idbPut')
+    await envPut.homeCacheMod.invalidateServiceHomeCache('sc')
+    releasePut()
+    const wrote = await writeP
+    assert.equal(wrote, false, 'idbPut(store.put)-paused write must return false after invalidation')
+    assert.equal(envPut.homeCacheMod.peekHomeCacheL1('sc', 'user:101', 'ru'), null, 'L1 must remain empty after idbPut(store.put) race')
+    assert.equal(idbPutStore._store.has('1:sc:user:101:ru'), false, 'IDB must not resurrect after idbPut(store.put) race')
+    envPut.homeCacheMod.clearHomeCacheMemory()
+    assert.equal(await envPut.homeCacheMod.readHomeCache('sc', 'user:101', 'ru'), null, 'readHomeCache must return null after idbPut(store.put) race')
+  }
 
   // inFlightBg generation-keyed deduplication
   const idb2 = makeFakeIdb()
