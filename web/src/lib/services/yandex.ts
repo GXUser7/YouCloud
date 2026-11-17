@@ -422,13 +422,21 @@ export interface Library {
   artists: string[]
 }
 
-export async function library(cat: CatalogContext = fallbackCatalog): Promise<Library> {
+export async function library(cat: CatalogContext = fallbackCatalog, opts: { strict?: boolean; onPartial?: () => void } = {}): Promise<Library> {
   const uid = await myUid()
   const likes = await loadSet('ya:likes', cat)
   const [playlists, artists] = await Promise.allSettled([
     yaGet<YaPlaylist[]>(`users/${uid}/playlists/list`),
     yaGet<YaArtist[]>(`users/${uid}/likes/artists`, { 'with-timestamps': false }),
   ])
+  if (playlists.status === 'rejected') {
+    if (opts.strict) throw playlists.reason
+    opts.onPartial?.()
+  }
+  if (artists.status === 'rejected') {
+    if (opts.strict) throw artists.reason
+    opts.onPartial?.()
+  }
   return {
     liked: likes.id,
     likedIds: likes.tracks,

@@ -13,6 +13,7 @@ import {
   hydrateCatalogFromSnapshot,
   liveYtAccountKey,
   peekHomeCacheL1,
+  purgeHomeCacheEntry,
   readHomeCache,
   waitForYtAccountResolved,
   writeHomeCacheIfChanged,
@@ -80,10 +81,11 @@ export function revalidateHomeInBackground(
   cachedHash: string,
 ): Promise<void> {
   const key = homeCacheKey(service, expectedAccountKey, expectedLang)
-  const existing = inFlightBg.get(key)
+  const gen = cacheGenerationFor(service)
+  const bgKey = `${key}:${gen}`
+  const existing = inFlightBg.get(bgKey)
   if (existing) return existing
 
-  const gen = cacheGenerationFor(service)
   const task = (async () => {
     try {
       if (service === 'ya') {
@@ -102,7 +104,10 @@ export function revalidateHomeInBackground(
       let sections: live.Section[]
       let lib: live.Library | null = null
       if (wantLib) {
-        ;[sections, lib] = await Promise.all([live.home(service, isoCat), live.library(service, isoCat)])
+        ;[sections, lib] = await Promise.all([
+          live.home(service, isoCat),
+          live.library(service, isoCat, { strict: true }),
+        ])
       } else {
         sections = await live.home(service, isoCat)
       }
@@ -129,10 +134,10 @@ export function revalidateHomeInBackground(
       // Background errors are swallowed silently; keep existing valid cache and open view intact.
     }
   })().finally(() => {
-    inFlightBg.delete(key)
+    if (inFlightBg.get(bgKey) === task) inFlightBg.delete(bgKey)
   })
 
-  inFlightBg.set(key, task)
+  inFlightBg.set(bgKey, task)
   return task
 }
 
@@ -189,8 +194,11 @@ export function useHome(service: Service, opts: { waitForExtension?: boolean } =
     state.signedIn = reqSignedIn
     state.lib = null
 
+    let libPartial = false
     const homePromise = live.home(service, defaultCatalog)
-    const libPromise = reqSignedIn ? live.library(service, defaultCatalog) : null
+    const libPromise = reqSignedIn
+      ? live.library(service, defaultCatalog, { onPartial: () => (libPartial = true) })
+      : null
     // Prevent unhandled rejection if homePromise rejects before libPromise is awaited.
     libPromise?.catch(() => {})
 
@@ -221,6 +229,7 @@ export function useHome(service: Service, opts: { waitForExtension?: boolean } =
       if (disposed || id !== runId) return
       markLiked(lib.likedIds)
       state.lib = lib
+      if (libPartial) return
     }
 
     const currentKey = service === 'yt' ? liveYtAccountKey() : accountKeyFor(service)
@@ -240,32 +249,52 @@ export function useHome(service: Service, opts: { waitForExtension?: boolean } =
     void writeHomeCacheIfChanged(snap)
   }
 
+  function tryApplyL1(key: string): boolean {
+    const l1 = peekHomeCacheL1(service, key, lang)
+    if (!l1) return false
+    try {
+      applySnapshot(l1)
+      return true
+    } catch {
+      void purgeHomeCacheEntry(service, key, lang)
+      state.servedFromCache = false
+      state.sections = []
+      state.lib = null
+      return false
+    }
+  }
+
   async function bootFromCacheOrNetwork(id: number, key: string) {
-    const l2 = await readHomeCache(service, key, lang)
-    if (disposed || id !== runId) return
-    if (l2) {
-      applySnapshot(l2)
-      return
+    try {
+      const l2 = await readHomeCache(service, key, lang)
+      if (disposed || id !== runId) return
+      if (l2) {
+        try {
+          applySnapshot(l2)
+          return
+        } catch {
+          await purgeHomeCacheEntry(service, key, lang)
+          if (disposed || id !== runId) return
+          state.servedFromCache = false
+          state.sections = []
+          state.lib = null
+        }
+      }
+    } catch {
+      // Corrupt or unreadable cache must never strand the page on 'checking'.
     }
     await loadForeground(id)
   }
 
   async function openForKey(nextKey: string) {
     const id = ++runId
-    const l1 = peekHomeCacheL1(service, nextKey, lang)
-    if (l1) {
-      applySnapshot(l1)
-      return
-    }
+    if (tryApplyL1(nextKey)) return
     state.status = 'checking'
     await bootFromCacheOrNetwork(id, nextKey)
   }
 
   const initialKey = accountKeyFor(service)
-  const l1 = peekHomeCacheL1(service, initialKey, lang)
-  if (l1) {
-    applySnapshot(l1)
-  } else {
+  if (!tryApplyL1(initialKey)) {
     void bootFromCacheOrNetwork(++runId, initialKey)
   }
 

@@ -19,6 +19,7 @@ const waiting: Record<'sc' | 'ya', Waiter | null> = { sc: null, ya: null }
 async function useSoundCloud(token: string) {
   const prevId = accounts.sc?.id
   const me = await soundcloud.me(token)
+  soundcloud.resetMyIdCache()
   setSoundCloud({ token, id: me.id, name: me.username, avatar: soundcloud.art(me.avatar_url, 't200x200') })
   if (prevId !== me.id) void invalidateServiceHomeCache('sc')
   return me.username
@@ -133,7 +134,10 @@ export async function connect(svc: Service): Promise<void> {
 }
 
 export function disconnect(svc: Service) {
-  if (svc === 'sc') setSoundCloud(null)
+  if (svc === 'sc') {
+    setSoundCloud(null)
+    soundcloud.resetMyIdCache()
+  }
   if (svc === 'ya') setYandex(null)
   void invalidateServiceHomeCache(svc)
 }

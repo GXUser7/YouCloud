@@ -13,7 +13,6 @@ const DB_VERSION = 1
 const STORE_NAME = 'home'
 const IDB_TIMEOUT_MS = 1500
 const YT_HINT_KEY = 'yc.yt.hint'
-const LIKED_ART_TRACKS = 40
 
 export interface HomeSnapshot {
   schema: number
@@ -193,7 +192,7 @@ export function buildHomeSnapshot(params: {
   const cleanLib: Library | null = params.lib ? plainClone(params.lib) : null
   if (cleanLib) {
     setIds.add(cleanLib.liked)
-    for (const tid of cleanLib.likedIds.slice(0, LIKED_ART_TRACKS)) trackIds.add(tid)
+    for (const tid of cleanLib.likedIds) trackIds.add(tid)
     for (const pid of cleanLib.playlists) setIds.add(pid)
     for (const aid of cleanLib.artists) artistIds.add(aid)
   }
@@ -205,9 +204,7 @@ export function buildHomeSnapshot(params: {
     const cloned = plainClone(s)
     setsOut[sid] = cloned
     if (cloned.artist?.id) artistIds.add(cloned.artist.id)
-    if (cloned.kind === 'liked') {
-      for (const tid of cloned.tracks.slice(0, LIKED_ART_TRACKS)) trackIds.add(tid)
-    } else if (cloned.loaded && cloned.tracks.length) {
+    if ((cloned.kind === 'liked' || cloned.loaded) && cloned.tracks.length) {
       for (const tid of cloned.tracks) trackIds.add(tid)
     }
   }
@@ -274,24 +271,54 @@ interface StoredRecord {
   snapshot: HomeSnapshot
 }
 
+function isPlainObject(v: unknown): v is Record<string, unknown> {
+  return !!v && typeof v === 'object' && !Array.isArray(v)
+}
+
+function isEntityMap(v: unknown): boolean {
+  if (!isPlainObject(v)) return false
+  for (const entry of Object.values(v)) {
+    if (!isPlainObject(entry) || typeof entry.id !== 'string') return false
+  }
+  return true
+}
+
+function isValidSection(sec: unknown): boolean {
+  if (!isPlainObject(sec)) return false
+  if (typeof sec.title !== 'string' || !Array.isArray(sec.sets)) return false
+  if (sec.tracks !== undefined && !Array.isArray(sec.tracks)) return false
+  return true
+}
+
 function isValidSnapshot(raw: unknown): raw is HomeSnapshot {
-  if (!raw || typeof raw !== 'object') return false
+  if (!isPlainObject(raw)) return false
   const s = raw as Partial<HomeSnapshot>
-  return (
-    s.schema === HOME_CACHE_SCHEMA &&
-    (s.service === 'sc' || s.service === 'ya' || s.service === 'yt') &&
-    typeof s.accountKey === 'string' &&
-    s.accountKey.length > 0 &&
-    (s.lang === 'ru' || s.lang === 'en') &&
-    typeof s.signedIn === 'boolean' &&
-    Array.isArray(s.sections) &&
-    (s.lib === null || (typeof s.lib === 'object' && typeof s.lib.liked === 'string' && Array.isArray(s.lib.likedIds))) &&
-    !!s.tracks && typeof s.tracks === 'object' &&
-    !!s.sets && typeof s.sets === 'object' &&
-    !!s.artists && typeof s.artists === 'object' &&
-    typeof s.hash === 'string' &&
-    s.hash.length > 0
-  )
+  if (
+    s.schema !== HOME_CACHE_SCHEMA ||
+    (s.service !== 'sc' && s.service !== 'ya' && s.service !== 'yt') ||
+    typeof s.accountKey !== 'string' ||
+    s.accountKey.length === 0 ||
+    (s.lang !== 'ru' && s.lang !== 'en') ||
+    typeof s.signedIn !== 'boolean' ||
+    !Array.isArray(s.sections) ||
+    !s.sections.every(isValidSection) ||
+    typeof s.hash !== 'string' ||
+    s.hash.length === 0
+  ) {
+    return false
+  }
+  if (s.lib !== null) {
+    if (
+      !isPlainObject(s.lib) ||
+      typeof s.lib.liked !== 'string' ||
+      !Array.isArray(s.lib.likedIds) ||
+      !Array.isArray(s.lib.playlists) ||
+      !Array.isArray(s.lib.artists)
+    ) {
+      return false
+    }
+  }
+  return isEntityMap(s.tracks) && isEntityMap(s.sets) && isEntityMap(s.artists)
 }
 
 function withTimeout<T>(work: Promise<T>, fallback: T): Promise<T> {
@@ -368,6 +395,8 @@ async function idbPut(key: string, snapshot: HomeSnapshot): Promise<boolean> {
       new Promise<boolean>((resolve) => {
         try {
           const tx = db.transaction(STORE_NAME, 'readwrite')
+          tx.onabort = () => resolve(false)
+          tx.onerror = () => resolve(false)
           const req = tx.objectStore(STORE_NAME).put({ key, snapshot } satisfies StoredRecord)
           req.onsuccess = () => resolve(true)
           req.onerror = () => resolve(false)
@@ -456,14 +485,29 @@ async function idbDeletePrefix(prefix: string): Promise<void> {
 // ---------------------------------------------------------------------------------- public API
 
 export function peekHomeCacheL1(svc: Service, accountKey: string, lang: Lang): HomeSnapshot | null {
-  const hit = l1.get(homeCacheKey(svc, accountKey, lang))
-  return hit && isValidSnapshot(hit) ? hit : null
+  const key = homeCacheKey(svc, accountKey, lang)
+  const hit = l1.get(key)
+  if (!hit) return null
+  if (!isValidSnapshot(hit)) {
+    l1.delete(key)
+    return null
+  }
+  return hit
+}
+
+export async function purgeHomeCacheEntry(svc: Service, accountKey: string, lang: Lang): Promise<void> {
+  const key = homeCacheKey(svc, accountKey, lang)
+  l1.delete(key)
+  await idbDelete(key)
 }
 
 export async function readHomeCache(svc: Service, accountKey: string, lang: Lang): Promise<HomeSnapshot | null> {
   const key = homeCacheKey(svc, accountKey, lang)
   const mem = l1.get(key)
-  if (mem && isValidSnapshot(mem)) return mem
+  if (mem) {
+    if (isValidSnapshot(mem)) return mem
+    l1.delete(key)
+  }
   const raw = await idbGet(key)
   if (!raw) return null
   if (!isValidSnapshot(raw) || raw.service !== svc || raw.accountKey !== accountKey || raw.lang !== lang) {
@@ -477,19 +521,27 @@ export async function readHomeCache(svc: Service, accountKey: string, lang: Lang
 
 export async function writeHomeCacheIfChanged(snapshot: HomeSnapshot): Promise<boolean> {
   if (!isValidSnapshot(snapshot)) return false
+  const gen = cacheGenerationFor(snapshot.service)
   const key = homeCacheKey(snapshot.service, snapshot.accountKey, snapshot.lang)
   let existing = l1.get(key)
   if (!existing) {
     const fromIdb = await idbGet(key)
+    if (cacheGenerationFor(snapshot.service) !== gen) return false
     if (fromIdb && isValidSnapshot(fromIdb)) existing = fromIdb
   }
   if (existing && existing.hash === snapshot.hash) {
+    if (cacheGenerationFor(snapshot.service) !== gen) return false
     l1.set(key, existing)
     return false
   }
+  if (cacheGenerationFor(snapshot.service) !== gen) return false
   const clean = plainClone(snapshot)
   l1.set(key, clean)
   await idbPut(key, clean)
+  if (cacheGenerationFor(snapshot.service) !== gen) {
+    if (l1.get(key) === clean) l1.delete(key)
+    return false
+  }
   return true
 }
 

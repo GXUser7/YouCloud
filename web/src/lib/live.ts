@@ -156,8 +156,18 @@ function sameName(q: string, name: string): boolean {
   return norm(name) === norm(q)
 }
 
-export async function library(svc: Service, cat: CatalogContext = defaultCatalog): Promise<Library> {
-  const l = svc === 'sc' ? await soundcloud.library(cat) : svc === 'ya' ? await yandex.library(cat) : await youtube.library(cat)
+export interface LibraryOptions {
+  strict?: boolean
+  onPartial?: () => void
+}
+
+export async function library(svc: Service, cat: CatalogContext = defaultCatalog, opts: LibraryOptions = {}): Promise<Library> {
+  const l =
+    svc === 'sc'
+      ? await soundcloud.library(cat, opts)
+      : svc === 'ya'
+        ? await yandex.library(cat, opts)
+        : await youtube.library(cat, opts)
   return { ...l, likedIds: unique(l.likedIds), playlists: unique(l.playlists), artists: unique(l.artists) }
 }
 

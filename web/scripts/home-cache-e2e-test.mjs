@@ -166,30 +166,14 @@ function yaResponseFor(url, ver) {
   return {}
 }
 
-async function waitForIdbHashChange(page, key, prevHash) {
-  await page.waitForFunction(
-    async ({ key, prevHash }) => {
-      const db = await new Promise((res) => {
-        const req = indexedDB.open('youcloud-cache', 1)
-        req.onsuccess = () => res(req.result)
-        req.onerror = () => res(null)
-      })
-      if (!db) return false
-      try {
-        const rec = await new Promise((res) => {
-          const tx = db.transaction('home', 'readonly')
-          const req = tx.objectStore('home').get(key)
-          req.onsuccess = () => res(req.result)
-          req.onerror = () => res(null)
-        })
-        return !!rec?.snapshot?.hash && rec.snapshot.hash !== prevHash
-      } finally {
-        db.close()
-      }
-    },
-    { key, prevHash },
-    { timeout: 10000 },
-  )
+async function waitForIdbHashChange(page, key, prevHash, timeoutMs = 10000) {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    const hash = await readIdbHash(page, key)
+    if (hash && hash !== prevHash) return hash
+    await new Promise((r) => setTimeout(r, 25))
+  }
+  throw new Error(`Timed out waiting for IDB hash change on ${key} (previous: ${prevHash})`)
 }
 
 async function readIdbHash(page, key) {
@@ -560,6 +544,71 @@ async function testYandex(browser, origin) {
   }
 }
 
+async function testCorruptIdbAndWaiter(browser, origin) {
+  // 1. Verify waitForIdbHashChange genuinely polls and throws on unchanged hash
+  {
+    const { context, page } = await createIsolatedPage(browser, {
+      service: 'sc',
+      extraLocalStorage: { 'yc.sc.clientId': 'test-sc-client' },
+      onScRequest: async () => ({ status: 200, body: scPayload('A') }),
+    })
+    try {
+      await page.goto(origin)
+      await page.getByText('SC Station A1').waitFor()
+      const h = await readIdbHash(page, '1:sc:anon:ru')
+      assert.ok(h)
+      await assert.rejects(waitForIdbHashChange(page, '1:sc:anon:ru', h, 150), /Timed out waiting for IDB hash change/)
+    } finally {
+      await context.close()
+    }
+  }
+
+  // 2. Seed subtly corrupt IDB payloads and verify clean fallback to network with 0 pageerrors
+  const corruptPayloads = [
+    ['null track entry', { schema: 1, service: 'sc', accountKey: 'anon', lang: 'ru', signedIn: false, sections: [{ title: 'Row', sets: [] }], lib: null, tracks: { 'sc:t:1': null }, sets: {}, artists: {}, hash: 'corrupt-1', updatedAt: 1 }],
+    ['array tracks', { schema: 1, service: 'sc', accountKey: 'anon', lang: 'ru', signedIn: false, sections: [{ title: 'Row', sets: [] }], lib: null, tracks: [], sets: {}, artists: {}, hash: 'corrupt-2', updatedAt: 1 }],
+    ['null section', { schema: 1, service: 'sc', accountKey: 'anon', lang: 'ru', signedIn: false, sections: [null], lib: null, tracks: {}, sets: {}, artists: {}, hash: 'corrupt-3', updatedAt: 1 }],
+    ['lib missing arrays', { schema: 1, service: 'sc', accountKey: 'anon', lang: 'ru', signedIn: false, sections: [{ title: 'Row', sets: [] }], lib: { liked: 'sc:likes', likedIds: [] }, tracks: {}, sets: {}, artists: {}, hash: 'corrupt-4', updatedAt: 1 }],
+  ]
+
+  for (const [label, payload] of corruptPayloads) {
+    const { context, page, errors } = await createIsolatedPage(browser, {
+      service: 'sc',
+      extraLocalStorage: { 'yc.sc.clientId': 'test-sc-client' },
+      onScRequest: async () => ({ status: 200, body: scPayload('A') }),
+    })
+    try {
+      await page.goto(origin)
+      await page.getByText('SC Station A1').waitFor()
+      await page.evaluate(async (snap) => {
+        const db = await new Promise((res, rej) => {
+          const req = indexedDB.open('youcloud-cache', 1)
+          req.onupgradeneeded = () => {
+            if (!req.result.objectStoreNames.contains('home')) req.result.createObjectStore('home', { keyPath: 'key' })
+          }
+          req.onsuccess = () => res(req.result)
+          req.onerror = () => rej(req.error)
+        })
+        await new Promise((res, rej) => {
+          const tx = db.transaction('home', 'readwrite')
+          const req = tx.objectStore('home').put({ key: '1:sc:anon:ru', snapshot: snap })
+          req.onsuccess = () => res()
+          req.onerror = () => rej(req.error)
+        })
+        db.close()
+      }, payload)
+      await page.reload()
+      await page.getByText('SC Station A1').waitFor()
+      const recoveredHash = await waitForIdbHashChange(page, '1:sc:anon:ru', payload.hash, 5000)
+      assert.ok(recoveredHash && recoveredHash !== payload.hash, `corrupt IDB (${label}) must fall back to network and rewrite valid hash`)
+      assert.deepEqual(errors, [], `corrupt IDB (${label}) must produce 0 pageerrors`)
+    } finally {
+      await context.close()
+    }
+  }
+  console.log('E2E Corrupt IDB fallback & waitForIdbHashChange polling passed')
+}
+
 const MIME = {
   '.html': 'text/html; charset=utf-8',
   '.js': 'application/javascript; charset=utf-8',
@@ -607,6 +656,7 @@ try {
   await testSoundCloud(browser, origin, 'dev')
   await testYouTube(browser, origin)
   await testYandex(browser, origin)
+  await testCorruptIdbAndWaiter(browser, origin)
 
   if (existsSync(join(distClientDir, 'index.html'))) {
     const started = await startStaticDistServer()

@@ -235,7 +235,7 @@ function renewSession(stale: string): Promise<boolean> {
     const me = await scGet<ScUser>('me', {}, token)
     if (!accounts.sc) return false
     if (accounts.sc.token !== stale) return true
-    myIdCache = me.id
+    myIdCache = { token, accountId: me.id, id: me.id }
     setSoundCloud({ token, id: me.id, name: me.username, avatar: art(me.avatar_url, 't200x200') })
     return true
   })()
@@ -585,10 +585,24 @@ export async function me(token: string): Promise<ScUser> {
   return scGet<ScUser>('me', {}, token)
 }
 
-let myIdCache: number | null = null
+let myIdCache: { token: string | undefined; accountId: number | undefined; id: number } | null = null
+
+export function resetMyIdCache() {
+  myIdCache = null
+}
+
 async function myId(): Promise<number> {
-  myIdCache ??= (await scGet<ScUser>('me')).id
-  return myIdCache
+  const token = scToken()
+  const accountId = accounts.sc?.id
+  if (accountId != null) {
+    myIdCache = { token, accountId, id: accountId }
+    return accountId
+  }
+  if (!myIdCache || myIdCache.token !== token || myIdCache.accountId !== accountId) {
+    const id = (await scGet<ScUser>('me')).id
+    myIdCache = { token, accountId, id }
+  }
+  return myIdCache.id
 }
 
 export interface Library {
@@ -598,12 +612,20 @@ export interface Library {
   artists: string[]
 }
 
-export async function library(cat: CatalogContext = fallbackCatalog): Promise<Library> {
+export async function library(cat: CatalogContext = fallbackCatalog, opts: { strict?: boolean; onPartial?: () => void } = {}): Promise<Library> {
   const likes = await loadSet('sc:likes', cat)
   const [all, followings] = await Promise.allSettled([
     scGet<{ collection: { type: string; playlist?: ScPlaylist; system_playlist?: ScSystemPlaylist }[] }>('me/library/all', { limit: 50 }),
     scGet<{ collection: ScUser[] }>(`users/${await myId()}/followings`, { limit: 50 }),
   ])
+  if (all.status === 'rejected') {
+    if (opts.strict) throw all.reason
+    opts.onPartial?.()
+  }
+  if (followings.status === 'rejected') {
+    if (opts.strict) throw followings.reason
+    opts.onPartial?.()
+  }
   const playlists =
     all.status === 'fulfilled'
       ? all.value.collection.flatMap((x) => (x.playlist ? [putScPlaylist(x.playlist, cat)] : x.system_playlist ? [putScSystem(x.system_playlist, cat)] : []))

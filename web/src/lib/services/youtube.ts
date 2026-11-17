@@ -744,7 +744,7 @@ export interface Library {
   artists: string[]
 }
 
-export async function library(cat: CatalogContext = fallbackCatalog): Promise<Library> {
+export async function library(cat: CatalogContext = fallbackCatalog, opts: { strict?: boolean; onPartial?: () => void } = {}): Promise<Library> {
   cat.putSet({ id: 'yt:pl:LM', kind: 'liked', service: 'yt', title: tr('Понравившаяся музыка'), subtitle: 'YouTube Music', color: '#e53935', tracks: [], cover: null })
   const liked = await loadSet('yt:pl:LM', cat)
   const playlists: string[] = []
@@ -753,7 +753,9 @@ export async function library(cat: CatalogContext = fallbackCatalog): Promise<Li
     const into = { tracks: [] as string[], sets: [] as string[], artists: [] as string[] }
     sortItems(lib.contents ?? [], into, cat)
     playlists.push(...into.sets.filter((s) => s !== 'yt:pl:LM'))
-  } catch {
+  } catch (e) {
+    if (opts.strict) throw e
+    opts.onPartial?.()
     // the library page changes often; liked songs are what matters
   }
   return { liked: liked.id, likedIds: liked.tracks, playlists, artists: [] }

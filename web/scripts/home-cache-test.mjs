@@ -23,7 +23,7 @@ function makeStorage() {
   }
 }
 
-function makeFakeIdb({ failOpen = false, corruptKey = null } = {}) {
+function makeFakeIdb({ failOpen = false, corruptKey = null, corruptRecords = null, onGet = null, failPutTx = false } = {}) {
   const store = new Map()
   const makeReq = (fn) => {
     const req = { result: undefined, onsuccess: null, onerror: null, onupgradeneeded: null, onblocked: null }
@@ -40,34 +40,50 @@ function makeFakeIdb({ failOpen = false, corruptKey = null } = {}) {
           objectStoreNames: { contains: () => true },
           createObjectStore: () => ({}),
           close: () => {},
-          transaction: () => ({
-            objectStore: () => ({
-              get: (key) =>
-                makeReq((r) => {
-                  if (corruptKey && key === corruptKey) {
-                    r.result = { key, snapshot: { schema: 1, bad: true } }
-                  } else {
-                    r.result = store.get(key)
-                  }
-                  r.onsuccess?.()
-                }),
-              put: (rec) =>
-                makeReq((r) => {
-                  store.set(rec.key, structuredClone(rec))
-                  r.onsuccess?.()
-                }),
-              delete: (arg) =>
-                makeReq((r) => {
-                  if (typeof arg === 'string') store.delete(arg)
-                  else if (arg && typeof arg === 'object' && 'lower' in arg) {
-                    for (const k of [...store.keys()]) {
-                      if (k >= arg.lower && k <= arg.upper) store.delete(k)
+          transaction: () => {
+            const tx = {
+              onabort: null,
+              onerror: null,
+              objectStore: () => ({
+                get: (key) => {
+                  const r = { result: undefined, onsuccess: null, onerror: null }
+                  const finish = () => {
+                    if (corruptRecords && corruptRecords.has(key)) {
+                      r.result = { key, snapshot: corruptRecords.get(key) }
+                    } else if (corruptKey && key === corruptKey) {
+                      r.result = { key, snapshot: { schema: 1, bad: true } }
+                    } else {
+                      r.result = store.get(key)
                     }
+                    r.onsuccess?.()
                   }
-                  r.onsuccess?.()
-                }),
-            }),
-          }),
+                  if (onGet) onGet(key, finish)
+                  else queueMicrotask(finish)
+                  return r
+                },
+                put: (rec) =>
+                  makeReq((r) => {
+                    if (failPutTx) {
+                      tx.onabort?.()
+                      return
+                    }
+                    store.set(rec.key, structuredClone(rec))
+                    r.onsuccess?.()
+                  }),
+                delete: (arg) =>
+                  makeReq((r) => {
+                    if (typeof arg === 'string') store.delete(arg)
+                    else if (arg && typeof arg === 'object' && 'lower' in arg) {
+                      for (const k of [...store.keys()]) {
+                        if (k >= arg.lower && k <= arg.upper) store.delete(k)
+                      }
+                    }
+                    r.onsuccess?.()
+                  }),
+              }),
+            }
+            return tx
+          },
         }
         req.result = db
         req.onupgradeneeded?.()
@@ -107,6 +123,7 @@ function loadStack({ idb, scAuth = null, yaAuth = null, lang = 'ru' } = {}) {
     IDBKeyRange: { bound: (lower, upper) => ({ lower, upper }) },
     setTimeout,
     clearTimeout,
+    addEventListener: () => {},
     console,
     $state: (v) => v,
     $derived: (v) => v,
@@ -123,15 +140,30 @@ function loadStack({ idb, scAuth = null, yaAuth = null, lang = 'ru' } = {}) {
       if (id in overrides) return overrides[id]
       if (id.endsWith('/i18n.svelte') || id === './i18n.svelte') return { tr, i18n: i18nState, pluralWord: () => 'треков' }
       if (id.endsWith('/accounts.svelte') || id === './accounts.svelte') {
-        return { accounts, scToken: () => accounts.sc?.token, yaToken: () => accounts.ya?.token, setSoundCloud: (a) => (accounts.sc = a) }
+        return {
+          accounts,
+          scToken: () => accounts.sc?.token,
+          yaToken: () => accounts.ya?.token,
+          setSoundCloud: (a) => (accounts.sc = a),
+          setYandex: (a) => (accounts.ya = a),
+        }
       }
       if (id.endsWith('/catalog') || id === './catalog') return catalogMod
       if (id.endsWith('/homeCache') || id === './homeCache') return homeCacheMod
-      if (id.endsWith('/extension') || id === './extension') return { extension: async () => extVersion, extensionCall: async () => false, soundCloudWrites: () => true }
+      if (id.endsWith('/extension') || id === './extension') {
+        return {
+          extension: async () => extVersion,
+          extensionCall: async () => false,
+          soundCloudWrites: () => true,
+          onHostEvent: () => () => {},
+          onToken: () => () => {},
+        }
+      }
       if (id.endsWith('/net') || id === './net') return netStub
       if (id.endsWith('/md5') || id === './md5') return { md5: () => '0' }
       if (id.endsWith('/soundcloudChallenge.svelte')) return { challengeUrl: () => null, solveSoundCloud: async () => false, soundCloudSetup() {} }
       if (id.endsWith('/state.svelte') || id === './state.svelte') return { markLiked: (ids) => markedLiked.push(...ids) }
+      if (id.endsWith('/toast.svelte') || id === './toast.svelte') return { reason: String, toast: () => {} }
       if (id.endsWith('/mock') || id === './mock') return { tracksOfArtist: () => [], releasesOf: () => [], similarTo: () => [] }
       if (id === 'svelte') return { onDestroy: () => {}, untrack: (fn) => fn() }
       throw new Error(`unexpected require(${id}) from ${relPath}`)
@@ -236,7 +268,7 @@ function loadStack({ idb, scAuth = null, yaAuth = null, lang = 'ru' } = {}) {
   assert.equal(await homeCacheMod.writeHomeCacheIfChanged(s3), true)
 }
 
-// 3. Entity graph extraction (up to 40 liked tracks) + putSet loaded preservation
+// 3. Entity graph extraction (all >40 liked tracks) + putSet loaded preservation
 {
   const idb = makeFakeIdb()
   const env = loadStack({ idb })
@@ -258,7 +290,7 @@ function loadStack({ idb, scAuth = null, yaAuth = null, lang = 'ru' } = {}) {
     lib: { liked: 'ya:likes', likedIds, playlists: [], artists: ['ya:a:1'] },
     cat,
   })
-  assert.equal(Object.keys(snap.tracks).length, 40, 'must cap liked tracks at 40 for LikedArt')
+  assert.equal(Object.keys(snap.tracks).length, 55, 'must serialize all liked tracks without 40-track truncation')
   assert.ok(snap.sets['ya:al:9'] && snap.sets['ya:likes'] && snap.artists['ya:a:1'])
 
   // Pre-existing loaded set in defaultCatalog must preserve its tracks when hydrated with an unloaded snapshot set
@@ -266,7 +298,11 @@ function loadStack({ idb, scAuth = null, yaAuth = null, lang = 'ru' } = {}) {
   homeCacheMod.hydrateCatalogFromSnapshot(snap, catalogMod.defaultCatalog)
   assert.deepEqual(catalogMod.defaultCatalog.set('ya:al:9').tracks, ['ya:t:0'])
   assert.equal(catalogMod.defaultCatalog.set('ya:al:9').loaded, true)
-  assert.equal(catalogMod.defaultCatalog.track('ya:t:39').title, 'Liked 39')
+  for (let i = 0; i < 55; i++) {
+    const t = catalogMod.defaultCatalog.track(`ya:t:${i}`)
+    assert.ok(t, `liked track ${i} must hydrate cleanly without undefined entries`)
+    assert.equal(t.title, `Liked ${i}`)
+  }
 }
 
 // 4. Scoped CatalogContext isolation during R2 background revalidation & partial-failure protection
@@ -402,6 +438,211 @@ function loadStack({ idb, scAuth = null, yaAuth = null, lang = 'ru' } = {}) {
   await env3.homeCacheMod.invalidateServiceHomeCache('sc')
   assert.equal(await env3.homeCacheMod.readHomeCache('sc', 'user:1', 'ru'), null, 'sc cache invalidated')
   assert.notEqual(await env3.homeCacheMod.readHomeCache('ya', 'user:2', 'ru'), null, 'ya cache preserved')
+}
+
+// 7. Subtly corrupt IDB validation, idbPut tx abort speed, and boot fallback
+{
+  const validCat = loadStack({ idb: makeFakeIdb() }).catalogMod.createCatalog()
+  validCat.putArtist({ id: 'sc:u:1', name: 'A', service: 'sc', color: '#111' })
+  validCat.putTrack({ id: 'sc:t:1', service: 'sc', title: 'T', artists: [{ id: 'sc:u:1', name: 'A' }], duration: 60, color: '#111' })
+  validCat.putSet({ id: 'sc:pl:1', kind: 'playlist', service: 'sc', title: 'P', subtitle: '', color: '#111', tracks: [] })
+  const baseSnap = loadStack({ idb: makeFakeIdb() }).homeCacheMod.buildHomeSnapshot({
+    service: 'sc', accountKey: 'anon', lang: 'ru', signedIn: false,
+    sections: [{ title: 'Row', sets: ['sc:pl:1'] }], lib: null, cat: validCat,
+  })
+
+  const corruptVariants = [
+    ['null track entry', { ...baseSnap, tracks: { 'sc:t:1': null } }],
+    ['array tracks', { ...baseSnap, tracks: [] }],
+    ['array sets', { ...baseSnap, sets: [] }],
+    ['null section item', { ...baseSnap, sections: [null] }],
+    ['bad section sets', { ...baseSnap, sections: [{ title: 'Row', sets: 'bad' }] }],
+    ['lib missing playlists/artists', { ...baseSnap, lib: { liked: 'sc:likes', likedIds: [] } }],
+  ]
+  for (const [label, payload] of corruptVariants) {
+    const key = '1:sc:anon:ru'
+    const idb = makeFakeIdb({ corruptRecords: new Map([[key, payload]]) })
+    const env = loadStack({ idb })
+    assert.equal(await env.homeCacheMod.readHomeCache('sc', 'anon', 'ru'), null, `corrupt variant (${label}) must be rejected`)
+  }
+
+  // idbPut tx.onabort resolves immediately instead of waiting 1500ms timeout
+  const abortIdb = makeFakeIdb({ failPutTx: true })
+  const abortEnv = loadStack({ idb: abortIdb })
+  const t0 = Date.now()
+  await abortEnv.homeCacheMod.writeHomeCacheIfChanged(baseSnap)
+  assert.ok(Date.now() - t0 < 500, 'idbPut tx abort must resolve immediately without 1500ms timeout')
+}
+
+// 8. Generation races: writeHomeCacheIfChanged mid-idbGet & inFlightBg across generation bumps
+{
+  let releaseGet
+  const idb = makeFakeIdb({
+    onGet: (key, finish) => {
+      if (key === '1:sc:user:1:ru') releaseGet = finish
+      else queueMicrotask(finish)
+    },
+  })
+  const env = loadStack({ idb, scAuth: { id: 1, token: 'tok-1' } })
+  const cat = env.catalogMod.createCatalog()
+  cat.putSet({ id: 'sc:pl:1', kind: 'playlist', service: 'sc', title: 'Race', subtitle: '', color: '#111', tracks: [] })
+  const snap = env.homeCacheMod.buildHomeSnapshot({
+    service: 'sc', accountKey: 'user:1', lang: 'ru', signedIn: true,
+    sections: [{ title: 'S', sets: ['sc:pl:1'] }], lib: null, cat,
+  })
+
+  const writePromise = env.homeCacheMod.writeHomeCacheIfChanged(snap)
+  await new Promise((r) => setTimeout(r, 10))
+  assert.ok(releaseGet, 'writeHomeCacheIfChanged must be awaiting idbGet')
+  await env.homeCacheMod.invalidateServiceHomeCache('sc')
+  releaseGet()
+  assert.equal(await writePromise, false, 'writeHomeCacheIfChanged must abort when generation bumps mid-idbGet')
+  assert.equal(env.homeCacheMod.peekHomeCacheL1('sc', 'user:1', 'ru'), null, 'L1 must not resurrect invalidated snapshot')
+  assert.equal(idb._store.has('1:sc:user:1:ru'), false, 'IDB must not resurrect invalidated snapshot')
+
+  // inFlightBg generation-keyed deduplication
+  const idb2 = makeFakeIdb()
+  const env2 = loadStack({ idb: idb2 })
+  env2.localStorage.setItem('yc.sc.clientId', 'cid')
+  let releaseBg1
+  let bgCalls = 0
+  env2.netStub.request = async (url) => {
+    if (url.includes('mixed-selections')) {
+      bgCalls++
+      if (bgCalls === 1) {
+        await new Promise((r) => (releaseBg1 = r))
+        return Response.json({ collection: [{ title: 'Old', items: { collection: [{ kind: 'system-playlist', urn: 'old', title: 'Old', tracks: [] }] } }] })
+      }
+      return Response.json({ collection: [{ title: 'New', items: { collection: [{ kind: 'system-playlist', urn: 'new', title: 'New', tracks: [] }] } }] })
+    }
+    return Response.json({})
+  }
+  const pOld = env2.homeMod.revalidateHomeInBackground('sc', 'anon', 'ru', 'h0')
+  await new Promise((r) => setTimeout(r, 10))
+  await env2.homeCacheMod.invalidateServiceHomeCache('sc')
+  const pNew = env2.homeMod.revalidateHomeInBackground('sc', 'anon', 'ru', 'h0')
+  assert.notEqual(pOld, pNew, 'post-invalidation revalidation must not join dying pre-invalidation inFlightBg promise')
+  await pNew
+  releaseBg1()
+  await pOld
+  assert.equal(bgCalls, 2)
+  const fresh = await env2.homeCacheMod.readHomeCache('sc', 'anon', 'ru')
+  assert.equal(fresh?.sets['sc:sys:new']?.title, 'New', 'post-invalidation revalidation must persist fresh snapshot')
+}
+
+// 9. SoundCloud account switch (User 101 -> disconnect('sc') -> User 202) & myIdCache isolation
+{
+  const idb = makeFakeIdb()
+  const env = loadStack({ idb })
+  env.localStorage.setItem('yc.sc.clientId', 'cid')
+  const loginMod = env.runModule('../src/lib/login.ts', {
+    './services/soundcloud': env.scMod,
+    './services/yandex': env.yaMod,
+    './services/youtube': env.ytMod,
+  })
+  const requested = []
+  env.netStub.request = async (url, init = {}) => {
+    const u = new URL(url)
+    const auth = init.headers?.authorization ?? ''
+    requested.push({ path: u.pathname, auth })
+    if (u.pathname.endsWith('/me')) {
+      if (auth === 'OAuth tok-101') return Response.json({ id: 101, username: 'User101', avatar_url: null })
+      if (auth === 'OAuth tok-202') return Response.json({ id: 202, username: 'User202', avatar_url: null })
+    }
+    if (u.pathname === '/users/101/track_likes') {
+      return Response.json({ collection: [{ track: { id: 1010, title: 'T101', duration: 60000, user: { id: 101, username: 'U101' } } }] })
+    }
+    if (u.pathname === '/users/101/followings') {
+      return Response.json({ collection: [{ id: 1011, username: 'A101' }] })
+    }
+    if (u.pathname === '/users/202/track_likes') {
+      return Response.json({ collection: [{ track: { id: 2020, title: 'T202', duration: 60000, user: { id: 202, username: 'U202' } } }] })
+    }
+    if (u.pathname === '/users/202/followings') {
+      return Response.json({ collection: [{ id: 2021, username: 'A202' }] })
+    }
+    if (u.pathname.includes('me/library/all')) return Response.json({ collection: [] })
+    return Response.json({})
+  }
+
+  await loginMod.connectSoundCloud('tok-101')
+  const lib101 = await env.liveMod.library('sc', env.catalogMod.createCatalog(), { strict: true })
+  assert.deepEqual(Array.from(lib101.likedIds), ['sc:t:1010'])
+
+  loginMod.disconnect('sc')
+  await loginMod.connectSoundCloud('tok-202')
+  const cat202 = env.catalogMod.createCatalog()
+  const lib202 = await env.liveMod.library('sc', cat202, { strict: true })
+  assert.deepEqual(Array.from(lib202.likedIds), ['sc:t:2020'], 'User 202 library must contain only User 202 likes')
+  assert.deepEqual(Array.from(lib202.artists), ['sc:u:2021'], 'User 202 library must contain only User 202 followings')
+  assert.ok(requested.some((r) => r.path === '/users/202/track_likes' && r.auth === 'OAuth tok-202'))
+  assert.ok(requested.some((r) => r.path === '/users/202/followings' && r.auth === 'OAuth tok-202'))
+  assert.equal(requested.some((r) => r.path.includes('/users/101/') && r.auth === 'OAuth tok-202'), false, 'must never fetch User 101 endpoints with User 202 token')
+
+  const snap202 = env.homeCacheMod.buildHomeSnapshot({
+    service: 'sc', accountKey: env.homeCacheMod.accountKeyFor('sc'), lang: 'ru', signedIn: true,
+    sections: [], lib: lib202, cat: cat202,
+  })
+  await env.homeCacheMod.writeHomeCacheIfChanged(snap202)
+  const cached202 = await env.homeCacheMod.readHomeCache('sc', 'user:202', 'ru')
+  assert.deepEqual(Array.from(cached202?.lib?.likedIds ?? []), ['sc:t:2020'])
+}
+
+// 10. Partial library sub-request 500 failure must preserve complete cached playlists & artists
+{
+  const idb = makeFakeIdb()
+  const env = loadStack({ idb, scAuth: { id: 77, token: 'sc-tok' }, yaAuth: { uid: 88, token: 'ya-tok' } })
+  env.localStorage.setItem('yc.sc.clientId', 'cid')
+  const cat = env.catalogMod.createCatalog()
+  cat.putSet({ id: 'sc:sys:m1', kind: 'mix', service: 'sc', title: 'Mix 1', subtitle: '', color: '#111', tracks: [] })
+  cat.putSet({ id: 'sc:pl:55', kind: 'playlist', service: 'sc', title: 'Saved PL', subtitle: '', color: '#222', tracks: [] })
+  cat.putArtist({ id: 'sc:u:66', name: 'Saved Artist', service: 'sc', color: '#333' })
+  cat.putSet({ id: 'sc:likes', kind: 'liked', service: 'sc', title: 'Likes', subtitle: '', color: '#f00', tracks: ['sc:t:1'], loaded: true })
+  cat.putTrack({ id: 'sc:t:1', service: 'sc', title: 'T1', artists: [{ id: 'sc:u:66', name: 'Saved Artist' }], duration: 60, color: '#111' })
+  const completeSc = env.homeCacheMod.buildHomeSnapshot({
+    service: 'sc', accountKey: 'user:77', lang: 'ru', signedIn: true,
+    sections: [{ title: 'Mix', sets: ['sc:sys:m1'] }],
+    lib: { liked: 'sc:likes', likedIds: ['sc:t:1'], playlists: ['sc:pl:55'], artists: ['sc:u:66'] },
+    cat,
+  })
+  await env.homeCacheMod.writeHomeCacheIfChanged(completeSc)
+
+  env.netStub.request = async (url) => {
+    const u = new URL(url)
+    if (u.pathname.includes('mixed-selections')) {
+      return Response.json({ collection: [{ title: 'Mix', items: { collection: [{ kind: 'system-playlist', urn: 'm2', title: 'Mix 2', tracks: [] }] } }] })
+    }
+    if (u.pathname.includes('track_likes')) {
+      return Response.json({ collection: [{ track: { id: 1, title: 'T1', duration: 60000, user: { id: 66, username: 'Saved Artist' } } }] })
+    }
+    if (u.pathname.includes('me/library/all') || u.pathname.includes('followings')) {
+      return new Response('server error', { status: 500 })
+    }
+    return Response.json({})
+  }
+
+  await env.homeMod.revalidateHomeInBackground('sc', 'user:77', 'ru', completeSc.hash)
+  const afterSc = await env.homeCacheMod.readHomeCache('sc', 'user:77', 'ru')
+  assert.deepEqual(Array.from(afterSc?.lib?.playlists ?? []), ['sc:pl:55'], 'partial 500 on me/library/all must preserve cached playlists')
+  assert.deepEqual(Array.from(afterSc?.lib?.artists ?? []), ['sc:u:66'], 'partial 500 on followings must preserve cached artists')
+
+  // Foreground non-strict library still returns partial likes while flagging onPartial
+  let sawPartial = false
+  const partialFg = await env.liveMod.library('sc', env.catalogMod.createCatalog(), { onPartial: () => (sawPartial = true) })
+  assert.equal(sawPartial, true)
+  assert.deepEqual(Array.from(partialFg.likedIds), ['sc:t:1'])
+
+  // Yandex partial 500 protection in strict mode
+  env.netStub.getJson = async (url) => {
+    if (url.includes('/likes/tracks')) return { result: { library: { tracks: [{ id: '1' }] } } }
+    if (url.includes('/playlists/list')) throw new Error('500 playlists')
+    return { result: [] }
+  }
+  env.netStub.postForm = async (url) => {
+    if (url.includes('/tracks')) return { result: [{ id: 1, title: 'Y1', durationMs: 60000, artists: [{ id: 2, name: 'YA' }] }] }
+    return { result: {} }
+  }
+  await assert.rejects(env.liveMod.library('ya', env.catalogMod.createCatalog(), { strict: true }), /500 playlists/)
 }
 
 console.log('Home cache contract: partitioning, catalog isolation, hashing, partial-failure, IDB resilience and invalidation passed')
