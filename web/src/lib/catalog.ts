@@ -86,29 +86,67 @@ export interface Artist {
   link?: string
 }
 
-export const tracks = new Map<string, Track>()
-export const sets = new Map<string, TrackSet>()
-export const artists = new Map<string, Artist>()
+export interface CatalogContext {
+  tracks: Map<string, Track>
+  sets: Map<string, TrackSet>
+  artists: Map<string, Artist>
+  track(id: string): Track
+  set(id: string): TrackSet
+  artist(id: string): Artist
+  putTrack(t: Track): string
+  putSet(s: TrackSet): string
+  putArtist(a: Artist): string
+}
 
-export const track = (id: string) => tracks.get(id)!
-export const set = (id: string) => sets.get(id)!
-export const artist = (id: string) => artists.get(id)!
+export function createCatalog(): CatalogContext {
+  const tracks = new Map<string, Track>()
+  const sets = new Map<string, TrackSet>()
+  const artists = new Map<string, Artist>()
+  return {
+    tracks,
+    sets,
+    artists,
+    track: (id: string) => tracks.get(id)!,
+    set: (id: string) => sets.get(id)!,
+    artist: (id: string) => artists.get(id)!,
+    putTrack(t: Track): string {
+      tracks.set(t.id, t)
+      return t.id
+    },
+    /** Keeps the tracks a set already has when it comes again without them (as on a home page). */
+    putSet(s: TrackSet): string {
+      const known = sets.get(s.id)
+      sets.set(s.id, known?.loaded && !s.loaded ? { ...s, tracks: known.tracks, loaded: true } : s)
+      return s.id
+    },
+    putArtist(a: Artist): string {
+      artists.set(a.id, a)
+      return a.id
+    },
+  }
+}
+
+export const defaultCatalog = createCatalog()
+
+export const tracks = defaultCatalog.tracks
+export const sets = defaultCatalog.sets
+export const artists = defaultCatalog.artists
+
+export const track = (id: string) => defaultCatalog.track(id)
+export const set = (id: string) => defaultCatalog.set(id)
+export const artist = (id: string) => defaultCatalog.artist(id)
 
 export function putTrack(t: Track): string {
-  tracks.set(t.id, t)
-  return t.id
+  return defaultCatalog.putTrack(t)
 }
 
 /** Keeps the tracks a set already has when it comes again without them (as on a home page). */
 export function putSet(s: TrackSet): string {
-  const known = sets.get(s.id)
-  sets.set(s.id, known?.loaded && !s.loaded ? { ...s, tracks: known.tracks, loaded: true } : s)
-  return s.id
+  return defaultCatalog.putSet(s)
 }
 
 export function putArtist(a: Artist): string {
-  artists.set(a.id, a)
-  return a.id
+  return defaultCatalog.putArtist(a)
 }
 
 export const artistNames = (t: Track) => t.artists.map((a) => a.name).join(', ')

@@ -7,6 +7,7 @@ import { tr } from './i18n.svelte'
 import { accounts, setSoundCloud, setYandex } from './accounts.svelte'
 import type { Service } from './catalog'
 import { extension, extensionCall, onHostEvent, onToken } from './extension'
+import { invalidateServiceHomeCache, liveYtAccountKey, markYtAccountResolved } from './homeCache'
 import * as soundcloud from './services/soundcloud'
 import * as yandex from './services/yandex'
 import * as youtube from './services/youtube'
@@ -16,14 +17,18 @@ type Waiter = { resolve: () => void; reject: (e: unknown) => void }
 const waiting: Record<'sc' | 'ya', Waiter | null> = { sc: null, ya: null }
 
 async function useSoundCloud(token: string) {
+  const prevId = accounts.sc?.id
   const me = await soundcloud.me(token)
   setSoundCloud({ token, id: me.id, name: me.username, avatar: soundcloud.art(me.avatar_url, 't200x200') })
+  if (prevId !== me.id) void invalidateServiceHomeCache('sc')
   return me.username
 }
 
 async function useYandex(token: string) {
+  const prevUid = accounts.ya?.uid
   const a = await yandex.account(token)
   setYandex({ token, uid: a.uid, name: a.name, plus: a.plus })
+  if (prevUid !== a.uid) void invalidateServiceHomeCache('ya')
   return a.name
 }
 
@@ -86,8 +91,14 @@ export async function connectYandex(): Promise<void> {
 
 /** YouTube is signed in as this browser is: whether it is, checked now and whenever the tab comes back. */
 export async function refreshYouTube() {
-  accounts.yt = await youtube.signedIn()
-  accounts.ytName = accounts.yt ? await youtube.accountName().catch(() => null) : null
+  try {
+    const signed = await youtube.signedIn()
+    const name = signed ? await youtube.accountName().catch(() => null) : null
+    accounts.yt = signed
+    accounts.ytName = name
+  } finally {
+    markYtAccountResolved(liveYtAccountKey())
+  }
 }
 refreshYouTube()
 
@@ -124,4 +135,5 @@ export async function connect(svc: Service): Promise<void> {
 export function disconnect(svc: Service) {
   if (svc === 'sc') setSoundCloud(null)
   if (svc === 'ya') setYandex(null)
+  void invalidateServiceHomeCache(svc)
 }

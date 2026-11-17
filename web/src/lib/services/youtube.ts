@@ -9,7 +9,34 @@
 
 import { i18n, tr } from '../i18n.svelte'
 import type { Innertube } from 'youtubei.js/web'
-import { artists as artistIndex, colorFor, compact, countWords, putArtist, putSet, putTrack, sets, tracks as catalogTracks, type SetKind, type Track, type TrackSet } from '../catalog'
+import {
+  artists as artistIndex,
+  colorFor,
+  compact,
+  countWords,
+  defaultCatalog,
+  putArtist,
+  putSet,
+  putTrack,
+  sets,
+  tracks as catalogTracks,
+  type CatalogContext,
+  type SetKind,
+  type Track,
+  type TrackSet,
+} from '../catalog'
+
+const fallbackCatalog: CatalogContext = defaultCatalog ?? {
+  tracks: catalogTracks,
+  sets,
+  artists: artistIndex,
+  track: (id) => catalogTracks.get(id)!,
+  set: (id) => sets.get(id)!,
+  artist: (id) => artistIndex.get(id)!,
+  putTrack,
+  putSet,
+  putArtist,
+}
 import { accounts } from '../accounts.svelte'
 import { extension, extensionCall, extensionHost, hostStream, hostStreams, mediaRelay } from '../extension'
 import { at, getText, HttpError, postJson, request } from '../net'
@@ -174,11 +201,15 @@ function liveStatus(item: any): boolean | undefined {
   return undefined
 }
 
-function putYtTrack(item: any, fallback?: { cover?: string | null; artist?: { id: string; name: string }; album?: { id: string; title: string } }): string | null {
+function putYtTrack(
+  item: any,
+  fallback?: { cover?: string | null; artist?: { id: string; name: string }; album?: { id: string; title: string } },
+  cat: CatalogContext = fallbackCatalog,
+): string | null {
   const videoId: string | undefined = item.video_id ?? item.id ?? item.endpoint?.payload?.videoId
   if (!videoId || videoId.length !== 11) return null
   const id = `yt:t:${videoId}`
-  const known = catalogTracks.get(id)
+  const known = cat.tracks.get(id)
   const live = liveStatus(item) ?? known?.live
   const people = (item.artists ?? item.authors ?? (item.author && typeof item.author === 'object' ? [item.author] : [])) as { name: string; channel_id?: string }[]
   const artists = people.length
@@ -186,7 +217,7 @@ function putYtTrack(item: any, fallback?: { cover?: string | null; artist?: { id
     : fallback?.artist
       ? [fallback.artist]
       : [{ id: `yt:n:${text(item.author) || 'YouTube'}`, name: text(item.author) || 'YouTube' }]
-  return putTrack({
+  return cat.putTrack({
     id,
     service: 'yt',
     title: text(item.title) || tr('Без названия'),
@@ -201,7 +232,7 @@ function putYtTrack(item: any, fallback?: { cover?: string | null; artist?: { id
   })
 }
 
-function putYtSet(item: any, kind?: SetKind): string | null {
+function putYtSet(item: any, kind?: SetKind, cat: CatalogContext = fallbackCatalog): string | null {
   const browseId: string | undefined = item.id ?? item.endpoint?.payload?.browseId
   if (!browseId) return null
   const type = kind ?? (item.item_type === 'album' ? 'album' : 'playlist')
@@ -209,7 +240,7 @@ function putYtSet(item: any, kind?: SetKind): string | null {
   const subtitle = text(item.subtitle) || [item.author?.name, ...(item.artists ?? []).map((a: any) => a.name)].filter(Boolean).join(', ')
   const firstArtist = item.artists?.[0] ?? item.author
   const year = Number(item.year)
-  return putSet({
+  return cat.putSet({
     id,
     kind: type,
     service: 'yt',
@@ -224,11 +255,11 @@ function putYtSet(item: any, kind?: SetKind): string | null {
   })
 }
 
-function putYtArtist(item: any): string | null {
+function putYtArtist(item: any, cat: CatalogContext = fallbackCatalog): string | null {
   const channelId: string | undefined = item.id ?? item.endpoint?.payload?.browseId
   if (!channelId) return null
   const id = `yt:a:${channelId}`
-  return putArtist({
+  return cat.putArtist({
     id,
     name: text(item.title) || item.name || tr('Артист'),
     service: 'yt',
@@ -240,17 +271,17 @@ function putYtArtist(item: any): string | null {
 }
 
 /** Whatever a shelf item is, put where it belongs: [tracks] for songs and videos, [sets], [artists]. */
-function sortItems(items: any[], into: { tracks: string[]; sets: string[]; artists: string[] }) {
+function sortItems(items: any[], into: { tracks: string[]; sets: string[]; artists: string[] }, cat: CatalogContext = fallbackCatalog) {
   for (const item of items ?? []) {
     const type = item.item_type
     if (type === 'song' || type === 'video' || type === 'non_music_track') {
-      const id = putYtTrack(item)
+      const id = putYtTrack(item, undefined, cat)
       if (id) into.tracks.push(id)
     } else if (type === 'artist' || type === 'library_artist') {
-      const id = putYtArtist(item)
+      const id = putYtArtist(item, cat)
       if (id) into.artists.push(id)
     } else if (type === 'album' || type === 'playlist') {
-      const id = putYtSet(item)
+      const id = putYtSet(item, undefined, cat)
       if (id) into.sets.push(id)
     }
   }
@@ -305,7 +336,7 @@ function pageRows(parsed: any): { shelves: any[]; token?: string } {
   return { shelves: [] }
 }
 
-export async function home(): Promise<Section[]> {
+export async function home(cat: CatalogContext = fallbackCatalog): Promise<Section[]> {
   const client = await yt()
   let feed: any = await client.music.getHomeFeed()
   const shelves: any[] = [...(feed.sections ?? [])]
@@ -330,7 +361,7 @@ export async function home(): Promise<Section[]> {
   const seen = new Set<string>()
   for (const shelf of shelves) {
     const into = { tracks: [] as string[], sets: [] as string[], artists: [] as string[] }
-    sortItems(shelf.contents, into)
+    sortItems(shelf.contents, into, cat)
     const title = text(shelf.header?.title) || 'YouTube Music'
     const key = `${title}|${into.tracks[0] ?? into.sets[0] ?? ''}`
     if (seen.has(key)) continue
@@ -339,7 +370,7 @@ export async function home(): Promise<Section[]> {
     else if (into.sets.length) sections.push({ title, sets: into.sets })
   }
   if (await signedIn()) {
-    putSet({ id: 'yt:pl:LM', kind: 'liked', service: 'yt', title: tr('Понравившаяся музыка'), subtitle: tr('Автоплейлист'), color: '#e53935', tracks: [], cover: null })
+    cat.putSet({ id: 'yt:pl:LM', kind: 'liked', service: 'yt', title: tr('Понравившаяся музыка'), subtitle: tr('Автоплейлист'), color: '#e53935', tracks: [], cover: null })
     // Home puts the liked playlist in a different row each time, or leaves it out; it goes first.
     for (const section of sections) section.sets = section.sets.filter((id) => id !== 'yt:pl:LM')
     const firstSets = sections.find((section) => section.sets.length)
@@ -349,7 +380,7 @@ export async function home(): Promise<Section[]> {
   const kept = sections.filter((section) => section.sets.length || section.tracks?.length)
   // Home's songs come without their length; asked for, but home doesn't wait long for them.
   const songs = kept.flatMap((section) => section.tracks ?? [])
-  await Promise.race([fillLengths(songs).catch(() => {}), new Promise((done) => setTimeout(done, 3000))])
+  await Promise.race([fillLengths(songs, cat).catch(() => {}), new Promise((done) => setTimeout(done, 3000))])
   return kept
 }
 
@@ -366,9 +397,9 @@ function lengthOf(text: string | undefined): number | null {
  * its player asks for a queue, fifty at a time. A broadcast is marked live instead: the queue
  * gives it a «Прямая трансляция» badge and no length, or (a 24/7 one, before) its running time.
  */
-async function fillLengths(ids: string[]): Promise<void> {
+async function fillLengths(ids: string[], cat: CatalogContext = fallbackCatalog): Promise<void> {
   const missing = [...new Set(ids)].filter((id) => {
-    const t = catalogTracks.get(id)
+    const t = cat.tracks.get(id)
     return t?.yt && !t.duration && !t.live
   })
   if (!missing.length) return
@@ -377,10 +408,10 @@ async function fillLengths(ids: string[]): Promise<void> {
   for (let i = 0; i < missing.length; i += 50) chunks.push(missing.slice(i, i + 50))
   await Promise.all(
     chunks.map(async (chunk) => {
-      const answer = await actions.execute('/music/get_queue', { client: 'YTMUSIC', videoIds: chunk.map((id) => catalogTracks.get(id)!.yt!.videoId), parse: false })
+      const answer = await actions.execute('/music/get_queue', { client: 'YTMUSIC', videoIds: chunk.map((id) => cat.tracks.get(id)!.yt!.videoId), parse: false })
       for (const q of answer?.data?.queueDatas ?? []) {
         const v = q.content?.playlistPanelVideoRenderer ?? q.content?.playlistPanelVideoWrapperRenderer?.primaryRenderer?.playlistPanelVideoRenderer
-        const t = v?.videoId && catalogTracks.get(`yt:t:${v.videoId}`)
+        const t = v?.videoId && cat.tracks.get(`yt:t:${v.videoId}`)
         if (!t) continue
         const live = liveStatus(v)
         if (live === true) {
@@ -397,13 +428,13 @@ async function fillLengths(ids: string[]): Promise<void> {
   )
 }
 
-function finish(id: string, tracks: string[], extra: Partial<TrackSet> = {}): TrackSet {
-  const done = { ...sets.get(id)!, ...extra, tracks, loaded: true, total: tracks.length }
-  putSet(done)
+function finish(id: string, tracks: string[], extra: Partial<TrackSet> = {}, cat: CatalogContext = fallbackCatalog): TrackSet {
+  const done = { ...cat.sets.get(id)!, ...extra, tracks, loaded: true, total: tracks.length }
+  cat.putSet(done)
   return done
 }
 
-export async function loadSet(id: string): Promise<TrackSet> {
+export async function loadSet(id: string, cat: CatalogContext = fallbackCatalog): Promise<TrackSet> {
   const client = await yt()
   if (id.startsWith('yt:al:')) {
     const browseId = id.slice('yt:al:'.length)
@@ -412,12 +443,12 @@ export async function loadSet(id: string): Promise<TrackSet> {
     const cover = picture(thumbsOf(header?.thumbnail) .length ? thumbsOf(header.thumbnail) : thumbsOf(album.background))
     const artistRun = header?.strapline_text_one?.runs?.[0] ?? header?.subtitle?.runs?.find((r: any) => r.endpoint?.payload?.browseId?.startsWith('UC'))
     const artist = artistRun?.endpoint?.payload?.browseId ? { id: `yt:a:${artistRun.endpoint.payload.browseId}`, name: artistRun.text } : undefined
-    if (!sets.has(id)) putSet({ id, kind: 'album', service: 'yt', title: text(header?.title), subtitle: artist?.name ?? '', color: colorFor(id), tracks: [], cover })
+    if (!cat.sets.has(id)) cat.putSet({ id, kind: 'album', service: 'yt', title: text(header?.title), subtitle: artist?.name ?? '', color: colorFor(id), tracks: [], cover })
     const tracks = (album.contents ?? []).flatMap((item: any) => {
-      const t = putYtTrack(item, { cover, artist, album: { id, title: text(header?.title) } })
+      const t = putYtTrack(item, { cover, artist, album: { id, title: text(header?.title) } }, cat)
       return t ? [t] : []
     })
-    return finish(id, tracks, { cover: sets.get(id)?.cover ?? cover, title: text(header?.title) || sets.get(id)!.title, artist: artist ?? sets.get(id)?.artist })
+    return finish(id, tracks, { cover: cat.sets.get(id)?.cover ?? cover, title: text(header?.title) || cat.sets.get(id)!.title, artist: artist ?? cat.sets.get(id)?.artist }, cat)
   }
   const playlistId = id.slice('yt:pl:'.length)
   let playlist: any = await client.music.getPlaylist(playlistId)
@@ -427,15 +458,15 @@ export async function loadSet(id: string): Promise<TrackSet> {
     items.push(...(playlist.items ?? []))
   }
   const header = playlist.header
-  if (!sets.has(id)) putSet({ id, kind: playlistId === 'LM' ? 'liked' : 'playlist', service: 'yt', title: text(header?.title), subtitle: text(header?.subtitle), color: colorFor(id), tracks: [], cover: picture(thumbsOf(header?.thumbnail)) })
+  if (!cat.sets.has(id)) cat.putSet({ id, kind: playlistId === 'LM' ? 'liked' : 'playlist', service: 'yt', title: text(header?.title), subtitle: text(header?.subtitle), color: colorFor(id), tracks: [], cover: picture(thumbsOf(header?.thumbnail)) })
   const tracks = items.flatMap((item) => {
-    const t = putYtTrack(item)
+    const t = putYtTrack(item, undefined, cat)
     return t ? [t] : []
   })
   // Liked-song shelves often omit both duration and the live badge. Resolve their queue metadata
   // before the page applies its hide-live setting or creates a playback queue.
-  if (playlistId === 'LM') await fillLengths(tracks).catch(() => {})
-  return finish(id, tracks, playlistId === 'LM' ? { kind: 'liked' } : {})
+  if (playlistId === 'LM') await fillLengths(tracks, cat).catch(() => {})
+  return finish(id, tracks, playlistId === 'LM' ? { kind: 'liked' } : {}, cat)
 }
 
 async function artistSongPage(playlist: any, artist: { id: string; name: string }): Promise<ResultPage> {
@@ -713,14 +744,14 @@ export interface Library {
   artists: string[]
 }
 
-export async function library(): Promise<Library> {
-  putSet({ id: 'yt:pl:LM', kind: 'liked', service: 'yt', title: tr('Понравившаяся музыка'), subtitle: 'YouTube Music', color: '#e53935', tracks: [], cover: null })
-  const liked = await loadSet('yt:pl:LM')
+export async function library(cat: CatalogContext = fallbackCatalog): Promise<Library> {
+  cat.putSet({ id: 'yt:pl:LM', kind: 'liked', service: 'yt', title: tr('Понравившаяся музыка'), subtitle: 'YouTube Music', color: '#e53935', tracks: [], cover: null })
+  const liked = await loadSet('yt:pl:LM', cat)
   const playlists: string[] = []
   try {
     const lib: any = await (await yt()).music.getLibrary()
     const into = { tracks: [] as string[], sets: [] as string[], artists: [] as string[] }
-    sortItems(lib.contents ?? [], into)
+    sortItems(lib.contents ?? [], into, cat)
     playlists.push(...into.sets.filter((s) => s !== 'yt:pl:LM'))
   } catch {
     // the library page changes often; liked songs are what matters

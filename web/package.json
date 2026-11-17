@@ -12,6 +12,7 @@
     "test:helper": "node scripts/helper-test.mjs",
     "test:hearing": "node scripts/hearing-test.mjs",
     "test:menu": "node scripts/track-menu-test.mjs",
+    "test:cache": "node scripts/home-cache-test.mjs && node scripts/home-cache-e2e-test.mjs",
     "test:regressions": "node scripts/artist-follow-test.mjs && node scripts/soundcloud-challenge-test.mjs && node scripts/bridge-capabilities-test.mjs && node scripts/library-live-test.mjs"
   },
   "dependencies": {

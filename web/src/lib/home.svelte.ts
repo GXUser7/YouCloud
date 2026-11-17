@@ -1,8 +1,24 @@
 // What every service's home is made of: the sets to lead with, songs to play in place, the
-// listener's library on the service.
+// listener's library on the service, and cached snapshot loading with silent background updates.
 
-import type { Service } from './catalog'
-import { tr } from './i18n.svelte'
+import { onDestroy, untrack } from 'svelte'
+import { accounts } from './accounts.svelte'
+import { createCatalog, defaultCatalog, type Service } from './catalog'
+import { extension } from './extension'
+import {
+  accountKeyFor,
+  buildHomeSnapshot,
+  cacheGenerationFor,
+  homeCacheKey,
+  hydrateCatalogFromSnapshot,
+  liveYtAccountKey,
+  peekHomeCacheL1,
+  readHomeCache,
+  waitForYtAccountResolved,
+  writeHomeCacheIfChanged,
+  type HomeSnapshot,
+} from './homeCache'
+import { i18n, tr, type Lang } from './i18n.svelte'
 import * as live from './live'
 import { markLiked } from './state.svelte'
 
@@ -44,4 +60,250 @@ export function libraryOf(service: Service) {
 export function greeting(now = new Date()): string {
   const h = now.getHours()
   return tr(h < 5 ? tr('Доброй ночи') : h < 12 ? tr('Доброе утро') : h < 18 ? tr('Добрый день') : tr('Добрый вечер'))
+}
+
+// ---------------------------------------------------------------------------------- R1 & R2 controller
+
+export type HomeStatus = 'checking' | 'loading' | 'ready' | 'error'
+
+const inFlightBg = new Map<string, Promise<void>>()
+
+/**
+ * Silent background revalidation (R2): fetches fresh home (+ library when signed in) into an
+ * isolated CatalogContext, compares canonical hash against [cachedHash], and persists to L1+L2
+ * for the next open without mutating defaultCatalog, player.liked, or any mounted screen state.
+ */
+export function revalidateHomeInBackground(
+  service: Service,
+  expectedAccountKey: string,
+  expectedLang: Lang,
+  cachedHash: string,
+): Promise<void> {
+  const key = homeCacheKey(service, expectedAccountKey, expectedLang)
+  const existing = inFlightBg.get(key)
+  if (existing) return existing
+
+  const gen = cacheGenerationFor(service)
+  const task = (async () => {
+    try {
+      if (service === 'ya') {
+        if (!(await extension())) return
+      }
+      if (service === 'yt') {
+        await waitForYtAccountResolved()
+      }
+      if (accountKeyFor(service) !== expectedAccountKey || i18n.lang !== expectedLang || cacheGenerationFor(service) !== gen) {
+        return
+      }
+      const wantLib = expectedAccountKey !== 'anon'
+      if (live.signedIn(service) !== wantLib) return
+
+      const isoCat = createCatalog()
+      let sections: live.Section[]
+      let lib: live.Library | null = null
+      if (wantLib) {
+        ;[sections, lib] = await Promise.all([live.home(service, isoCat), live.library(service, isoCat)])
+      } else {
+        sections = await live.home(service, isoCat)
+      }
+
+      if (accountKeyFor(service) !== expectedAccountKey || i18n.lang !== expectedLang || cacheGenerationFor(service) !== gen) {
+        return
+      }
+
+      const accountLabel = service === 'yt' && accounts.ytName ? tr('Для тебя, %s', accounts.ytName) : undefined
+      const next = buildHomeSnapshot({
+        service,
+        accountKey: expectedAccountKey,
+        lang: expectedLang,
+        signedIn: wantLib,
+        accountLabel,
+        sections,
+        lib,
+        cat: isoCat,
+      })
+      if (next.hash !== cachedHash) {
+        await writeHomeCacheIfChanged(next)
+      }
+    } catch {
+      // Background errors are swallowed silently; keep existing valid cache and open view intact.
+    }
+  })().finally(() => {
+    inFlightBg.delete(key)
+  })
+
+  inFlightBg.set(key, task)
+  return task
+}
+
+export function useHome(service: Service, opts: { waitForExtension?: boolean } = {}) {
+  const state = $state({
+    status: 'checking' as HomeStatus,
+    sections: [] as live.Section[],
+    lib: null as live.Library | null,
+    signedIn: false,
+    servedFromCache: false,
+    error: null as unknown,
+    ytNote: '',
+  })
+
+  const lang = i18n.lang
+  let disposed = false
+  let runId = 0
+
+  onDestroy(() => {
+    disposed = true
+  })
+
+  function applySnapshot(snap: HomeSnapshot) {
+    hydrateCatalogFromSnapshot(snap, defaultCatalog)
+    if (snap.lib) markLiked(snap.lib.likedIds)
+    state.sections = snap.sections
+    state.lib = snap.lib
+    state.signedIn = snap.signedIn
+    state.ytNote = snap.accountLabel ?? ''
+    state.servedFromCache = true
+    state.error = null
+    state.status = 'ready'
+    void revalidateHomeInBackground(service, snap.accountKey, snap.lang, snap.hash)
+  }
+
+  async function loadForeground(id: number) {
+    if (opts.waitForExtension) {
+      const ext = await extension()
+      if (disposed || id !== runId) return
+      if (!ext) {
+        state.status = 'checking'
+        return
+      }
+    }
+
+    state.status = 'loading'
+    state.error = null
+    state.servedFromCache = false
+
+    const reqSignedIn = service === 'yt' ? accounts.yt : live.signedIn(service)
+    const reqAccountKey = reqSignedIn ? (service === 'yt' ? liveYtAccountKey() : accountKeyFor(service)) : 'anon'
+    const reqLang = i18n.lang
+    const reqGen = cacheGenerationFor(service)
+    state.signedIn = reqSignedIn
+    state.lib = null
+
+    const homePromise = live.home(service, defaultCatalog)
+    const libPromise = reqSignedIn ? live.library(service, defaultCatalog) : null
+    // Prevent unhandled rejection if homePromise rejects before libPromise is awaited.
+    libPromise?.catch(() => {})
+
+    let sections: live.Section[]
+    try {
+      sections = await homePromise
+    } catch (e) {
+      if (disposed || id !== runId) return
+      state.error = e
+      state.status = 'error'
+      return
+    }
+    if (disposed || id !== runId) return
+
+    const accountLabel = service === 'yt' && accounts.ytName ? tr('Для тебя, %s', accounts.ytName) : undefined
+    state.sections = sections
+    state.ytNote = accountLabel ?? ''
+    state.status = 'ready'
+
+    let lib: live.Library | null = null
+    if (libPromise) {
+      try {
+        lib = await libPromise
+      } catch {
+        // Library failed on initial load; keep sections rendered and do not cache an incomplete signed-in snapshot.
+        return
+      }
+      if (disposed || id !== runId) return
+      markLiked(lib.likedIds)
+      state.lib = lib
+    }
+
+    const currentKey = service === 'yt' ? liveYtAccountKey() : accountKeyFor(service)
+    if (currentKey !== reqAccountKey || i18n.lang !== reqLang || cacheGenerationFor(service) !== reqGen) {
+      return
+    }
+    const snap = buildHomeSnapshot({
+      service,
+      accountKey: reqAccountKey,
+      lang: reqLang,
+      signedIn: reqSignedIn,
+      accountLabel,
+      sections,
+      lib,
+      cat: defaultCatalog,
+    })
+    void writeHomeCacheIfChanged(snap)
+  }
+
+  async function bootFromCacheOrNetwork(id: number, key: string) {
+    const l2 = await readHomeCache(service, key, lang)
+    if (disposed || id !== runId) return
+    if (l2) {
+      applySnapshot(l2)
+      return
+    }
+    await loadForeground(id)
+  }
+
+  async function openForKey(nextKey: string) {
+    const id = ++runId
+    const l1 = peekHomeCacheL1(service, nextKey, lang)
+    if (l1) {
+      applySnapshot(l1)
+      return
+    }
+    state.status = 'checking'
+    await bootFromCacheOrNetwork(id, nextKey)
+  }
+
+  const initialKey = accountKeyFor(service)
+  const l1 = peekHomeCacheL1(service, initialKey, lang)
+  if (l1) {
+    applySnapshot(l1)
+  } else {
+    void bootFromCacheOrNetwork(++runId, initialKey)
+  }
+
+  if (service === 'yt') {
+    let wasYtSignedIn = accounts.yt
+    $effect(() => {
+      const signed = accounts.yt
+      if (signed !== wasYtSignedIn) {
+        wasYtSignedIn = signed
+        // Startup refreshYouTube() must never wipe or reload an already-displayed cached view.
+        if (!untrack(() => state.servedFromCache)) {
+          const nextKey = untrack(() => liveYtAccountKey())
+          untrack(() => void openForKey(nextKey))
+        }
+      }
+    })
+  } else {
+    let trackedKey = initialKey
+    $effect(() => {
+      const nextKey = accountKeyFor(service)
+      if (nextKey !== trackedKey) {
+        trackedKey = nextKey
+        untrack(() => void openForKey(nextKey))
+      }
+    })
+  }
+
+  return {
+    get status() { return state.status },
+    get sections() { return state.sections },
+    get lib() { return state.lib },
+    get signedIn() { return state.signedIn },
+    get servedFromCache() { return state.servedFromCache },
+    get error() { return state.error },
+    get ytNote() { return state.ytNote },
+    retry: () => {
+      const id = ++runId
+      void loadForeground(id)
+    },
+  }
 }

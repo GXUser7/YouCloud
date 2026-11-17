@@ -2,12 +2,10 @@
   // YouTube Music's home: a hello, what it leads with in the spotlight, the listener's own a tap
   // away, its rows of songs (quick picks, an artist's, broadcasts) as lists to play in place and
   // its rows of sets as cards.
-  import { accounts } from '../lib/accounts.svelte'
   import { onMount } from 'svelte'
   import { extension, onExtension } from '../lib/extension'
-  import { leading, libraryOf, quickPicks } from '../lib/home.svelte'
+  import { leading, quickPicks, useHome } from '../lib/home.svelte'
   import { tr } from '../lib/i18n.svelte'
-  import * as live from '../lib/live'
   import { playQueue } from '../lib/state.svelte'
   import { reason } from '../lib/toast.svelte'
   import ExtensionCard from '../components/ExtensionCard.svelte'
@@ -22,26 +20,17 @@
   import Shelf from '../components/Shelf.svelte'
   import TrackRow from '../components/TrackRow.svelte'
 
-  let data = $state(live.home('yt'))
+  const home = useHome('yt')
   let ext = $state<string | null | undefined>(undefined)
   extension().then((v) => (ext = v))
-  // Installed while this page is open: its requests go through it from now on.
+  // Installed while this page is open: its requests go through it from now on when not cached.
   onMount(() =>
     onExtension((v) => {
-      if (ext === null) data = live.home('yt')
+      const wasMissing = ext === null
       ext = v
+      if (wasMissing && !home.servedFromCache) home.retry()
     }),
   )
-  // Signing in on YouTube makes home the listener's own.
-  let wasSignedIn = accounts.yt
-  $effect(() => {
-    if (accounts.yt !== wasSignedIn) {
-      wasSignedIn = accounts.yt
-      data = live.home('yt')
-    }
-  })
-
-  const lib = libraryOf('yt')
 </script>
 
 {#snippet picks(section: import('../lib/live').Section, i: number, limit: number)}
@@ -58,22 +47,25 @@
   </div>
 {/snippet}
 
-<HomeHeader service="yt" note={accounts.ytName ? tr('Для тебя, %s', accounts.ytName) : ''} />
-{#await data}
+<HomeHeader service="yt" note={home.ytNote} />
+{#if home.status === 'loading'}
   <Loading text={tr('Спрашиваю YouTube Music…')} />
-{:then sections}
+{:else if home.status === 'error'}
+  <Problem message={reason(home.error)} onretry={home.retry} />
+{:else if home.status === 'ready'}
+  {@const sections = home.sections}
   {@const lead = leading(sections)}
   {@const quick = quickPicks(sections)}
   {@const quickIndex = quick ? sections.indexOf(quick) : -1}
   {#if lead}<Spotlight lead={lead.sets} title={lead.title} />{/if}
-  {#if ext === null}
+  {#if !home.servedFromCache && ext === null}
     <ExtensionCard why={tr('YouTube отдаёт звук только на твой IP, а не Cloudflare. Подборки и поиск видно и так, а играть будет через расширение.')} />
   {/if}
-  <QuickRow service="yt" lib={lib.lib} signedIn={accounts.yt} />
+  <QuickRow service="yt" lib={home.lib} signedIn={home.signedIn} />
   {#if quick}
     <section class="section quick rise">{@render picks(quick, quickIndex, 12)}</section>
   {/if}
-  <LibraryShelves lib={lib.lib} />
+  <LibraryShelves lib={home.lib} />
   {#each sections as section, i (section.title + i)}
     {#if section === quick || section === lead}
       <!-- shown above -->
@@ -86,11 +78,9 @@
       </Shelf>
     {/if}
   {:else}
-    <Problem empty title={tr('Пусто')} message={tr('YouTube Music ничего не предложил.')} onretry={() => (data = live.home('yt'))} />
+    <Problem empty title={tr('Пусто')} message={tr('YouTube Music ничего не предложил.')} onretry={home.retry} />
   {/each}
-{:catch e}
-  <Problem message={reason(e)} onretry={() => (data = live.home('yt'))} />
-{/await}
+{/if}
 
 <style>
   /* On the page grid (app.css): --picks columns of rows, the grid's gap between them. */

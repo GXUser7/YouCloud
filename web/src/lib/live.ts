@@ -3,7 +3,7 @@
 
 import { tr } from './i18n.svelte'
 import { accounts } from './accounts.svelte'
-import { artist, serviceOf, set as setOf, track, type Service, type Track, type TrackSet } from './catalog'
+import { artist, defaultCatalog, serviceOf, track, type CatalogContext, type Service, type Track, type TrackSet } from './catalog'
 import * as mock from './mock'
 import * as soundcloud from './services/soundcloud'
 import * as yandex from './services/yandex'
@@ -92,18 +92,18 @@ function tidy(sections: Section[]): Section[] {
     .filter((s) => s.sets.length || s.tracks?.length)
 }
 
-export async function home(svc: Service): Promise<Section[]> {
-  if (svc === 'sc') return tidy(await soundcloud.home())
-  if (svc === 'ya') return tidy(await yandex.home())
-  return tidy(await youtube.home())
+export async function home(svc: Service, cat: CatalogContext = defaultCatalog): Promise<Section[]> {
+  if (svc === 'sc') return tidy(await soundcloud.home(cat))
+  if (svc === 'ya') return tidy(await yandex.home(cat))
+  return tidy(await youtube.home(cat))
 }
 
-export async function loadSet(id: string): Promise<TrackSet> {
+export async function loadSet(id: string, cat: CatalogContext = defaultCatalog): Promise<TrackSet> {
   const svc = serviceOf(id)
-  if (svc === 'sc') return soundcloud.loadSet(id)
-  if (svc === 'ya') return yandex.loadSet(id)
-  if (svc === 'yt') return youtube.loadSet(id)
-  return setOf(id)
+  if (svc === 'sc') return soundcloud.loadSet(id, cat)
+  if (svc === 'ya') return yandex.loadSet(id, cat)
+  if (svc === 'yt') return youtube.loadSet(id, cat)
+  return cat.set(id)
 }
 
 export async function loadArtist(id: string): Promise<ArtistPage> {
@@ -156,8 +156,8 @@ function sameName(q: string, name: string): boolean {
   return norm(name) === norm(q)
 }
 
-export async function library(svc: Service): Promise<Library> {
-  const l = svc === 'sc' ? await soundcloud.library() : svc === 'ya' ? await yandex.library() : await youtube.library()
+export async function library(svc: Service, cat: CatalogContext = defaultCatalog): Promise<Library> {
+  const l = svc === 'sc' ? await soundcloud.library(cat) : svc === 'ya' ? await yandex.library(cat) : await youtube.library(cat)
   return { ...l, likedIds: unique(l.likedIds), playlists: unique(l.playlists), artists: unique(l.artists) }
 }
 

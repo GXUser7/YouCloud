@@ -7,19 +7,34 @@ import { accounts, scToken, setSoundCloud } from '../accounts.svelte'
 import { extension, extensionCall, soundCloudWrites } from '../extension'
 import { challengeUrl, solveSoundCloud, soundCloudSetup } from '../soundcloudChallenge.svelte'
 import {
+  artists as catalogArtists,
   colorFor,
   compact,
   countWords,
+  defaultCatalog,
   putArtist,
   putSet,
   putTrack,
   sets,
   tracks as catalogTracks,
+  type CatalogContext,
   type ScTranscoding,
   type SetKind,
   type Track,
   type TrackSet,
 } from '../catalog'
+
+const fallbackCatalog: CatalogContext = defaultCatalog ?? {
+  tracks: catalogTracks,
+  sets,
+  artists: catalogArtists,
+  track: (id) => catalogTracks.get(id)!,
+  set: (id) => sets.get(id)!,
+  artist: (id) => catalogArtists.get(id)!,
+  putTrack,
+  putSet,
+  putArtist,
+}
 import { getJson, getText, HttpError, request } from '../net'
 import type { ArtistPage, ResultPage, SearchResult } from '../live'
 
@@ -322,10 +337,10 @@ function scPlayable(t: ScTrack): boolean {
   return streams.some((x) => !x.format.protocol.includes('encrypted'))
 }
 
-export function putScTrack(t: ScTrack): string {
+export function putScTrack(t: ScTrack, cat: CatalogContext = fallbackCatalog): string {
   const id = `sc:t:${t.id}`
   const artistName = t.publisher_metadata?.artist?.trim() || t.user?.username || 'SoundCloud'
-  return putTrack({
+  return cat.putTrack({
     id,
     service: 'sc',
     title: t.title ?? tr('Без названия'),
@@ -340,9 +355,9 @@ export function putScTrack(t: ScTrack): string {
   })
 }
 
-export function putScUser(u: ScUser): string {
+export function putScUser(u: ScUser, cat: CatalogContext = fallbackCatalog): string {
   const id = `sc:u:${u.id}`
-  return putArtist({
+  return cat.putArtist({
     id,
     name: u.username,
     service: 'sc',
@@ -353,13 +368,13 @@ export function putScUser(u: ScUser): string {
   })
 }
 
-function putScPlaylist(p: ScPlaylist): string {
+function putScPlaylist(p: ScPlaylist, cat: CatalogContext = fallbackCatalog): string {
   const id = `sc:pl:${p.id}`
   const album = p.is_album || ['album', 'ep', 'single', 'compilation'].includes(p.set_type ?? '')
   const kind: SetKind = album ? (p.set_type === 'single' ? 'single' : 'album') : 'playlist'
   const full = p.tracks?.filter(hasDetails) ?? []
   const year = (p.release_date ?? p.published_at)?.slice(0, 4)
-  return putSet({
+  return cat.putSet({
     id,
     kind,
     service: 'sc',
@@ -381,9 +396,9 @@ function systemKind(urn: string): SetKind {
   return 'mix'
 }
 
-function putScSystem(p: ScSystemPlaylist): string {
+function putScSystem(p: ScSystemPlaylist, cat: CatalogContext = fallbackCatalog): string {
   const id = `sc:sys:${p.urn}`
-  return putSet({
+  return cat.putSet({
     id,
     kind: systemKind(p.urn),
     service: 'sc',
@@ -398,7 +413,7 @@ function putScSystem(p: ScSystemPlaylist): string {
 }
 
 /** Full tracks for [stubs]: sets carry only ids past their first few tracks. */
-async function filled(stubs: ScTrack[]): Promise<string[]> {
+async function filled(stubs: ScTrack[], cat: CatalogContext = fallbackCatalog): Promise<string[]> {
   const known = new Map(stubs.filter(hasDetails).map((t) => [t.id, t]))
   const missing = stubs.filter((t) => !known.has(t.id)).map((t) => t.id)
   for (let i = 0; i < missing.length; i += 50) {
@@ -407,7 +422,7 @@ async function filled(stubs: ScTrack[]): Promise<string[]> {
   }
   return stubs.flatMap((s) => {
     const t = known.get(s.id)
-    return t ? [putScTrack(t)] : []
+    return t ? [putScTrack(t, cat)] : []
   })
 }
 
@@ -431,7 +446,7 @@ const SECTION_TITLES: Record<string, string> = {
 }
 
 /** Home: the mixes made for the listener when signed in, stations, curated sets, the charts. */
-export async function home(): Promise<Section[]> {
+export async function home(cat: CatalogContext = fallbackCatalog): Promise<Section[]> {
   const answer = await scGet<{ collection: { title?: string; tracking_feature_name?: string; items?: { collection: any[] } }[] }>('mixed-selections', {
     limit: 10,
     offset: 0,
@@ -443,8 +458,8 @@ export async function home(): Promise<Section[]> {
   for (const selection of answer.collection) {
     const items = selection.items?.collection ?? []
     const ids = items.flatMap((item) => {
-      if (item.kind === 'system-playlist') return [putScSystem(item)]
-      if (item.kind === 'playlist') return [putScPlaylist(item)]
+      if (item.kind === 'system-playlist') return [putScSystem(item, cat)]
+      if (item.kind === 'playlist') return [putScPlaylist(item, cat)]
       return []
     })
     if (!ids.length) continue
@@ -455,32 +470,32 @@ export async function home(): Promise<Section[]> {
   return sections.sort((a, b) => Number(b.title === tr('Твои миксы')) - Number(a.title === tr('Твои миксы')))
 }
 
-export async function loadSet(id: string): Promise<TrackSet> {
+export async function loadSet(id: string, cat: CatalogContext = fallbackCatalog): Promise<TrackSet> {
   if (id.startsWith('sc:sys:')) {
     const urn = id.slice('sc:sys:'.length)
     const p = await scGet<ScSystemPlaylist>(`system-playlists/${encodeURIComponent(urn)}`, { app_version: APP_VERSION, app_locale: 'en' })
-    putScSystem(p)
-    const tracks = await filled(p.tracks ?? [])
-    return finish(id, tracks)
+    putScSystem(p, cat)
+    const tracks = await filled(p.tracks ?? [], cat)
+    return finish(id, tracks, cat)
   }
   if (id === 'sc:likes') {
     const me = await myId()
     const page = await scGet<{ collection: { track?: ScTrack }[] }>(`users/${me}/track_likes`, { limit: 200 })
-    const tracks = page.collection.flatMap((x) => (x.track ? [putScTrack(x.track)] : []))
-    putSet({ id, kind: 'liked', service: 'sc', title: tr('Нравится'), subtitle: 'SoundCloud', color: '#ff7043', tracks: [], cover: null })
-    return finish(id, tracks)
+    const tracks = page.collection.flatMap((x) => (x.track ? [putScTrack(x.track, cat)] : []))
+    cat.putSet({ id, kind: 'liked', service: 'sc', title: tr('Нравится'), subtitle: 'SoundCloud', color: '#ff7043', tracks: [], cover: null })
+    return finish(id, tracks, cat)
   }
   const plId = id.slice('sc:pl:'.length)
   const p = await scGet<ScPlaylist>(`playlists/${plId}`)
-  putScPlaylist(p)
-  const tracks = await filled(p.tracks ?? [])
-  return finish(id, tracks)
+  putScPlaylist(p, cat)
+  const tracks = await filled(p.tracks ?? [], cat)
+  return finish(id, tracks, cat)
 }
 
-function finish(id: string, tracks: string[]): TrackSet {
-  const s = sets.get(id)!
+function finish(id: string, tracks: string[], cat: CatalogContext = fallbackCatalog): TrackSet {
+  const s = cat.sets.get(id)!
   const done = { ...s, tracks, loaded: true, total: tracks.length }
-  putSet(done)
+  cat.putSet(done)
   return done
 }
 
@@ -496,7 +511,7 @@ async function resultPage<T>(path: string, params: Params, put: (item: T) => str
   const nextPath = page.next_href
   const hasOffset = page.total_results != null && nextOffset < page.total_results && page.collection.length > 0
   return {
-    items: page.collection.map(put),
+    items: page.collection.map((item) => put(item)),
     next: nextPath
       ? () => resultPage(nextPath, {}, put, new URL(nextPath, API).searchParams.has('offset') ? Number(new URL(nextPath, API).searchParams.get('offset')) : nextOffset)
       : hasOffset ? () => resultPage(path, params, put, nextOffset) : undefined,
@@ -536,9 +551,9 @@ export async function loadArtist(id: string): Promise<ArtistPage> {
     artist: id,
     top: top.value.items,
     moreTop: top.value.next,
-    releases: albums.status === 'fulfilled' ? albums.value.collection.map(putScPlaylist) : [],
-    playlists: playlists.status === 'fulfilled' ? playlists.value.collection.map(putScPlaylist) : [],
-    similar: related.status === 'fulfilled' ? related.value.collection.map(putScUser) : [],
+    releases: albums.status === 'fulfilled' ? albums.value.collection.map((p) => putScPlaylist(p)) : [],
+    playlists: playlists.status === 'fulfilled' ? playlists.value.collection.map((p) => putScPlaylist(p)) : [],
+    similar: related.status === 'fulfilled' ? related.value.collection.map((u) => putScUser(u)) : [],
   }
 }
 
@@ -583,21 +598,21 @@ export interface Library {
   artists: string[]
 }
 
-export async function library(): Promise<Library> {
-  const likes = await loadSet('sc:likes')
+export async function library(cat: CatalogContext = fallbackCatalog): Promise<Library> {
+  const likes = await loadSet('sc:likes', cat)
   const [all, followings] = await Promise.allSettled([
     scGet<{ collection: { type: string; playlist?: ScPlaylist; system_playlist?: ScSystemPlaylist }[] }>('me/library/all', { limit: 50 }),
     scGet<{ collection: ScUser[] }>(`users/${await myId()}/followings`, { limit: 50 }),
   ])
   const playlists =
     all.status === 'fulfilled'
-      ? all.value.collection.flatMap((x) => (x.playlist ? [putScPlaylist(x.playlist)] : x.system_playlist ? [putScSystem(x.system_playlist)] : []))
+      ? all.value.collection.flatMap((x) => (x.playlist ? [putScPlaylist(x.playlist, cat)] : x.system_playlist ? [putScSystem(x.system_playlist, cat)] : []))
       : []
   return {
     liked: likes.id,
     likedIds: likes.tracks,
     playlists,
-    artists: followings.status === 'fulfilled' ? followings.value.collection.map(putScUser) : [],
+    artists: followings.status === 'fulfilled' ? followings.value.collection.map((u) => putScUser(u, cat)) : [],
   }
 }
 
@@ -610,7 +625,7 @@ export async function setLiked(track: Track, liked: boolean): Promise<void> {
 export async function related(track: Track): Promise<string[]> {
   const trackId = track.id.slice('sc:t:'.length)
   const page = await scGet<{ collection: ScTrack[] }>(`tracks/${trackId}/related`, { limit: 20 })
-  return page.collection.map(putScTrack)
+  return page.collection.map((t) => putScTrack(t))
 }
 
 // ---------------------------------------------------------------------------------- playback

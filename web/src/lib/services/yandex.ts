@@ -5,17 +5,33 @@
 import { tr } from '../i18n.svelte'
 import { accounts, yaToken } from '../accounts.svelte'
 import {
+  artists as catalogArtists,
   colorFor,
   compact,
   countWords,
+  defaultCatalog,
   putArtist,
   putSet,
   putTrack,
   sets,
+  tracks as catalogTracks,
+  type CatalogContext,
   type SetKind,
   type Track,
   type TrackSet,
 } from '../catalog'
+
+const fallbackCatalog: CatalogContext = defaultCatalog ?? {
+  tracks: catalogTracks,
+  sets,
+  artists: catalogArtists,
+  track: (id) => catalogTracks.get(id)!,
+  set: (id) => sets.get(id)!,
+  artist: (id) => catalogArtists.get(id)!,
+  putTrack,
+  putSet,
+  putArtist,
+}
 import { md5 } from '../md5'
 import { getJson, getText, HttpError, postForm, postJson } from '../net'
 import type { ArtistPage, ResultPage, SearchResult, SearchSection } from '../live'
@@ -99,11 +115,11 @@ interface YaPlaylist {
 
 export const cover = (uri: string | undefined | null, size = '400x400') => (uri ? 'https://' + uri.replace('%%', size) : null)
 
-export function putYaTrack(t: YaTrack): string {
+export function putYaTrack(t: YaTrack, cat: CatalogContext = fallbackCatalog): string {
   const trackId = String(t.realId ?? t.id).split(':')[0]
   const album = t.albums?.[0]
   const id = `ya:t:${trackId}`
-  return putTrack({
+  return cat.putTrack({
     id,
     service: 'ya',
     title: t.version ? `${t.title} (${t.version})` : t.title,
@@ -119,10 +135,10 @@ export function putYaTrack(t: YaTrack): string {
   })
 }
 
-function putYaAlbum(a: YaAlbum): string {
+function putYaAlbum(a: YaAlbum, cat: CatalogContext = fallbackCatalog): string {
   const id = `ya:al:${a.id}`
   const first = a.artists?.[0]
-  return putSet({
+  return cat.putSet({
     id,
     kind: a.type === 'single' ? 'single' : 'album',
     service: 'ya',
@@ -138,11 +154,11 @@ function putYaAlbum(a: YaAlbum): string {
   })
 }
 
-function putYaPlaylist(p: YaPlaylist, kind: SetKind = 'playlist'): string {
+function putYaPlaylist(p: YaPlaylist, kind: SetKind = 'playlist', cat: CatalogContext = fallbackCatalog): string {
   const uid = p.uid ?? p.owner?.uid
   const id = `ya:pl:${uid}:${p.kind}`
   const pic = p.cover?.uri ?? p.cover?.itemsUri?.[0]
-  return putSet({
+  return cat.putSet({
     id,
     kind: p.generatedPlaylistType ? 'personal' : kind,
     service: 'ya',
@@ -156,10 +172,10 @@ function putYaPlaylist(p: YaPlaylist, kind: SetKind = 'playlist'): string {
   })
 }
 
-function putYaArtist(a: YaArtist): string {
+function putYaArtist(a: YaArtist, cat: CatalogContext = fallbackCatalog): string {
   const id = `ya:a:${a.id}`
   const likes = a.likesCount
-  return putArtist({
+  return cat.putArtist({
     id,
     name: a.name,
     service: 'ya',
@@ -172,11 +188,11 @@ function putYaArtist(a: YaArtist): string {
 }
 
 /** Full tracks for "id:albumId" ids, a hundred at a time. */
-async function tracksById(ids: string[]): Promise<string[]> {
+async function tracksById(ids: string[], cat: CatalogContext = fallbackCatalog): Promise<string[]> {
   const out: string[] = []
   for (let i = 0; i < ids.length; i += 100) {
     const chunk = await yaPostForm<YaTrack[]>('tracks', { 'track-ids': ids.slice(i, i + 100).join(',') })
-    out.push(...chunk.map(putYaTrack))
+    out.push(...chunk.map((t) => putYaTrack(t, cat)))
   }
   return out
 }
@@ -193,7 +209,7 @@ export interface Section {
  * releases and playlists — as the app's YandexLanding reads them — and the chart. Signed out,
  * Yandex gives only the chart.
  */
-export async function home(): Promise<Section[]> {
+export async function home(cat: CatalogContext = fallbackCatalog): Promise<Section[]> {
   const signed = !!yaToken()
   const [feed, releases, playlists, chart] = await Promise.allSettled([
     signed ? yaGet<{ generatedPlaylists?: { ready?: boolean; data?: YaPlaylist }[] }>('feed') : Promise.resolve(null),
@@ -203,23 +219,23 @@ export async function home(): Promise<Section[]> {
   ])
   const sections: Section[] = []
   if (feed.status === 'fulfilled' && feed.value) {
-    const made = (feed.value.generatedPlaylists ?? []).flatMap((g) => (g.ready !== false && g.data ? [putYaPlaylist(g.data, 'personal')] : []))
+    const made = (feed.value.generatedPlaylists ?? []).flatMap((g) => (g.ready !== false && g.data ? [putYaPlaylist(g.data, 'personal', cat)] : []))
     if (made.length) sections.push({ title: tr('Собрано для тебя'), sets: made })
   }
   if (releases.status === 'fulfilled' && releases.value?.newReleases.length) {
     const albums = await yaPostForm<YaAlbum[]>('albums', { 'album-ids': releases.value.newReleases.slice(0, 40).join(',') }).catch(() => [])
-    if (albums.length) sections.push({ title: tr('Новые релизы'), sets: albums.map(putYaAlbum) })
+    if (albums.length) sections.push({ title: tr('Новые релизы'), sets: albums.map((a) => putYaAlbum(a, cat)) })
   }
   if (playlists.status === 'fulfilled' && playlists.value?.newPlaylists.length) {
     const ids = playlists.value.newPlaylists.slice(0, 40).map((p) => `${p.uid}:${p.kind}`)
     const list = await yaPostForm<YaPlaylist[]>('playlists/list', { 'playlist-ids': ids.join(',') }).catch(() => [])
-    if (list.length) sections.push({ title: tr('Новые плейлисты'), sets: list.map((p) => putYaPlaylist(p)) })
+    if (list.length) sections.push({ title: tr('Новые плейлисты'), sets: list.map((p) => putYaPlaylist(p, 'playlist', cat)) })
   }
   if (chart.status === 'fulfilled' && chart.value.chart) {
     // The chart comes whole, tracks and all: the set is ready to play from home.
     const p = chart.value.chart
-    const id = putYaPlaylist({ ...p, description: tr('Самое популярное в Яндекс Музыке') })
-    finish(id, (p.tracks ?? []).filter((x) => x.track).map((x) => putYaTrack(x.track!)))
+    const id = putYaPlaylist({ ...p, description: tr('Самое популярное в Яндекс Музыке') }, 'playlist', cat)
+    finish(id, (p.tracks ?? []).filter((x) => x.track).map((x) => putYaTrack(x.track!, cat)), cat)
     sections.push({ title: tr('Чарт'), sets: [id] })
   }
   if (!sections.length) {
@@ -229,30 +245,30 @@ export async function home(): Promise<Section[]> {
   return sections
 }
 
-export async function loadSet(id: string): Promise<TrackSet> {
+export async function loadSet(id: string, cat: CatalogContext = fallbackCatalog): Promise<TrackSet> {
   if (id.startsWith('ya:al:')) {
     const album = await yaGet<YaAlbum>(`albums/${id.slice('ya:al:'.length)}/with-tracks`)
-    putYaAlbum(album)
-    return finish(id, (album.volumes ?? []).flat().map(putYaTrack))
+    putYaAlbum(album, cat)
+    return finish(id, (album.volumes ?? []).flat().map((t) => putYaTrack(t, cat)), cat)
   }
   if (id === 'ya:likes') {
     const uid = await myUid()
     const answer = await yaGet<{ library: { tracks: { id: string; albumId?: string }[] } }>(`users/${uid}/likes/tracks`)
     const ids = answer.library.tracks.slice(0, 500).map((t) => (t.albumId ? `${t.id}:${t.albumId}` : t.id))
-    putSet({ id, kind: 'liked', service: 'ya', title: tr('Мне нравится'), subtitle: tr('Яндекс Музыка'), color: '#ef5350', tracks: [], cover: null })
-    return finish(id, await tracksById(ids))
+    cat.putSet({ id, kind: 'liked', service: 'ya', title: tr('Мне нравится'), subtitle: tr('Яндекс Музыка'), color: '#ef5350', tracks: [], cover: null })
+    return finish(id, await tracksById(ids, cat), cat)
   }
   const [, uid, kind] = id.slice('ya:'.length).split(':')
   const p = await yaGet<YaPlaylist>(`users/${uid}/playlists/${kind}`)
-  putYaPlaylist(p, sets.get(id)?.kind ?? 'playlist')
-  const full = (p.tracks ?? []).filter((x) => x.track).map((x) => putYaTrack(x.track!))
-  const ids = full.length ? full : await tracksById((p.tracks ?? []).map((x) => (x.albumId ? `${x.id}:${x.albumId}` : String(x.id))))
-  return finish(id, ids)
+  putYaPlaylist(p, cat.sets.get(id)?.kind ?? 'playlist', cat)
+  const full = (p.tracks ?? []).filter((x) => x.track).map((x) => putYaTrack(x.track!, cat))
+  const ids = full.length ? full : await tracksById((p.tracks ?? []).map((x) => (x.albumId ? `${x.id}:${x.albumId}` : String(x.id))), cat)
+  return finish(id, ids, cat)
 }
 
-function finish(id: string, tracks: string[]): TrackSet {
-  const done = { ...sets.get(id)!, tracks, loaded: true, total: tracks.length }
-  putSet(done)
+function finish(id: string, tracks: string[], cat: CatalogContext = fallbackCatalog): TrackSet {
+  const done = { ...cat.sets.get(id)!, tracks, loaded: true, total: tracks.length }
+  cat.putSet(done)
   return done
 }
 
@@ -303,9 +319,9 @@ export async function loadArtist(id: string): Promise<ArtistPage> {
     artist: id,
     top: [...new Set([...popular, ...page.items])],
     moreTop: page.next,
-    releases: [...(info.albums ?? []), ...(info.alsoAlbums ?? [])].map(putYaAlbum),
+    releases: [...(info.albums ?? []), ...(info.alsoAlbums ?? [])].map((a) => putYaAlbum(a)),
     playlists: (info.playlists ?? []).map((p) => putYaPlaylist(p)),
-    similar: (info.similarArtists ?? []).map(putYaArtist),
+    similar: (info.similarArtists ?? []).map((a) => putYaArtist(a)),
   }
 }
 
@@ -322,7 +338,12 @@ interface YaSearch {
 }
 
 const searchTypes: Record<SearchSection, string> = { tracks: 'track', artists: 'artist', albums: 'album', playlists: 'playlist' }
-const searchPut = { tracks: putYaTrack, artists: putYaArtist, albums: putYaAlbum, playlists: (p: YaPlaylist) => putYaPlaylist(p) }
+const searchPut = {
+  tracks: (t: YaTrack) => putYaTrack(t),
+  artists: (a: YaArtist) => putYaArtist(a),
+  albums: (a: YaAlbum) => putYaAlbum(a),
+  playlists: (p: YaPlaylist) => putYaPlaylist(p),
+}
 
 function searchPage(r: YaSearch, section: SearchSection, text: string, page: number): ResultPage {
   const group = r[section]
@@ -330,7 +351,7 @@ function searchPage(r: YaSearch, section: SearchSection, text: string, page: num
   const current = group?.page ?? page
   const perPage = group?.perPage
   return {
-    items: results.map(searchPut[section] as (item: any) => string),
+    items: results.map((item) => (searchPut[section] as (item: any) => string)(item)),
     next: results.length > 0 && group?.total != null && perPage != null && perPage > 0 && (current + 1) * perPage < group.total
       ? async () => searchPage(await yaGet<YaSearch>('search', { text, type: searchTypes[section], page: current + 1, nocorrect: false }), section, text, current + 1)
       : undefined,
@@ -401,9 +422,9 @@ export interface Library {
   artists: string[]
 }
 
-export async function library(): Promise<Library> {
+export async function library(cat: CatalogContext = fallbackCatalog): Promise<Library> {
   const uid = await myUid()
-  const likes = await loadSet('ya:likes')
+  const likes = await loadSet('ya:likes', cat)
   const [playlists, artists] = await Promise.allSettled([
     yaGet<YaPlaylist[]>(`users/${uid}/playlists/list`),
     yaGet<YaArtist[]>(`users/${uid}/likes/artists`, { 'with-timestamps': false }),
@@ -411,8 +432,8 @@ export async function library(): Promise<Library> {
   return {
     liked: likes.id,
     likedIds: likes.tracks,
-    playlists: playlists.status === 'fulfilled' ? playlists.value.map((p) => putYaPlaylist(p)) : [],
-    artists: artists.status === 'fulfilled' ? artists.value.map(putYaArtist) : [],
+    playlists: playlists.status === 'fulfilled' ? playlists.value.map((p) => putYaPlaylist(p, 'playlist', cat)) : [],
+    artists: artists.status === 'fulfilled' ? artists.value.map((a) => putYaArtist(a, cat)) : [],
   }
 }
 
