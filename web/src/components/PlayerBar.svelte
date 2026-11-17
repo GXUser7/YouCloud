@@ -44,8 +44,8 @@
   ]
 </script>
 
-<footer class="bar glass-strong" style:--cover-rest={COVER_REST} style:--cover-playing={COVER_PLAYING}>
-  <section class="now">
+<footer class="bar" style:--cover-rest={COVER_REST} style:--cover-playing={COVER_PLAYING}>
+  <section class="island now glass-strong">
     {#if t}
       <button class="cover" class:spinning={player.playing} onclick={() => (app.nowPlaying = true)} aria-label={tr('Открыть плеер')} title={tr('Открыть плеер')}>
         {#key t.id}
@@ -66,6 +66,7 @@
           </span>
         {/key}
       </div>
+      <PlayerControls items={['like']} />
     {:else}
       <span class="cover empty"><Icon name="music_note" size={22} /></span>
       <div class="text">
@@ -75,23 +76,25 @@
     {/if}
   </section>
 
-  <PlayerControls />
+  <div class="island center glass-strong">
+    <PlayerControls items={['shuffle', 'prev', 'play', 'next', 'repeat']} />
 
-  <div class="progress" class:idle={!t}>
-    {#if player.live}
-      <!-- A broadcast has no end to be part way to: «В эфире» and the line run full, as in the app. -->
-      <span class="live-mark" title={tr('Прямая трансляция')}><span class="dot"></span><span class="label">{tr('В эфире')}</span></span>
-      <WavyProgress value={1} playing={player.playing && !player.loading} />
-    {:else}
-      <span class="time now-time">{time(player.position)}</span>
-      <WavyProgress value={duration ? player.position / duration : 0} playing={player.playing && !player.loading} {duration} onseek={t ? (f) => seek(f * duration) : undefined} />
-      <button class="time end-time" onclick={flipTime} title={left ? tr('Показать длину') : tr('Показать, сколько осталось')}>
-        {left && duration ? `−${time(Math.max(0, duration - player.position))}` : time(duration)}
-      </button>
-    {/if}
+    <div class="progress" class:idle={!t}>
+      {#if player.live}
+        <!-- A broadcast has no end to be part way to: «В эфире» and the line run full, as in the app. -->
+        <span class="live-mark" title={tr('Прямая трансляция')}><span class="dot"></span><span class="label">{tr('В эфире')}</span></span>
+        <WavyProgress value={1} playing={player.playing && !player.loading} />
+      {:else}
+        <span class="time now-time">{time(player.position)}</span>
+        <WavyProgress value={duration ? player.position / duration : 0} playing={player.playing && !player.loading} {duration} onseek={t ? (f) => seek(f * duration) : undefined} />
+        <button class="time end-time" onclick={flipTime} title={left ? tr('Показать длину') : tr('Показать, сколько осталось')}>
+          {left && duration ? `−${time(Math.max(0, duration - player.position))}` : time(duration)}
+        </button>
+      {/if}
+    </div>
   </div>
 
-  <div class="side">
+  <div class="island side glass-strong">
     <div class="group" role="group" aria-label={tr('Панель')}>
       {#each panels as p (p.id)}
         {@const on = app.panelOpen && app.panel === p.id}
@@ -105,8 +108,8 @@
 </footer>
 
 <style>
-  /* As wide as the page's column and on the same edges as the bar on top — not the window's
-     width, which on a wide screen stretched the progress across the whole monitor. */
+  /* Three floating Material 3 Expressive islands across the bottom column: what plays (with its
+     like), the transport and wavy progress in the middle, and the panels with volume on the right. */
   .bar {
     grid-area: player;
     justify-self: center;
@@ -117,22 +120,73 @@
     box-sizing: border-box;
     display: flex;
     align-items: center;
-    gap: 18px;
-    padding: 8px 12px 8px 8px;
-    border-radius: 32px;
-    box-shadow: 0 -10px 40px -26px color-mix(in oklab, #000 60%, transparent);
+    gap: 14px;
     /* What fits is decided by the bar's own width, not the window's: in Masaki and beside the
        side panel the page is narrower than the window. */
     container: bar / inline-size;
   }
 
-  /* ---- What plays ---- */
-  .now {
-    flex: 0 1 320px;
-    min-width: 180px;
+  .island {
+    height: 64px;
+    box-sizing: border-box;
     display: flex;
     align-items: center;
+    border-radius: 32px;
+    box-shadow: 0 -10px 40px -26px color-mix(in oklab, #000 65%, transparent);
+  }
+
+  /* ---- Island 1: What plays ---- */
+  .now {
+    flex: 0 1 310px;
+    min-width: 180px;
+    padding: 8px 12px 8px 8px;
     gap: 12px;
+  }
+
+  /* ---- Island 2: Connected transport + WavyProgress ---- */
+  .center {
+    flex: 1 1 auto;
+    min-width: 0;
+    padding: 8px 18px;
+    gap: 18px;
+  }
+
+  /* In the islands, active toggles (like, shuffle, repeat) and paused Play share the skip buttons'
+     tonal fill and bright on-surface icon; only playing Play lights up in primary. */
+  .bar :global(.controls) {
+    --play-w: 62px;
+    --play-h: 44px;
+    gap: 3px;
+  }
+  .bar :global(.controls .xb.toggle.on),
+  .bar :global(.controls .xb.toggle.on:hover) {
+    --fill: color-mix(in oklab, var(--on-surface) 12%, transparent);
+    color: var(--on-surface);
+  }
+  .bar :global(.controls .xb.opt:first-child) {
+    margin-right: 3px;
+  }
+  .bar :global(.controls .xb.opt:last-child) {
+    margin-left: 3px;
+  }
+  .bar :global(.controls .xb.back) {
+    --base: 42px;
+    --fill: color-mix(in oklab, var(--on-surface) 12%, transparent);
+    --r: 20px 6px 6px 20px;
+  }
+  .bar :global(.controls .xb.back:active) {
+    --r: 20px 2px 2px 20px;
+  }
+  .bar :global(.controls .xb.forward) {
+    --base: 42px;
+    --fill: color-mix(in oklab, var(--on-surface) 12%, transparent);
+    --r: 6px 20px 20px 6px;
+  }
+  .bar :global(.controls .xb.forward:active) {
+    --r: 2px 20px 20px 2px;
+  }
+  .bar :global(.controls .xb.play) {
+    margin: 0;
   }
   .cover {
     width: 48px;
@@ -291,11 +345,10 @@
     background: #ff3b30;
   }
 
-  /* ---- Panels and volume ---- */
+  /* ---- Island 3: Panels and volume ---- */
   .side {
     flex: none;
-    display: flex;
-    align-items: center;
+    padding: 8px 12px;
     gap: 12px;
   }
   .group {
@@ -387,6 +440,10 @@
     .progress,
     .side {
       display: none;
+    }
+    .center {
+      flex: none;
+      padding: 8px 10px;
     }
     .now {
       flex: 1 1 auto;
