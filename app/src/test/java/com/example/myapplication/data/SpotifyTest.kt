@@ -284,6 +284,16 @@ class SpotifyTest {
         assertTrue(spotifyPopularYouTubeFallbackScore(bloody, popular10M)!! > spotifyPopularYouTubeFallbackScore(bloody, popular500)!!)
         assertNull(spotifyPopularYouTubeFallbackScore(bloody, osuTitle))
         assertNull(spotifyPopularYouTubeFallbackScore(bloody, guitarMinus))
+        // Cross-script YouTube uploads (e.g. Spotify "Tetoris" by "Hiiragi Magnetite" vs YouTube "テトリス / 重音テトSV" by "柊マグネタイト")
+        // still get a positive fallback score so the track never skips when YouTube returned playable results.
+        val tetorisSp = SoundCloudTrack(34L, title = "Tetoris", duration = 142_000L, user = SoundCloudUser(username = "Hiiragi Magnetite"))
+        val tetorisYtJp = SoundCloudTrack(35L, title = "テトリス / 重音テトSV", duration = 142_000L, user = SoundCloudUser(username = "柊マグネタイト"), playbackCount = 55_000_000L)
+        val tetorisYtOverlap = SoundCloudTrack(36L, title = "Tetoris (テトリス)", duration = 142_000L, user = SoundCloudUser(username = "柊マグネタイト"), playbackCount = 5_000_000L)
+        val jpScore = spotifyPopularYouTubeFallbackScore(tetorisSp, tetorisYtJp)
+        val overlapScore = spotifyPopularYouTubeFallbackScore(tetorisSp, tetorisYtOverlap)
+        assertNotNull(jpScore)
+        assertNotNull(overlapScore)
+        assertTrue(overlapScore!! > jpScore!!)
 
         // 2) Full Bloody Stream lyric video (4:19) matches despite anime prefix + "(Color Coded Lyrics ...)", while Piano Trio / +4Key karaoke are rejected.
         val bloodyFullLyric = SoundCloudTrack(

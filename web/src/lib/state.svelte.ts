@@ -951,12 +951,33 @@ function trackFingerprint(id: string): string {
   return art && title ? `${art}:${title}` : id
 }
 
+const multiUsedSeeds = new Set<string>()
+let multiHeardFps = new Set<string>(stored<string[]>('multiWaveHeardFps', []))
+
+function rememberMultiWaveFp(fp: string) {
+  if (!fp) return
+  multiHeardFps.delete(fp)
+  multiHeardFps.add(fp)
+  if (multiHeardFps.size > 600) {
+    const keep = [...multiHeardFps].slice(-600)
+    multiHeardFps = new Set(keep)
+  }
+  remember('multiWaveHeardFps', [...multiHeardFps])
+}
+
 async function fetchMultiWaveTracks(
   radio: Extract<Radio, { kind: 'multi' }>,
   existingIds: string[],
 ): Promise<string[]> {
-  const seenIds = new Set(existingIds)
-  const seenFp = new Set(existingIds.map(trackFingerprint))
+  const isFavMode = app.waveMode === 'favorite'
+  const recentHeardIds = isFavMode
+    ? heard.filter((h) => h.at >= Date.now() - FAVOURITES_REST).map((h) => h.id)
+    : heard.map((h) => h.id)
+  const seenIds = new Set([...existingIds, ...recentHeardIds])
+  const seenFp = new Set([
+    ...existingIds.map(trackFingerprint),
+    ...(isFavMode ? [] : [...multiHeardFps]),
+  ])
   const pools: string[][] = []
 
   const tasks: Promise<string[]>[] = []
@@ -1003,30 +1024,35 @@ async function fetchMultiWaveTracks(
     tasks.push(
       (async () => {
         try {
-          const seedFromQueue = [...existingIds].reverse().find((id) => trackOf(id)?.service === svc)
-          if (seedFromQueue) {
-            const rel = welcome(await live.relatedTo(trackOf(seedFromQueue)))
-            if (rel.length) return shuffledTracks(rel).slice(0, 8)
-          }
+          // Never pull from home screen recommendation shelves (live.home); use only the user's own
+          // liked tracks and tracks discovered in the wave queue as seeds for relatedTo().
           const lib = await live.library(svc).catch(() => null)
-          const pool: string[] = [...(lib?.likedIds ?? []).slice(0, 40)]
-          if (pool.length < 10) {
-            const sections = await live.home(svc).catch(() => [])
-            for (const s of sections) {
-              if (s.tracks?.length) pool.push(...s.tracks)
-            }
-            const firstSet = sections.flatMap((s) => s.sets)[0]
-            if (firstSet && pool.length < 8) {
-              const loaded = await live.loadSet(firstSet).catch(() => null)
-              if (loaded?.tracks.length) pool.push(...loaded.tracks.slice(0, 20))
+          const likedPool = welcome(lib?.likedIds ?? [])
+          const queuePool = [...existingIds].reverse().filter((id) => trackOf(id)?.service === svc && !disliked.has(id))
+          const candidateSeeds = [...queuePool, ...shuffledTracks(likedPool)]
+          const freshSeeds = candidateSeeds.filter((id) => !multiUsedSeeds.has(id)).slice(0, 2)
+          const chosenSeeds = freshSeeds.length ? freshSeeds : shuffledTracks(candidateSeeds).slice(0, 2)
+          for (const s of chosenSeeds) {
+            multiUsedSeeds.add(s)
+            if (multiUsedSeeds.size > 200) {
+              const first = multiUsedSeeds.values().next().value
+              if (first) multiUsedSeeds.delete(first)
             }
           }
-          const picked = shuffledTracks(welcome(pool))
-          if (picked[0] && picked.length < 6) {
-            const rel = welcome(await live.relatedTo(trackOf(picked[0])).catch(() => []))
-            picked.push(...rel)
+          const seedSet = new Set(chosenSeeds)
+          const relLists = await Promise.all(
+            chosenSeeds.map((sid) =>
+              live
+                .relatedTo(trackOf(sid))
+                .then((list) => welcome(list).filter((id) => !seedSet.has(id)))
+                .catch(() => [] as string[]),
+            ),
+          )
+          const related = shuffledTracks(relLists.flat())
+          if (isFavMode) {
+            return [...shuffledTracks(likedPool), ...related].slice(0, 12)
           }
-          return picked.slice(0, 10)
+          return related.slice(0, 10)
         } catch {
           return []
         }
@@ -1050,6 +1076,7 @@ async function fetchMultiWaveTracks(
         if (seenFp.has(fp)) continue
         seenIds.add(candidate)
         seenFp.add(fp)
+        rememberMultiWaveFp(fp)
         out.push(candidate)
         added = true
         break

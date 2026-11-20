@@ -180,6 +180,21 @@ class SettingsRepository(
         preferences.edit().putString(KEY_YANDEX_WAVE_HEARD, ids.joinToString(",")).apply()
     }
 
+    /** Persistent memory for Multi-Service Wave so tracks don't repeat across wave starts or app restarts. */
+    fun multiWaveHeardIds(): List<Long> =
+        preferences.getString(KEY_MULTI_WAVE_HEARD_IDS, null)?.split(',')?.mapNotNull { it.toLongOrNull() }.orEmpty()
+
+    fun setMultiWaveHeardIds(ids: List<Long>) {
+        preferences.edit().putString(KEY_MULTI_WAVE_HEARD_IDS, ids.takeLast(600).joinToString(",")).apply()
+    }
+
+    fun multiWaveHeardFingerprints(): List<String> =
+        preferences.getString(KEY_MULTI_WAVE_HEARD_FPS, null)?.split('\n')?.filter { it.isNotBlank() }.orEmpty()
+
+    fun setMultiWaveHeardFingerprints(fps: List<String>) {
+        preferences.edit().putString(KEY_MULTI_WAVE_HEARD_FPS, fps.takeLast(800).joinToString("\n")).apply()
+    }
+
     // A YouTube artist's page whole (every row: videos, singles, similar artists…); off, their
     // tracks and albums as before, and their broadcasts.
     val ytArtistShowAll = MutableStateFlow(preferences.getBoolean(KEY_YT_ARTIST_SHOW_ALL, false))
@@ -545,6 +560,8 @@ class SettingsRepository(
         const val KEY_VIDEO_YANDEX = "video_yandex"
         const val KEY_VIDEO_GLOW_STYLE = "video_glow_style"
         const val KEY_YANDEX_WAVE_HEARD = "yandex_wave_heard"
+        const val KEY_MULTI_WAVE_HEARD_IDS = "multi_wave_heard_ids"
+        const val KEY_MULTI_WAVE_HEARD_FPS = "multi_wave_heard_fps"
         const val KEY_YANDEX_WAVE_SESSION = "yandex_wave_session"
         const val KEY_YANDEX_WAVE_PICKS = "yandex_wave_picks"
         const val KEY_PLAYER_FX_BUTTON = "player_fx_button"

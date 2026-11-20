@@ -2018,13 +2018,15 @@ class MusicViewModel(
             
             if (streamUrl.isNotEmpty()) {
                 resolvedUrls[track.id] = streamUrl
-                // Update the player queue with the new URL
-                val updatedQueue = _activeQueue.value.map { t ->
-                    val localUrl = localStreamUrl(t.id)
-                    val fallbackUrl = placeholderStreamUrl(t)
-                    t.toQueueTrack(localUrl ?: resolvedUrls[t.id] ?: fallbackUrl)
+                if (streamUrl != placeholderStreamUrl(track)) {
+                    // Update the player queue only when the resolved URL differs from the placeholder stub
+                    val updatedQueue = _activeQueue.value.map { t ->
+                        val localUrl = localStreamUrl(t.id)
+                        val fallbackUrl = placeholderStreamUrl(t)
+                        t.toQueueTrack(localUrl ?: resolvedUrls[t.id] ?: fallbackUrl)
+                    }
+                    musicPlayer.updateQueue(updatedQueue)
                 }
-                musicPlayer.updateQueue(updatedQueue)
             }
         } catch (e: Exception) {
             handleSoundCloudApiError(e)
@@ -6495,6 +6497,11 @@ class MusicViewModel(
     ) {
         var yandex: YandexRadio? = null
         val discoveredSeeds = java.util.EnumMap<WaveSource, ArrayDeque<SoundCloudTrack>>(WaveSource::class.java)
+        val bridgedTasteIds = HashSet<Long>()
+        @Volatile
+        var scLikedCache: List<SoundCloudTrack>? = null
+        @Volatile
+        var spLikedCache: List<SoundCloudTrack>? = null
         var tailId: Long? = null
         var refilling = false
 
@@ -6504,7 +6511,7 @@ class MusicViewModel(
                 val q = discoveredSeeds.getOrPut(src) { ArrayDeque() }
                 if (q.none { it.id == track.id }) {
                     q.addLast(track)
-                    while (q.size > 24) q.removeFirst()
+                    while (q.size > 36) q.removeFirst()
                 }
             }
         }
@@ -6620,7 +6627,7 @@ class MusicViewModel(
             ActiveRadioKind.MULTI_WAVE -> {
                 val sources = snapshot.waveSources.ifEmpty { connectedWaveSources() }
                 if (sources.isEmpty()) return
-                val mixer = MultiServiceWaveMixer().apply { markQueued(restored) }
+                val mixer = createMultiWaveMixer(snapshot.wavePicks[WaveTuning.MODE]).apply { markQueued(restored) }
                 val session = MultiWaveSession(
                     picks = snapshot.wavePicks,
                     sources = sources,
@@ -7055,6 +7062,64 @@ class MusicViewModel(
         }
     }
 
+    private fun createMultiWaveMixer(mode: String?): MultiServiceWaveMixer {
+        val mixer = MultiServiceWaveMixer(
+            initialSeenIds = settingsRepository.multiWaveHeardIds(),
+            initialSeenFingerprints = settingsRepository.multiWaveHeardFingerprints()
+        )
+        if (mode != "settingDiversity:favorite") {
+            // Avoid immediately re-playing tracks the user just listened to before starting the wave.
+            mixer.markQueued(history.value.take(60))
+        }
+        return mixer
+    }
+
+    private fun persistMultiWaveHistory(mixer: MultiServiceWaveMixer) {
+        settingsRepository.setMultiWaveHeardIds(mixer.seenIdsSnapshot())
+        settingsRepository.setMultiWaveHeardFingerprints(mixer.seenFingerprintsSnapshot())
+    }
+
+    /**
+     * Unified cross-service taste pool built ONLY from tracks the user actually chose (liked/downloaded
+     * tracks, user playlists, remote likes, and listening history) — NEVER from home screen recommendation
+     * shelves (`_ytHome`, `_spotifyHome`, `_mixSection`), so every connected service can bridge fresh
+     * seeds from the user's real taste without pulling unwanted home screen recommendations.
+     */
+    private fun userTastePool(session: MultiWaveSession): List<SoundCloudTrack> {
+        val favs = favoritesRepository.favorites.value.map { it.toSoundCloudTrack() }
+        val userLists = playlistsRepository.playlists.value.flatMap { it.tracks }.map { it.toSoundCloudTrack() }
+        val remoteSc = session.scLikedCache.orEmpty()
+        val remoteSp = session.spLikedCache.orEmpty()
+        val hist = history.value.take(120)
+        return (favs + userLists + remoteSc + remoteSp + hist)
+            .filter { track ->
+                track.urn?.startsWith("local:") != true &&
+                    !track.title.isNullOrBlank() &&
+                    !session.mixer.isDisliked(track)
+            }
+            .distinctBy { it.id }
+    }
+
+    private fun pickCrossServiceTasteQuery(session: MultiWaveSession): String? {
+        val pool = userTastePool(session)
+        if (pool.isEmpty()) return null
+        val fresh = pool.filter { it.id !in session.bridgedTasteIds }
+        val picked = (fresh.ifEmpty {
+            session.bridgedTasteIds.clear()
+            pool
+        }).randomOrNull() ?: return null
+        session.bridgedTasteIds.add(picked.id)
+        val artist = picked.artists?.firstOrNull()?.username?.takeIf { it.isNotBlank() && it != "Spotify" }
+            ?: picked.user?.username?.takeIf { it.isNotBlank() && it != "Spotify" }
+            ?: ""
+        val title = com.example.myapplication.data.cleanAudioTitle(picked.title.orEmpty()).trim()
+        return if (artist.isNotEmpty() && !title.lowercase().contains(artist.lowercase())) {
+            "$artist $title".trim()
+        } else {
+            title.ifEmpty { picked.title.orEmpty().trim() }
+        }.takeIf { it.length >= 2 }
+    }
+
     private fun playMultiServiceWave(sources: List<WaveSource>) {
         yandexWaveJob?.cancel()
         spotifyRadioJob?.cancel()
@@ -7067,7 +7132,7 @@ class MusicViewModel(
                 val session = MultiWaveSession(
                     picks = picks,
                     sources = sources,
-                    mixer = MultiServiceWaveMixer()
+                    mixer = createMultiWaveMixer(picks[WaveTuning.MODE])
                 )
                 val target = maxOf(WAVE_MIN_START_TRACKS + 4, sources.size * 3)
                 val (batch, firstYandexBatchId) = fetchMultiServiceWaveBatch(session, targetCount = target)
@@ -7133,13 +7198,26 @@ class MusicViewModel(
             val list = deferred.await()
             if (list.isNotEmpty()) byService[source] = list
         }
-        val excludeIds = if (mode == "settingDiversity:discover") {
-            favoritesRepository.favorites.value.mapTo(HashSet()) { it.id }
-        } else {
-            emptySet()
+        val excludeIds = when (mode) {
+            "settingDiversity:discover" -> {
+                val out = HashSet<Long>()
+                favoritesRepository.favorites.value.mapTo(out) { it.id }
+                playlistsRepository.playlists.value.forEach { pl -> pl.tracks.mapTo(out) { it.id } }
+                history.value.mapTo(out) { it.id }
+                session.scLikedCache?.mapTo(out) { it.id }
+                session.spLikedCache?.mapTo(out) { it.id }
+                out
+            }
+            "settingDiversity:favorite" -> emptySet()
+            else -> {
+                // In default wave mode, keep the user's already-downloaded daily tracks from dominating
+                // unless Rotor/radio specifically surfaces them and nothing fresher is available.
+                favoritesRepository.favorites.value.mapTo(HashSet()) { it.id }
+            }
         }
         val mixed = session.mixer.mix(byService, targetCount, excludeIds)
         session.rememberSeeds(mixed)
+        persistMultiWaveHistory(session.mixer)
         Log.i(
             "MusicViewModel",
             "Multi-wave batch raw={${byService.entries.joinToString { "${it.key}=${it.value.size}" }}} " +
@@ -7195,162 +7273,170 @@ class MusicViewModel(
     private suspend fun fetchSoundCloudWaveCandidates(
         session: MultiWaveSession,
         mode: String?
-    ): List<SoundCloudTrack> {
+    ): List<SoundCloudTrack> = coroutineScope {
         val clientId = settingsRepository.clientId.value
-        if (clientId.isBlank()) return emptyList()
+        if (clientId.isBlank()) return@coroutineScope emptyList()
         val favs = favoritesRepository.favorites.value
             .map { it.toSoundCloudTrack() }
             .filter { isSoundCloudTrack(it) && !session.mixer.isDisliked(it) }
+        val userPlaylistTracks = playlistsRepository.playlists.value
+            .flatMap { it.tracks }
+            .map { it.toSoundCloudTrack() }
+            .filter { isSoundCloudTrack(it) && !session.mixer.isDisliked(it) }
         val hist = history.value.filter { isSoundCloudTrack(it) && !session.mixer.isDisliked(it) }
-        val homeMixes = buildList {
-            if (mode == "settingDiversity:popular") {
-                addAll(_trendingSection.value?.mixes.orEmpty())
-                addAll(_mixSection.value?.mixes.orEmpty())
-                addAll(_stationSection.value?.mixes.orEmpty())
-            } else {
-                addAll(_mixSection.value?.mixes.orEmpty())
-                addAll(_stationSection.value?.mixes.orEmpty())
-                addAll(_trendingSection.value?.mixes.orEmpty())
-            }
-        }
-        val mixTracks = if (mode == "settingDiversity:popular" || (favs.isEmpty() && hist.isEmpty())) {
-            val pickedMix = homeMixes.filter { it.trackIds.isNotEmpty() }.randomOrNull()
-            if (pickedMix != null) {
-                runCatching {
-                    service.getTracksByIds(pickedMix.trackIds.shuffled().take(20).joinToString(","), clientId)
-                        .filter(::isPlayableTrack)
-                }.onFailure { if (it is CancellationException) throw it }.getOrNull().orEmpty()
-            } else emptyList()
-        } else emptyList()
-
-        val likedRemote = if (favs.isEmpty() && hist.isEmpty() && mixTracks.isEmpty()) {
+        val likedRemote = session.scLikedCache ?: run {
             val uid = settingsRepository.userIdValue()
             if (uid.isNotBlank()) {
-                runCatching {
-                    service.getLikedTracks(uid, clientId, limit = 30).collection
-                        .mapNotNull { it.track }
-                        .filter(::isPlayableTrack)
-                }.onFailure { if (it is CancellationException) throw it }.getOrNull().orEmpty()
+                withTimeoutOrNull(4_000L) {
+                    runCatching {
+                        service.getLikedTracks(uid, clientId, limit = 50).collection
+                            .mapNotNull { it.track }
+                            .filter(::isPlayableTrack)
+                    }.onFailure { if (it is CancellationException) throw it }.getOrNull()
+                }.orEmpty().also { if (it.isNotEmpty()) session.scLikedCache = it }
             } else emptyList()
-        } else emptyList()
+        }.filterNot { session.mixer.isDisliked(it) }
 
-        val seedPool = (favs + hist + mixTracks + likedRemote + session.seedsFor(WaveSource.SOUNDCLOUD)).distinctBy { it.id }
-        val seed = session.mixer.pickSeed(WaveSource.SOUNDCLOUD, seedPool)
-        val related = if (seed != null) {
-            withTimeoutOrNull(5_000L) { fetchSoundCloudRelated(seed, clientId) }.orEmpty()
-        } else emptyList()
-        return when (mode) {
-            "settingDiversity:favorite" -> favs.shuffled() + related + likedRemote.shuffled()
-            "settingDiversity:popular" -> mixTracks.shuffled() + related
-            else -> related + mixTracks.shuffled() + favs.shuffled() + likedRemote.shuffled()
+        val seedPool = (session.seedsFor(WaveSource.SOUNDCLOUD) + favs + likedRemote + userPlaylistTracks + hist)
+            .distinctBy { it.id }
+        val seeds = session.mixer.pickSeeds(WaveSource.SOUNDCLOUD, seedPool, count = 2).toMutableList()
+        if (seeds.size < 2) {
+            val query = pickCrossServiceTasteQuery(session)
+            if (query != null) {
+                val bridged = withTimeoutOrNull(4_000L) {
+                    runCatching {
+                        service.searchTracks(query, clientId, limit = 8).collection
+                            .firstOrNull { isPlayableTrack(it) && !session.mixer.isDisliked(it) }
+                    }.onFailure { if (it is CancellationException) throw it }.getOrNull()
+                }
+                if (bridged != null && seeds.none { it.id == bridged.id }) seeds.add(bridged)
+            }
+        }
+        val seedIdSet = seeds.mapTo(HashSet()) { it.id }
+        val relatedJobs = seeds.map { seed ->
+            async {
+                withTimeoutOrNull(5_000L) {
+                    fetchSoundCloudRelated(seed, clientId).filter { it.id !in seedIdSet && !session.mixer.isDisliked(it) }
+                }.orEmpty()
+            }
+        }
+        val related = relatedJobs.flatMap { it.await() }.distinctBy { it.id }.shuffled()
+        when (mode) {
+            "settingDiversity:favorite" -> ((favs + likedRemote + userPlaylistTracks).distinctBy { it.id }.shuffled() + related).distinctBy { it.id }
+            else -> related
         }
     }
 
     private suspend fun fetchYouTubeWaveCandidates(
         session: MultiWaveSession,
         mode: String?
-    ): List<SoundCloudTrack> {
-        if (settingsRepository.ytMusicAuth() == null) return emptyList()
-        val shelves = _ytHome.value.ifEmpty {
-            runCatching { ytMusic.home() }
-                .onFailure { if (it is CancellationException) throw it }
-                .getOrDefault(emptyList())
-                .also { if (it.isNotEmpty()) _ytHome.value = it }
-        }
-        val homeTracks = buildList {
-            shelves.forEach { shelf ->
-                addAll(shelf.tracks)
-                shelf.sets.forEach { addAll(it.knownTracks) }
-            }
-            _ytPlaylists.value.forEach { addAll(it.knownTracks) }
-        }.filter { it.youTubeVideoId != null && !session.mixer.isDisliked(it) }.distinctBy { it.id }
+    ): List<SoundCloudTrack> = coroutineScope {
+        if (settingsRepository.ytMusicAuth() == null) return@coroutineScope emptyList()
         val favs = favoritesRepository.favorites.value
             .map { it.toSoundCloudTrack() }
             .filter { it.youTubeVideoId != null && !session.mixer.isDisliked(it) }
+        val userPlaylistTracks = playlistsRepository.playlists.value
+            .flatMap { it.tracks }
+            .map { it.toSoundCloudTrack() }
+            .filter { it.youTubeVideoId != null && !session.mixer.isDisliked(it) }
         val hist = history.value.filter { it.youTubeVideoId != null && !session.mixer.isDisliked(it) }
-        val seedPool = (favs + hist + homeTracks + session.seedsFor(WaveSource.YOUTUBE)).distinctBy { it.id }
-        val seed = session.mixer.pickSeed(WaveSource.YOUTUBE, seedPool)
-        val radio = seed?.youTubeVideoId?.let { vid ->
-            withTimeoutOrNull(5_000L) {
-                runCatching { ytMusic.radio(vid).filter { it.youTubeVideoId != null } }
-                    .onFailure { if (it is CancellationException) throw it }
-                    .getOrDefault(emptyList())
+
+        val seedPool = (session.seedsFor(WaveSource.YOUTUBE) + favs + userPlaylistTracks + hist)
+            .distinctBy { it.id }
+        val seeds = session.mixer.pickSeeds(WaveSource.YOUTUBE, seedPool, count = if (seedPool.size >= 8) 2 else 1).toMutableList()
+        if (seeds.size < 2) {
+            val query = pickCrossServiceTasteQuery(session)
+            if (query != null) {
+                val bridged = withTimeoutOrNull(4_500L) {
+                    runCatching {
+                        ytMusic.searchAudioCandidates(query).songs
+                            .firstOrNull { it.youTubeVideoId != null && !session.mixer.isDisliked(it) }
+                    }.onFailure { if (it is CancellationException) throw it }.getOrNull()
+                }
+                if (bridged != null && seeds.none { it.id == bridged.id }) seeds.add(bridged)
             }
-        }.orEmpty()
-        return when (mode) {
-            "settingDiversity:favorite" -> favs.shuffled() + radio + homeTracks.shuffled()
-            "settingDiversity:popular" -> homeTracks.shuffled() + radio
-            else -> radio + homeTracks.shuffled() + favs.shuffled()
+        }
+        val seedVideoIds = seeds.mapNotNullTo(HashSet()) { it.youTubeVideoId }
+        val seedIds = seeds.mapTo(HashSet()) { it.id }
+        val radioJobs = seeds.mapNotNull { seed ->
+            val vid = seed.youTubeVideoId ?: return@mapNotNull null
+            async {
+                withTimeoutOrNull(5_500L) {
+                    runCatching {
+                        // Exclude the seed track itself (which YouTube radio always returns at index 0).
+                        ytMusic.radio(vid).filter {
+                            it.youTubeVideoId != null &&
+                                it.id !in seedIds &&
+                                it.youTubeVideoId !in seedVideoIds &&
+                                !session.mixer.isDisliked(it)
+                        }
+                    }.onFailure { if (it is CancellationException) throw it }.getOrDefault(emptyList())
+                }.orEmpty()
+            }
+        }
+        val radio = radioJobs.flatMap { it.await() }.distinctBy { it.id }.shuffled()
+        when (mode) {
+            "settingDiversity:favorite" -> ((favs + userPlaylistTracks).distinctBy { it.id }.shuffled() + radio).distinctBy { it.id }
+            else -> radio
         }
     }
 
     private suspend fun fetchSpotifyWaveCandidates(
         session: MultiWaveSession,
         mode: String?
-    ): List<SoundCloudTrack> {
-        if (spotifyAccount.value == null) return emptyList()
-        val shelves = _spotifyHome.value.ifEmpty {
-            withTimeoutOrNull(5_000L) {
-                runCatching { spotify.home() }
-                    .onFailure { if (it is CancellationException) throw it }
-                    .getOrDefault(emptyList())
-            }.orEmpty().also { if (it.isNotEmpty()) _spotifyHome.value = it }
-        }
-        val homeTracks = buildList {
-            shelves.forEach { shelf ->
-                addAll(shelf.tracks)
-                shelf.sets.forEach { addAll(it.knownTracks) }
-            }
-        }.filter { it.spotifyId != null && !session.mixer.isDisliked(it) }.distinctBy { it.id }
+    ): List<SoundCloudTrack> = coroutineScope {
+        if (spotifyAccount.value == null) return@coroutineScope emptyList()
         val favs = favoritesRepository.favorites.value
             .map { it.toSoundCloudTrack() }
             .filter { it.spotifyId != null && !session.mixer.isDisliked(it) }
+        val userPlaylistTracks = playlistsRepository.playlists.value
+            .flatMap { it.tracks }
+            .map { it.toSoundCloudTrack() }
+            .filter { it.spotifyId != null && !session.mixer.isDisliked(it) }
         val hist = history.value.filter { it.spotifyId != null && !session.mixer.isDisliked(it) }
+        val likedRemote = session.spLikedCache ?: run {
+            withTimeoutOrNull(4_500L) {
+                runCatching {
+                    spotify.setTracksSample(SPOTIFY_LIKED, limit = 50).filter { it.spotifyId != null }
+                }.onFailure { if (it is CancellationException) throw it }.getOrNull()
+            }.orEmpty().also { if (it.isNotEmpty()) session.spLikedCache = it }
+        }.filterNot { session.mixer.isDisliked(it) }
 
-        // Spotify's home rows are mostly playlists/mixes whose tracks aren't inlined: sample one
-        // personalized playlist (e.g. Daily Mix / Discover / Liked Songs) when needed so Spotify
-        // always has rich, fresh tracks even if related() is slow or local history is empty.
-        val shelfSets = shelves.flatMap { it.sets }
-            .mapNotNull { it.permalinkUrl?.takeIf { url -> url == SPOTIFY_LIKED || url.startsWith("spotify:playlist:") || url.startsWith("spotify:album:") } }
-            .distinct()
-        val playlistSample = if (mode == "settingDiversity:popular" || (homeTracks.size + favs.size + hist.size) < 8) {
-            val pickRef = shelfSets.filterNot { it == SPOTIFY_LIKED }.randomOrNull() ?: shelfSets.firstOrNull()
-            if (pickRef != null) {
-                withTimeoutOrNull(4_500L) {
-                    runCatching { spotify.setTracksSample(pickRef, limit = 30).filter { it.spotifyId != null } }
-                        .onFailure { if (it is CancellationException) throw it }
-                        .getOrDefault(emptyList())
+        val seedPool = (session.seedsFor(WaveSource.SPOTIFY) + favs + likedRemote + userPlaylistTracks + hist)
+            .distinctBy { it.id }
+        val seeds = session.mixer.pickSeeds(WaveSource.SPOTIFY, seedPool, count = if (seedPool.size >= 8) 2 else 1).toMutableList()
+        if (seeds.size < 2) {
+            val query = pickCrossServiceTasteQuery(session)
+            if (query != null) {
+                val bridged = withTimeoutOrNull(4_500L) {
+                    runCatching {
+                        spotify.search(query).tracks
+                            .firstOrNull { it.spotifyId != null && !session.mixer.isDisliked(it) }
+                    }.onFailure { if (it is CancellationException) throw it }.getOrNull()
+                }
+                if (bridged != null && seeds.none { it.id == bridged.id }) seeds.add(bridged)
+            }
+        }
+        val seedIds = seeds.mapTo(HashSet()) { it.id }
+        val seedSpotifyIds = seeds.mapNotNullTo(HashSet()) { it.spotifyId }
+        val relatedJobs = seeds.map { seed ->
+            async {
+                withTimeoutOrNull(5_500L) {
+                    runCatching {
+                        spotify.related(seed).filter {
+                            it.spotifyId != null &&
+                                it.id !in seedIds &&
+                                it.spotifyId !in seedSpotifyIds &&
+                                !session.mixer.isDisliked(it)
+                        }
+                    }.onFailure { if (it is CancellationException) throw it }.getOrDefault(emptyList())
                 }.orEmpty()
-            } else emptyList()
-        } else emptyList()
-
-        val seedPool = (favs + hist + homeTracks + playlistSample + session.seedsFor(WaveSource.SPOTIFY)).distinctBy { it.id }
-        val seed = session.mixer.pickSeed(WaveSource.SPOTIFY, seedPool)
-        val related = if (seed != null) {
-            withTimeoutOrNull(5_500L) {
-                runCatching { spotify.related(seed).filter { it.spotifyId != null } }
-                    .onFailure { if (it is CancellationException) throw it }
-                    .getOrDefault(emptyList())
-            }.orEmpty()
-        } else emptyList()
-
-        // If related() returned nothing and we haven't sampled a personalized Spotify playlist yet, try one now.
-        val extraPlaylist = if (related.isEmpty() && playlistSample.isEmpty() && shelfSets.isNotEmpty()) {
-            val pickRef = shelfSets.filterNot { it == SPOTIFY_LIKED }.randomOrNull() ?: shelfSets.firstOrNull()
-            if (pickRef != null) {
-                withTimeoutOrNull(4_500L) {
-                    runCatching { spotify.setTracksSample(pickRef, limit = 30).filter { it.spotifyId != null } }
-                        .onFailure { if (it is CancellationException) throw it }
-                        .getOrDefault(emptyList())
-                }.orEmpty()
-            } else emptyList()
-        } else emptyList()
-
-        val curated = (playlistSample + extraPlaylist + homeTracks).distinctBy { it.id }
-        return when (mode) {
-            "settingDiversity:favorite" -> favs.shuffled() + related + curated.shuffled()
-            "settingDiversity:popular" -> curated.shuffled() + related
-            else -> related + curated.shuffled() + favs.shuffled()
+            }
+        }
+        val related = relatedJobs.flatMap { it.await() }.distinctBy { it.id }.shuffled()
+        when (mode) {
+            "settingDiversity:favorite" -> ((favs + likedRemote + userPlaylistTracks).distinctBy { it.id }.shuffled() + related).distinctBy { it.id }
+            else -> related
         }
     }
 

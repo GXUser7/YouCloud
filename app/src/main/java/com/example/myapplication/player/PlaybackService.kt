@@ -165,9 +165,10 @@ class PlaybackService : MediaLibraryService() {
                             Log.d("SpotifyAudio", "[${uri.lastPathSegment}] Playing from stream cache ($key)")
                             return dataSpec.buildUpon().setKey(key).build()
                         }
+                        val isPrefetch = Thread.currentThread().name == "StreamPrefetch"
                         val stream = kotlinx.coroutines.runBlocking {
                             com.example.myapplication.data.SpotifyAudio.resolve(
-                                this@PlaybackService, spotifySettings, track, urgent = true
+                                this@PlaybackService, spotifySettings, track, urgent = !isPrefetch
                             )
                         }
                         return dataSpec.buildUpon().setUri(android.net.Uri.parse(stream.url))
@@ -188,7 +189,13 @@ class PlaybackService : MediaLibraryService() {
                             StreamCache.cachedYouTubeKey(this@PlaybackService, videoId)?.let { key ->
                                 return dataSpec.buildUpon().setKey(key).build()
                             }
-                            val audio = com.example.myapplication.data.YouTubeStreams.resolve(this@PlaybackService, videoId, youTubeAuth())
+                            val isPrefetch = Thread.currentThread().name == "StreamPrefetch"
+                            val audio = com.example.myapplication.data.YouTubeStreams.resolve(
+                                this@PlaybackService,
+                                videoId,
+                                youTubeAuth(),
+                                urgent = { !isPrefetch }
+                            )
                             if (audio != null) {
                                 // Keyed by the video and its format, not the URL: a fresh URL for
                                 // the same track still finds what the cache holds, and another

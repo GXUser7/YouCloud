@@ -214,7 +214,7 @@ private fun normalized(text: String): String =
         .replace(separators, " ")
         .trim()
 
-private fun cleanAudioTitle(raw: String): String {
+internal fun cleanAudioTitle(raw: String): String {
     var result = raw.trim()
     repeat(3) {
         val next = result
@@ -304,7 +304,9 @@ private val popularFallbackBlockedEditions = setOf(
  * search results that shares title/artist words and is not gameplay, karaoke or a backing track.
  */
 internal fun spotifyPopularYouTubeFallbackScore(target: SoundCloudTrack, candidate: SoundCloudTrack): Long? {
-    if (candidate.duration !in 45_000L..900_000L) return null
+    val minDuration = if (target.duration in 15_000L..45_000L) maxOf(12_000L, target.duration / 2) else 30_000L
+    val maxDuration = if (target.duration > 450_000L) target.duration * 2 else 900_000L
+    if (candidate.duration > 0L && candidate.duration !in minDuration..maxDuration) return null
     val rawCandidateTitle = candidate.title.orEmpty()
     if (rawCandidateTitle.isBlank()) return null
 
@@ -313,7 +315,7 @@ internal fun spotifyPopularYouTubeFallbackScore(target: SoundCloudTrack, candida
     if (extraEditions.any { it.startsWith("game:") || it in popularFallbackBlockedEditions }) return null
 
     val extraChannelVariants = channelVariantTags(candidate) - channelVariantTags(target) - targetEditions
-    if (extraChannelVariants.isNotEmpty()) return null
+    val channelPenalty = if (extraChannelVariants.isNotEmpty()) 4_000L else 0L
 
     val targetTitleWords = normalized(cleanAudioTitle(target.title.orEmpty())).split(' ').filter { it.length >= 2 }
     val targetArtistWords = splitArtistCredits(target).flatMap { it.split(' ') }.filter { it.length >= 2 }
@@ -321,16 +323,21 @@ internal fun spotifyPopularYouTubeFallbackScore(target: SoundCloudTrack, candida
         normalized(rawCandidateTitle).split(' ') +
             splitArtistCredits(candidate).flatMap { it.split(' ') }
         ).filter { it.length >= 2 }.toSet()
-    val wantedWords = (targetTitleWords + targetArtistWords).toSet()
-    if (wantedWords.isNotEmpty() && wantedWords.none { it in candWords }) return null
 
     val titleHits = targetTitleWords.count { it in candWords }
     val artistHits = targetArtistWords.count { it in candWords }
     val officialBonus = if (spotifyHasOfficialChannel(target, candidate)) 5_000L else 0L
+    val hasOverlap = titleHits > 0 || artistHits > 0 || officialBonus > 0L
+    val tierBase = if (hasOverlap) 15_000L else 1_000L
     val views = (candidate.playbackCount ?: 0L).coerceAtLeast(0L)
     val viewsScore = if (views > 0L) (kotlin.math.log10(views.toDouble() + 1.0) * 2_000.0).toLong() else 0L
-    val durationPenalty = if (target.duration > 0L) kotlin.math.abs(target.duration - candidate.duration) / 50L else 0L
-    return maxOf(1L, 1_000L + viewsScore + officialBonus + titleHits * 800L + artistHits * 600L - durationPenalty)
+    val durationPenalty = if (target.duration > 0L && candidate.duration > 0L) {
+        minOf(6_000L, kotlin.math.abs(target.duration - candidate.duration) / 50L)
+    } else 0L
+    return maxOf(
+        1L,
+        tierBase + viewsScore + officialBonus + titleHits * 800L + artistHits * 600L - durationPenalty - channelPenalty
+    )
 }
 
 private fun editionTags(title: String): Set<String> {

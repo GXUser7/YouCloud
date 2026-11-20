@@ -102,4 +102,35 @@ class MultiServiceWaveTest {
         assertFalse(isSoundCloudTrack(track(-200L, "${YT_TRACK_URN}abcdefghijk", "YT", "Artist")))
         assertFalse(isSoundCloudTrack(track(-300L, "spotify:track:4uLU6hMCjMI75M1A2tKUQC", "Sp", "Artist")))
     }
+
+    @Test
+    fun deduplicatesEmbeddedArtistSoundCloudUploadsAndPersistsSeenHistoryAcrossSessions() {
+        val scRepost = track(9001L, "soundcloud:tracks:9001", "GONE.Fludd - КОД ГИАС (Sped Up)", "phonk_archive")
+        val spOriginal = track(-9002L, "spotify:track:7jt5qt0YwLHJ2EdWX6mQTi", "КОД ГИАС", "GONE.Fludd")
+        assertEquals("gone fludd::код гиас", waveTrackFingerprint(scRepost))
+        assertEquals("gone fludd::код гиас", waveTrackFingerprint(spOriginal))
+
+        val firstMixer = MultiServiceWaveMixer(Random(11))
+        val firstBatch = firstMixer.mix(
+            mapOf(WaveSource.SOUNDCLOUD to listOf(scRepost)),
+            targetCount = 4
+        )
+        assertEquals(listOf(scRepost.id), firstBatch.map { it.id })
+
+        // Restoring into a new session mixer (e.g. restarting the wave) remembers both IDs and fingerprints.
+        val secondMixer = MultiServiceWaveMixer(
+            random = Random(11),
+            initialSeenIds = firstMixer.seenIdsSnapshot(),
+            initialSeenFingerprints = firstMixer.seenFingerprintsSnapshot()
+        )
+        val freshTrack = track(-9003L, "yandex:track:9003", "Новый трек", "Новый артист")
+        val secondBatch = secondMixer.mix(
+            mapOf(
+                WaveSource.SPOTIFY to listOf(spOriginal),
+                WaveSource.YANDEX to listOf(freshTrack)
+            ),
+            targetCount = 4
+        )
+        assertEquals(listOf(freshTrack.id), secondBatch.map { it.id })
+    }
 }

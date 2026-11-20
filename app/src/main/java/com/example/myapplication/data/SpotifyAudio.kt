@@ -42,6 +42,7 @@ internal object SpotifyAudio {
 
     private val cache = android.util.LruCache<String, Pair<Long, Stream>>(64)
     private val failedCandidates = android.util.LruCache<String, MutableMap<String, Long>>(64)
+    private val inFlight = java.util.concurrent.ConcurrentHashMap<String, kotlinx.coroutines.CompletableDeferred<Stream>>()
     private val resolvedVariants = java.util.concurrent.ConcurrentHashMap<String, ResolvedVariant>()
     @Volatile
     private var variantsLoaded = false
@@ -166,6 +167,8 @@ internal object SpotifyAudio {
 
     internal enum class SourceKind { YOUTUBE, YANDEX, SOUNDCLOUD }
 
+    internal const val TIER_STRICT = 150_000L
+    internal const val TIER_LOOSE = 80_000L
     internal const val BONUS_YT_SONG = 26_000L
     internal const val BONUS_YT_VIDEO = 25_000L
     internal const val BONUS_YT_WEB = 24_000L
@@ -193,6 +196,41 @@ internal object SpotifyAudio {
             Log.d(TAG, "[$id] Cache hit -> ${it.second.candidateKey}")
             return it.second
         }
+        val existing = inFlight[key]
+        if (existing != null) {
+            Log.d(TAG, "[$id] Joining in-flight resolve (urgent=$urgent)")
+            return existing.await()
+        }
+        val deferred = kotlinx.coroutines.CompletableDeferred<Stream>()
+        val prev = inFlight.putIfAbsent(key, deferred)
+        if (prev != null) {
+            Log.d(TAG, "[$id] Joining in-flight resolve (urgent=$urgent)")
+            return prev.await()
+        }
+        try {
+            val resolved = resolveInternal(context, settings, track, id, key, ytAuth, yandexToken, clientId, now, urgent)
+            deferred.complete(resolved)
+            return resolved
+        } catch (t: Throwable) {
+            deferred.completeExceptionally(t)
+            throw t
+        } finally {
+            inFlight.remove(key, deferred)
+        }
+    }
+
+    private suspend fun resolveInternal(
+        context: Context,
+        settings: SettingsRepository,
+        track: SoundCloudTrack,
+        id: String,
+        key: String,
+        ytAuth: YtAuth?,
+        yandexToken: String,
+        clientId: String,
+        now: Long,
+        urgent: Boolean
+    ): Stream {
         val primaryQuery = spotifyAudioQuery(track).trim()
         if (primaryQuery.isEmpty() || track.duration <= 0) {
             Log.w(TAG, "[$id] Invalid metadata for resolve: query='$primaryQuery' duration=${track.duration}")
@@ -223,8 +261,8 @@ internal object SpotifyAudio {
         val scResolver = soundCloudService?.let(::SoundCloudPlaybackResolver)
 
         suspend fun searchCandidates(query: String, label: String): List<ScoredCandidate> = coroutineScope {
-            suspend fun <T> safeSearch(source: String, call: suspend () -> T): T? = try {
-                call()
+            suspend fun <T> safeSearch(source: String, timeoutMs: Long, call: suspend () -> T): T? = try {
+                kotlinx.coroutines.withTimeoutOrNull(timeoutMs) { call() }
             } catch (e: CancellationException) {
                 throw e
             } catch (e: IOException) {
@@ -236,17 +274,22 @@ internal object SpotifyAudio {
                 null
             }
 
-            val ytJob = async { safeSearch("YTM") { yt.searchAudioCandidates(query) } }
+            val ytJob = async { safeSearch("YTM", 6_500L) { yt.searchAudioCandidates(query) } }
+            val ytWebJob = async {
+                safeSearch("YTWeb", 5_000L) { YouTubeWeb.search(query, ytAuth).tracks }
+                    .orEmpty()
+                    .filter { it.youTubeVideoId != null && it.liveVideoId == null && it.duration > 0 }
+            }
             val yandexJob = async {
                 if (yandexService == null) emptyList()
-                else safeSearch("Yandex") { yandexService.searchTracks(query).result?.tracks?.results.orEmpty() }.orEmpty()
+                else safeSearch("Yandex", 4_500L) { yandexService.searchTracks(query).result?.tracks?.results.orEmpty() }.orEmpty()
             }
             val scJob = async {
                 if (soundCloudService == null) emptyList()
-                else safeSearch("SoundCloud") { soundCloudService.searchTracks(query, settings.clientId.value, limit = 15).collection }.orEmpty()
+                else safeSearch("SoundCloud", 4_500L) { soundCloudService.searchTracks(query, settings.clientId.value, limit = 15).collection }.orEmpty()
             }
 
-            val out = mutableListOf<ScoredCandidate>()
+            val strictPool = mutableListOf<ScoredCandidate>()
             val loosePool = mutableListOf<ScoredCandidate>()
             val popularPool = mutableListOf<ScoredCandidate>()
             val ytRes = ytJob.await()
@@ -263,14 +306,14 @@ internal object SpotifyAudio {
                 if (score != null) {
                     ytSongsMatched++
                     ytMatched++
-                    out += ScoredCandidate(cKey, SourceKind.YOUTUBE, song, score + BONUS_YT_SONG, official, "YouTube Music", "strict")
+                    strictPool += ScoredCandidate(cKey, SourceKind.YOUTUBE, song, TIER_STRICT + score + BONUS_YT_SONG, official, "YouTube Music", "strict")
                 } else {
                     val loose = spotifyLooseDurationMatchScore(track, song)
                     if (loose != null) {
-                        loosePool += ScoredCandidate(cKey, SourceKind.YOUTUBE, song, loose + BONUS_YT_SONG, official, "YouTube Music", "loose")
+                        loosePool += ScoredCandidate(cKey, SourceKind.YOUTUBE, song, TIER_LOOSE + loose + BONUS_YT_SONG, official, "YouTube Music", "loose")
                     } else {
                         spotifyPopularYouTubeFallbackScore(track, song)?.let { pop ->
-                            popularPool += ScoredCandidate(cKey, SourceKind.YOUTUBE, song, pop, official, "YouTube Music", "popular")
+                            popularPool += ScoredCandidate(cKey, SourceKind.YOUTUBE, song, pop + 1_000L, official, "YouTube Music", "popular")
                         }
                     }
                 }
@@ -283,11 +326,11 @@ internal object SpotifyAudio {
                 val score = spotifyMatchScore(track, video)
                 if (score != null) {
                     ytMatched++
-                    out += ScoredCandidate(cKey, SourceKind.YOUTUBE, video, score + BONUS_YT_VIDEO, official, "YouTube Music", "strict")
+                    strictPool += ScoredCandidate(cKey, SourceKind.YOUTUBE, video, TIER_STRICT + score + BONUS_YT_VIDEO, official, "YouTube Music", "strict")
                 } else {
                     val loose = spotifyLooseDurationMatchScore(track, video)
                     if (loose != null) {
-                        loosePool += ScoredCandidate(cKey, SourceKind.YOUTUBE, video, loose + BONUS_YT_VIDEO, official, "YouTube Music", "loose")
+                        loosePool += ScoredCandidate(cKey, SourceKind.YOUTUBE, video, TIER_LOOSE + loose + BONUS_YT_VIDEO, official, "YouTube Music", "loose")
                     } else {
                         spotifyPopularYouTubeFallbackScore(track, video)?.let { pop ->
                             popularPool += ScoredCandidate(cKey, SourceKind.YOUTUBE, video, pop, official, "YouTube", "popular")
@@ -296,30 +339,28 @@ internal object SpotifyAudio {
                 }
             }
 
-            // If YouTube Music had no matching official song (region-restricted catalog or only
-            // community videos), also check YouTube Web so the original recording can compete.
-            var ytWebCount = 0
-            if (ytSongsMatched == 0) {
-                val ytWebTracks = safeSearch("YTWeb") { YouTubeWeb.search(query, ytAuth).tracks }.orEmpty()
-                    .filter { it.youTubeVideoId != null && it.liveVideoId == null && it.duration > 0 }
-                ytWebCount = ytWebTracks.size
-                for (webTrack in ytWebTracks) {
-                    val vid = webTrack.youTubeVideoId ?: continue
-                    val cKey = "yt:$vid"
-                    if (cKey in failed) continue
-                    val official = spotifyHasOfficialChannel(track, webTrack)
-                    val score = spotifyMatchScore(track, webTrack)
-                    if (score != null) {
+            val ytWebTracks = ytWebJob.await()
+            val ytWebCount = ytWebTracks.size
+            for (webTrack in ytWebTracks) {
+                val vid = webTrack.youTubeVideoId ?: continue
+                val cKey = "yt:$vid"
+                if (cKey in failed) continue
+                val official = spotifyHasOfficialChannel(track, webTrack)
+                val score = spotifyMatchScore(track, webTrack)
+                if (score != null) {
+                    if (ytSongsMatched == 0) {
                         ytMatched++
-                        out += ScoredCandidate(cKey, SourceKind.YOUTUBE, webTrack, score + BONUS_YT_WEB, official, "YouTube", "strict")
+                        strictPool += ScoredCandidate(cKey, SourceKind.YOUTUBE, webTrack, TIER_STRICT + score + BONUS_YT_WEB, official, "YouTube", "strict")
                     } else {
-                        val loose = spotifyLooseDurationMatchScore(track, webTrack)
-                        if (loose != null) {
-                            loosePool += ScoredCandidate(cKey, SourceKind.YOUTUBE, webTrack, loose + BONUS_YT_WEB, official, "YouTube", "loose")
-                        } else {
-                            spotifyPopularYouTubeFallbackScore(track, webTrack)?.let { pop ->
-                                popularPool += ScoredCandidate(cKey, SourceKind.YOUTUBE, webTrack, pop, official, "YouTube", "popular")
-                            }
+                        loosePool += ScoredCandidate(cKey, SourceKind.YOUTUBE, webTrack, TIER_LOOSE + score + BONUS_YT_WEB, official, "YouTube", "strict")
+                    }
+                } else {
+                    val loose = spotifyLooseDurationMatchScore(track, webTrack)
+                    if (loose != null) {
+                        loosePool += ScoredCandidate(cKey, SourceKind.YOUTUBE, webTrack, TIER_LOOSE + loose + BONUS_YT_WEB, official, "YouTube", "loose")
+                    } else {
+                        spotifyPopularYouTubeFallbackScore(track, webTrack)?.let { pop ->
+                            popularPool += ScoredCandidate(cKey, SourceKind.YOUTUBE, webTrack, pop, official, "YouTube", "popular")
                         }
                     }
                 }
@@ -336,10 +377,10 @@ internal object SpotifyAudio {
                 val score = spotifyMatchScore(track, matchTrack)
                 if (score != null) {
                     yaMatched++
-                    out += ScoredCandidate(cKey, SourceKind.YANDEX, mapped, score + BONUS_YANDEX, sourceLabel = "Яндекс Музыка", matchMode = "strict")
+                    strictPool += ScoredCandidate(cKey, SourceKind.YANDEX, mapped, TIER_STRICT + score + BONUS_YANDEX, sourceLabel = "Яндекс Музыка", matchMode = "strict")
                 } else {
                     spotifyLooseDurationMatchScore(track, matchTrack)?.let { loose ->
-                        loosePool += ScoredCandidate(cKey, SourceKind.YANDEX, mapped, loose + BONUS_YANDEX, sourceLabel = "Яндекс Музыка", matchMode = "loose")
+                        loosePool += ScoredCandidate(cKey, SourceKind.YANDEX, mapped, TIER_LOOSE + loose + BONUS_YANDEX, sourceLabel = "Яндекс Музыка", matchMode = "loose")
                     }
                 }
             }
@@ -362,29 +403,29 @@ internal object SpotifyAudio {
                         continue
                     }
                     scMatched++
-                    out += ScoredCandidate(cKey, SourceKind.SOUNDCLOUD, scTrack, score + BONUS_SOUNDCLOUD, sourceLabel = "SoundCloud", matchMode = "strict")
+                    strictPool += ScoredCandidate(cKey, SourceKind.SOUNDCLOUD, scTrack, TIER_STRICT + score + BONUS_SOUNDCLOUD, sourceLabel = "SoundCloud", matchMode = "strict")
                 } else if (hasProgressive) {
                     spotifyLooseDurationMatchScore(track, scTrack)?.let { loose ->
-                        loosePool += ScoredCandidate(cKey, SourceKind.SOUNDCLOUD, scTrack, loose + BONUS_SOUNDCLOUD, sourceLabel = "SoundCloud", matchMode = "loose")
+                        loosePool += ScoredCandidate(cKey, SourceKind.SOUNDCLOUD, scTrack, TIER_LOOSE + loose + BONUS_SOUNDCLOUD, sourceLabel = "SoundCloud", matchMode = "loose")
                     }
                 }
             }
 
-            val usedLoose = out.isEmpty() && loosePool.isNotEmpty()
-            if (usedLoose) {
-                out += loosePool
-            }
-            val usedPopular = out.isEmpty() && popularPool.isNotEmpty()
-            if (usedPopular) {
-                out += popularPool
-            }
+            // Keep all three tiers in descending score order so if a strict candidate fails
+            // extraction or post-extraction Gaming metadata validation, we seamlessly fall through
+            // to loose-duration and popular YouTube candidates instead of skipping the track.
+            val combined = buildList {
+                addAll(strictPool.sortedByDescending { it.score })
+                addAll(loosePool.sortedByDescending { it.score })
+                addAll(popularPool.sortedByDescending { it.score })
+            }.distinctBy { it.key }
 
             Log.i(
                 TAG,
                 "[$id] Search($label) raw={ytmS=${ytSongsRaw.size}, ytmV=${ytVideosRaw.size}, ytw=$ytWebCount, ya=${yaRaw.size}, sc=${scRaw.size}/${scProgressive.size}prog} " +
-                    "matched={yt=$ytMatched, ya=$yaMatched, sc=$scMatched, scHlsOnly=$scHlsOnlyMatched${if (usedLoose) ", loose=${loosePool.size}" else ""}${if (usedPopular) ", popular=${popularPool.size}" else ""}}"
+                    "matched={yt=$ytMatched, ya=$yaMatched, sc=$scMatched, scHlsOnly=$scHlsOnlyMatched, loose=${loosePool.size}, popular=${popularPool.size}}"
             )
-            if (out.isEmpty()) {
+            if (strictPool.isEmpty()) {
                 val sampleRejects = buildList {
                     ytSongsRaw.firstOrNull()?.let { add("ytmS:${spotifyMatchRejectReason(track, it)}") }
                     ytVideosRaw.firstOrNull()?.let { add("ytmV:${spotifyMatchRejectReason(track, it)}") }
@@ -397,13 +438,19 @@ internal object SpotifyAudio {
                     Log.i(TAG, "[$id] Sample rejects($label): ${sampleRejects.joinToString(" | ")}")
                 }
             }
-            out.sortedByDescending { it.score }.distinctBy { it.key }
+            combined
         }
 
         var ranked = searchCandidates(primaryQuery, "primary")
-        if (ranked.isEmpty()) {
+        val hasPrimaryStrictOrLoose = ranked.any { it.matchMode != "popular" }
+        if (!hasPrimaryStrictOrLoose) {
             spotifyAudioFallbackQuery(track)?.let { fallbackQuery ->
-                ranked = searchCandidates(fallbackQuery, "fallback")
+                val fallbackRanked = searchCandidates(fallbackQuery, "fallback")
+                if (fallbackRanked.isNotEmpty()) {
+                    val fallbackStrictOrLoose = fallbackRanked.filter { it.matchMode != "popular" }
+                    val fallbackPopular = fallbackRanked.filter { it.matchMode == "popular" }
+                    ranked = (fallbackStrictOrLoose + ranked + fallbackPopular).distinctBy { it.key }
+                }
             }
         }
 
@@ -428,7 +475,7 @@ internal object SpotifyAudio {
         for (cand in ranked) {
             when (cand.kind) {
                 SourceKind.YOUTUBE -> {
-                    if (ytAttempts >= 3 || ytAttempts + ytRejected >= 6) continue
+                    if (ytAttempts >= 5 || ytAttempts + ytRejected >= 8) continue
                     val vid = cand.track.youTubeVideoId ?: continue
                     val stream = tryResolve(cand.key) {
                         withContext(Dispatchers.IO) { YouTubeStreams.resolve(context, vid, ytAuth, urgent = { urgent }) }
