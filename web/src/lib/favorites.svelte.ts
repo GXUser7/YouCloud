@@ -29,8 +29,9 @@ interface Row {
   live?: boolean
 }
 
-const ROW_SERVICE: Record<Service, RowService> = { sc: 'soundcloud', ya: 'yandex', yt: 'youtube' }
+const ROW_SERVICE: Partial<Record<Service, RowService>> = { sc: 'soundcloud', ya: 'yandex', yt: 'youtube' }
 const SERVICE: Record<RowService, Service> = { soundcloud: 'sc', yandex: 'ya', youtube: 'yt' }
+export const supportsFavorite = (svc: Service): boolean => svc in ROW_SERVICE
 // What the database takes for a track's id.
 const TRACK_ID = /^[A-Za-z0-9_-]{1,64}$/
 // Asked again from a little before the last look: a change written as that look was made may
@@ -104,10 +105,12 @@ function put(r: Row): string {
 }
 
 function rowOf(t: Track, liked: boolean): Row | null {
+  const rowService = ROW_SERVICE[t.service]
+  if (!rowService) return null
   const trackId = t.service === 'sc' ? t.id.slice('sc:t:'.length) : t.service === 'ya' ? t.ya?.trackId : t.yt?.videoId
   if (!trackId || !TRACK_ID.test(trackId)) return null
   return {
-    service: ROW_SERVICE[t.service],
+    service: rowService,
     track_id: trackId,
     liked,
     changed_at: new Date().toISOString(),

@@ -27,8 +27,14 @@ const SERVICES: { suffixes: string[]; profile: Profile }[] = [
     suffixes: ['music.youtube.com', 'www.youtube.com', 'youtubei.googleapis.com'],
     profile: { ua: DESKTOP_UA, origin: 'https://music.youtube.com', referer: 'https://music.youtube.com/' },
   },
-  // Stream URLs are signed for the client that asked for them; the site says which (x-yc-ua).
-  { suffixes: ['googlevideo.com'], profile: { ua: DESKTOP_UA, origin: 'https://www.youtube.com', referer: 'https://www.youtube.com/' } },
+  {
+    suffixes: ['googlevideo.com'],
+    profile: { ua: DESKTOP_UA, origin: 'https://www.youtube.com', referer: 'https://www.youtube.com/' },
+  },
+  {
+    suffixes: ['open.spotify.com', 'open.spotifycdn.com', 'clienttoken.spotify.com', 'api-partner.spotify.com', 'spclient.wg.spotify.com', 'api.spotify.com'],
+    profile: { ua: DESKTOP_UA, origin: 'https://open.spotify.com', referer: 'https://open.spotify.com/' },
+  },
   { suffixes: ['lrclib.net'], profile: {} },
 ]
 
@@ -48,6 +54,9 @@ const PASS = [
   'x-youtube-client-version',
   'x-yandex-music-client',
   'x-yandex-music-without-invocation-info',
+  'client-token',
+  'app-platform',
+  'spotify-app-version',
 ]
 
 /** Headers a page can't set itself, sent as x-yc-*: the Worker puts them back. */

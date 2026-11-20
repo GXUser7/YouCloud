@@ -104,9 +104,9 @@ function makeFakeIdb({ failOpen = false, corruptKey = null, corruptRecords = nul
   return api
 }
 
-function loadStack({ idb, scAuth = null, yaAuth = null, lang = 'ru' } = {}) {
+function loadStack({ idb, scAuth = null, yaAuth = null, spAuth = null, lang = 'ru' } = {}) {
   const localStorage = makeStorage()
-  const accounts = { sc: scAuth, ya: yaAuth, yt: false, ytName: null }
+  const accounts = { sc: scAuth, ya: yaAuth, sp: spAuth, yt: false, ytName: null }
   const i18nState = { lang }
   const tr = (s, ...args) => s.replace(/%s/g, () => String(args.shift() ?? ''))
   const markedLiked = []
@@ -127,6 +127,11 @@ function loadStack({ idb, scAuth = null, yaAuth = null, lang = 'ru' } = {}) {
     Response,
     Headers,
     Request,
+    crypto,
+    TextEncoder,
+    TextDecoder,
+    atob,
+    btoa,
     localStorage,
     indexedDB: idb,
     IDBKeyRange: { bound: (lower, upper) => ({ lower, upper }) },
@@ -153,8 +158,11 @@ function loadStack({ idb, scAuth = null, yaAuth = null, lang = 'ru' } = {}) {
           accounts,
           scToken: () => accounts.sc?.token,
           yaToken: () => accounts.ya?.token,
+          spToken: () => accounts.sp?.token,
+          spClientToken: () => accounts.sp?.clientToken,
           setSoundCloud: (a) => (accounts.sc = a),
           setYandex: (a) => (accounts.ya = a),
+          setSpotify: (a) => (accounts.sp = a),
         }
       }
       if (id.endsWith('/catalog') || id === './catalog') return catalogMod
@@ -164,8 +172,10 @@ function loadStack({ idb, scAuth = null, yaAuth = null, lang = 'ru' } = {}) {
           extension: async () => extVersion,
           extensionCall: async () => false,
           soundCloudWrites: () => true,
+          spotifySupported: () => true,
           onHostEvent: () => () => {},
           onToken: () => () => {},
+          onSpotifyToken: () => () => {},
         }
       }
       if (id.endsWith('/net') || id === './net') return netStub
@@ -187,8 +197,14 @@ function loadStack({ idb, scAuth = null, yaAuth = null, lang = 'ru' } = {}) {
   const scMod = runModule('../src/lib/services/soundcloud.ts')
   const yaMod = runModule('../src/lib/services/yandex.ts')
   const ytMod = runModule('../src/lib/services/youtube.ts')
+  const spMod = runModule('../src/lib/services/spotify.ts', {
+    './soundcloud': scMod,
+    './yandex': yaMod,
+    './youtube': ytMod,
+  })
   const liveMod = runModule('../src/lib/live.ts', {
     './services/soundcloud': scMod,
+    './services/spotify': spMod,
     './services/yandex': yaMod,
     './services/youtube': ytMod,
   })
@@ -206,6 +222,7 @@ function loadStack({ idb, scAuth = null, yaAuth = null, lang = 'ru' } = {}) {
     catalogMod,
     homeCacheMod,
     scMod,
+    spMod,
     yaMod,
     ytMod,
     liveMod,
@@ -629,6 +646,7 @@ function loadStack({ idb, scAuth = null, yaAuth = null, lang = 'ru' } = {}) {
   env.localStorage.setItem('yc.sc.clientId', 'cid')
   const loginMod = env.runModule('../src/lib/login.ts', {
     './services/soundcloud': env.scMod,
+    './services/spotify': env.spMod,
     './services/yandex': env.yaMod,
     './services/youtube': env.ytMod,
   })

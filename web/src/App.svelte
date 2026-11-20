@@ -14,6 +14,7 @@
   import ArtistPage from './pages/ArtistPage.svelte'
   import Friends from './pages/Friends.svelte'
   import HomeSoundCloud from './pages/HomeSoundCloud.svelte'
+  import HomeSpotify from './pages/HomeSpotify.svelte'
   import HomeYandex from './pages/HomeYandex.svelte'
   import HomeYouTube from './pages/HomeYouTube.svelte'
   import Liked from './pages/Liked.svelte'
@@ -76,7 +77,7 @@
     {#key pageKey}
       <div class="page">
         {#if app.route.name === 'home'}
-          {#if app.service === 'sc'}<HomeSoundCloud />{:else if app.service === 'ya'}<HomeYandex />{:else}<HomeYouTube />{/if}
+          {#if app.service === 'sc'}<HomeSoundCloud />{:else if app.service === 'ya'}<HomeYandex />{:else if app.service === 'sp'}<HomeSpotify />{:else}<HomeYouTube />{/if}
         {:else if app.route.name === 'search'}
           <Search />
         {:else if app.route.name === 'liked'}

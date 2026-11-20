@@ -5,7 +5,7 @@
 
 import { tr } from './i18n.svelte'
 import type { RealtimeChannel, Session } from '@supabase/supabase-js'
-import { artistNames, type Track } from './catalog'
+import { artistNames, type Service, type Track } from './catalog'
 import { currentTrack, player } from './state.svelte'
 import { SUPABASE_KEY as KEY, SUPABASE_URL as URL, supabase } from './supabase'
 
@@ -251,7 +251,7 @@ supabase.auth.onAuthStateChange((event, session) => {
 
 // ------------------------------------------------------------------------------------ now playing
 
-const SERVICE_NAMES = { sc: 'soundcloud', ya: 'yandex', yt: 'youtube' } as const
+const SERVICE_NAMES: Record<Service, string> = { sc: 'soundcloud', ya: 'yandex', yt: 'youtube', sp: 'spotify' }
 
 type Snapshot = {
   title: string

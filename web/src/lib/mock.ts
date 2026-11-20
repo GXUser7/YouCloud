@@ -218,6 +218,7 @@ export const library: Record<Service, { liked: string; playlists: string[]; arti
   sc: { liked: 'sc-likes', playlists: ['sc-pl-night', 'sc-pl-gym', 'sc-al-kira', 'sc-mix1'], artists: ['kira', 'glass', 'nora', 'lowtide'] },
   ya: { liked: 'ya-likes', playlists: ['ya-pl-car', 'ya-al-perelet', 'ya-pl-autumn', 'ya-day'], artists: ['severny', 'mart', 'lis', 'teply'] },
   yt: { liked: 'yt-liked', playlists: ['yt-pl-study', 'yt-al-harbor', 'yt-super', 'yt-al-golden'], artists: ['neon', 'cafe', 'orbit', 'hush'] },
+  sp: { liked: 'sp:likes', playlists: [], artists: [] },
 }
 
 export const releasesOf = (artistId: string) =>

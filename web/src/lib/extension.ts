@@ -24,8 +24,16 @@ let seq = 0
 const waiting = new Map<number, (answer: Answer) => void>()
 const helloWaiters: (() => void)[] = []
 const versionListeners = new Set<(version: string) => void>()
+export interface SpotifyTokenPayload {
+  token: string
+  clientToken: string
+  expiresAt: number
+}
+
 type TokenListener = (token: string, expiresIn: number) => void
+type SpTokenListener = (session: SpotifyTokenPayload) => void
 const tokenListeners: Record<'ya' | 'sc', TokenListener[]> = { ya: [], sc: [] }
+const spTokenListeners: SpTokenListener[] = []
 
 addEventListener('message', (event) => {
   if (event.source !== window || event.origin !== location.origin) return
@@ -50,6 +58,9 @@ addEventListener('message', (event) => {
     eventListeners.forEach((f) => f(data))
   } else if ((data.kind === 'ya-token' || data.kind === 'sc-token') && typeof data.token === 'string') {
     tokenListeners[data.kind === 'ya-token' ? 'ya' : 'sc'].forEach((f) => f(data.token, Number(data.expiresIn) || 0))
+  } else if (data.kind === 'sp-token' && typeof data.token === 'string' && typeof data.clientToken === 'string') {
+    const payload: SpotifyTokenPayload = { token: data.token, clientToken: data.clientToken, expiresAt: Number(data.expiresAt) || 0 }
+    spTokenListeners.forEach((f) => f(payload))
   }
 })
 
@@ -158,7 +169,7 @@ function explain(error: string): string {
 /** One of the extension's own asks: 'sc-token' (SoundCloud's session cookie), 'sc-renew' (a token
  *  other than [args].stale, soundcloud.com's session renewed), 'sc-login', 'ya-login'. */
 export async function extensionCall<T = unknown>(
-  name: 'sc-token' | 'sc-renew' | 'sc-login' | 'sc-request' | 'sc-captcha' | 'ya-login' | 'yt-account' | 'yt-login' | 'yt-cookies' | 'helper',
+  name: 'sc-token' | 'sc-renew' | 'sc-login' | 'sc-request' | 'sc-captcha' | 'ya-login' | 'yt-account' | 'yt-login' | 'yt-cookies' | 'sp-token' | 'sp-renew' | 'sp-login' | 'helper',
   timeoutMs = 10_000,
   args?: Record<string, string>,
 ): Promise<T> {
@@ -287,3 +298,9 @@ export type PresenceTrack = {
 export function onToken(service: 'ya' | 'sc', listener: TokenListener) {
   tokenListeners[service].push(listener)
 }
+
+export function onSpotifyToken(listener: SpTokenListener) {
+  spTokenListeners.push(listener)
+}
+
+export const spotifySupported = () => !!version && (host === 'masaki' ? capabilities.has('sp-login') : !older(version, [0, 10, 0]))

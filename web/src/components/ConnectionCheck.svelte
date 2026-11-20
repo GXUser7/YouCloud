@@ -5,6 +5,7 @@
   import type { Service } from '../lib/mock'
   import { SERVICES } from '../lib/mock'
   import * as soundcloud from '../lib/services/soundcloud'
+  import * as spotify from '../lib/services/spotify'
   import * as yandex from '../lib/services/yandex'
   import * as youtube from '../lib/services/youtube'
   import { extension, onExtension } from '../lib/extension'
@@ -34,6 +35,10 @@
       if (sound.status !== 'OK' || !sound.audio.length) throw new SoundRefused(tr('%s · аудио нет: %s', found, sound.reason || sound.status))
       return tr('%s · аудио есть', found)
     },
+    sp: async () => {
+      const first = await spotify.searchProbe(QUERY)
+      return first ? `${first.artist} — ${first.title}` : tr('ответ пустой')
+    },
   }
 
   /** The service answered, but not with everything: shown as a warning, not a failure. */
@@ -43,6 +48,7 @@
     sc: 'https://api-v2.soundcloud.com/',
     ya: 'https://api.music.yandex.net/',
     yt: 'https://www.youtube.com/',
+    sp: 'https://api-partner.spotify.com/',
   }
 
   let ext = $state<string | null>(null)
@@ -51,7 +57,7 @@
     return onExtension((v) => (ext = v))
   })
 
-  let results = $state<Record<Service, Result>>({ sc: { state: 'idle' }, ya: { state: 'idle' }, yt: { state: 'idle' } })
+  let results = $state<Record<Service, Result>>({ sc: { state: 'idle' }, ya: { state: 'idle' }, yt: { state: 'idle' }, sp: { state: 'idle' } })
   const busy = $derived(Object.values(results).some((r) => r.state === 'busy'))
 
   async function run() {

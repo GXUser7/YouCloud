@@ -13,7 +13,7 @@ import Hls from 'hls.js'
 import { accounts } from './accounts.svelte'
 import { untrack } from 'svelte'
 import { putTrack, serviceName, track as trackOf, type Service, type Track } from './catalog'
-import { favorites, setFavorite } from './favorites.svelte'
+import { favorites, setFavorite, supportsFavorite } from './favorites.svelte'
 import { BridgeLoader } from './hlsBridge'
 import * as live from './live'
 import { directFailed, reach, readable, readingRefused } from './media.svelte'
@@ -386,7 +386,7 @@ function upcoming(): string[] {
     const t = trackOf(id)
     // The design's stand-in tracks have no sound to get ready.
     // Nor has a broadcast: held ready, it would fall behind the moment it is in.
-    if (id !== player.queue[player.index] && !ids.includes(id) && (t?.sc || t?.ya || t?.yt) && !t.live) ids.push(id)
+    if (id !== player.queue[player.index] && !ids.includes(id) && (t?.sc || t?.ya || t?.yt || t?.sp) && !t.live) ids.push(id)
   }
   return ids
 }
@@ -696,14 +696,17 @@ $effect.root(() => {
  * What a heart shows. Signed in to YouCloud it is the account's «Любимое», as in the app, so a
  * track has the same heart on the phone and here; signed out, the service's own like.
  */
-export const isLiked = (id: string) => (favorites.on ? !!favorites.has[id] : !!player.liked[id])
+export const isLiked = (id: string) => {
+  const t = trackOf(id)
+  return favorites.on && t && supportsFavorite(t.service) ? !!favorites.has[id] : !!player.liked[id]
+}
 
 export async function like(id: string) {
   const t = trackOf(id)
   const want = !isLiked(id)
   // In «Любимое» it is kept on every device (and downloaded on the phone); liked on the service
   // besides, where signed in there, as the app does.
-  if (favorites.on) {
+  if (favorites.on && supportsFavorite(t.service)) {
     try {
       await setFavorite(t, want)
     } catch (e) {
@@ -1027,7 +1030,7 @@ export async function startRadio(id: string) {
       if (!fresh.tracks.length) throw new Error(tr('радио ничего не предложило'))
       Object.assign(radio.batchOf, fresh.batchOf)
       playQueue([id, ...fresh.tracks], 0, tr('Радио: %s', t.title), null, radio)
-    } else if (t.sc || t.yt) {
+    } else if (t.sc || t.yt || t.sp) {
       const rest = welcome(await live.relatedTo(t)).filter((x) => x !== id)
       if (request !== radioRequest || (accounts.ya?.uid ?? 0) !== uid) return
       if (!rest.length) throw new Error(tr('похожих не нашлось'))
@@ -1067,7 +1070,7 @@ export async function playSet(id: string, shuffled = false) {
 }
 
 // A mix or station goes on with tracks related to its last, as the app's do.
-const radioForSet = (ids: string[]): Radio | null => (trackOf(ids[0])?.sc || trackOf(ids[0])?.yt ? { kind: 'related' } : null)
+const radioForSet = (ids: string[]): Radio | null => (trackOf(ids[0])?.sc || trackOf(ids[0])?.yt || trackOf(ids[0])?.sp ? { kind: 'related' } : null)
 
 // ------------------------------------------------------------------------------------ restore
 

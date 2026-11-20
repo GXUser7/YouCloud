@@ -15,6 +15,16 @@ export interface YaAccount {
   plus: boolean
 }
 
+export interface SpAccount {
+  token: string
+  clientToken: string
+  expiresAt: number
+  id: string
+  name: string
+  avatar?: string | null
+  spDc?: string
+}
+
 function load<T>(key: string): T | null {
   try {
     const raw = localStorage.getItem('yc.acc.' + key)
@@ -36,6 +46,7 @@ function save(key: string, value: unknown) {
 export const accounts = $state({
   sc: load<ScAccount>('sc'),
   ya: load<YaAccount>('ya'),
+  sp: load<SpAccount>('sp'),
   /** Whether this browser is signed in on YouTube: the extension signs YouTube's requests with it. */
   yt: false,
   /** The YouTube account those requests come back as — proof the session took. */
@@ -44,6 +55,8 @@ export const accounts = $state({
 
 export const scToken = () => accounts.sc?.token
 export const yaToken = () => accounts.ya?.token
+export const spToken = () => accounts.sp?.token
+export const spClientToken = () => accounts.sp?.clientToken
 
 export function setSoundCloud(account: ScAccount | null) {
   accounts.sc = account
@@ -53,4 +66,9 @@ export function setSoundCloud(account: ScAccount | null) {
 export function setYandex(account: YaAccount | null) {
   accounts.ya = account
   save('ya', account)
+}
+
+export function setSpotify(account: SpAccount | null) {
+  accounts.sp = account
+  save('sp', account)
 }

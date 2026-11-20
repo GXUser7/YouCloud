@@ -19,6 +19,10 @@ const PROFILES = [
   // A YouTube broadcast's playlist and pieces, read as they are for hls.js on the page — asked as
   // yt-dlp and the app ask them, without the extension's own origin.
   { domains: ['googlevideo.com'], headers: { origin: null, referer: null } },
+  {
+    domains: ['open.spotify.com', 'open.spotifycdn.com', 'clienttoken.spotify.com', 'api-partner.spotify.com', 'spclient.wg.spotify.com', 'api.spotify.com'],
+    headers: { origin: 'https://open.spotify.com', referer: 'https://open.spotify.com/' },
+  },
 ]
 
 /** Where the media itself is: only read (GET), and nothing of the listener's goes along. */
@@ -48,6 +52,8 @@ const MARK = 'ycr'
 const YANDEX_LOGIN = 'https://oauth.yandex.ru/authorize?response_type=token&client_id=23cabbbdc6cd418abb4b39c32c41195d'
 const SOUNDCLOUD_LOGIN = 'https://soundcloud.com/signin'
 const YOUTUBE_LOGIN = 'https://accounts.google.com/ServiceLogin?service=youtube&continue=https%3A%2F%2Fmusic.youtube.com%2F'
+const SPOTIFY_LOGIN = 'https://accounts.spotify.com/login?continue=https%3A%2F%2Fopen.spotify.com%2F'
+const SPOTIFY_SITE = 'https://open.spotify.com/'
 const YOUTUBE_HOSTS = ['music.youtube.com', 'www.youtube.com', 'youtubei.googleapis.com']
 const LOGIN_WINDOW_MS = 15 * 60_000
 
@@ -574,6 +580,17 @@ async function call(name, args) {
     await api.tabs.create({ url: YANDEX_LOGIN })
     return { value: true }
   }
+  if (name === 'sp-token') {
+    return { value: !!(await spotifyCookie()) }
+  }
+  if (name === 'sp-renew') {
+    return { value: await renewSpotify(args ?? {}) }
+  }
+  if (name === 'sp-login') {
+    const tab = await api.tabs.create({ url: SPOTIFY_LOGIN })
+    await api.storage.local.set({ spLoginAt: Date.now(), spLoginTab: tab.id })
+    return { value: true }
+  }
   return { error: `unknown call: ${name}` }
 }
 
@@ -667,12 +684,130 @@ api.cookies.onChanged.addListener(({ cookie, removed }) => {
   renewedSoundCloud(decodeURIComponent(cookie.value))
 })
 
-try {
-  api.webRequest.onBeforeSendHeaders.addListener(watchSoundCloud, { urls: ['https://api-v2.soundcloud.com/*'] }, ['requestHeaders', 'extraHeaders'])
-} catch {
-  // Firefox has no 'extraHeaders' and shows Authorization without it.
-  api.webRequest.onBeforeSendHeaders.addListener(watchSoundCloud, { urls: ['https://api-v2.soundcloud.com/*'] }, ['requestHeaders'])
+function watchHeaders(listener, urls) {
+  try {
+    api.webRequest.onBeforeSendHeaders.addListener(listener, { urls }, ['requestHeaders', 'extraHeaders'])
+  } catch {
+    // Firefox has no 'extraHeaders' and shows Authorization without it.
+    api.webRequest.onBeforeSendHeaders.addListener(listener, { urls }, ['requestHeaders'])
+  }
 }
+
+watchHeaders(watchSoundCloud, ['https://api-v2.soundcloud.com/*'])
+
+// ------------------------------------------------------------------------------------- Spotify
+
+let spLastClientToken = ''
+let spLastCaught = ''
+let spRenewal = null
+let spRenewWaiter = null
+
+async function spotifyCookie() {
+  const cookie = await api.cookies.get({ url: SPOTIFY_SITE, name: 'sp_dc' })
+  return cookie?.value ? decodeURIComponent(cookie.value) : null
+}
+
+async function caughtSpotifyToken(session) {
+  if (session.token === spLastCaught) return
+  const { spLoginAt, spLoginTab } = await api.storage.local.get(['spLoginAt', 'spLoginTab'])
+  if (!spLoginAt || Date.now() - spLoginAt > LOGIN_WINDOW_MS) return
+  spLastCaught = session.token
+  await api.storage.local.set({ spToken: { ...session, at: Date.now() } })
+  await api.storage.local.remove(['spLoginAt', 'spLoginTab'])
+  if (spLoginTab != null) api.tabs.remove(spLoginTab).catch(() => {})
+}
+
+function watchSpotify(details) {
+  let token = ''
+  let clientToken = ''
+  for (const h of details.requestHeaders ?? []) {
+    const name = h.name.toLowerCase()
+    if (name === 'authorization' && h.value?.startsWith('Bearer ')) token = h.value.slice('Bearer '.length).trim()
+    else if (name === 'client-token' && h.value) clientToken = h.value.trim()
+  }
+  if (clientToken) spLastClientToken = clientToken
+  if (!token) return
+  const ct = clientToken || spLastClientToken
+  if (!ct) return
+  void spotifyCookie().then((dc) => {
+    if (!dc) return
+    const session = { token, clientToken: ct, expiresAt: Date.now() + 50 * 60_000 }
+    if (spRenewWaiter && token !== spRenewWaiter.stale) spRenewWaiter.done(session)
+    void caughtSpotifyToken(session)
+  })
+}
+
+async function renewSpotify(args) {
+  const stale = String(args?.stale ?? '')
+  const apiTokenUrl = typeof args?.apiTokenUrl === 'string' ? args.apiTokenUrl : ''
+  const clientDataJson = typeof args?.clientDataJson === 'string' ? args.clientDataJson : ''
+  spRenewal ??= (async () => {
+    const dc = await spotifyCookie()
+    if (!dc) return null
+    await ready
+    if (apiTokenUrl) {
+      try {
+        const u = new URL(apiTokenUrl)
+        if (u.origin === 'https://open.spotify.com' && u.pathname === '/api/token') {
+          const tokRes = await withOverrides(u, { cookie: `sp_dc=${dc}` }, (target) =>
+            fetch(target.href, { headers: { accept: 'application/json' }, credentials: 'omit' }),
+          )
+          const tok = await tokRes.json().catch(() => null)
+          if (tok?.accessToken && !tok.isAnonymous && tok.accessToken !== stale) {
+            let clientToken = spLastClientToken
+            if (clientDataJson) {
+              const payload = JSON.parse(clientDataJson)
+              if (tok.clientId && payload?.client_data) payload.client_data.client_id = tok.clientId
+              const ctRes = await fetch('https://clienttoken.spotify.com/v1/clienttoken', {
+                method: 'POST',
+                headers: { 'content-type': 'application/json', accept: 'application/json' },
+                body: JSON.stringify(payload),
+              })
+              const ct = await ctRes.json().catch(() => null)
+              if (ct?.granted_token?.token) clientToken = ct.granted_token.token
+            }
+            if (clientToken) {
+              spLastClientToken = clientToken
+              return {
+                token: tok.accessToken,
+                clientToken,
+                expiresAt: Number(tok.accessTokenExpirationTimestampMs) || Date.now() + 50 * 60_000,
+              }
+            }
+          }
+        }
+      } catch {
+        // Fall through to opening open.spotify.com in a muted background tab.
+      }
+    }
+    return new Promise((resolve) => {
+      let tabId = null
+      const waiter = {
+        stale,
+        done: (session) => {
+          if (spRenewWaiter !== waiter) return
+          spRenewWaiter = null
+          clearTimeout(timer)
+          if (tabId != null) api.tabs.remove(tabId).catch(() => {})
+          resolve(session)
+        },
+      }
+      spRenewWaiter = waiter
+      const timer = setTimeout(() => waiter.done(null), RENEW_TIMEOUT_MS)
+      api.tabs.create({ url: SPOTIFY_SITE, active: false }).then(
+        (tab) => {
+          tabId = tab.id
+          if (spRenewWaiter !== waiter) api.tabs.remove(tab.id).catch(() => {})
+          else api.tabs.update(tab.id, { muted: true }).catch(() => {})
+        },
+        () => waiter.done(null),
+      )
+    })
+  })().finally(() => (spRenewal = null))
+  return spRenewal
+}
+
+watchHeaders(watchSpotify, ['https://api-partner.spotify.com/*', 'https://spclient.wg.spotify.com/*', 'https://api.spotify.com/*'])
 
 api.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (sender.id !== api.runtime.id) return

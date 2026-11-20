@@ -28,7 +28,7 @@
       return
     }
     // The design's stand-in tracks — no service behind them — keep the design's lyrics.
-    if (!track.sc && !track.ya && !track.yt) {
+    if (!track.sc && !track.ya && !track.yt && !track.sp) {
       lines = designLyrics.map(([at, text]) => ({ at, text }))
       synced = true
       phase = 'ready'

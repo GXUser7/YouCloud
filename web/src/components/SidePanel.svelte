@@ -34,7 +34,7 @@
       .sort((a, b) => Number(listeningNow(b, now)) - Number(listeningNow(a, now)))
       .slice(0, 12),
   )
-  const SERVICES: Record<string, Service> = { soundcloud: 'sc', yandex: 'ya', youtube: 'yt' }
+  const SERVICES: Record<string, Service> = { soundcloud: 'sc', yandex: 'ya', youtube: 'yt', spotify: 'sp' }
   const list = $derived(queueWindow(100))
   // The window's parts: what was played (above the one playing) and what comes.
   const before = $derived(list.ids.slice(0, player.index - list.from))

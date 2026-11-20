@@ -12,8 +12,16 @@
   const service = $derived(serviceOf(id))
   const connected = $derived(!!service && live.signedIn(service))
   const own = $derived(service === 'sc' && id === `sc:u:${accounts.sc?.id}`)
-  const supported = $derived(/^(sc:u:\d+|ya:a:\d+|yt:a:UC[\w-]+)$/.test(id))
-  const session = $derived(service === 'sc' ? accounts.sc?.token : service === 'ya' ? accounts.ya?.token : `${accounts.yt}:${accounts.ytName}`)
+  const supported = $derived(/^(sc:u:\d+|ya:a:\d+|yt:a:UC[\w-]+|sp:a:[A-Za-z0-9]+)$/.test(id))
+  const session = $derived(
+    service === 'sc'
+      ? accounts.sc?.token
+      : service === 'ya'
+        ? accounts.ya?.token
+        : service === 'sp'
+          ? accounts.sp?.token
+          : `${accounts.yt}:${accounts.ytName}`,
+  )
   let following = $state<boolean | null>(null)
   let loading = $state(false)
   let busy = $state(false)

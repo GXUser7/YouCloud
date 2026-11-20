@@ -29,7 +29,7 @@ export const QUICK_PLAYLISTS = 7
 /** The row home leads with: the listener's own (made for them, mixes) before what everyone gets. */
 export function leading(sections: live.Section[]): live.Section | undefined {
   const withSets = sections.filter((s) => s.sets.length)
-  return withSets.find((s) => /для тебя|for you|микс/i.test(s.title)) ?? withSets[0]
+  return withSets.find((s) => /для тебя|for you|made for|микс|mix/i.test(s.title)) ?? withSets[0]
 }
 
 /** Songs to play in place (YouTube Music's "Быстрый выбор"). */

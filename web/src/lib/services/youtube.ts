@@ -1159,6 +1159,7 @@ export interface YtSong {
   videoId: string
   title: string
   artists: string
+  duration?: number
 }
 
 /** Songs for [query] straight from InnerTube: the connection check's light probe. */
@@ -1181,7 +1182,9 @@ export async function searchSongs(query: string): Promise<YtSong[]> {
       const byline = (at(row, 'flexColumns', 1, 'musicResponsiveListItemFlexColumnRenderer', 'text', 'runs') ?? [])
         .map((r: { text: string }) => r.text)
         .join('')
-      if (videoId && title) songs.push({ videoId, title, artists: byline.split(' • ')[0] ?? '' })
+      const durMatch = byline.match(/(?:(\d+):)?(\d{1,2}):(\d{2})\s*$/)
+      const duration = durMatch ? (Number(durMatch[1] || 0) * 3600 + Number(durMatch[2]) * 60 + Number(durMatch[3])) : undefined
+      if (videoId && title) songs.push({ videoId, title, artists: byline.split(' • ')[0] ?? '', duration })
     }
   }
   return songs

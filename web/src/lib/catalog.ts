@@ -6,12 +6,13 @@
 
 import { i18n, pluralWord, tr } from './i18n.svelte'
 
-export type Service = 'sc' | 'ya' | 'yt'
+export type Service = 'sc' | 'ya' | 'yt' | 'sp'
 
 export const SERVICES: { id: Service; name: string; short: string }[] = [
   { id: 'sc', name: 'SoundCloud', short: 'SoundCloud' },
   { id: 'ya', name: tr('Яндекс Музыка'), short: tr('Яндекс') },
   { id: 'yt', name: 'YouTube Music', short: 'YouTube' },
+  { id: 'sp', name: 'Spotify', short: 'Spotify' },
 ]
 
 export const serviceName = (s: Service) => SERVICES.find((x) => x.id === s)!.name
@@ -46,6 +47,8 @@ export interface Track {
   ya?: { trackId: string; albumId?: string; ugc?: boolean }
   /** What YouTube needs to play it. */
   yt?: { videoId: string }
+  /** What Spotify needs to locate and play it. */
+  sp?: { id: string; uri: string }
 }
 
 export interface ScTranscoding {
@@ -152,7 +155,7 @@ export function putArtist(a: Artist): string {
 export const artistNames = (t: Track) => t.artists.map((a) => a.name).join(', ')
 
 export const serviceOf = (id: string): Service | null =>
-  id.startsWith('sc:') ? 'sc' : id.startsWith('ya:') ? 'ya' : id.startsWith('yt:') ? 'yt' : null
+  id.startsWith('sc:') ? 'sc' : id.startsWith('ya:') ? 'ya' : id.startsWith('yt:') ? 'yt' : id.startsWith('sp:') ? 'sp' : null
 
 // Colours for things without a cover, picked by id so each keeps its own.
 const PALETTE = ['#a8673a', '#5c6bc0', '#00897b', '#d81b60', '#7e57c2', '#f9a825', '#039be5', '#6d4c41', '#43a047', '#e64a19', '#8e24aa', '#00acc1']

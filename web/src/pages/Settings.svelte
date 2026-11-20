@@ -7,7 +7,7 @@
   import { avatarUrl, setShareListening, shownName, signOut, social, socialMessage, type ShowcaseItem } from '../lib/social.svelte'
   import AccountForm from '../components/AccountForm.svelte'
   import { accounts } from '../lib/accounts.svelte'
-  import { connect, connectSoundCloud, disconnect, refreshYouTube } from '../lib/login'
+  import { connect, connectSoundCloud, connectSpotify, disconnect, refreshYouTube } from '../lib/login'
   import { diagnose } from '../lib/services/youtube'
   import { app, PLAYER_LOOKS, remember, WAVE_LOOKS, type PlayerLook, type ThemeMode } from '../lib/state.svelte'
   import { reason, toast } from '../lib/toast.svelte'
@@ -26,6 +26,7 @@
     sc: tr('Возьму сессию soundcloud.com из этого браузера или открою вход'),
     ya: tr('Откроется вход Яндекс ID, вкладка закроется сама'),
     yt: tr('Вход этого браузера на youtube.com — откроется вход Google'),
+    sp: tr('Возьму сессию open.spotify.com из этого браузера или открою вход'),
   }
 
   const accountName = (svc: Service) =>
@@ -35,9 +36,11 @@
         ? accounts.ya
           ? `${accounts.ya.name}${accounts.ya.plus ? tr(' · Плюс') : tr(' · без Плюса: 30 секунд')}`
           : null
-        : accounts.yt
-          ? accounts.ytName ?? tr('Вход этого браузера есть, но YouTube отвечает как гостю')
-          : null
+        : svc === 'sp'
+          ? accounts.sp?.name
+          : accounts.yt
+            ? accounts.ytName ?? tr('Вход этого браузера есть, но YouTube отвечает как гостю')
+            : null
 
   let busy = $state<Service | null>(null)
   let ytReport = $state<string[] | null>(null)
@@ -53,7 +56,7 @@
     }
   }
   let errors = $state<Partial<Record<Service, string>>>({})
-  let pasting = $state(false)
+  let pasting = $state<'sc' | 'sp' | null>(null)
   let pasted = $state('')
 
   async function signIn(svc: Service) {
@@ -69,15 +72,17 @@
     }
   }
 
-  async function usePasted() {
-    busy = 'sc'
-    errors.sc = ''
+  async function usePasted(svc: Service) {
+    if (svc !== 'sc' && svc !== 'sp') return
+    busy = svc
+    errors[svc] = ''
     try {
-      await connectSoundCloud(pasted)
-      pasting = false
+      if (svc === 'sc') await connectSoundCloud(pasted)
+      else await connectSpotify(pasted)
+      pasting = null
       pasted = ''
     } catch (e) {
-      errors.sc = reason(e)
+      errors[svc] = reason(e)
     } finally {
       busy = null
     }
@@ -184,14 +189,29 @@
           {/if}
         </div>
       {/if}
-      {#if s.id === 'sc' && !name}
-        {#if pasting}
+      {#if (s.id === 'sc' || s.id === 'sp') && !name}
+        {#if pasting === s.id}
           <div class="paste">
-            <input bind:value={pasted} placeholder={tr('oauth_token с soundcloud.com')} spellcheck="false" autocomplete="off" />
-            <button class="btn tonal small" disabled={!pasted.trim() || busy === 'sc'} onclick={usePasted}>{tr('Подключить')}</button>
+            <input
+              bind:value={pasted}
+              placeholder={s.id === 'sc' ? tr('oauth_token с soundcloud.com') : tr('cookie sp_dc с open.spotify.com')}
+              spellcheck="false"
+              autocomplete="off"
+            />
+            <button class="btn tonal small" disabled={!pasted.trim() || busy === s.id} onclick={() => usePasted(s.id)}>
+              {tr('Подключить')}
+            </button>
           </div>
         {:else}
-          <button class="btn text small paste-link" onclick={() => (pasting = true)}>{tr('Вставить токен вручную')}</button>
+          <button
+            class="btn text small paste-link"
+            onclick={() => {
+              pasting = s.id === 'sc' ? 'sc' : 'sp'
+              pasted = ''
+            }}
+          >
+            {s.id === 'sc' ? tr('Вставить токен вручную') : tr('Вставить cookie sp_dc вручную')}
+          </button>
         {/if}
       {/if}
     {/each}

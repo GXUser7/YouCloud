@@ -54,7 +54,7 @@ function tellPresence(track) {
   }
 }
 
-const TOKENS = { yaToken: 'ya-token', scToken: 'sc-token' }
+const TOKENS = { yaToken: 'ya-token', scToken: 'sc-token', spToken: 'sp-token' }
 
 async function handOverTokens() {
   const found = await api.storage.local.get(Object.keys(TOKENS))

@@ -524,6 +524,29 @@ export const EN: Record<string, string> = {
   'YouTube отдал только поток SABR, без ссылок': 'YouTube gave only a SABR stream, without links',
   'YouTube просит войти — войди на youtube.com в этом браузере (%s)': 'YouTube asks you to sign in — sign in on youtube.com in this browser (%s)',
   'YouTube не отдал звук: %s; с входом — %s': "YouTube didn't give the audio: %s; signed in — %s",
+  'Загружаем Spotify…': 'Loading Spotify…',
+  'Возьму сессию open.spotify.com из этого браузера или открою вход':
+    "I'll take the open.spotify.com session from this browser or open sign-in",
+  'cookie sp_dc с open.spotify.com': 'sp_dc cookie from open.spotify.com',
+  'Вставить cookie sp_dc вручную': 'Paste sp_dc cookie manually',
+  'Для входа в Spotify обнови расширение YouCloud до 0.10.0 или вставь sp_dc вручную':
+    'To sign in to Spotify, update the YouCloud extension to 0.10.0 or paste sp_dc manually',
+  'У этого исполнителя нет страницы в Spotify': 'This artist has no Spotify page',
+  'Spotify не узнал ссылку': "Spotify didn't recognise the link",
+  'Spotify не отдал веб-плеер': "Spotify didn't return the web player",
+  'Spotify не отдал скрипт плеера': "Spotify didn't return the player script",
+  'Spotify не отдал параметры входа': "Spotify didn't return sign-in parameters",
+  'Spotify не отдал токен доступа': "Spotify didn't return an access token",
+  'Spotify не выдал client-token': "Spotify didn't issue a client-token",
+  'Spotify не узнал этот sp_dc': "Spotify didn't recognise this sp_dc",
+  'Spotify не узнал этот вход': "Spotify didn't recognise this sign-in",
+  'Сессия Spotify истекла: войди заново в Настройках': 'Spotify session expired: sign in again in Settings',
+  'Spotify обновил запрос %s — попробуй обновить страницу': 'Spotify updated the %s query — try reloading the page',
+  'Spotify не нашёл альбом': "Spotify didn't find that album",
+  'Spotify не нашёл плейлист': "Spotify didn't find that playlist",
+  'Spotify не нашёл исполнителя': "Spotify didn't find that artist",
+  'Spotify не нашёл источник звука для «%s»': 'No audio source found for "%s" from Spotify',
+  'Не удалось включить трек Spotify': "Couldn't play the Spotify track",
 }
 
 /** Counted words: the Russian "one" form → English singular and plural. */

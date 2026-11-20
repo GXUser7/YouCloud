@@ -3,6 +3,7 @@
 
 import { tr } from './i18n.svelte'
 import * as soundcloud from './services/soundcloud'
+import * as spotify from './services/spotify'
 import * as yandex from './services/yandex'
 import * as youtube from './services/youtube'
 import { go, playQueue } from './state.svelte'
@@ -23,6 +24,13 @@ export async function openLink(link: string, context = ''): Promise<void> {
     if (host === 'soundcloud.com' || host === 'on.soundcloud.com') {
       const found = await soundcloud.resolve(link)
       if (!found) throw new Error(tr('SoundCloud не узнал ссылку'))
+      if (found.kind === 'track') playQueue([found.id], 0, context, null, { kind: 'related' })
+      else go(`${found.kind === 'set' ? 'set' : 'artist'}/${found.id}`)
+      return
+    }
+    if (host === 'open.spotify.com') {
+      const found = await spotify.resolve(link)
+      if (!found) throw new Error(tr('Spotify не узнал ссылку'))
       if (found.kind === 'track') playQueue([found.id], 0, context, null, { kind: 'related' })
       else go(`${found.kind === 'set' ? 'set' : 'artist'}/${found.id}`)
       return

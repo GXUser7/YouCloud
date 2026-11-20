@@ -9,7 +9,18 @@ import { tr } from './i18n.svelte'
 import { extension, extensionFetch } from './extension'
 
 /** Hosts that answer only a listener's own IP; the extension takes them when it is there. */
-const HOME_HOSTS = ['yandex.net', 'music.youtube.com', 'www.youtube.com', 'youtubei.googleapis.com']
+const HOME_HOSTS = [
+  'yandex.net',
+  'music.youtube.com',
+  'www.youtube.com',
+  'youtubei.googleapis.com',
+  'open.spotify.com',
+  'open.spotifycdn.com',
+  'clienttoken.spotify.com',
+  'api-partner.spotify.com',
+  'spclient.wg.spotify.com',
+  'api.spotify.com',
+]
 
 export type Route = 'extension' | 'worker'
 

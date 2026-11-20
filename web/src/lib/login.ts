@@ -4,17 +4,18 @@
 // WebView does. Yandex: the extension opens Yandex ID and catches the token it hands back.
 
 import { tr } from './i18n.svelte'
-import { accounts, setSoundCloud, setYandex } from './accounts.svelte'
+import { accounts, setSoundCloud, setSpotify, setYandex } from './accounts.svelte'
 import type { Service } from './catalog'
-import { extension, extensionCall, onHostEvent, onToken } from './extension'
+import { extension, extensionCall, onHostEvent, onSpotifyToken, onToken, spotifySupported, type SpotifyTokenPayload } from './extension'
 import { invalidateServiceHomeCache, liveYtAccountKey, markYtAccountResolved } from './homeCache'
 import * as soundcloud from './services/soundcloud'
+import * as spotify from './services/spotify'
 import * as yandex from './services/yandex'
 import * as youtube from './services/youtube'
 import { reason, toast } from './toast.svelte'
 
 type Waiter = { resolve: () => void; reject: (e: unknown) => void }
-const waiting: Record<'sc' | 'ya', Waiter | null> = { sc: null, ya: null }
+const waiting: Record<'sc' | 'ya' | 'sp', Waiter | null> = { sc: null, ya: null, sp: null }
 
 async function useSoundCloud(token: string) {
   const prevId = accounts.sc?.id
@@ -31,6 +32,22 @@ async function useYandex(token: string) {
   setYandex({ token, uid: a.uid, name: a.name, plus: a.plus })
   if (prevUid !== a.uid) void invalidateServiceHomeCache('ya')
   return a.name
+}
+
+async function useSpotify(session: SpotifyTokenPayload & { spDc?: string }) {
+  const prevId = accounts.sp?.id
+  const profile = await spotify.account({ token: session.token, clientToken: session.clientToken, expiresAt: session.expiresAt })
+  setSpotify({
+    token: session.token,
+    clientToken: session.clientToken,
+    expiresAt: session.expiresAt,
+    id: profile.id,
+    name: profile.name,
+    avatar: profile.avatar,
+    spDc: session.spDc,
+  })
+  if (prevId !== profile.id) void invalidateServiceHomeCache('sp')
+  return profile.name
 }
 
 // A token can arrive after a reload too: the extension holds it until a YouCloud page listens.
@@ -51,9 +68,22 @@ function caught(service: 'sc' | 'ya', use: (token: string) => Promise<string>, k
 }
 caught('sc', useSoundCloud, () => accounts.sc?.token)
 caught('ya', useYandex, () => accounts.ya?.token)
+onSpotifyToken(async (session) => {
+  if (accounts.sp?.token === session.token) return
+  const waiter = waiting.sp
+  waiting.sp = null
+  try {
+    const name = await useSpotify(session)
+    if (waiter) waiter.resolve()
+    else toast(tr('%s подключён: %s', 'Spotify', name))
+  } catch (e) {
+    if (waiter) waiter.reject(e)
+    else toast(tr('Вход не удался: %s', reason(e)))
+  }
+})
 
 /** Opens the service's sign-in in a new tab; done when the extension has caught the token. */
-async function loginInTab(service: 'sc' | 'ya'): Promise<void> {
+async function loginInTab(service: 'sc' | 'ya' | 'sp'): Promise<void> {
   const done = new Promise<void>((resolve, reject) => {
     waiting[service] = { resolve, reject }
     setTimeout(() => {
@@ -63,7 +93,7 @@ async function loginInTab(service: 'sc' | 'ya'): Promise<void> {
       }
     }, 10 * 60_000)
   })
-  await extensionCall(service === 'sc' ? 'sc-login' : 'ya-login')
+  await extensionCall(service === 'sc' ? 'sc-login' : service === 'ya' ? 'ya-login' : 'sp-login')
   return done
 }
 
@@ -112,11 +142,17 @@ function checkSoundCloud() {
   scCheckedAt = Date.now()
   soundcloud.checkSession().catch(() => {})
 }
+function checkSpotify() {
+  if (!accounts.sp || Date.now() - scCheckedAt < SC_CHECK_INTERVAL_MS) return
+  spotify.checkSession().catch(() => {})
+}
 checkSoundCloud()
+checkSpotify()
 
 addEventListener('focus', () => {
   refreshYouTube()
   checkSoundCloud()
+  checkSpotify()
 })
 // Masaki says when Google's sign-in lands, without waiting for the tab to be focused again.
 onHostEvent((e) => e.event === 'session' && e.service === 'yt' && refreshYouTube())
@@ -127,9 +163,36 @@ export async function connectYouTube(): Promise<void> {
   await extensionCall('yt-login')
 }
 
+export async function connectSpotify(pasted?: string): Promise<void> {
+  const raw = pasted?.trim().replace(/^sp_dc=/i, '')
+  if (raw) {
+    const s = await spotify.mintSessionFromCookie(raw)
+    if (s.isAnonymous) throw new Error(tr('Spotify не узнал этот sp_dc'))
+    await useSpotify({ token: s.token, clientToken: s.clientToken, expiresAt: s.expiresAt, spDc: raw })
+    return
+  }
+  if (!(await extension()) || !spotifySupported()) {
+    throw new Error(tr('Для входа в Spotify обнови расширение YouCloud до 0.10.0 или вставь sp_dc вручную'))
+  }
+  const hasCookie = await extensionCall<boolean>('sp-token').catch(() => false)
+  if (hasCookie) {
+    const renewed = await extensionCall<SpotifyTokenPayload | null>('sp-renew', 35_000).catch(() => null)
+    if (renewed?.token && renewed?.clientToken) {
+      try {
+        await useSpotify(renewed)
+        return
+      } catch {
+        // Stale cookie; fall through to interactive sign-in.
+      }
+    }
+  }
+  return loginInTab('sp')
+}
+
 export async function connect(svc: Service): Promise<void> {
   if (svc === 'sc') return connectSoundCloud()
   if (svc === 'ya') return connectYandex()
+  if (svc === 'sp') return connectSpotify()
   return connectYouTube()
 }
 
@@ -139,5 +202,6 @@ export function disconnect(svc: Service) {
     soundcloud.resetMyIdCache()
   }
   if (svc === 'ya') setYandex(null)
+  if (svc === 'sp') setSpotify(null)
   void invalidateServiceHomeCache(svc)
 }

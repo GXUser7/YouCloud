@@ -93,6 +93,7 @@ export function waitForYtAccountResolved(timeoutMs = 2000): Promise<void> {
 export function accountKeyFor(svc: Service): string {
   if (svc === 'sc') return accounts.sc ? `user:${accounts.sc.id}` : 'anon'
   if (svc === 'ya') return accounts.ya ? `user:${accounts.ya.uid}` : 'anon'
+  if (svc === 'sp') return accounts.sp ? `user:${accounts.sp.id}` : 'anon'
   if (accounts.yt) return liveYtAccountKey()
   if (!ytResolved) return getYtAccountHint() ?? 'anon'
   return 'anon'
@@ -312,7 +313,7 @@ function isValidSnapshot(raw: unknown): raw is HomeSnapshot {
   const s = raw as Partial<HomeSnapshot>
   if (
     s.schema !== HOME_CACHE_SCHEMA ||
-    (s.service !== 'sc' && s.service !== 'ya' && s.service !== 'yt') ||
+    (s.service !== 'sc' && s.service !== 'ya' && s.service !== 'yt' && s.service !== 'sp') ||
     typeof s.accountKey !== 'string' ||
     s.accountKey.length === 0 ||
     (s.lang !== 'ru' && s.lang !== 'en') ||

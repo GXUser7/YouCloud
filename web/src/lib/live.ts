@@ -6,6 +6,7 @@ import { accounts } from './accounts.svelte'
 import { artist, defaultCatalog, serviceOf, track, type CatalogContext, type Service, type Track, type TrackSet } from './catalog'
 import * as mock from './mock'
 import * as soundcloud from './services/soundcloud'
+import * as spotify from './services/spotify'
 import * as yandex from './services/yandex'
 import * as youtube from './services/youtube'
 
@@ -50,12 +51,14 @@ export interface Library {
   artists: string[]
 }
 
-export const signedIn = (svc: Service) => (svc === 'sc' ? !!accounts.sc : svc === 'ya' ? !!accounts.ya : accounts.yt)
+export const signedIn = (svc: Service) =>
+  svc === 'sc' ? !!accounts.sc : svc === 'ya' ? !!accounts.ya : svc === 'sp' ? !!accounts.sp : accounts.yt
 
 export async function artistFollowing(id: string): Promise<boolean> {
   if (id.startsWith('sc:u:')) return soundcloud.artistFollowing(id)
   if (id.startsWith('ya:a:')) return yandex.artistFollowing(id)
   if (id.startsWith('yt:a:')) return youtube.artistFollowing(id)
+  if (id.startsWith('sp:a:')) return spotify.artistFollowing(id)
   throw new Error(tr('У этого исполнителя нет страницы в сервисе'))
 }
 
@@ -65,6 +68,7 @@ export async function setArtistFollowing(id: string, following: boolean): Promis
   if (id.startsWith('sc:u:')) await soundcloud.setArtistFollowing(id, following)
   else if (id.startsWith('ya:a:')) await yandex.setArtistFollowing(id, following)
   else if (id.startsWith('yt:a:')) await youtube.setArtistFollowing(id, following)
+  else if (id.startsWith('sp:a:')) await spotify.setArtistFollowing(id, following)
   else throw new Error(tr('У этого исполнителя нет страницы в сервисе'))
   window.dispatchEvent(new CustomEvent('yc-artist-follow-changed', { detail: { id, following } }))
 }
@@ -95,6 +99,7 @@ function tidy(sections: Section[]): Section[] {
 export async function home(svc: Service, cat: CatalogContext = defaultCatalog): Promise<Section[]> {
   if (svc === 'sc') return tidy(await soundcloud.home(cat))
   if (svc === 'ya') return tidy(await yandex.home(cat))
+  if (svc === 'sp') return tidy(await spotify.home(cat))
   return tidy(await youtube.home(cat))
 }
 
@@ -103,6 +108,7 @@ export async function loadSet(id: string, cat: CatalogContext = defaultCatalog):
   if (svc === 'sc') return soundcloud.loadSet(id, cat)
   if (svc === 'ya') return yandex.loadSet(id, cat)
   if (svc === 'yt') return youtube.loadSet(id, cat)
+  if (svc === 'sp') return spotify.loadSet(id, cat)
   return cat.set(id)
 }
 
@@ -118,6 +124,10 @@ async function artistIn(id: string): Promise<ArtistPage> {
   if (svc === 'yt') {
     if (!id.startsWith('yt:a:')) throw new Error(tr('У этого исполнителя нет страницы на YouTube Music'))
     return youtube.loadArtist(id)
+  }
+  if (svc === 'sp') {
+    if (!id.startsWith('sp:a:')) throw new Error(tr('У этого исполнителя нет страницы в Spotify'))
+    return spotify.loadArtist(id)
   }
   return {
     artist: id,
@@ -148,6 +158,7 @@ async function searchIn(svc: Service, q: string): Promise<SearchResult> {
     return { ...r, best: named ? { type: 'artist', id: named } : r.tracks[0] ? { type: 'track', id: r.tracks[0] } : undefined }
   }
   if (svc === 'ya') return yandex.search(q)
+  if (svc === 'sp') return spotify.search(q)
   return youtube.search(q)
 }
 
@@ -167,13 +178,16 @@ export async function library(svc: Service, cat: CatalogContext = defaultCatalog
       ? await soundcloud.library(cat, opts)
       : svc === 'ya'
         ? await yandex.library(cat, opts)
-        : await youtube.library(cat, opts)
+        : svc === 'sp'
+          ? await spotify.library(cat, opts)
+          : await youtube.library(cat, opts)
   return { ...l, likedIds: unique(l.likedIds), playlists: unique(l.playlists), artists: unique(l.artists) }
 }
 
 export async function setLiked(t: Track, liked: boolean): Promise<void> {
   if (t.service === 'sc' && t.sc) return soundcloud.setLiked(t, liked)
   if (t.service === 'ya' && t.ya) return yandex.setLiked(t, liked)
+  if (t.service === 'sp' && t.sp) return spotify.setLiked(t, liked)
   if (t.yt) return youtube.setLiked(t, liked)
 }
 
@@ -197,18 +211,21 @@ export type Stream = { url: string; hls: boolean; live?: boolean; bridge?: boole
 export async function stream(t: Track): Promise<Stream | null> {
   if (t.sc) return soundcloud.stream(t)
   if (t.ya) return { url: await yandex.stream(t), hls: false }
+  if (t.sp) return spotify.stream(t)
   if (t.yt) return youtube.stream(t)
   return null
 }
 
 /** [t]'s stream wouldn't play: true when the service has another way to give it, tried next time. */
 export function streamFailed(t: Track): boolean {
+  if (t.sp) return spotify.streamFailed(t)
   return t.yt ? youtube.streamFailed(t.yt.videoId) : false
 }
 
 /** Tracks that go on after [t] when its queue runs out: SoundCloud's related, YouTube's up next. */
 export async function relatedTo(t: Track): Promise<string[]> {
   if (t.sc) return soundcloud.related(t)
+  if (t.sp) return spotify.related(t)
   if (t.yt) return (await youtube.radio(t)).filter((id) => id !== t.id)
   return []
 }

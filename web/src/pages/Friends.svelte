@@ -66,9 +66,9 @@
     }
   }
 
-  const SERVICES: Record<string, Service> = { soundcloud: 'sc', yandex: 'ya', youtube: 'yt' }
+  const SERVICES: Record<string, Service> = { soundcloud: 'sc', yandex: 'ya', youtube: 'yt', spotify: 'sp' }
   const serviceOf = (p: Person): Service | null => SERVICES[p.service ?? ''] ?? null
-  const SERVICE_NAMES: Record<string, string> = { soundcloud: 'SoundCloud', yandex: tr('Яндекс Музыка'), youtube: 'YouTube Music', device: tr('С устройства') }
+  const SERVICE_NAMES: Record<string, string> = { soundcloud: 'SoundCloud', yandex: tr('Яндекс Музыка'), youtube: 'YouTube Music', spotify: 'Spotify', device: tr('С устройства') }
 </script>
 
 <PageHeader

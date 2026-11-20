@@ -3,6 +3,7 @@
 
 import { tr } from './i18n.svelte'
 import type { Track } from './catalog'
+import * as spotify from './services/spotify'
 import * as yandex from './services/yandex'
 import * as youtube from './services/youtube'
 
@@ -69,6 +70,19 @@ export function lyricsFor(t: Track): Promise<Lyrics | null> {
       if (own) {
         const lines = parseLrc(own)
         if (lines.length) return { lines, source: tr('Яндекс Музыка'), synced: true }
+      }
+      if (t.service === 'sp') {
+        const spOwn = await spotify.lyrics(t)
+        if (spOwn) {
+          const lines = spOwn.synced
+            ? parseLrc(spOwn.text)
+            : spOwn.text
+                .split(/\r?\n/)
+                .map((text) => text.trim())
+                .filter(Boolean)
+                .map((text) => ({ at: 0, text }))
+          if (lines.length) return { lines, source: 'Spotify', synced: spOwn.synced }
+        }
       }
       const open = await lrclib(t).catch(() => null)
       const lines = open ? parseLrc(open) : []
