@@ -1,6 +1,8 @@
 package com.example.myapplication.data
 
 import android.content.Context
+import android.util.Log
+import androidx.media3.common.C
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DataSource
 import androidx.media3.datasource.DataSpec
@@ -63,7 +65,12 @@ object StreamCache {
     fun dataSourceFactory(context: Context): CacheDataSource.Factory = CacheDataSource.Factory()
         .setCache(cache(context))
         .setCacheKeyFactory(keyFactory)
-        .setUpstreamDataSourceFactory(DefaultDataSource.Factory(context, slowNetworkHttp()))
+        .setUpstreamDataSourceFactory(
+            YouTubeChunkedDataSource.Factory(
+                DefaultDataSource.Factory(context, slowNetworkHttp()),
+                YOUTUBE_STREAM_CHUNK_BYTES
+            )
+        )
         // Without FLAG_BLOCK_ON_CACHE: a piece being fetched ahead is read from the network
         // meanwhile rather than waited for.
         .setFlags(CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR)
@@ -81,6 +88,7 @@ object StreamCache {
 
     private const val HTTP_CONNECT_TIMEOUT_MS = 20_000
     private const val HTTP_READ_TIMEOUT_MS = 25_000
+    private const val YOUTUBE_STREAM_CHUNK_BYTES = 1024L * 1024
 
     /** Whether all of [key] is kept, so it plays without the network, and without a link. */
     fun isFullyCached(context: Context, key: String): Boolean {
@@ -126,6 +134,65 @@ object StreamCache {
         }
     }
 
+    /** File extension implied by a cached YouTube stream key (`ytmusic:<vid>:<itag>`). */
+    fun extensionForYouTubeKey(key: String): String {
+        val itag = key.substringAfterLast(':', "")
+        return if (itag in YOUTUBE_WEBM_ITAGS) "webm" else "m4a"
+    }
+
+    /** File extension implied by a cached Spotify stream key (`stream:spotify:<id>:<variant>`). */
+    fun extensionForSpotifyKey(key: String): String {
+        val variant = key.substringAfterLast(':', "")
+        if (variant.startsWith("ya_") || variant.startsWith("sc_")) return "mp3"
+        val itag = variant.substringAfterLast('_', "")
+        return if (itag in YOUTUBE_WEBM_ITAGS) "webm" else "m4a"
+    }
+
+    /**
+     * Copies a track already cached whole in [StreamCache] straight into [target], avoiding a
+     * redundant yt-dlp resolve and network download when the user downloads a track they just
+     * listened to or prefetched.
+     */
+    fun copyCachedToFile(context: Context, key: String, target: File): Boolean {
+        val c = cache(context)
+        val expectedLength = ContentMetadata.getContentLength(c.getContentMetadata(key))
+        if (expectedLength <= 0L || !c.isCached(key, 0, expectedLength)) return false
+        val dataSource = CacheDataSource.Factory()
+            .setCache(c)
+            .setCacheWriteDataSinkFactory(null)
+            .setUpstreamDataSourceFactory(null)
+            .setFlags(CacheDataSource.FLAG_BLOCK_ON_CACHE)
+            .createDataSource()
+        val spec = DataSpec.Builder()
+            .setUri(android.net.Uri.parse("cache:///$key"))
+            .setKey(key)
+            .build()
+        var copied = 0L
+        return try {
+            dataSource.open(spec)
+            target.outputStream().use { out ->
+                val buffer = ByteArray(64 * 1024)
+                while (true) {
+                    val count = dataSource.read(buffer, 0, buffer.size)
+                    if (count == C.RESULT_END_OF_INPUT) break
+                    if (count > 0) {
+                        out.write(buffer, 0, count)
+                        copied += count
+                    }
+                }
+            }
+            val ok = copied == expectedLength
+            if (!ok) target.delete()
+            ok
+        } catch (e: Exception) {
+            Log.w("StreamCache", "Couldn't export cached stream $key: ${e.message}")
+            target.delete()
+            false
+        } finally {
+            runCatching { dataSource.close() }
+        }
+    }
+
     /** MIME type implied by a cached Spotify stream key (e.g. `stream:spotify:<id>:yt_<vid>_251`). */
     fun mimeTypeForSpotifyKey(key: String): String {
         val variant = key.substringAfterLast(':', "")
@@ -157,6 +224,52 @@ object StreamCache {
     private val YANDEX_VARIANTS = listOf("mp3-320", "mp3-192", "mp3-128", "aac-256", "aac-192", "aac-128", "aac-64")
     private val YOUTUBE_AUDIO_ITAGS = listOf("251", "140", "250", "249", "141", "139", "774", "171", "172")
     private val YOUTUBE_WEBM_ITAGS = setOf("251", "250", "249", "171", "172")
+}
+
+/**
+ * Applies bounded [ChunkedDataSource] reads only to progressive googlevideo audio URLs so
+ * prefetching and streaming YouTube tracks run at full speed (and fail over across mirrors)
+ * without altering SoundCloud or Yandex streams.
+ */
+@UnstableApi
+private class YouTubeChunkedDataSource(private val upstream: DataSource, chunkSize: Long) : DataSource {
+    private val chunked = ChunkedDataSource(upstream, chunkSize)
+    private var active: DataSource? = null
+
+    override fun addTransferListener(transferListener: TransferListener) {
+        upstream.addTransferListener(transferListener)
+    }
+
+    override fun open(dataSpec: DataSpec): Long {
+        val uri = dataSpec.uri
+        val host = uri.host.orEmpty()
+        val path = uri.path.orEmpty()
+        val useChunked = host.endsWith(".googlevideo.com") &&
+            host != "manifest.googlevideo.com" &&
+            "/videoplayback" in path
+        val target = if (useChunked) chunked else upstream
+        active = target
+        return target.open(dataSpec)
+    }
+
+    override fun read(buffer: ByteArray, offset: Int, length: Int): Int =
+        active?.read(buffer, offset, length) ?: throw IllegalStateException("not open")
+
+    override fun getUri() = active?.uri
+
+    override fun getResponseHeaders(): Map<String, List<String>> = active?.responseHeaders ?: emptyMap()
+
+    override fun close() {
+        try {
+            active?.close()
+        } finally {
+            active = null
+        }
+    }
+
+    class Factory(private val upstream: DataSource.Factory, private val chunkSize: Long) : DataSource.Factory {
+        override fun createDataSource(): DataSource = YouTubeChunkedDataSource(upstream.createDataSource(), chunkSize)
+    }
 }
 
 /**

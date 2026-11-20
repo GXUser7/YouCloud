@@ -13,7 +13,7 @@ import kotlinx.coroutines.cancelChildren
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
 import java.io.IOException
-import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
 
 /** Spotify supplies the catalog. The player resolves a matching complete recording using its other sources. */
 internal object SpotifyAudio {
@@ -26,7 +26,9 @@ internal object SpotifyAudio {
         val chunked: Boolean = false,
         val cacheKey: String? = null,
         val candidateKey: String = "",
-        val expectedDurationMs: Long = 0L
+        val expectedDurationMs: Long = 0L,
+        val contentLength: Long = -1L,
+        val fastPath: Boolean = false
     )
 
     data class ResolvedVariant(
@@ -45,8 +47,16 @@ internal object SpotifyAudio {
 
     private class InFlightResolve(
         val deferred: kotlinx.coroutines.CompletableDeferred<Stream>,
-        val urgent: AtomicBoolean
-    )
+        val priority: AtomicReference<YtDlp.Priority>
+    ) {
+        fun promote(incoming: YtDlp.Priority) {
+            while (true) {
+                val cur = priority.get()
+                if (incoming.ordinal >= cur.ordinal) return
+                if (priority.compareAndSet(cur, incoming)) return
+            }
+        }
+    }
 
     private val cache = android.util.LruCache<String, Pair<Long, Stream>>(128)
     private val failedCandidates = android.util.LruCache<String, MutableMap<String, Long>>(64)
@@ -163,7 +173,12 @@ internal object SpotifyAudio {
             failedCandidates.get(spotifyId) ?: LinkedHashMap<String, Long>().also { failedCandidates.put(spotifyId, it) }
         }
         for (stream in matched) {
-            if (stream.candidateKey.isNotEmpty()) {
+            if (stream.fastPath && stream.candidateKey.startsWith("yt:")) {
+                // Fast-path ANDROID_VR URL rejected (e.g. 403): drop it and cool down fast-path
+                // instead of blacklisting the YouTube candidate itself, so yt-dlp resolves it next.
+                YouTubeStreams.markFastPathRejected()
+                YouTubeStreams.invalidate(stream.candidateKey.removePrefix("yt:"))
+            } else if (stream.candidateKey.isNotEmpty()) {
                 synchronized(failedMap) { failedMap[stream.candidateKey] = now + FAILED_TTL_MS }
             }
             Log.w(TAG, "[$spotifyId] Marked failed ${stream.candidateKey} (${reason ?: "playback error"})")
@@ -214,7 +229,13 @@ internal object SpotifyAudio {
         runCatching { running.deferred.await() }
     }
 
-    suspend fun resolve(context: Context, settings: SettingsRepository, track: SoundCloudTrack, urgent: Boolean): Stream {
+    suspend fun resolve(
+        context: Context,
+        settings: SettingsRepository,
+        track: SoundCloudTrack,
+        urgent: Boolean,
+        priority: YtDlp.Priority = if (urgent) YtDlp.Priority.URGENT else YtDlp.Priority.PREFETCH
+    ): Stream {
         val id = track.spotifyId ?: throw unavailable()
         val ytAuth = settings.ytMusicAuth()
         val yandexToken = settings.yandexTokenValue()
@@ -227,20 +248,20 @@ internal object SpotifyAudio {
         }
         val existing = inFlight[key]
         if (existing != null) {
-            if (urgent) existing.urgent.set(true)
-            Log.d(TAG, "[$id] Joining in-flight resolve (urgent=$urgent)")
+            existing.promote(priority)
+            Log.d(TAG, "[$id] Joining in-flight resolve (priority=$priority)")
             return existing.deferred.await()
         }
-        val mine = InFlightResolve(kotlinx.coroutines.CompletableDeferred(), AtomicBoolean(urgent))
+        val mine = InFlightResolve(kotlinx.coroutines.CompletableDeferred(), AtomicReference(priority))
         val prev = inFlight.putIfAbsent(key, mine)
         if (prev != null) {
-            if (urgent) prev.urgent.set(true)
-            Log.d(TAG, "[$id] Joining in-flight resolve (urgent=$urgent)")
+            prev.promote(priority)
+            Log.d(TAG, "[$id] Joining in-flight resolve (priority=$priority)")
             return prev.deferred.await()
         }
         try {
             val resolved = resolveInternal(context, settings, track, id, key, ytAuth, yandexToken, clientId, now) {
-                mine.urgent.get()
+                mine.priority.get()
             }
             mine.deferred.complete(resolved)
             return resolved
@@ -262,7 +283,7 @@ internal object SpotifyAudio {
         yandexToken: String,
         clientId: String,
         now: Long,
-        urgent: () -> Boolean
+        priority: () -> YtDlp.Priority
     ): Stream {
         val primaryQuery = spotifyAudioQuery(track).trim()
         if (primaryQuery.isEmpty() || track.duration <= 0) {
@@ -275,7 +296,7 @@ internal object SpotifyAudio {
             .ifEmpty { listOfNotNull(track.user?.username) }.joinToString(", ")
         Log.i(
             TAG,
-            "[$id] Resolving '${track.title}' by [$artistsText] (${track.duration / 1000}s) urgent=${urgent()} " +
+            "[$id] Resolving '${track.title}' by [$artistsText] (${track.duration / 1000}s) priority=${priority()} " +
                 "auth={yt=${ytAuth != null}, ya=${yandexToken.isNotBlank()}, scId=${clientId.isNotBlank()}, scAuth=${settings.oauthTokenValue().isNotBlank()}} query='$primaryQuery'"
         )
 
@@ -312,7 +333,7 @@ internal object SpotifyAudio {
                 val vid = cKey.removePrefix("yt:").takeIf { it.isNotBlank() }
                 if (vid != null) {
                     val stream = tryResolve(cKey) {
-                        withContext(Dispatchers.IO) { YouTubeStreams.resolve(context, vid, ytAuth, urgent = urgent) }
+                        withContext(Dispatchers.IO) { YouTubeStreams.resolve(context, vid, ytAuth, priority = priority) }
                     }
                     if (stream != null) {
                         val extension = if (stream.mimeType?.startsWith("audio/webm") == true) "webm" else "m4a"
@@ -328,10 +349,12 @@ internal object SpotifyAudio {
                                 url = stream.url,
                                 extension = extension,
                                 userAgent = stream.userAgent,
-                                chunked = stream.contentLength > 0,
+                                chunked = true,
                                 cacheKey = cacheKey,
                                 candidateKey = cKey,
-                                expectedDurationMs = remembered.durationMs.takeIf { it > 0L } ?: track.duration
+                                expectedDurationMs = remembered.durationMs.takeIf { it > 0L } ?: track.duration,
+                                contentLength = stream.contentLength,
+                                fastPath = stream.fastPath
                             )
                         )
                     }
@@ -370,7 +393,7 @@ internal object SpotifyAudio {
             triedKeys += cand.key
             val vid = cand.track.youTubeVideoId ?: return null
             val stream = tryResolve(cand.key) {
-                withContext(Dispatchers.IO) { YouTubeStreams.resolve(context, vid, ytAuth, urgent = urgent) }
+                withContext(Dispatchers.IO) { YouTubeStreams.resolve(context, vid, ytAuth, priority = priority) }
             }
             if (stream == null) {
                 ytAttempts++
@@ -414,10 +437,12 @@ internal object SpotifyAudio {
                     url = stream.url,
                     extension = extension,
                     userAgent = stream.userAgent,
-                    chunked = stream.contentLength > 0,
+                    chunked = true,
                     cacheKey = cacheKey,
                     candidateKey = cand.key,
-                    expectedDurationMs = cand.track.duration
+                    expectedDurationMs = cand.track.duration,
+                    contentLength = stream.contentLength,
+                    fastPath = stream.fastPath
                 )
             )
         }

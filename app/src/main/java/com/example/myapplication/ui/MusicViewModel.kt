@@ -108,7 +108,9 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.sync.withPermit
 import com.example.myapplication.data.CachedArtistPage
 import com.example.myapplication.data.MultiServiceWaveMixer
 import com.example.myapplication.data.PageCache
@@ -868,6 +870,13 @@ class MusicViewModel(
     private var playbackStartToken = 0L
 
     private val downloadQueue = kotlinx.coroutines.channels.Channel<DownloadRequest>(kotlinx.coroutines.channels.Channel.UNLIMITED)
+    // Number of audio downloads currently running across the worker pool; offline video downloads
+    // pause while this is non-zero so 720p clips never compete with songs for yt-dlp or VPN bandwidth.
+    private val activeAudioDownloads = MutableStateFlow(0)
+    // Serializes concurrent requests for the exact same track id (e.g. liked + playlist download).
+    private val trackDownloadLocks = ConcurrentHashMap<Long, Mutex>()
+    // Caps concurrent background artwork fetches kicked off after audio downloads finish.
+    private val artworkDownloadGate = Semaphore(3)
 
     init {
         updates.startSchedule()
@@ -881,6 +890,7 @@ class MusicViewModel(
         viewModelScope.launch(Dispatchers.IO) {
             for (track in extrasQueue) {
                 try {
+                    activeAudioDownloads.first { it == 0 }
                     downloadExtras(track)
                 } catch (e: CancellationException) {
                     throw e
@@ -1133,11 +1143,23 @@ class MusicViewModel(
             }
         }
 
-        viewModelScope.launch(Dispatchers.Default) {
-            for (request in downloadQueue) {
-                val success = request.playlistId?.let { performPlaylistDownload(request.track, it) }
-                    ?: performDownload(request.track, request.isRedownload, request.fromServiceLikes)
-                request.onComplete(success)
+        // Concurrent download pool: pipelines yt-dlp resolution and HTTP transfers across multiple
+        // tracks instead of waiting for one track's resolve + transfer + artwork before starting the next.
+        repeat(DOWNLOAD_CONCURRENCY) {
+            viewModelScope.launch(Dispatchers.Default) {
+                for (request in downloadQueue) {
+                    val lock = trackDownloadLocks.computeIfAbsent(request.track.id) { Mutex() }
+                    activeAudioDownloads.update { it + 1 }
+                    val success = try {
+                        lock.withLock {
+                            request.playlistId?.let { performPlaylistDownload(request.track, it) }
+                                ?: performDownload(request.track, request.isRedownload, request.fromServiceLikes)
+                        }
+                    } finally {
+                        activeAudioDownloads.update { (it - 1).coerceAtLeast(0) }
+                    }
+                    request.onComplete(success)
+                }
             }
         }
 
@@ -4465,15 +4487,32 @@ class MusicViewModel(
     }
 
     /**
-     * Keeps a copy of the cover next to the audio. Best effort: a track that downloaded fine is
-     * still usable without its artwork, so a failure here only costs a log line.
+     * Keeps a copy of the cover next to the audio off the audio download critical path so the next
+     * track starts immediately. Best effort: a track that downloaded fine is still usable without
+     * its artwork, so a failure here only costs a log line.
      */
-    private suspend fun cacheArtwork(track: SoundCloudTrack) {
+    private fun cacheArtworkAsync(track: SoundCloudTrack) {
         val source = ArtworkUrls.highRes(track.artworkUrl) ?: return
-        val path = withContext(Dispatchers.IO) {
-            offlineMusicStore.downloadArtwork(source, track.id)
+        viewModelScope.launch(Dispatchers.IO) {
+            artworkDownloadGate.withPermit {
+                val path = offlineMusicStore.downloadArtwork(source, track.id)
+                if (path != null && favoritesRepository.isFavorite(track.id)) {
+                    favoritesRepository.updateLocalArtwork(track.id, path)
+                }
+            }
         }
-        if (path != null) favoritesRepository.updateLocalArtwork(track.id, path)
+    }
+
+    private fun cachePlaylistArtworkAsync(playlistId: String, track: SoundCloudTrack) {
+        val source = ArtworkUrls.highRes(track.artworkUrl)?.takeUnless { it.startsWith("file://") } ?: return
+        viewModelScope.launch(Dispatchers.IO) {
+            artworkDownloadGate.withPermit {
+                val path = offlineMusicStore.downloadArtwork(source, track.id)
+                if (path != null && playlistsRepository.get(playlistId)?.tracks?.any { it.id == track.id } == true) {
+                    playlistsRepository.updateTrackArtwork(playlistId, track.id, path)
+                }
+            }
+        }
     }
 
     /**
@@ -4658,6 +4697,8 @@ class MusicViewModel(
     private val networkBack by lazy {
         object : android.net.ConnectivityManager.NetworkCallback() {
             override fun onAvailable(network: android.net.Network) {
+                YouTubeStreams.resetFastPathCooldown()
+                com.example.myapplication.data.RangedDownload.clearFailedHosts()
                 networkChanges.update { it + 1 }
                 viewModelScope.launch { reloadMissingHome() }
             }
@@ -4992,18 +5033,9 @@ class MusicViewModel(
             val stored: String? = if (track.spotifyId != null) {
                 downloadSpotifyAudio(track, "pl_sp_${track.spotifyId}")
             } else if (youTubeId != null) {
-                withContext(Dispatchers.IO) { YouTubeStreams.resolve(context, youTubeId, settingsRepository.ytMusicAuth(), urgent = { false }) }?.let { audio ->
-                    val path = withContext(Dispatchers.IO) {
-                        offlineMusicStore.downloadProgressive(audio.url, "pl_yt_$youTubeId", extension = "m4a", chunked = true, userAgent = audio.userAgent) { progress ->
-                            updateDownloadProgress(track.id, progress)
-                        }
-                    }
-                    if (path != null && !isCompleteDownload(path, track.duration)) {
-                        withContext(Dispatchers.IO) { java.io.File(path).delete() }
-                        null
-                    } else {
-                        path
-                    }
+                when (val yt = downloadYouTubeAudio(track, youTubeId, "pl_yt_$youTubeId", allowStreamCache = true)) {
+                    is YouTubeDownloadResult.Saved -> yt.path
+                    YouTubeDownloadResult.NoStream, YouTubeDownloadResult.Failed -> null
                 }
             } else if (isYandex) {
                 val yandexId = track.urn?.substringAfter("yandex:track:")?.substringBefore(":").orEmpty()
@@ -5057,10 +5089,8 @@ class MusicViewModel(
                 }
                 return false
             }
-            val artwork = ArtworkUrls.highRes(track.artworkUrl)
-                ?.takeUnless { it.startsWith("file://") }
-                ?.let { url -> withContext(Dispatchers.IO) { offlineMusicStore.downloadArtwork(url, track.id) } }
-            playlistsRepository.updateTrackDownload(playlistId, track.id, DownloadState.DOWNLOADED, stored, artwork)
+            playlistsRepository.updateTrackDownload(playlistId, track.id, DownloadState.DOWNLOADED, stored)
+            cachePlaylistArtworkAsync(playlistId, track)
             return true
         } catch (e: CancellationException) {
             throw e
@@ -5074,13 +5104,138 @@ class MusicViewModel(
         }
     }
 
-    private suspend fun downloadSpotifyAudio(track: SoundCloudTrack, key: String): String? {
-        val stream = SpotifyAudio.resolve(context, settingsRepository, track, urgent = false)
-        val expectedMs = stream.expectedDurationMs.takeIf { it > 0L } ?: track.duration
+    private sealed interface YouTubeDownloadResult {
+        class Saved(val path: String) : YouTubeDownloadResult
+        object NoStream : YouTubeDownloadResult
+        object Failed : YouTubeDownloadResult
+    }
+
+    /**
+     * Downloads a YouTube track's audio: copies straight from [StreamCache] when already cached
+     * whole, otherwise resolves via fast-path/yt-dlp at [YtDlp.Priority.DOWNLOAD], downloads in
+     * parallel chunks with known length, and retries cleanly through yt-dlp if a fast-path or
+     * cached URL returns HTTP 403.
+     */
+    private suspend fun downloadYouTubeAudio(
+        track: SoundCloudTrack,
+        youTubeId: String,
+        fileKey: String,
+        allowStreamCache: Boolean
+    ): YouTubeDownloadResult {
+        if (allowStreamCache) {
+            val copied = offlineMusicStore.copyCachedYouTube(youTubeId, fileKey)
+            if (copied != null) {
+                if (isCompleteDownload(copied, track.duration)) {
+                    updateDownloadProgress(track.id, 1f)
+                    return YouTubeDownloadResult.Saved(copied)
+                }
+                withContext(Dispatchers.IO) { offlineMusicStore.removeProgressive(copied) }
+            }
+        }
+        val auth = settingsRepository.ytMusicAuth()
+        var audio = withContext(Dispatchers.IO) {
+            YouTubeStreams.resolve(context, youTubeId, auth, priority = { YtDlp.Priority.DOWNLOAD })
+        } ?: return YouTubeDownloadResult.NoStream
+
+        val ext = if (audio.mimeType?.startsWith("audio/webm") == true) "webm" else "m4a"
+        var rejected403 = false
+        var path = offlineMusicStore.downloadProgressive(
+            url = audio.url,
+            trackId = fileKey,
+            extension = ext,
+            chunked = true,
+            userAgent = audio.userAgent,
+            expectedLength = audio.contentLength,
+            onRejected403 = { rejected403 = true }
+        ) { progress -> updateDownloadProgress(track.id, progress) }
+
+        if (path == null && rejected403) {
+            if (audio.fastPath) YouTubeStreams.markFastPathRejected()
+            YouTubeStreams.invalidate(youTubeId)
+            audio = withContext(Dispatchers.IO) {
+                YouTubeStreams.resolve(
+                    context,
+                    youTubeId,
+                    auth,
+                    priority = { YtDlp.Priority.DOWNLOAD },
+                    allowFastPath = false
+                )
+            } ?: return YouTubeDownloadResult.NoStream
+            val retryExt = if (audio.mimeType?.startsWith("audio/webm") == true) "webm" else "m4a"
+            path = offlineMusicStore.downloadProgressive(
+                url = audio.url,
+                trackId = fileKey,
+                extension = retryExt,
+                chunked = true,
+                userAgent = audio.userAgent,
+                expectedLength = audio.contentLength
+            ) { progress -> updateDownloadProgress(track.id, progress) }
+        }
+
+        if (path == null) return YouTubeDownloadResult.Failed
+        if (!isCompleteDownload(path, track.duration)) {
+            withContext(Dispatchers.IO) { offlineMusicStore.removeProgressive(path) }
+            return YouTubeDownloadResult.Failed
+        }
+        return YouTubeDownloadResult.Saved(path)
+    }
+
+    private suspend fun downloadSpotifyAudio(
+        track: SoundCloudTrack,
+        key: String,
+        allowStreamCache: Boolean = true
+    ): String? {
+        val spotifyId = track.spotifyId
+        if (allowStreamCache && spotifyId != null) {
+            val copied = offlineMusicStore.copyCachedSpotify(spotifyId, key)
+            if (copied != null) {
+                if (isCompleteDownload(copied, track.duration)) {
+                    updateDownloadProgress(track.id, 1f)
+                    return copied
+                }
+                withContext(Dispatchers.IO) { offlineMusicStore.removeProgressive(copied) }
+            }
+        }
+        var stream = SpotifyAudio.resolve(
+            context,
+            settingsRepository,
+            track,
+            urgent = false,
+            priority = YtDlp.Priority.DOWNLOAD
+        )
+        var expectedMs = stream.expectedDurationMs.takeIf { it > 0L } ?: track.duration
         return withContext(Dispatchers.IO) {
-            val path = offlineMusicStore.downloadProgressive(
-                stream.url, key, extension = stream.extension, chunked = stream.chunked, userAgent = stream.userAgent
-            ) { progress -> updateDownloadProgress(track.id, progress) } ?: return@withContext null
+            var rejected403 = false
+            var path = offlineMusicStore.downloadProgressive(
+                url = stream.url,
+                trackId = key,
+                extension = stream.extension,
+                chunked = stream.chunked,
+                userAgent = stream.userAgent,
+                expectedLength = stream.contentLength,
+                onRejected403 = { rejected403 = true }
+            ) { progress -> updateDownloadProgress(track.id, progress) }
+
+            if (path == null && rejected403 && spotifyId != null) {
+                SpotifyAudio.markStreamFailed(spotifyId, context, reason = "HTTP 403 during download")
+                stream = SpotifyAudio.resolve(
+                    context,
+                    settingsRepository,
+                    track,
+                    urgent = false,
+                    priority = YtDlp.Priority.DOWNLOAD
+                )
+                expectedMs = stream.expectedDurationMs.takeIf { it > 0L } ?: track.duration
+                path = offlineMusicStore.downloadProgressive(
+                    url = stream.url,
+                    trackId = key,
+                    extension = stream.extension,
+                    chunked = stream.chunked,
+                    userAgent = stream.userAgent,
+                    expectedLength = stream.contentLength
+                ) { progress -> updateDownloadProgress(track.id, progress) }
+            }
+            if (path == null) return@withContext null
             if (!isCompleteDownload(path, expectedMs)) {
                 offlineMusicStore.removeProgressive(path)
                 null
@@ -5144,6 +5299,7 @@ class MusicViewModel(
     }
 
     private companion object {
+        const val DOWNLOAD_CONCURRENCY = 3
         const val AUTH_RECOVERY_COOLDOWN_MS = 30_000L
         // How long changes to «Любимое» settle before they go to the account.
         const val FAVORITES_SYNC_SETTLE_MS = 2_000L
@@ -5904,7 +6060,7 @@ class MusicViewModel(
 
         try {
             if (track.spotifyId != null) {
-                val path = downloadSpotifyAudio(track, "sp_${track.spotifyId}")
+                val path = downloadSpotifyAudio(track, "sp_${track.spotifyId}", allowStreamCache = !isRedownload)
                 if (path == null) {
                     favoritesRepository.updateDownloadState(track.id, DownloadState.FAILED)
                     _errorMessage.value = tr("Ошибка: Трек скачался не полностью.")
@@ -5916,19 +6072,38 @@ class MusicViewModel(
                 }
                 favoritesRepository.updateStreamUrl(track.id, path)
                 favoritesRepository.updateDownloadState(track.id, DownloadState.DOWNLOADED)
-                cacheArtwork(track)
+                cacheArtworkAsync(track)
                 if (!isRedownload && !fromServiceLikes) {
                     saveOnSpotify(track, true)
                 }
                 return true
             }
-            val youTubeAudio = youTubeId?.let { id ->
-                // A download waits for what plays now.
-                withContext(Dispatchers.IO) { YouTubeStreams.resolve(context, id, settingsRepository.ytMusicAuth(), urgent = { false }) }
+            if (youTubeId != null) {
+                when (val result = downloadYouTubeAudio(track, youTubeId, "yt_$youTubeId", allowStreamCache = !isRedownload)) {
+                    is YouTubeDownloadResult.Saved -> {
+                        if (favoritesRepository.isFavorite(track.id)) {
+                            favoritesRepository.updateStreamUrl(track.id, result.path)
+                            favoritesRepository.updateDownloadState(track.id, DownloadState.DOWNLOADED)
+                            cacheArtworkAsync(track)
+                            return true
+                        } else {
+                            withContext(Dispatchers.IO) { offlineMusicStore.removeProgressive(result.path) }
+                            return false
+                        }
+                    }
+                    YouTubeDownloadResult.NoStream -> {
+                        favoritesRepository.updateDownloadState(track.id, DownloadState.FAILED)
+                        _errorMessage.value = tr("YouTube не отдал звук этого трека.")
+                        return false
+                    }
+                    YouTubeDownloadResult.Failed -> {
+                        favoritesRepository.updateDownloadState(track.id, DownloadState.FAILED)
+                        _errorMessage.value = tr("Ошибка: Трек скачался не полностью.")
+                        return false
+                    }
+                }
             }
-            val streamUrl = if (youTubeId != null) {
-                youTubeAudio?.url
-            } else if (isYandex) {
+            val streamUrl = if (isYandex) {
                 val yandexTrackId = track.urn?.substringAfter("yandex:track:")?.substringBefore(":") ?: ""
                 val token = settingsRepository.yandexTokenValue()
                 if (token.isNotBlank()) {
@@ -5969,9 +6144,7 @@ class MusicViewModel(
 
             if (streamUrl == null) {
                 favoritesRepository.updateDownloadState(track.id, DownloadState.FAILED)
-                if (youTubeId != null) {
-                    _errorMessage.value = tr("YouTube не отдал звук этого трека.")
-                } else if (isYandex) {
+                if (isYandex) {
                     _errorMessage.value = tr("Укажите рабочий токен Яндекс Музыки в настройках.")
                 } else if (clientId.isBlank()) {
                     _errorMessage.value = tr("Войдите в SoundCloud в настройках, чтобы скачать трек")
@@ -5981,24 +6154,17 @@ class MusicViewModel(
                 return false
             }
 
-            if (isYandex || youTubeId != null) {
+            if (isYandex) {
                 val yandexTrackId = track.urn?.substringAfter("yandex:track:")?.substringBefore(":") ?: ""
                 val localPath = withContext(Dispatchers.IO) {
-                    if (youTubeId != null) {
-                        // YouTube's audio is AAC in MP4, and comes down in pieces (see downloadProgressive).
-                        offlineMusicStore.downloadProgressive(streamUrl, "yt_$youTubeId", extension = "m4a", chunked = true, userAgent = youTubeAudio?.userAgent) { progress ->
-                            updateDownloadProgress(track.id, progress)
-                        }
-                    } else {
-                        offlineMusicStore.downloadProgressive(streamUrl, yandexTrackId) { progress ->
-                            updateDownloadProgress(track.id, progress)
-                        }
+                    offlineMusicStore.downloadProgressive(streamUrl, yandexTrackId) { progress ->
+                        updateDownloadProgress(track.id, progress)
                     }
                 }
                 if (localPath != null) {
                     val actualDuration = getMp3Duration(localPath)
                     var expectedDuration = track.duration
-                    if (expectedDuration <= 0L && isYandex) {
+                    if (expectedDuration <= 0L) {
                         try {
                             val expectedYandexTrackId = track.urn?.substringAfter("yandex:track:")?.substringBefore(":") ?: ""
                             val response = yandexService.getTracksDetails(expectedYandexTrackId)
@@ -6018,7 +6184,7 @@ class MusicViewModel(
                         if (favoritesRepository.isFavorite(track.id)) {
                             favoritesRepository.updateStreamUrl(track.id, localPath)
                             favoritesRepository.updateDownloadState(track.id, DownloadState.DOWNLOADED)
-                            cacheArtwork(track)
+                            cacheArtworkAsync(track)
                             return true
                         } else {
                             withContext(Dispatchers.IO) {
@@ -6049,7 +6215,7 @@ class MusicViewModel(
                     // Store URL only after successful download (#23)
                     favoritesRepository.updateStreamUrl(track.id, streamUrl)
                     favoritesRepository.updateDownloadState(track.id, DownloadState.DOWNLOADED)
-                    cacheArtwork(track)
+                    cacheArtworkAsync(track)
                     return true
                 } else {
                     withContext(Dispatchers.IO) {

@@ -402,6 +402,16 @@ class PlaybackService : MediaLibraryService() {
                             reason = "${error.errorCodeName}: ${error.cause?.message}"
                         )
                     }
+                } else if (
+                    currentUri?.scheme == "ytmusic" &&
+                    error.errorCode == androidx.media3.common.PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS
+                ) {
+                    // Stale signed URL or rejected fast-path link: drop cache and cool down fast-path
+                    // so the upcoming retry resolves afresh through yt-dlp.
+                    com.example.myapplication.data.YouTubeStreams.markFastPathRejected()
+                    currentUri.lastPathSegment?.takeIf { it.isNotBlank() }?.let(
+                        com.example.myapplication.data.YouTubeStreams::invalidate
+                    )
                 }
                 val canRetry = error.errorCode in RETRIED_ERRORS ||
                     (isSpotify && error.errorCode in SPOTIFY_FAILOVER_ERRORS)

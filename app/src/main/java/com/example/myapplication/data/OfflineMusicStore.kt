@@ -93,9 +93,53 @@ class OfflineMusicStore private constructor(context: Context) {
         HlsDownloader(mediaItem, cacheDataSourceFactory).remove()
     }
 
+    /** If [youTubeId] is already cached whole in [StreamCache], copies it straight to offline storage. */
+    suspend fun copyCachedYouTube(youTubeId: String, trackId: String): String? {
+        val cachedKey = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            StreamCache.cachedYouTubeKey(appContext, youTubeId)
+        } ?: return null
+        return copyFromStreamCache(cachedKey, trackId, StreamCache.extensionForYouTubeKey(cachedKey))
+    }
+
+    /** If [spotifyId] is already cached whole in [StreamCache], copies it straight to offline storage. */
+    suspend fun copyCachedSpotify(spotifyId: String, trackId: String): String? {
+        val cachedKey = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            StreamCache.cachedSpotifyKey(appContext, spotifyId)
+        } ?: return null
+        return copyFromStreamCache(cachedKey, trackId, StreamCache.extensionForSpotifyKey(cachedKey))
+    }
+
     /**
-     * @param chunked fetch in [CHUNK_BYTES] ranges. YouTube serves a whole file at barely more than
+     * Copies an audio track that is already completely present in [StreamCache] into the offline
+     * music folder, finishing in milliseconds without hitting yt-dlp or the network.
+     */
+    suspend fun copyFromStreamCache(
+        cacheKey: String,
+        trackId: String,
+        extension: String
+    ): String? = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+        val finalFile = File(downloadDirectory, "track_${trackId}.$extension")
+        val tempFile = File.createTempFile("track_${trackId}_", ".tmp", downloadDirectory)
+        try {
+            if (!StreamCache.copyCachedToFile(appContext, cacheKey, tempFile)) return@withContext null
+            coroutineContext.ensureActive()
+            finalFile.delete()
+            if (!tempFile.renameTo(finalFile)) throw java.io.IOException("Could not save cached recording")
+            Log.i("OfflineMusicStore", "Copied $cacheKey from StreamCache (${finalFile.length() / 1024} KB)")
+            finalFile.absolutePath
+        } catch (e: java.io.IOException) {
+            Log.w("OfflineMusicStore", "Failed to copy cached track $cacheKey: ${e.message}")
+            null
+        } finally {
+            tempFile.delete()
+        }
+    }
+
+    /**
+     * @param chunked fetch in bounded ranges. YouTube serves a whole file at barely more than
      *   playback speed and a ranged request at full speed, so its audio comes down in pieces.
+     * @param expectedLength known byte size if available, letting [RangedDownload] launch all
+     *   parallel chunk workers at t=0 without waiting for a single-threaded first chunk.
      */
     suspend fun downloadProgressive(
         url: String,
@@ -103,6 +147,8 @@ class OfflineMusicStore private constructor(context: Context) {
         extension: String = "mp3",
         chunked: Boolean = false,
         userAgent: String? = null,
+        expectedLength: Long = -1L,
+        onRejected403: (() -> Unit)? = null,
         onProgress: (Float) -> Unit = {}
     ): String? = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
         val finalFile = File(downloadDirectory, "track_${trackId}.$extension")
@@ -110,11 +156,22 @@ class OfflineMusicStore private constructor(context: Context) {
         try {
             if (chunked) {
                 val headers = if (userAgent == null) emptyMap() else mapOf("User-Agent" to userAgent)
-                if (!RangedDownload.toFile(url, headers, tempFile, onProgress)) return@withContext null
+                when (RangedDownload.toFileOutcome(url, headers, tempFile, onProgress, expectedLength)) {
+                    RangedDownload.Outcome.OK -> Unit
+                    RangedDownload.Outcome.REJECTED_403 -> {
+                        onRejected403?.invoke()
+                        return@withContext null
+                    }
+                    RangedDownload.Outcome.FAILED -> return@withContext null
+                }
             } else {
                 val request = okhttp3.Request.Builder().url(url)
                     .apply { userAgent?.let { header("User-Agent", it) } }.build()
                 http.newCall(request).execute().use { response ->
+                    if (response.code == 403) {
+                        onRejected403?.invoke()
+                        return@withContext null
+                    }
                     if (response.code != 200) return@withContext null
                     val body = response.body ?: return@withContext null
                     val expected = body.contentLength()
@@ -138,6 +195,7 @@ class OfflineMusicStore private constructor(context: Context) {
                 }
             }
             coroutineContext.ensureActive()
+            finalFile.delete()
             if (!tempFile.renameTo(finalFile)) throw java.io.IOException("Could not save recording")
             finalFile.absolutePath
         } catch (e: java.io.IOException) {
@@ -184,18 +242,21 @@ class OfflineMusicStore private constructor(context: Context) {
             } else {
                 decoded
             }
-            val temp = File(artworkDirectory, "art_$trackId.jpg.tmp")
-            temp.outputStream().use { out ->
-                scaled.compress(android.graphics.Bitmap.CompressFormat.JPEG, 88, out)
-            }
-            if (scaled !== decoded) scaled.recycle()
-            decoded.recycle()
-            if (temp.length() <= 0L) {
+            val temp = File.createTempFile("art_${trackId}_", ".tmp", artworkDirectory)
+            try {
+                temp.outputStream().use { out ->
+                    scaled.compress(android.graphics.Bitmap.CompressFormat.JPEG, 88, out)
+                }
+                if (scaled !== decoded) scaled.recycle()
+                decoded.recycle()
+                if (temp.length() <= 0L) {
+                    return null
+                }
+                target.delete()
+                if (temp.renameTo(target)) target.absolutePath else null
+            } finally {
                 temp.delete()
-                return null
             }
-            target.delete()
-            if (temp.renameTo(target)) target.absolutePath else null
         } catch (e: Exception) {
             Log.e("OfflineMusicStore", "Failed to cache artwork for $trackId", e)
             null

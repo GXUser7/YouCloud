@@ -12,8 +12,8 @@ import java.util.concurrent.ExecutionException
 import java.util.concurrent.Executors
 import java.util.concurrent.FutureTask
 import java.util.concurrent.TimeUnit
-import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.atomic.AtomicReference
 import java.util.concurrent.locks.ReentrantLock
 import java.util.concurrent.locks.ReentrantReadWriteLock
 import kotlin.concurrent.read
@@ -41,6 +41,9 @@ object YtDlp {
     private const val PREFS = "yt_dlp"
     private const val KEY_CHECKED_AT = "update_checked_at"
 
+    /** Priority for acquiring a yt-dlp server slot. Lower ordinal = higher priority. */
+    enum class Priority { URGENT, DOWNLOAD, PREFETCH }
+
     /**
      * What to ask yt-dlp for. Plain HTTPS only, never an HLS or DASH manifest — the players and
      * the downloader here expect one file — but for a live stream, which is only HLS.
@@ -52,7 +55,7 @@ object YtDlp {
         val skip: String = "hls,dash"
     ) {
         /** AAC in MP4 (itag 140) first: every device decodes it, and downloads are kept as it. */
-        AUDIO("140/bestaudio[ext=m4a][protocol=https]/bestaudio[protocol=https]"),
+        AUDIO("140/bestaudio[ext=m4a][protocol=https]/bestaudio[protocol=https]", skip = "hls,dash,translated_subs"),
 
         /**
          * A music video's picture alone, no larger than the screen needs, VP9 first — where the
@@ -99,6 +102,11 @@ object YtDlp {
     // tests end.
     @Volatile
     private var tvRefusedSession: Int? = null
+
+    // Session where lightweight single-client audio extraction (`tv` + `player_skip=webpage`) was
+    // turned away; subsequent tracks skip straight to yt-dlp's full default client set.
+    @Volatile
+    private var fastAudioRefusedSession: Int? = null
 
     /**
      * A yt-dlp plugin that keeps the challenge solver's preprocessed player between runs. Solving
@@ -161,13 +169,16 @@ def main():
             # The manifests not to fetch, per request: a live stream is only HLS.
             if "skip" in request:
                 youtube_args["skip"] = [part for part in request["skip"].split(",") if part]
+            if request.get("player_skip"):
+                youtube_args["player_skip"] = [part for part in request["player_skip"].split(",") if part]
             ydl.params["extractor_args"] = {**base_args, YOUTUBE_ARGS: youtube_args}
             info = ydl.extract_info(request["url"], download=False)
             if info is None:
                 raise Exception("yt-dlp found nothing")
             reply = {key: info.get(key) for key in KEEP}
             reply["tags"] = (info.get("tags") or [])[:30]
-            reply["formats"] = [{key: f.get(key) for key in FORMAT_KEEP} for f in info.get("formats") or []]
+            if request.get("want_formats"):
+                reply["formats"] = [{key: f.get(key) for key in FORMAT_KEEP} for f in info.get("formats") or []]
             print(json.dumps({"id": request.get("id"), "info": reply}), flush=True)
         except Exception as e:  # one failed request must not end the server
             print(json.dumps({"id": request.get("id"), "error": str(e)}), flush=True)
@@ -194,10 +205,10 @@ main()
     private val scriptLock = ReentrantReadWriteLock()
 
     /**
-     * A stream being resolved, and whether someone wants it now: one fetched ahead (the next
-     * track's) that the player then asks for itself goes as wanted now.
+     * A stream being resolved, and its promoted priority: one fetched ahead (the next track's) that
+     * a download or the player then asks for itself is bumped up at once.
      */
-    private class Pending(val task: FutureTask<YouTubeStreams.Stream?>, val wantedNow: AtomicBoolean)
+    private class Pending(val task: FutureTask<YouTubeStreams.Stream?>, val promoted: AtomicReference<Priority>)
 
     private val pending = ConcurrentHashMap<String, Pending>()
     private val lastUpdateAttempt = AtomicLong(0)
@@ -244,11 +255,28 @@ main()
         auth: YtAuth?,
         kind: Kind,
         urgent: () -> Boolean = { true }
+    ): YouTubeStreams.Stream? = resolve(
+        context, videoId, auth, kind,
+        priority = { if (urgent()) Priority.URGENT else Priority.PREFETCH }
+    )
+
+    @JvmName("resolveWithPriority")
+    fun resolve(
+        context: Context,
+        videoId: String,
+        auth: YtAuth?,
+        kind: Kind,
+        priority: () -> Priority
     ): YouTubeStreams.Stream? {
         val app = context.applicationContext
         val key = "$kind:$videoId"
-        val wantedNow = AtomicBoolean(false)
-        val mine = Pending(FutureTask { resolveOrUpdate(app, videoId, auth, kind) { wantedNow.get() || urgent() } }, wantedNow)
+        val promoted = AtomicReference(Priority.PREFETCH)
+        val effectivePriority = {
+            val base = priority()
+            val bump = promoted.get()
+            if (bump.ordinal < base.ordinal) bump else base
+        }
+        val mine = Pending(FutureTask { resolveOrUpdate(app, videoId, auth, kind, effectivePriority) }, promoted)
         val running = pending.putIfAbsent(key, mine)
         if (running == null) {
             try {
@@ -256,9 +284,18 @@ main()
             } finally {
                 pending.remove(key, mine)
             }
-        } else if (urgent()) {
-            // Fetched ahead, and wanted now: it goes before what is still only fetched ahead.
-            running.wantedNow.set(true)
+        } else {
+            val incoming = priority()
+            var upgraded = false
+            while (true) {
+                val cur = running.promoted.get()
+                if (incoming.ordinal >= cur.ordinal) break
+                if (running.promoted.compareAndSet(cur, incoming)) {
+                    upgraded = true
+                    break
+                }
+            }
+            if (upgraded) Runs.wakeUp()
         }
         return try {
             (running ?: mine).task.get()
@@ -268,12 +305,12 @@ main()
         }
     }
 
-    private fun resolveOrUpdate(context: Context, videoId: String, auth: YtAuth?, kind: Kind, urgent: () -> Boolean): YouTubeStreams.Stream? {
+    private fun resolveOrUpdate(context: Context, videoId: String, auth: YtAuth?, kind: Kind, priority: () -> Priority): YouTubeStreams.Stream? {
         if (!ensureReady(context)) return null
-        extract(context, videoId, auth, kind, urgent)?.let { return it }
+        extract(context, videoId, auth, kind, priority)?.let { return it }
         // Most failures are YouTube having changed something a newer yt-dlp already handles.
         if (!update(context, minInterval = FAILED_UPDATE_RETRY_MS)) return null
-        return extract(context, videoId, auth, kind, urgent)
+        return extract(context, videoId, auth, kind, priority)
     }
 
     private fun ensureReady(context: Context): Boolean {
@@ -328,52 +365,68 @@ main()
         }
     }
 
-    private fun extract(context: Context, videoId: String, auth: YtAuth?, kind: Kind, urgent: () -> Boolean): YouTubeStreams.Stream? {
-        val now = Runs.acquire(urgent)
+    private fun extract(context: Context, videoId: String, auth: YtAuth?, kind: Kind, priority: () -> Priority): YouTubeStreams.Stream? {
+        val granted = Runs.acquire(priority)
         try {
             return scriptLock.read { runYtDlp(context, videoId, auth, kind) }
         } finally {
-            Runs.release(ahead = !now)
+            Runs.release(wasPrefetch = granted == Priority.PREFETCH)
         }
     }
 
     /**
      * yt-dlp's runs, two at a time — each a Python process of its own, tens of MB, and as much work
-     * as a phone's cores take — given to what is wanted now before what is fetched ahead. What is
-     * fetched ahead (the next tracks, downloads, the warm-up) takes one of the two at most, and none
-     * while something wanted now waits. Queued behind the next tracks' sound, the playing track's
-     * video waited its turn for seconds on a fast phone; on a slower one, for most of the track.
+     * as a phone's cores take:
+     * - [Priority.URGENT] (playing track's audio/video): takes either slot immediately ahead of all others.
+     * - [Priority.DOWNLOAD] (explicit downloads): may use both slots while nothing urgent waits,
+     *   doubling playlist download throughput without spawning a third Python process.
+     * - [Priority.PREFETCH] (next-track prefetch, warm-up, offline videos): capped at one slot and
+     *   yields to both urgent playback and active audio downloads.
      */
     private object Runs {
         private const val ALL = 2
-        private const val AHEAD = 1
+        private const val PREFETCH_LIMIT = 1
         private val lock = ReentrantLock()
         private val freed = lock.newCondition()
         private var busy = 0
-        private var busyAhead = 0
-        private val waiting = mutableListOf<() -> Boolean>()
+        private var busyPrefetch = 0
+        private val waiting = mutableListOf<() -> Priority>()
 
-        /** Waits for a run of its own; true when it was given as wanted now. */
-        fun acquire(urgent: () -> Boolean): Boolean = lock.withLock {
-            waiting += urgent
+        /** Waits for a run of its own; returns the priority it was admitted at. */
+        fun acquire(priority: () -> Priority): Priority = lock.withLock {
+            waiting += priority
             try {
-                var now = urgent()
-                while (!(busy < ALL && (now || (busyAhead < AHEAD && waiting.none { it !== urgent && it() })))) {
+                var p = priority()
+                while (!canRun(p, priority)) {
                     // Asked again now and then: the next track may have become the one playing.
                     freed.await(250, TimeUnit.MILLISECONDS)
-                    now = urgent()
+                    p = priority()
                 }
                 busy++
-                if (!now) busyAhead++
-                now
+                if (p == Priority.PREFETCH) busyPrefetch++
+                p
             } finally {
-                waiting.remove(urgent)
+                waiting.remove(priority)
             }
         }
 
-        fun release(ahead: Boolean) = lock.withLock {
+        private fun canRun(p: Priority, self: () -> Priority): Boolean {
+            if (busy >= ALL) return false
+            return when (p) {
+                Priority.URGENT -> true
+                Priority.DOWNLOAD -> waiting.none { it !== self && it() == Priority.URGENT }
+                Priority.PREFETCH -> busyPrefetch < PREFETCH_LIMIT &&
+                    waiting.none { it !== self && it() != Priority.PREFETCH }
+            }
+        }
+
+        fun wakeUp() = lock.withLock {
+            freed.signalAll()
+        }
+
+        fun release(wasPrefetch: Boolean) = lock.withLock {
             busy--
-            if (ahead) busyAhead--
+            if (wasPrefetch) busyPrefetch--
             freed.signalAll()
         }
 
@@ -383,16 +436,16 @@ main()
          * kept the first track's video waiting on the warm-up at every start.
          */
         fun acquireWarmUp(): Boolean = lock.withLock {
-            if (busy > 0 || busyAhead >= AHEAD || waiting.isNotEmpty()) {
+            if (busy > 0 || busyPrefetch >= PREFETCH_LIMIT || waiting.isNotEmpty()) {
                 false
             } else {
-                busyAhead++
+                busyPrefetch++
                 true
             }
         }
 
         fun releaseWarmUp() = lock.withLock {
-            busyAhead--
+            busyPrefetch--
             freed.signalAll()
         }
     }
@@ -402,27 +455,62 @@ main()
         if (kind == Kind.VIDEO) VideoDecoders.videoFormat(context) else kind.format
 
     private fun runYtDlp(context: Context, videoId: String, auth: YtAuth?, kind: Kind): YouTubeStreams.Stream? {
-        if (kind != Kind.VIDEO) return runYtDlp(context, videoId, auth, kind, kind.clients).stream
+        if (kind == Kind.AUDIO) {
+            if (auth != null) {
+                val session = auth.cookie.hashCode()
+                if (tvRefusedSession != session && fastAudioRefusedSession != session) {
+                    val fast = runYtDlp(context, videoId, auth, kind, clients = "tv", playerSkip = "webpage")
+                    if (fast.stream != null) return fast.stream
+                    val reason = fast.failure.orEmpty()
+                    if (reason.contains(TV_REFUSED)) {
+                        Log.i(TAG, "The TV clients turn this account away; falling back to default audio clients")
+                        tvRefusedSession = session
+                        fastAudioRefusedSession = session
+                    } else if (
+                        reason.contains("Sign in", ignoreCase = true) ||
+                        reason.contains("cookies", ignoreCase = true) ||
+                        reason.contains("confirm you", ignoreCase = true)
+                    ) {
+                        Log.i(TAG, "Fast TV audio client refused this session; using default audio clients")
+                        fastAudioRefusedSession = session
+                    }
+                }
+            }
+            return runYtDlp(context, videoId, auth, kind, kind.clients, playerSkip = null).stream
+        }
+        if (kind != Kind.VIDEO) return runYtDlp(context, videoId, auth, kind, kind.clients, playerSkip = null).stream
         val session = auth?.cookie.hashCode()
         if (tvRefusedSession != session) {
-            val tv = runYtDlp(context, videoId, auth, kind, kind.clients)
+            val tv = runYtDlp(context, videoId, auth, kind, kind.clients, playerSkip = null)
             if (tv.stream != null || tv.failure?.contains(TV_REFUSED) != true) return tv.stream
             Log.i(TAG, "The TV clients turn this account away; its videos are asked of $OTHER_VIDEO_CLIENTS")
             tvRefusedSession = session
         }
-        return runYtDlp(context, videoId, auth, kind, OTHER_VIDEO_CLIENTS).stream
+        return runYtDlp(context, videoId, auth, kind, OTHER_VIDEO_CLIENTS, playerSkip = null).stream
     }
 
     /** A run's stream, or why there is none, as yt-dlp put it. */
     private class Attempt(val stream: YouTubeStreams.Stream?, val failure: String? = null)
 
-    private fun runYtDlp(context: Context, videoId: String, auth: YtAuth?, kind: Kind, clients: String?): Attempt {
-        when (val answer = askServer(context, videoId, auth, kind, clients)) {
+    private fun runYtDlp(
+        context: Context,
+        videoId: String,
+        auth: YtAuth?,
+        kind: Kind,
+        clients: String?,
+        playerSkip: String? = null
+    ): Attempt {
+        when (val answer = askServer(context, videoId, auth, kind, clients, playerSkip)) {
             is ServerAnswer.Found -> return Attempt(answer.stream)
             is ServerAnswer.Failed -> return Attempt(null, answer.reason)
             ServerAnswer.Unavailable -> Unit
         }
         val dir = runDir(context).apply { mkdirs() }
+        val extractorArgs = buildString {
+            append("youtube:skip=").append(kind.skip)
+            if (!clients.isNullOrBlank()) append(";player_client=").append(clients)
+            if (!playerSkip.isNullOrBlank()) append(";player_skip=").append(playerSkip)
+        }
         val request = YoutubeDLRequest("https://www.youtube.com/watch?v=$videoId")
             .addOption("--dump-json")
             .addOption("--no-playlist")
@@ -433,7 +521,7 @@ main()
             .addOption("--cache-dir", cacheDir(context).absolutePath)
             .addOption("--plugin-dirs", pluginDir(context).absolutePath)
             // Only the plain audio files are of use; the HLS manifest is one more request.
-            .addOption("--extractor-args", "youtube:skip=${kind.skip}" + clients?.let { ";player_client=$it" }.orEmpty())
+            .addOption("--extractor-args", extractorArgs)
         // A file per run: yt-dlp writes the jar back when it exits, and two runs can overlap.
         val cookies = auth?.let { writeCookies(File(dir, "cookies-$kind-$videoId.txt"), it) }
         cookies?.let { request.addOption("--cookies", it.absolutePath) }
@@ -490,7 +578,9 @@ main()
             "webm" -> "$media/webm"
             else -> null
         }
-        val length = (field("filesize") ?: field("filesize_approx"))?.asLong ?: -1L
+        val length = (field("filesize") ?: field("filesize_approx"))?.asLong
+            ?: RangedDownload.extractClen(url)
+            ?: -1L
         val codec = field("vcodec")?.asString?.takeUnless { it == "none" }
         val category = field("categories")?.takeIf { it.isJsonArray }?.asJsonArray
             ?.firstNotNullOfOrNull { el -> el.takeIf { it.isJsonPrimitive }?.asString?.takeIf(String::isNotBlank) }
@@ -563,7 +653,14 @@ main()
         }, 1, 1, TimeUnit.MINUTES)
     }
 
-    private fun askServer(context: Context, videoId: String, auth: YtAuth?, kind: Kind, clients: String? = kind.clients): ServerAnswer {
+    private fun askServer(
+        context: Context,
+        videoId: String,
+        auth: YtAuth?,
+        kind: Kind,
+        clients: String? = kind.clients,
+        playerSkip: String? = null
+    ): ServerAnswer {
         val server = borrow(context, auth) ?: return ServerAnswer.Unavailable
         val started = System.currentTimeMillis()
         val id = "${System.nanoTime()}"
@@ -573,6 +670,8 @@ main()
             addProperty("format", formatOf(context, kind))
             clients?.let { addProperty("clients", it) }
             addProperty("skip", kind.skip)
+            playerSkip?.let { addProperty("player_skip", it) }
+            if (kind == Kind.VIDEO) addProperty("want_formats", true)
         }
         // A request that hangs takes its server with it.
         val timeout = watchdog.schedule({ server.stop() }, RUN_TIMEOUT_MS, TimeUnit.MILLISECONDS)
@@ -679,11 +778,13 @@ main()
                     environment()["PATH"] = System.getenv("PATH") + ":" + nativeDir
                 }
                 .start()
-            // Drained, or a full pipe would stall the server; warnings are worth keeping.
+            // Drained, or a full pipe would stall the server; warnings (e.g. challenge solver) are worth keeping.
             thread(name = "yt-dlp server stderr", isDaemon = true) {
                 runCatching {
                     process.errorStream.bufferedReader().forEachLine { line ->
-                        if ("ERROR" in line || "Traceback" in line || "Error" in line) Log.w(TAG, "server: $line")
+                        if ("ERROR" in line || "WARNING" in line || "Traceback" in line || "Error" in line) {
+                            Log.w(TAG, "server: $line")
+                        }
                     }
                 }
             }

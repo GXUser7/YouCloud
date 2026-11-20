@@ -11,6 +11,7 @@ class FavoritesRepository(private val context: Context) {
     private val preferences = context.getSharedPreferences("favorite_tracks", Context.MODE_PRIVATE)
     private val gson = Gson()
     private val listType = object : TypeToken<List<FavoriteTrack>>() {}.type
+    private val persistLock = Any()
 
     private val _favorites = MutableStateFlow(load())
     val favorites = _favorites.asStateFlow()
@@ -223,7 +224,9 @@ class FavoritesRepository(private val context: Context) {
     }
 
     private fun persist() {
-        preferences.edit().putString(KEY_TRACKS, gson.toJson(_favorites.value)).apply()
+        synchronized(persistLock) {
+            preferences.edit().putString(KEY_TRACKS, gson.toJson(_favorites.value)).apply()
+        }
     }
 
     private companion object {

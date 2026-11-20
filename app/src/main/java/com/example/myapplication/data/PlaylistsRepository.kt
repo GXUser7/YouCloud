@@ -37,17 +37,18 @@ class PlaylistsRepository(context: Context) {
     private val preferences = context.getSharedPreferences("playlists_store", Context.MODE_PRIVATE)
     private val gson = Gson()
     private val listType = object : TypeToken<List<Playlist>>() {}.type
+    private val lock = Any()
 
     private val _playlists = MutableStateFlow(load())
     val playlists = _playlists.asStateFlow()
 
-    fun createPlaylist(name: String): Playlist {
+    fun createPlaylist(name: String): Playlist = synchronized(lock) {
         val newPlaylist = Playlist(
             id = UUID.randomUUID().toString(),
             name = name
         )
-        update(_playlists.value + newPlaylist)
-        return newPlaylist
+        updateLocked(_playlists.value + newPlaylist)
+        newPlaylist
     }
 
     fun get(playlistId: String): Playlist? = _playlists.value.firstOrNull { it.id == playlistId }
@@ -65,7 +66,7 @@ class PlaylistsRepository(context: Context) {
         artist: String?,
         artworkUrl: String?,
         tracks: List<FavoriteTrack>
-    ): Playlist {
+    ): Playlist = synchronized(lock) {
         findBySource(sourceKey)?.let { return it }
         val playlist = Playlist(
             id = UUID.randomUUID().toString(),
@@ -75,16 +76,16 @@ class PlaylistsRepository(context: Context) {
             sourceKey = sourceKey,
             artist = artist
         )
-        update(listOf(playlist) + _playlists.value)
-        return playlist
+        updateLocked(listOf(playlist) + _playlists.value)
+        playlist
     }
 
     /**
      * Replaces a liked album's track list with a fresher one (the full list arrives after the
      * first few tracks) while keeping what was already downloaded for each track.
      */
-    fun mergeTracks(playlistId: String, fresh: List<FavoriteTrack>) {
-        update(_playlists.value.map { playlist ->
+    fun mergeTracks(playlistId: String, fresh: List<FavoriteTrack>) = mutate { current ->
+        current.map { playlist ->
             if (playlist.id != playlistId) return@map playlist
             val saved = playlist.tracks.associateBy { it.id }
             val merged = fresh.distinctBy { it.id }.map { track ->
@@ -96,7 +97,7 @@ class PlaylistsRepository(context: Context) {
                 )
             }
             if (merged == playlist.tracks) playlist else playlist.copy(tracks = merged)
-        })
+        }
     }
 
     /** Download bookkeeping for one track of one playlist; "Скачанное" is not touched. */
@@ -106,8 +107,8 @@ class PlaylistsRepository(context: Context) {
         state: DownloadState,
         streamUrl: String? = null,
         localArtworkPath: String? = null
-    ) {
-        update(_playlists.value.map { playlist ->
+    ) = mutate { current ->
+        current.map { playlist ->
             if (playlist.id != playlistId) return@map playlist
             playlist.copy(tracks = playlist.tracks.map { track ->
                 if (track.id != trackId) {
@@ -120,7 +121,17 @@ class PlaylistsRepository(context: Context) {
                     )
                 }
             })
-        })
+        }
+    }
+
+    /** Updates cached local artwork for a track in a playlist without touching its download state. */
+    fun updateTrackArtwork(playlistId: String, trackId: Long, localArtworkPath: String?) = mutate { current ->
+        current.map { playlist ->
+            if (playlist.id != playlistId) return@map playlist
+            playlist.copy(tracks = playlist.tracks.map { track ->
+                if (track.id != trackId) track else track.copy(localArtworkPath = localArtworkPath)
+            })
+        }
     }
 
     /** A copy of [trackId] saved through any playlist, for playing it offline from anywhere. */
@@ -137,12 +148,12 @@ class PlaylistsRepository(context: Context) {
             playlist.id != exceptPlaylistId && playlist.tracks.any { it.streamUrl == streamUrl }
         }
 
-    fun deletePlaylist(playlistId: String) {
-        update(_playlists.value.filterNot { it.id == playlistId })
+    fun deletePlaylist(playlistId: String) = mutate { current ->
+        current.filterNot { it.id == playlistId }
     }
 
-    fun addTrackToPlaylist(playlistId: String, track: FavoriteTrack) {
-        update(_playlists.value.map { playlist ->
+    fun addTrackToPlaylist(playlistId: String, track: FavoriteTrack) = mutate { current ->
+        current.map { playlist ->
             if (playlist.id == playlistId) {
                 if (playlist.tracks.any { it.id == track.id }) {
                     playlist
@@ -155,11 +166,11 @@ class PlaylistsRepository(context: Context) {
             } else {
                 playlist
             }
-        })
+        }
     }
 
-    fun removeTrackFromPlaylist(playlistId: String, trackId: Long) {
-        update(_playlists.value.map { playlist ->
+    fun removeTrackFromPlaylist(playlistId: String, trackId: Long) = mutate { current ->
+        current.map { playlist ->
             if (playlist.id == playlistId) {
                 val updatedTracks = playlist.tracks.filterNot { it.id == trackId }
                 playlist.copy(
@@ -173,21 +184,21 @@ class PlaylistsRepository(context: Context) {
             } else {
                 playlist
             }
-        })
+        }
     }
 
-    fun updatePlaylistArtwork(playlistId: String, artworkUrl: String?) {
-        update(_playlists.value.map { playlist ->
+    fun updatePlaylistArtwork(playlistId: String, artworkUrl: String?) = mutate { current ->
+        current.map { playlist ->
             if (playlist.id == playlistId) {
                 playlist.copy(artworkUrl = artworkUrl)
             } else {
                 playlist
             }
-        })
+        }
     }
 
-    fun updatePlaylistTracks(playlistId: String, tracks: List<FavoriteTrack>) {
-        update(_playlists.value.map { playlist ->
+    fun updatePlaylistTracks(playlistId: String, tracks: List<FavoriteTrack>) = mutate { current ->
+        current.map { playlist ->
             if (playlist.id == playlistId) {
                 playlist.copy(
                     tracks = tracks,
@@ -196,7 +207,7 @@ class PlaylistsRepository(context: Context) {
             } else {
                 playlist
             }
-        })
+        }
     }
 
     private fun load(): List<Playlist> {
@@ -227,7 +238,13 @@ class PlaylistsRepository(context: Context) {
         return if (!mustExist || (file.exists() && file.length() > 0L)) file.absolutePath else null
     }
 
-    private fun update(value: List<Playlist>) {
+    private fun mutate(transform: (List<Playlist>) -> List<Playlist>) {
+        synchronized(lock) {
+            updateLocked(transform(_playlists.value))
+        }
+    }
+
+    private fun updateLocked(value: List<Playlist>) {
         _playlists.value = value
         preferences.edit().putString("playlists", gson.toJson(value)).apply()
     }
