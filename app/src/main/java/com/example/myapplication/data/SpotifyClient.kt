@@ -230,20 +230,31 @@ internal class SpotifyClient private constructor(private val context: Context) {
                 "flatten" to true, "folderUri" to null, "includeFoldersWhenFlattening" to true
             )).obj("me")?.obj("libraryV3")?.items("items").orEmpty().mapNotNull { it.obj("item") }
         }.orEmpty() }
-        val liked = async { optional { likedPage(0, 1).number("totalCount") } ?: 0L }
+        val liked = async {
+            optional {
+                val page = likedPage(0, 16)
+                val count = page.number("totalCount") ?: 0L
+                val tracks = page.items("items").mapNotNull { it.obj("track")?.let(::spotifyTrack) }
+                count to tracks
+            } ?: (0L to emptyList())
+        }
         val items = library.await()
+        val (likedCount, likedTracks) = liked.await()
         val sets = items.mapNotNull { spotifySet(it, false) ?: spotifySet(it, true) }.distinctBy { it.id }
         val artists = items.filter { it.obj("data")?.string("__typename") == "Artist" }.mapNotNull(::spotifyArtist).distinctBy { it.id }
         buildList {
-            add(YtShelf(tr("Медиатека"), emptyList(), listOf(likedSet(liked.await())) + sets))
+            add(YtShelf(tr("Медиатека"), emptyList(), listOf(likedSet(likedCount, likedTracks)) + sets))
             addAll(home.await())
             if (artists.isNotEmpty()) add(YtShelf(tr("Подписки"), emptyList(), emptyList(), artists))
         }
     }
 
-    private fun likedSet(count: Long = 0) = SoundCloudPlaylist(
-        id = spotifyKey(SPOTIFY_LIKED), title = tr("Понравившиеся треки"),
-        trackCount = count.coerceIn(0, Int.MAX_VALUE.toLong()).toInt(), permalinkUrl = SPOTIFY_LIKED
+    private fun likedSet(count: Long = 0, tracks: List<SoundCloudTrack> = emptyList()) = SoundCloudPlaylist(
+        id = spotifyKey(SPOTIFY_LIKED),
+        title = tr("Понравившиеся треки"),
+        tracks = tracks,
+        trackCount = count.coerceIn(0, Int.MAX_VALUE.toLong()).toInt(),
+        permalinkUrl = SPOTIFY_LIKED
     )
 
     private suspend fun likedPage(offset: Int, limit: Int): JsonObject =

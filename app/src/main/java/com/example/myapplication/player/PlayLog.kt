@@ -139,6 +139,7 @@ object PlayLog {
         private fun sourceOf(scheme: String?): String = when (scheme) {
             "yandex" -> "yandex"
             "ytmusic" -> "youtube"
+            "spotify" -> "spotify"
             "soundcloud" -> "soundcloud"
             else -> ""
         }

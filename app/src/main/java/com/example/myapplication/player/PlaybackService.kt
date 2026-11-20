@@ -152,13 +152,19 @@ class PlaybackService : MediaLibraryService() {
                     } else if (uri.scheme == "spotify") {
                         val track = com.example.myapplication.data.SpotifyAudio.fromUri(uri)
                             ?: throw com.example.myapplication.data.TrackUnavailableException("Invalid Spotify track")
+                        uri.lastPathSegment?.let(::downloadedSpotifyTrack)?.let { local ->
+                            return dataSpec.buildUpon().setUri(android.net.Uri.parse(local)).build()
+                        }
                         val stream = kotlinx.coroutines.runBlocking {
                             com.example.myapplication.data.SpotifyAudio.resolve(
                                 this@PlaybackService, spotifySettings, track, urgent = true
                             )
                         }
                         return dataSpec.buildUpon().setUri(android.net.Uri.parse(stream.url))
-                            .apply { stream.userAgent?.let { setHttpRequestHeaders(dataSpec.httpRequestHeaders + ("User-Agent" to it)) } }
+                            .apply {
+                                stream.cacheKey?.let(::setKey)
+                                stream.userAgent?.let { setHttpRequestHeaders(dataSpec.httpRequestHeaders + ("User-Agent" to it)) }
+                            }
                             .build()
                     } else if (uri.scheme == "ytmusic") {
                         val videoId = uri.lastPathSegment
@@ -362,11 +368,25 @@ class PlaybackService : MediaLibraryService() {
                     }
                     return
                 }
-                if (error.errorCode !in RETRIED_ERRORS || retries >= RETRY_DELAYS_MS.size) {
+                val currentUri = player.currentMediaItem?.localConfiguration?.uri
+                val isSpotify = currentUri?.scheme == "spotify"
+                if (isSpotify) {
+                    currentUri?.lastPathSegment?.takeIf { it.isNotBlank() }?.let { spotifyId ->
+                        com.example.myapplication.data.SpotifyAudio.markStreamFailed(spotifyId, this@PlaybackService)
+                    }
+                }
+                val canRetry = error.errorCode in RETRIED_ERRORS ||
+                    (isSpotify && error.errorCode in SPOTIFY_FAILOVER_ERRORS)
+                if (!canRetry || retries >= RETRY_DELAYS_MS.size) {
                     retries = 0
                     return
                 }
-                val wait = RETRY_DELAYS_MS[retries++]
+                val wait = if (isSpotify && retries == 0) {
+                    retries++
+                    400L
+                } else {
+                    RETRY_DELAYS_MS[retries++]
+                }
                 val itemId = player.currentMediaItem?.mediaId
                 Log.w("PlaybackService", "Playback broke off (${error.errorCodeName}), again in $wait ms")
                 handler.postDelayed({
@@ -635,6 +655,13 @@ class PlaybackService : MediaLibraryService() {
             androidx.media3.common.PlaybackException.ERROR_CODE_AUDIO_TRACK_INIT_FAILED,
             androidx.media3.common.PlaybackException.ERROR_CODE_AUDIO_TRACK_WRITE_FAILED
         )
+        private val SPOTIFY_FAILOVER_ERRORS = setOf(
+            androidx.media3.common.PlaybackException.ERROR_CODE_IO_FILE_NOT_FOUND,
+            androidx.media3.common.PlaybackException.ERROR_CODE_PARSING_CONTAINER_MALFORMED,
+            androidx.media3.common.PlaybackException.ERROR_CODE_PARSING_CONTAINER_UNSUPPORTED,
+            androidx.media3.common.PlaybackException.ERROR_CODE_PARSING_MANIFEST_MALFORMED,
+            androidx.media3.common.PlaybackException.ERROR_CODE_PARSING_MANIFEST_UNSUPPORTED
+        )
 
         // The crossfade's length in seconds, 0 for none; set in the app's settings.
         const val KEY_CROSSFADE_SECONDS = "crossfade_seconds"
@@ -681,8 +708,13 @@ class PlaybackService : MediaLibraryService() {
     }
 
     /** A YouTube track saved in "Скачанное" or with a liked playlist, as a `file://` URL. */
-    private fun downloadedYouTubeTrack(videoId: String): String? {
-        val trackId = com.example.myapplication.data.youTubeTrackId(videoId)
+    private fun downloadedYouTubeTrack(videoId: String): String? =
+        downloadedTrackById(com.example.myapplication.data.youTubeTrackId(videoId))
+
+    private fun downloadedSpotifyTrack(spotifyId: String): String? =
+        downloadedTrackById(com.example.myapplication.data.spotifyKey(com.example.myapplication.data.SPOTIFY_TRACK + spotifyId))
+
+    private fun downloadedTrackById(trackId: Long): String? {
         val saved = lazyFavoritesRepository.get(trackId)
             ?.takeIf { it.downloadState == com.example.myapplication.data.DownloadState.DOWNLOADED }
             ?.streamUrl

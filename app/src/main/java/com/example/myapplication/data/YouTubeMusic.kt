@@ -304,9 +304,32 @@ class YouTubeMusicClient(private val authProvider: () -> YtAuth?) {
         )
     }
 
+    internal data class AudioSearchResult(
+        val songs: List<SoundCloudTrack>,
+        val videos: List<SoundCloudTrack>
+    )
+
+    /** Song results (plus video uploads for tracks missing from Songs) with duration for matching. */
+    internal suspend fun searchAudioCandidates(query: String): AudioSearchResult = coroutineScope {
+        val songs = async {
+            optional { listRows(searchShelf(query, FILTER_SONGS)).mapNotNull { parseSongRow(it) }.distinctBy { it.id } }.orEmpty()
+        }
+        val videos = async {
+            optional {
+                listRows(searchShelf(query, FILTER_VIDEOS))
+                    .mapNotNull { parseSongRow(it) }
+                    .filter { it.liveVideoId == null && it.duration > 0 }
+                    .distinctBy { it.id }
+            }.orEmpty()
+        }
+        val songList = songs.await()
+        val songIds = songList.mapTo(HashSet()) { it.id }
+        AudioSearchResult(songList, videos.await().filterNot { it.id in songIds })
+    }
+
     /** Song results with duration, for matching a recording from another catalog. */
     internal suspend fun searchAudioTracks(query: String): List<SoundCloudTrack> =
-        listRows(searchShelf(query, FILTER_SONGS)).mapNotNull { parseSongRow(it) }.distinctBy { it.id }
+        searchAudioCandidates(query).let { it.songs + it.videos }
 
     private class MixedResults(
         val tracks: List<SoundCloudTrack>,
@@ -942,7 +965,7 @@ class YouTubeMusicClient(private val authProvider: () -> YtAuth?) {
         private const val LONGER_BY_MS = 150_000L
         private val NOT_A_CLIP = listOf("audio", "lyric", "visualizer", "visualiser", "текст")
         // What a search row's byline starts with before naming anyone.
-        private val KIND_WORDS = setOf("композиция", "видео", "трек", "song", "video", "эпизод", "episode", "выпуск")
+        private val KIND_WORDS = setOf("композиция", "песня", "аудио", "видео", "трек", "song", "video", "audio", "эпизод", "episode", "выпуск")
         private val COUNT = Regex("(\\d+(?:[.,]\\d+)?)\\s*(тыс|млн|млрд|k|m|b)?", RegexOption.IGNORE_CASE)
         private val NON_WORD = Regex("[^\\p{L}\\p{N}]+")
         // What a byline part is when it isn't a name: a date, a year, a length, a count of plays,

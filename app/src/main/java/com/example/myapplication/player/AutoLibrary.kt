@@ -106,7 +106,9 @@ object AutoLibrary {
         if (track.downloadState == DownloadState.DOWNLOADED && !local.isNullOrBlank()) {
             return if (local.startsWith("/")) "file://$local" else local
         }
-        return if (track.urn.startsWith("yandex:track:")) {
+        return if (track.urn.startsWith("spotify:track:")) {
+            com.example.myapplication.data.SpotifyAudio.uri(track.toSoundCloudTrack()) ?: "soundcloud://track/${track.id}"
+        } else if (track.urn.startsWith("yandex:track:")) {
             "yandex://track/${track.urn.removePrefix("yandex:track:")}"
         } else if (track.urn.startsWith(com.example.myapplication.data.YT_TRACK_URN)) {
             "ytmusic://track/${track.urn.removePrefix(com.example.myapplication.data.YT_TRACK_URN)}"

@@ -131,4 +131,83 @@ class SpotifyTest {
         assertFalse(spotifySignInHostAllowed("example.org"))
         assertFalse(spotifySignInHostAllowed(null))
     }
+
+    @Test
+    fun matchesCrossServiceMetadataNoiseAndCollabsWhileRejectingWrongEditions() {
+        val target = SoundCloudTrack(
+            1L,
+            title = "Kill Bill (with Doja Cat) - Single Version",
+            duration = 154_000L,
+            user = SoundCloudUser(username = "SZA"),
+            artists = listOf(SoundCloudUser(username = "SZA"), SoundCloudUser(username = "Doja Cat"))
+        )
+        // YouTube Music video/audio upload with noise tags and combined artist byline.
+        val ytCandidate = SoundCloudTrack(
+            2L,
+            title = "SZA - Kill Bill (Official Audio) [Explicit]",
+            duration = 161_000L,
+            user = SoundCloudUser(username = "SZA & Doja Cat - Topic")
+        )
+        assertNotNull(spotifyMatchScore(target, ytCandidate))
+
+        // Yandex track with explicit separate version string matches safely without picking remixes.
+        val yandexRemaster = YandexTrack(
+            id = "999",
+            title = "Kill Bill",
+            artists = listOf(YandexArtist(id = "1", name = "Doja Cat"), YandexArtist(id = "2", name = "SZA")),
+            durationMs = 155_000L,
+            coverUri = null,
+            version = "2023 Remaster"
+        )
+        assertNotNull(spotifyMatchScore(target, yandexRemaster.toSoundCloudTrack().copy(title = yandexRemaster.fullTitle())))
+
+        val yandexRemix = yandexRemaster.copy(version = "Slowed Remix")
+        assertNull(spotifyMatchScore(target, yandexRemix.toSoundCloudTrack().copy(title = yandexRemix.fullTitle())))
+
+        // Single-word titles must not falsely match multi-word songs by the same artist.
+        val love = SoundCloudTrack(3L, title = "Love", duration = 200_000L, user = SoundCloudUser(username = "Artist"))
+        assertNull(spotifyMatchScore(love, love.copy(title = "Love Story")))
+        assertNotNull(spotifyMatchScore(love, love.copy(title = "Artist - Love (Official Video)")))
+    }
+
+    @Test
+    fun mergesRepeatedSpotifyHomeSectionTitlesIntoSingleShelves() {
+        val p1 = "37i9dQZF1DXcBWIGoYBM5M"
+        val p2 = "37i9dQZF1DX0XUsuxWHRQd"
+        val response = JsonParser.parseString("""
+            {"home":{"sectionContainer":{"sections":{"items":[
+                {
+                    "data":{"title":{"transformedLabel":"Сделано для тебя"}},
+                    "sectionItems":{"items":[
+                        {"content":{"data":{"__typename":"Playlist","uri":"spotify:playlist:$p1","name":"Mix 1"}}}
+                    ]}
+                },
+                {
+                    "data":{"title":{"text":"  Сделано для тебя "}},
+                    "sectionItems":{"items":[
+                        {"content":{"data":{"__typename":"Playlist","uri":"spotify:playlist:$p1","name":"Mix 1"}}},
+                        {"content":{"data":{"__typename":"Playlist","uri":"spotify:playlist:$p2","name":"Mix 2"}}}
+                    ]}
+                }
+            ]}}}}
+        """.trimIndent()).asJsonObject
+
+        val rows = spotifyHomeRows(response)
+        assertEquals(1, rows.size)
+        assertEquals("Сделано для тебя", rows.single().title)
+        assertEquals(2, rows.single().sets.size)
+    }
+
+    @Test
+    fun buildsCleanQueriesAndExtractsBothFirstAndOtherArtists() {
+        val raw = JsonParser.parseString("""
+            {"uri":"spotify:track:$id","name":"Track Name (feat. Guest) [Explicit]","trackDuration":{"totalMilliseconds":180000},
+             "firstArtist":{"items":[{"uri":"spotify:artist:$artistId","profile":{"name":"Lead Artist"}}]},
+             "otherArtists":{"items":[{"uri":"spotify:artist:1TnOYISbd1XYRBk9myaseg","profile":{"name":"Second Artist"}}]},
+             "albumOfTrack":{"coverArt":{"sources":[{"url":"https://i.scdn.co/cover"}]}}}
+        """.trimIndent()).asJsonObject
+        val track = spotifyTrack(raw)!!
+        assertEquals(listOf("Lead Artist", "Second Artist"), track.artists?.map { it.username })
+        assertEquals("Lead Artist Track Name", spotifyAudioQuery(track))
+    }
 }

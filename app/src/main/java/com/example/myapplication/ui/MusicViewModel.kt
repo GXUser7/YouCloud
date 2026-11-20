@@ -30,6 +30,7 @@ import com.example.myapplication.data.YtAuth
 import com.example.myapplication.data.YtShelf
 import com.example.myapplication.data.SPOTIFY_ARTIST
 import com.example.myapplication.data.SPOTIFY_ALBUM
+import com.example.myapplication.data.SPOTIFY_LIKED
 import com.example.myapplication.data.SPOTIFY_PLAYLIST
 import com.example.myapplication.data.SPOTIFY_TRACK
 import com.example.myapplication.data.SpotifyAudio
@@ -38,6 +39,7 @@ import com.example.myapplication.data.SpotifyFailure
 import com.example.myapplication.data.SpotifyWebSession
 import com.example.myapplication.data.spotifyId
 import com.example.myapplication.data.spotifyIdFor
+import com.example.myapplication.data.spotifyTrackDurationTolerance
 import com.example.myapplication.data.isProgressiveSource
 import com.example.myapplication.data.liveVideoId
 import com.example.myapplication.data.youTubeVideoId
@@ -1972,7 +1974,7 @@ class MusicViewModel(
         _ytOpenedSet.value = set
         _ytSetError.value = null
         _screen.value = AppScreen.YTM_SET_DETAIL
-        if (set.knownTracks.isNotEmpty()) return
+        if (set.knownTracks.isNotEmpty() && set.permalinkUrl != SPOTIFY_LIKED) return
         ytSetJob = viewModelScope.launch {
             _ytSetLoading.value = true
             try {
@@ -3889,8 +3891,11 @@ class MusicViewModel(
                 if (musicPlayer.currentTrackId.value != trackId) return@collectLatest
 
                 val queued = _activeQueue.value.firstOrNull { it.id == trackId }
-                // Yandex and YouTube tracks are nothing to do with SoundCloud's history.
-                if (queued?.urn?.startsWith("yandex:") == true || queued?.urn?.startsWith("ytmusic:") == true) return@collectLatest
+                // Yandex, YouTube and Spotify tracks are nothing to do with SoundCloud's history.
+                if (queued?.urn?.startsWith("yandex:") == true ||
+                    queued?.urn?.startsWith("ytmusic:") == true ||
+                    queued?.urn?.startsWith(SPOTIFY_TRACK) == true
+                ) return@collectLatest
                 if (trackId < 0) return@collectLatest
 
                 val urn = queued?.urn?.takeIf { it.startsWith("soundcloud:tracks:") }
@@ -4458,7 +4463,7 @@ class MusicViewModel(
                 stream.url, key, extension = stream.extension, chunked = stream.chunked, userAgent = stream.userAgent
             ) { progress -> updateDownloadProgress(track.id, progress) } ?: return@withContext null
             val length = getMp3Duration(path)
-            if (length <= 0 || kotlin.math.abs(length - track.duration) > minOf(8_000L, track.duration / 12)) {
+            if (length <= 0 || kotlin.math.abs(length - track.duration) > spotifyTrackDurationTolerance(track.duration)) {
                 offlineMusicStore.removeProgressive(path)
                 null
             } else {

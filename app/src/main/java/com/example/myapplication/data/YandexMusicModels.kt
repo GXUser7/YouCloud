@@ -40,8 +40,17 @@ data class YandexTrack(
     // A "videoshot": a short vertical loop Yandex plays behind the player, as an MP4.
     val backgroundVideoUri: String? = null,
     // False for a track that can't be played (withdrawn, not licensed here); absent otherwise.
-    val available: Boolean? = null
+    val available: Boolean? = null,
+    // Edition tag when Yandex separates it from [title] (e.g. "Remix", "Acoustic", "feat. ...").
+    val version: String? = null
 ) {
+    /** Title including [version] when present and not already part of [title], for cross-service matching. */
+    fun fullTitle(): String {
+        val base = title ?: "Unknown Track"
+        val note = version?.trim()?.takeIf { it.isNotEmpty() } ?: return base
+        return if (base.contains(note, ignoreCase = true)) base else "$base ($note)"
+    }
+
     fun getCoverUrl(size: String = "200x200"): String? {
         if (coverUri == null) return null
         return "https://" + coverUri.replace("%%", size)

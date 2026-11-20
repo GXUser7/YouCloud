@@ -101,6 +101,9 @@ object StreamCache {
     /** The same for a YouTube track: the video and its format (`itag`), for the same reason. */
     fun youTubeKey(videoId: String, itag: String): String = "ytmusic:$videoId:$itag"
 
+    /** A Spotify track's audio stream cached under the Spotify id and whichever source resolved it. */
+    fun spotifyKey(spotifyId: String, variant: String): String = "${KEY_PREFIX}spotify:$spotifyId:$variant"
+
     /** Which of a Yandex track's files is kept whole, if one is. */
     fun cachedYandexKey(context: Context, trackId: String): String? =
         YANDEX_VARIANTS.map { yandexKey(trackId, it) }.firstOrNull { isFullyCached(context, it) }

@@ -148,6 +148,7 @@ import androidx.compose.ui.input.pointer.PointerEventPass
 import com.example.myapplication.data.LyricLine
 import com.example.myapplication.data.YtAuth
 import com.example.myapplication.data.YtShelf
+import com.example.myapplication.data.SPOTIFY_LIKED
 import com.example.myapplication.data.spotifyId
 import com.example.myapplication.data.social.ShowcaseSlot
 import com.example.myapplication.data.isYtLikedMusic
@@ -1879,19 +1880,25 @@ private fun ytShelfItems(
     onOpen: (SoundCloudPlaylist) -> Unit,
     onPlay: (SoundCloudTrack, List<SoundCloudTrack>) -> Unit
 ): List<HeroItem> = buildList {
-    fun addSet(set: SoundCloudPlaylist) = add(
-        HeroItem(
-            key = "yt-set-${set.id}",
-            title = set.title ?: tr("Без названия"),
-            subtitle = set.user?.username,
-            artworkUrl = set.artworkUrl,
-            source = "set-${set.id}",
-            onClick = { onOpen(set) }
+    fun addSet(set: SoundCloudPlaylist) {
+        val isSpotifyLiked = set.permalinkUrl == SPOTIFY_LIKED
+        val collage = if (set.artworkUrl == null && isSpotifyLiked) recentCovers(set.knownTracks) else emptyList()
+        add(
+            HeroItem(
+                key = "yt-set-${set.id}",
+                title = set.title ?: tr("Без названия"),
+                subtitle = set.user?.username,
+                artworkUrl = set.artworkUrl,
+                collage = collage,
+                icon = if (isSpotifyLiked) Icons.Default.Favorite else null,
+                source = "set-${set.id}",
+                onClick = { onOpen(set) }
+            )
         )
-    )
+    }
     // The liked songs lead the row they're in, ahead of its songs: the first row's, always
-    // (see YouTubeMusicClient.home).
-    val (liked, sets) = shelf.sets.partition { it.isYtLikedMusic }
+    // (see YouTubeMusicClient.home and SpotifyClient.home).
+    val (liked, sets) = shelf.sets.partition { it.isYtLikedMusic || it.permalinkUrl == SPOTIFY_LIKED }
     liked.forEach(::addSet)
     shelf.tracks.forEach { track ->
         add(
@@ -1988,6 +1995,7 @@ private fun rowShelf(key: String, shelf: YtShelf, items: List<HeroItem>, lead: B
     val kind = when {
         lead -> ShelfKind.Stage
         live -> ShelfKind.Live
+        shelf.sets.isEmpty() && shelf.tracks.isEmpty() && shelf.artists.isNotEmpty() -> ShelfKind.Circles
         shelf.sets.isEmpty() && shelf.tracks.isNotEmpty() -> ShelfKind.Tracks
         else -> ShelfKind.Squares
     }
@@ -10223,6 +10231,15 @@ private fun Modifier.animatedHeight(max: Dp, fraction: () -> Float): Modifier = 
     layout(placeable.width, placeable.height) { placeable.placeRelative(0, 0) }
 }
 
+private fun trackServiceName(track: SoundCloudTrack): String = when {
+    track.urn?.startsWith("local:") == true -> tr("С телефона")
+    track.spotifyId != null -> "Spotify"
+    track.liveVideoId != null -> tr("YouTube · в эфире")
+    track.urn?.startsWith("yandex:") == true -> tr("Яндекс Музыка")
+    track.youTubeVideoId != null -> "YouTube Music"
+    else -> "SoundCloud"
+}
+
 private fun SoundCloudTrack.artistLine(): String =
     // Was just the uploader, so a collaboration listed one name here while the player showed
     // several.
@@ -11416,13 +11433,7 @@ private fun PlayerPanel(
                 val restoreBadge by com.example.myapplication.player.restore.RestoreState.badge.collectAsState()
                 val enhanced = restoreBadge?.let { it.restored && it.mediaId == track.id.toString() } == true
                 OnPanelChip(
-                    text = when {
-                        fromPhone -> tr("С телефона")
-                        live -> tr("YouTube · в эфире")
-                        track.urn?.startsWith("yandex:") == true -> tr("Яндекс Музыка")
-                        track.youTubeVideoId != null -> "YouTube Music"
-                        else -> "SoundCloud"
-                    },
+                    text = trackServiceName(track),
                     trailingIcon = if (downloaded) ServiceIcons.OnPhone else null,
                     trailingIconDescription = tr("Скачан"),
                     // Restored by the model as it plays: a lossy file, its lost top brought back.
@@ -15240,16 +15251,27 @@ private fun SetDetailContent(
         else -> setCaption(playlist)
     }
     val artworkUrl = ArtworkUrls.highRes(playlist.displayArtworkUrl) ?: playlist.displayArtworkUrl
+    val isSpotifyLiked = playlist.permalinkUrl == SPOTIFY_LIKED
+    val collage = remember(playlist.permalinkUrl, playlist.artworkUrl, tracks) {
+        if (playlist.artworkUrl == null && isSpotifyLiked) recentCovers(tracks) else emptyList()
+    }
     val artwork: @Composable BoxScope.() -> Unit = {
-        if (artworkUrl != null) {
-            AsyncImage(
+        when {
+            playlist.artworkUrl != null -> AsyncImage(
+                model = ArtworkUrls.highRes(playlist.artworkUrl) ?: playlist.artworkUrl,
+                contentDescription = null,
+                modifier = Modifier.fillMaxSize(),
+                contentScale = ContentScale.Crop
+            )
+            collage.isNotEmpty() -> CoverCollage(urls = collage)
+            isSpotifyLiked -> IconCover(icon = Icons.Default.Favorite)
+            artworkUrl != null -> AsyncImage(
                 model = artworkUrl,
                 contentDescription = null,
                 modifier = Modifier.fillMaxSize(),
                 contentScale = ContentScale.Crop
             )
-        } else {
-            IconCover(icon = Icons.Default.Album)
+            else -> IconCover(icon = Icons.Default.Album)
         }
     }
     // Saving the album keeps it as a playlist next to "Скачанное"; from then on it downloads as a
@@ -15503,13 +15525,7 @@ fun TrackActionsDialog(
                 TrackArtwork(artworkUrl = track.artworkUrl, size = 64.dp, useMorphing = false)
                 Column(modifier = Modifier.weight(1f)) {
                     Kicker(
-                        text = when {
-                            track.urn?.startsWith("local:") == true -> tr("С телефона")
-                            track.liveVideoId != null -> tr("YouTube · в эфире")
-                            track.urn?.startsWith("yandex:") == true -> tr("Яндекс Музыка")
-                            track.youTubeVideoId != null -> "YouTube Music"
-                            else -> "SoundCloud"
-                        },
+                        text = trackServiceName(track),
                         color = PanelColors.accent
                     )
                     Text(

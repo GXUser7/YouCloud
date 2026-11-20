@@ -254,6 +254,13 @@ object YandexMusicApi {
         return "https://$host/get-mp3/$md5Hash/$ts$path"
     }
 
+    private val downloadInfoHttp by lazy {
+        OkHttpClient.Builder()
+            .connectTimeout(10, java.util.concurrent.TimeUnit.SECONDS)
+            .readTimeout(15, java.util.concurrent.TimeUnit.SECONDS)
+            .build()
+    }
+
     /**
      * @param lightest the smallest file rather than the best-sounding one: for when the sound is
      *   only analysed, not listened to.
@@ -263,23 +270,24 @@ object YandexMusicApi {
             val service = createService { token }
             val response = service.getDownloadInfo(trackId)
             val items = response.result.orEmpty()
-            val bestItem = (if (lightest) items.minByOrNull { it.bitrateInKbps } else null)
-                ?: items.firstOrNull { it.codec == "mp3" } ?: items.firstOrNull()
-                ?: return null
-            
-            val client = OkHttpClient()
+            val bestItem = if (lightest) {
+                items.minByOrNull { it.bitrateInKbps }
+            } else {
+                items.filter { it.codec == "mp3" }.maxByOrNull { it.bitrateInKbps }
+                    ?: items.maxByOrNull { it.bitrateInKbps }
+            } ?: return null
+
             val request = okhttp3.Request.Builder()
                 .url(bestItem.downloadInfoUrl)
                 .header("Authorization", "OAuth $token")
                 .build()
-            
-            val xmlStringBuilder = java.lang.StringBuilder()
-            withContext(Dispatchers.IO) {
-                client.newCall(request).execute().use { response ->
-                    xmlStringBuilder.append(response.body?.string() ?: "")
+
+            val xmlString = withContext(Dispatchers.IO) {
+                downloadInfoHttp.newCall(request).execute().use { res ->
+                    if (!res.isSuccessful) throw java.io.IOException("Yandex HTTP ${res.code}")
+                    res.body?.string() ?: ""
                 }
             }
-            val xmlString = xmlStringBuilder.toString()
             if (xmlString.isEmpty()) return null
             
             val regex = { tag: String ->

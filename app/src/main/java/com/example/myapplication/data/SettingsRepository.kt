@@ -41,6 +41,9 @@ class SettingsRepository(
                     ?.let { _clientId.value = it }
                 KEY_OAUTH_TOKEN -> _oauthToken.value = readOauthToken()
                 KEY_USER_ID -> _userId.value = readUserId()
+                KEY_YANDEX_TOKEN -> _yandexToken.value = preferences.getString(KEY_YANDEX_TOKEN, "") ?: ""
+                KEY_YANDEX_UID -> _yandexUid.value = preferences.getLong(KEY_YANDEX_UID, 0L)
+                KEY_YTM_ACCOUNT, KEY_YTM_COOKIE -> _ytMusicAccount.value = readYtMusicAccount()
             }
         }
 
@@ -55,11 +58,12 @@ class SettingsRepository(
     val yandexUid = _yandexUid.asStateFlow()
 
     // YouTube Music: the site's session after signing in through the login page.
-    private val _ytMusicAccount = MutableStateFlow(
-        preferences.getString(KEY_YTM_ACCOUNT, null)?.takeIf { preferences.contains(KEY_YTM_COOKIE) }
-    )
+    private val _ytMusicAccount = MutableStateFlow(readYtMusicAccount())
     /** The signed-in account's name, or null when YouTube Music isn't connected. */
     val ytMusicAccount = _ytMusicAccount.asStateFlow()
+
+    private fun readYtMusicAccount(): String? =
+        preferences.getString(KEY_YTM_ACCOUNT, null)?.takeIf { preferences.contains(KEY_YTM_COOKIE) }
 
     fun ytMusicAuth(): YtAuth? {
         val cookie = preferences.getString(KEY_YTM_COOKIE, null)?.takeIf { it.isNotBlank() } ?: return null
@@ -439,7 +443,7 @@ class SettingsRepository(
 
     fun oauthTokenValue(): String = _oauthToken.value
     fun userIdValue(): String = _userId.value
-    fun yandexTokenValue(): String = _yandexToken.value
+    fun yandexTokenValue(): String = _yandexToken.value.ifBlank { preferences.getString(KEY_YANDEX_TOKEN, "") ?: "" }
 
     fun saveClientId(value: String) {
         val cleaned = value.trim()
