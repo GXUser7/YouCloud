@@ -168,6 +168,14 @@ class SpotifyTest {
         val love = SoundCloudTrack(3L, title = "Love", duration = 200_000L, user = SoundCloudUser(username = "Artist"))
         assertNull(spotifyMatchScore(love, love.copy(title = "Love Story")))
         assertNotNull(spotifyMatchScore(love, love.copy(title = "Artist - Love (Official Video)")))
+
+        // Punctuation/apostrophe differences (FE!N vs FEIN, Don't vs Dont) and clean/video edits match.
+        val fein = SoundCloudTrack(4L, title = "FE!N (feat. Playboi Carti)", duration = 191_000L, user = SoundCloudUser(username = "Travis Scott"))
+        val feinCand = fein.copy(title = "Travis Scott - FEIN (Official Video) [Clean Edit]")
+        assertNotNull(spotifyMatchRejectReason(fein, feinCand), spotifyMatchScore(fein, feinCand))
+        val dont = SoundCloudTrack(5L, title = "Don't Stop", duration = 180_000L, user = SoundCloudUser(username = "Artist"))
+        val dontCand = dont.copy(title = "Dont Stop")
+        assertNotNull(spotifyMatchRejectReason(dont, dontCand), spotifyMatchScore(dont, dontCand))
     }
 
     @Test

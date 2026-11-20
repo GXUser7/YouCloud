@@ -1,6 +1,7 @@
 package com.example.myapplication.data
 
 import android.content.Context
+import android.util.Log
 import com.example.myapplication.i18n.tr
 import com.google.gson.GsonBuilder
 import com.google.gson.JsonObject
@@ -158,6 +159,7 @@ internal class SpotifyClient private constructor(private val context: Context) {
         val errors = response.items("errors")
         if (errors.isNotEmpty() && (data == null || operation in libraryWrites)) {
             val errorsText = errors.mapNotNull { it.string("message") }.joinToString(" ")
+            Log.w("SpotifyClient", "GraphQL $operation error: $errorsText")
             if ("PersistedQueryNotFound" in errorsText || "persisted query not found" in errorsText.lowercase()) {
                 throw SpotifyQueryChanged()
             }
@@ -172,6 +174,7 @@ internal class SpotifyClient private constructor(private val context: Context) {
     private suspend fun execute(request: Request): JsonObject = withContext(Dispatchers.IO) {
         http.newCall(request).execute().use { response ->
             if (!response.isSuccessful) {
+                Log.w("SpotifyClient", "HTTP ${response.code} on ${request.url.encodedPath}")
                 val message = when (response.code) {
                     401 -> tr("Проверьте вход в Spotify.")
                     403 -> tr("Spotify не предоставил доступ к этому разделу.")

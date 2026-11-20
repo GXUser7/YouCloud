@@ -151,8 +151,12 @@ class PlaybackService : MediaLibraryService() {
                         }
                     } else if (uri.scheme == "spotify") {
                         val track = com.example.myapplication.data.SpotifyAudio.fromUri(uri)
-                            ?: throw com.example.myapplication.data.TrackUnavailableException("Invalid Spotify track")
+                            ?: run {
+                                Log.w("SpotifyAudio", "Invalid spotify MediaItem URI: $uri")
+                                throw com.example.myapplication.data.TrackUnavailableException("Invalid Spotify track")
+                            }
                         uri.lastPathSegment?.let(::downloadedSpotifyTrack)?.let { local ->
+                            Log.i("SpotifyAudio", "[${uri.lastPathSegment}] Playing downloaded file")
                             return dataSpec.buildUpon().setUri(android.net.Uri.parse(local)).build()
                         }
                         val stream = kotlinx.coroutines.runBlocking {
@@ -371,8 +375,16 @@ class PlaybackService : MediaLibraryService() {
                 val currentUri = player.currentMediaItem?.localConfiguration?.uri
                 val isSpotify = currentUri?.scheme == "spotify"
                 if (isSpotify) {
+                    Log.w(
+                        "SpotifyAudio",
+                        "[${currentUri?.lastPathSegment}] Player error ${error.errorCodeName}: ${error.cause?.message ?: error.message} (retries=$retries)"
+                    )
                     currentUri?.lastPathSegment?.takeIf { it.isNotBlank() }?.let { spotifyId ->
-                        com.example.myapplication.data.SpotifyAudio.markStreamFailed(spotifyId, this@PlaybackService)
+                        com.example.myapplication.data.SpotifyAudio.markStreamFailed(
+                            spotifyId,
+                            this@PlaybackService,
+                            reason = "${error.errorCodeName}: ${error.cause?.message}"
+                        )
                     }
                 }
                 val canRetry = error.errorCode in RETRIED_ERRORS ||

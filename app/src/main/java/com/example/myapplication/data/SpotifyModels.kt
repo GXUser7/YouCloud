@@ -169,28 +169,37 @@ internal fun spotifyHomeRows(data: JsonObject): List<YtShelf> {
 }
 
 private val bracketNoise = Regex(
-    """\s*[\[(](?:(?:feat\.?|ft\.?|featuring|with|prod\.?\s+by)\s+[^)\]]+|(?:official\s+)?(?:audio|video|music\s+video|lyric\s+video|visualizer)|lyrics?|hd|4k|explicit|clean|bonus\s+track|single\s+version|album\s+version|radio\s+edit|original\s+mix|deluxe(?:\s+edition)?|remaster(?:ed)?(?:\s+\d{4})?|\d{4}\s+remaster(?:ed)?|from\s+["“].*?["”])[)\]]""",
+    """\s*[\[(](?:(?:feat\.?|ft\.?|featuring|with|prod\.?\s+by)\s+[^)\]]+|(?:official\s+)?(?:audio|video|music\s+video|lyric\s+video|lyrics?|visualizer|clip)|audio\s+only|original\s+audio|full\s+song|hd|uhd|4k|hq|explicit(?:\s+version|\s+edit)?|clean(?:\s+version|\s+edit)?|video\s+edit|bonus\s+track|(?:single|album|extended|short|radio)\s+version|radio\s+edit|original\s+mix|deluxe(?:\s+edition)?|remaster(?:ed)?(?:\s+\d{4})?|\d{4}\s+remaster(?:ed)?|from\s+["“].*?["”])[)\]]""",
     RegexOption.IGNORE_CASE
 )
 private val dashNoise = Regex(
-    """\s+[-–—]\s+(?:(?:\d{4}\s+)?remaster(?:ed)?(?:\s+\d{4})?|single\s+version|album\s+version|radio\s+edit|explicit|clean|bonus\s+track|original\s+mix|deluxe(?:\s+edition)?|from\s+["“].*?["”].*)$""",
+    """\s+[-–—]\s+(?:(?:\d{4}\s+)?remaster(?:ed)?(?:\s+\d{4})?|(?:single|album|extended|short|radio)\s+version|(?:radio|video|clean|explicit)\s+edit|explicit|clean|bonus\s+track|original\s+mix|deluxe(?:\s+edition)?|from\s+["“].*?["”].*)$""",
     RegexOption.IGNORE_CASE
 )
 private val trailingFeat = Regex("""\s+(?:feat\.?|ft\.?|featuring)\s+[^-–—]+$""", RegexOption.IGNORE_CASE)
-private val safeEditionNoise = Regex("""\b(?:radio\s+edit|single\s+version|album\s+version|original\s+mix)\b""", RegexOption.IGNORE_CASE)
+private val safeEditionNoise = Regex(
+    """\b(?:(?:radio|video|clean|explicit|album|single|short)\s+edit|(?:single|album|extended|short|radio)\s+version|original\s+mix)\b""",
+    RegexOption.IGNORE_CASE
+)
 private val editionWords = Regex(
     """\b(?:live|remix|cover|karaoke|instrumental|acoustic|sped[\s-]+up|slowed|nightcore|8d|mashup|demo|edit|reverb|bootleg|acapella|a\s+cappella)\b""",
     RegexOption.IGNORE_CASE
 )
-private val titleSplit = Regex("""\s+[-–—:]\s+""")
+private val titleSplit = Regex("""\s*[-–—|]\s+|\s+[-–—|:]\s*""")
 private val artistSeparators = Regex("""\s*(?:,|&|\+|/|\bfeat\.?\b|\bft\.?\b|\bfeaturing\b|\bwith\b|\band\b|\bx\b|\bи\b)\s*""", RegexOption.IGNORE_CASE)
 private val anyBrackets = Regex("""\s*[\[(][^)\]]*[)\]]""")
+private val apostrophes = Regex("""['’`ʼ]""")
+private val inlineBang = Regex("""(?<=[\p{L}\p{N}])!(?=[\p{L}\p{N}])""")
+private val inlineDollar = Regex("""(?<=[\p{L}\p{N}])\$(?=[\p{L}\p{N}])""")
 private val marks = Regex("\\p{M}+")
 private val separators = Regex("[^\\p{L}\\p{N}]+")
 
 private fun normalized(text: String): String =
     Normalizer.normalize(text.lowercase(Locale.ROOT), Normalizer.Form.NFKD)
         .replace(marks, "")
+        .replace(apostrophes, "")
+        .replace(inlineBang, "i")
+        .replace(inlineDollar, "s")
         .replace("&", " and ")
         .replace(separators, " ")
         .trim()
@@ -270,6 +279,7 @@ private fun artistMatchBonus(targetArtists: List<String>, candArtists: List<Stri
 private fun titleSimilarityScore(targetTitle: String, candidateTitle: String): Long? {
     if (targetTitle.isEmpty() || candidateTitle.isEmpty()) return null
     if (targetTitle == candidateTitle) return 10_000L
+    if (targetTitle.replace(" ", "") == candidateTitle.replace(" ", "")) return 9_500L
     val tWords = targetTitle.split(' ').filter { it.isNotEmpty() }
     val cWords = candidateTitle.split(' ').filter { it.isNotEmpty() }
     if (tWords.isEmpty() || cWords.isEmpty()) return null
@@ -328,4 +338,27 @@ internal fun spotifyMatchScore(target: SoundCloudTrack, candidate: SoundCloudTra
     val titleScore = bestTitleScore ?: return null
     val artistScore = bestArtistBonus ?: return null
     return maxOf(1L, titleScore + artistScore - difference / 10L)
+}
+
+internal fun spotifyMatchRejectReason(target: SoundCloudTrack, candidate: SoundCloudTrack): String {
+    if (candidate.duration <= 0) return "no_duration"
+    val diff = kotlin.math.abs(target.duration - candidate.duration)
+    val tol = spotifyTrackDurationTolerance(target.duration)
+    if (diff > tol) return "duration(cand=${candidate.duration / 1000}s, target=${target.duration / 1000}s, tol=${tol / 1000}s)"
+    val te = editionTags(target.title.orEmpty())
+    val ce = editionTags(candidate.title.orEmpty())
+    if (te != ce) return "edition(target=$te, cand=$ce)"
+    val tArtists = splitArtistCredits(target)
+    val cArtists = splitArtistCredits(candidate)
+    val lead = tArtists.firstOrNull() ?: return "no_target_artist"
+    if (artistMatchBonus(tArtists, cArtists, lead) == null) {
+        val splitParts = titleSplit.split(candidate.title.orEmpty(), limit = 2)
+        val leftHit = splitParts.size == 2 && artistMatchBonus(
+            tArtists,
+            (splitParts[0].split(artistSeparators).map(::normalized) + listOf(normalized(splitParts[0]))).filter { it.length >= 2 },
+            lead
+        ) != null
+        if (!leftHit) return "artist(target=${tArtists.take(3)}, cand=${cArtists.take(3)})"
+    }
+    return "title(target='${cleanAudioTitle(target.title.orEmpty())}', cand='${cleanAudioTitle(candidate.title.orEmpty())}')"
 }
