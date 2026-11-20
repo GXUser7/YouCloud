@@ -5,6 +5,7 @@ import com.example.myapplication.data.social.FavoriteRowArtist
 import com.example.myapplication.data.social.FavoriteRows
 import com.google.gson.JsonParser
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -116,5 +117,18 @@ class SpotifyTest {
         assertEquals("Authorization: …", DiagnosticsReport.redact("Authorization: Bearer fake-token"))
         assertEquals("Cookie: …", DiagnosticsReport.redact("Cookie: sp_dc=first; other=second"))
         assertEquals("https://open.spotify.com/callback?…", DiagnosticsReport.redact("https://open.spotify.com/callback?code=hidden&state=test"))
+    }
+
+    @Test
+    fun allowsSpotifyAndIdentityHostsForSignInOnly() {
+        assertTrue(spotifySignInHostAllowed("accounts.spotify.com"))
+        assertTrue(spotifySignInHostAllowed("challenge.spotify.com"))
+        assertTrue(spotifySignInHostAllowed("open.spotify.com"))
+        assertTrue(spotifySignInHostAllowed("accounts.google.com"))
+        assertTrue(spotifySignInHostAllowed("appleid.apple.com"))
+        assertTrue(spotifySignInHostAllowed("m.facebook.com"))
+        assertFalse(spotifySignInHostAllowed("spotify.com.untrusted.test"))
+        assertFalse(spotifySignInHostAllowed("example.org"))
+        assertFalse(spotifySignInHostAllowed(null))
     }
 }

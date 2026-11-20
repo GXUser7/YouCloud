@@ -1733,7 +1733,7 @@ fun MusicScreen(viewModel: MusicViewModel) {
                     onConnect = viewModel::openSpotifyLogin
                 )
             ),
-            heroes = heroChoices(homeHeroes, soundCloudConnected, hasYandexToken, ytMusicAccount != null, ytHome, yandexShelves, spotifyHome, playlists),
+            heroes = heroChoices(homeHeroes, soundCloudConnected, hasYandexToken, ytMusicAccount != null, spotifyAccount != null, ytHome, yandexShelves, spotifyHome, playlists),
             onPick = viewModel.settingsRepo::setHomeHero,
             onFinish = {
                 viewModel.settingsRepo.setHomeSetupDone(true)
@@ -2011,6 +2011,7 @@ private fun heroChoices(
     soundCloud: Boolean,
     yandex: Boolean,
     youTube: Boolean,
+    spotify: Boolean,
     ytRows: List<YtShelf>,
     yandexRows: List<YtShelf>,
     spotifyRows: List<YtShelf>,
@@ -2066,7 +2067,7 @@ private fun heroChoices(
                 )
             )
         }
-        if (spotifyRows.isNotEmpty()) {
+        if (spotify && spotifyRows.isNotEmpty()) {
             val choice = picked[HomeService.Spotify.name].orEmpty()
             add(
                 HeroChoices(
@@ -2174,13 +2175,14 @@ private fun HomeScreen(
     val scope = rememberCoroutineScope()
     // The toolbar picks a service; a service not connected in settings isn't offered — SoundCloud
     // as much as the others. What is on the phone always is.
-    val services = remember(ytConnected, yandexConnected, soundCloudConnected) {
+    val services = remember(ytConnected, yandexConnected, soundCloudConnected, spotifyConnected) {
         HomeService.entries.filter { service ->
             when (service) {
                 HomeService.SoundCloud -> soundCloudConnected
                 HomeService.Yandex -> yandexConnected
                 HomeService.YouTube -> ytConnected
-                HomeService.Spotify, HomeService.Downloads -> true
+                HomeService.Spotify -> spotifyConnected
+                HomeService.Downloads -> true
             }
         }
     }
