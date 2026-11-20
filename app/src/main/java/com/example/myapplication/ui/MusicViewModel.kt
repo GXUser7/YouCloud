@@ -28,6 +28,15 @@ import com.example.myapplication.data.YandexRotorQueueRequest
 import com.example.myapplication.data.YandexRotorSessionRequest
 import com.example.myapplication.data.YtAuth
 import com.example.myapplication.data.YtShelf
+import com.example.myapplication.data.SPOTIFY_ARTIST
+import com.example.myapplication.data.SPOTIFY_ALBUM
+import com.example.myapplication.data.SPOTIFY_PLAYLIST
+import com.example.myapplication.data.SPOTIFY_TRACK
+import com.example.myapplication.data.SpotifyAudio
+import com.example.myapplication.data.SpotifyClient
+import com.example.myapplication.data.SpotifyFailure
+import com.example.myapplication.data.spotifyId
+import com.example.myapplication.data.spotifyIdFor
 import com.example.myapplication.data.isProgressiveSource
 import com.example.myapplication.data.liveVideoId
 import com.example.myapplication.data.youTubeVideoId
@@ -117,13 +126,13 @@ enum class AppScreen {
 }
 
 /** Where search looks. YouTube Music and Yandex only once they are connected. */
-enum class SearchSource { SOUNDCLOUD, YANDEX, YOUTUBE }
+enum class SearchSource { SOUNDCLOUD, YANDEX, YOUTUBE, SPOTIFY }
 
 /** Whether the account follows the artist on screen; [busy] while the change is on its way. */
 data class ArtistFollow(val following: Boolean, val busy: Boolean = false)
 
 /** A YouTube Music search: what was asked, and what came back so far. */
-data class YtSearchState(
+data class CatalogSearchState(
     val query: String = "",
     val page: com.example.myapplication.data.YtSearchPage? = null,
     val loading: Boolean = false,
@@ -187,6 +196,32 @@ class MusicViewModel(
     // YouTube Music: signed in through its own site; see onYtMusicLoginCaptured.
     private val ytMusic = YouTubeMusicClient { settingsRepository.ytMusicAuth() }
     val ytMusicAccount = settingsRepository.ytMusicAccount
+
+    private val spotify = SpotifyClient.get(context)
+    val spotifyAccount = spotify.account
+    val spotifyClientId get() = spotify.clientId
+    private val _spotifyLogin = MutableStateFlow(false)
+    val spotifyLogin = _spotifyLogin.asStateFlow()
+    private val _spotifyLoginBusy = MutableStateFlow(false)
+    val spotifyLoginBusy = _spotifyLoginBusy.asStateFlow()
+    private val _spotifyLoginError = MutableStateFlow<String?>(null)
+    val spotifyLoginError = _spotifyLoginError.asStateFlow()
+    private var spotifyLoginJob: Job? = null
+
+    private val _spotifyHome = MutableStateFlow<List<YtShelf>>(emptyList())
+    val spotifyHome = _spotifyHome.asStateFlow()
+    private val _spotifyHomeLoading = MutableStateFlow(false)
+    val spotifyHomeLoading = _spotifyHomeLoading.asStateFlow()
+    private val _spotifyHomeError = MutableStateFlow<String?>(null)
+    val spotifyHomeError = _spotifyHomeError.asStateFlow()
+    private var spotifyHomeJob: Job? = null
+
+    private val _spotifySearch = MutableStateFlow(CatalogSearchState())
+    val spotifySearch = _spotifySearch.asStateFlow()
+    private var spotifySearchJob: Job? = null
+    private var spotifyArtistJob: Job? = null
+    private var spotifyAlbumJob: Job? = null
+    private var spotifyRadioJob: Job? = null
 
     private val _ytHome = MutableStateFlow<List<YtShelf>>(emptyList())
     val ytHome = _ytHome.asStateFlow()
@@ -275,23 +310,25 @@ class MusicViewModel(
             SearchSource.SOUNDCLOUD -> _searchQuery.value
             SearchSource.YANDEX -> _yandexSearchQuery.value
             SearchSource.YOUTUBE -> _ytSearch.value.query
+            SearchSource.SPOTIFY -> _spotifySearch.value.query
         }
         _searchSource.value = source
         when (source) {
             SearchSource.SOUNDCLOUD -> if (query != _searchQuery.value) onSearchQueryChange(query)
             SearchSource.YANDEX -> if (query != _yandexSearchQuery.value) onYandexSearchQueryChange(query)
             SearchSource.YOUTUBE -> if (query != _ytSearch.value.query) onYtSearchQueryChange(query)
+            SearchSource.SPOTIFY -> if (query != _spotifySearch.value.query) onSpotifySearchQueryChange(query)
         }
     }
 
-    private val _ytSearch = MutableStateFlow(YtSearchState())
+    private val _ytSearch = MutableStateFlow(CatalogSearchState())
     val ytSearch = _ytSearch.asStateFlow()
     private var ytSearchJob: Job? = null
 
     fun onYtSearchQueryChange(query: String) {
         ytSearchJob?.cancel()
         if (query.isBlank()) {
-            _ytSearch.value = YtSearchState(query = query)
+            _ytSearch.value = CatalogSearchState(query = query)
             return
         }
         _ytSearch.value = _ytSearch.value.copy(query = query, loadingMore = false, error = null)
@@ -341,6 +378,114 @@ class MusicViewModel(
             }
         }
     }
+
+    fun openSpotifyLogin() {
+        _spotifyLoginError.value = null
+        _spotifyLogin.value = true
+    }
+
+    fun cancelSpotifyLogin() {
+        spotifyLoginJob?.cancel()
+        _spotifyLogin.value = false
+        _spotifyLoginBusy.value = false
+    }
+
+    fun signInToSpotify(clientId: String) {
+        if (_spotifyLoginBusy.value) return
+        val id = clientId.trim()
+        if (!id.matches(Regex("[A-Fa-f0-9]{32}"))) {
+            _spotifyLoginError.value = tr("Введите Client ID приложения Spotify.")
+            return
+        }
+        _spotifyLoginBusy.value = true
+        _spotifyLoginError.value = null
+        spotifyLoginJob = viewModelScope.launch {
+            try {
+                spotify.signIn(id) { uri ->
+                    withContext(Dispatchers.Main) {
+                        val intent = android.content.Intent(android.content.Intent.ACTION_VIEW, uri)
+                            .addCategory(android.content.Intent.CATEGORY_BROWSABLE)
+                            .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                        context.startActivity(intent)
+                    }
+                }
+                _spotifyLogin.value = false
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                _spotifyLoginError.value = spotifyMessage(e)
+            } finally {
+                _spotifyLoginBusy.value = false
+            }
+        }
+    }
+
+    fun logoutSpotify() {
+        cancelSpotifyLogin()
+        viewModelScope.launch { spotify.signOut() }
+    }
+
+    fun loadSpotifyHome() {
+        if (spotifyAccount.value == null || spotifyHomeJob?.isActive == true) return
+        spotifyHomeJob = viewModelScope.launch {
+            _spotifyHomeLoading.value = true
+            _spotifyHomeError.value = null
+            try {
+                _spotifyHome.value = spotify.home()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                _spotifyHomeError.value = spotifyMessage(e)
+            } finally {
+                _spotifyHomeLoading.value = false
+            }
+        }
+    }
+
+    fun onSpotifySearchQueryChange(query: String) {
+        if (_spotifySearch.value.query == query) return
+        spotifySearchJob?.cancel()
+        _spotifySearch.value = CatalogSearchState(query = query, loading = query.isNotBlank())
+        if (query.isBlank()) return
+        spotifySearchJob = viewModelScope.launch {
+            delay(350)
+            try {
+                _spotifySearch.value = CatalogSearchState(query = query, page = spotify.search(query.trim()))
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                _spotifySearch.value = CatalogSearchState(query = query, error = spotifyMessage(e))
+            }
+        }
+    }
+
+    fun loadMoreSpotifyTracks() {
+        val state = _spotifySearch.value
+        val before = state.page ?: return
+        val offset = before.continuation?.toIntOrNull() ?: return
+        if (state.loading || state.loadingMore) return
+        _spotifySearch.value = state.copy(loadingMore = true)
+        spotifySearchJob = viewModelScope.launch {
+            try {
+                val more = spotify.search(state.query.trim(), offset)
+                _spotifySearch.value = state.copy(page = before.copy(
+                    tracks = (before.tracks + more.tracks).distinctBy { it.id },
+                    continuation = more.continuation
+                ))
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                _spotifySearch.value = state
+                Toast.makeText(context, spotifyMessage(e), Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
+    private fun spotifyMessage(error: Exception): String =
+        when (error) {
+            is SpotifyFailure, is com.example.myapplication.data.TrackUnavailableException -> error.message.orEmpty()
+            else -> tr("Не удалось выполнить запрос к Spotify.")
+        }
 
     /** Set when automatic recovery is exhausted and only a real sign-in can help. */
     private val _needsRelogin = MutableStateFlow(false)
@@ -728,6 +873,19 @@ class MusicViewModel(
             }
         }
         loadYtHome()
+        viewModelScope.launch {
+            spotifyAccount.collectLatest { account ->
+                if (account == null) {
+                    spotifyHomeJob?.cancel()
+                    spotifySearchJob?.cancel()
+                    _spotifyHome.value = emptyList()
+                    _spotifyHomeError.value = null
+                    _spotifySearch.value = CatalogSearchState()
+                } else {
+                    loadSpotifyHome()
+                }
+            }
+        }
         watchNetwork()
         viewModelScope.launch {
             // The first value is the empty start, which must not overwrite the saved queue
@@ -1456,10 +1614,12 @@ class MusicViewModel(
             _searchPlaylistLoading.value = true
             val isYandex = playlist.permalinkUrl?.startsWith("yandex:") == true
             val isYouTube = playlist.permalinkUrl?.startsWith(YT_SET_REF) == true
+            val isSpotify = playlist.permalinkUrl?.startsWith("spotify:") == true
             try {
                 val tracks = when {
                     isYandex -> loadYandexSetTracks(playlist)
                     isYouTube -> ytMusic.setTracks(playlist)
+                    isSpotify -> spotify.setTracks(playlist.permalinkUrl.orEmpty())
                     else -> loadSoundCloudPlaylistTracks(playlist)
                 }
                 if (_searchOpenedPlaylist.value?.id == playlist.id) {
@@ -1470,8 +1630,8 @@ class MusicViewModel(
                 throw e
             } catch (e: Exception) {
                 Log.e("MusicViewModel", "Failed to load playlist ${playlist.permalinkUrl ?: playlist.id}", e)
-                if (!isYandex && !isYouTube) handleSoundCloudApiError(e)
-                _searchPlaylistError.value = readableMessage(e, isYandex = isYandex)
+                if (!isYandex && !isYouTube && !isSpotify) handleSoundCloudApiError(e)
+                _searchPlaylistError.value = if (isSpotify) spotifyMessage(e) else readableMessage(e, isYandex = isYandex)
             } finally {
                 _searchPlaylistLoading.value = false
             }
@@ -1606,6 +1766,7 @@ class MusicViewModel(
      * it resolves; null for SoundCloud, whose streams the app resolves up front.
      */
     private fun serviceStreamUrl(track: SoundCloudTrack): String? {
+        SpotifyAudio.uri(track)?.let { return it }
         track.youTubeVideoId?.let { return "ytmusic://track/$it" }
         track.liveVideoId?.let { return "ytlive://track/$it" }
         if (track.urn?.startsWith("yandex:track:") == true) {
@@ -1663,18 +1824,16 @@ class MusicViewModel(
                     _errorMessage.value = tr("Войдите в SoundCloud в настройках, чтобы слушать этот трек")
                     return@launch
                 }
-                val streamUrl = if (serviceUrl != null) {
-                    serviceUrl
-                } else {
-                    localStreamUrl(track.id)
-                        ?: playbackResolver.resolve(track, clientId)
-                }
+                val streamUrl = localStreamUrl(track.id) ?: serviceUrl
+                    ?: playbackResolver.resolve(track, clientId)
 
                 if (streamUrl == null) {
                     _errorMessage.value = tr("Для этого трека не нашёлся доступный поток.")
                     return@launch
                 }
 
+                clearYandexRadio()
+                resolvedUrls.clear()
                 _activeQueue.value = listOf(track)
                 // Shuffle draws from originalQueue, so a single-track play has to claim it too.
                 // Leaving it stale meant shuffling here reshuffled whichever list was loaded
@@ -1735,6 +1894,7 @@ class MusicViewModel(
         id = id,
         // Ids say where a track is from: Yandex ones are negative, imported files are timestamps.
         urn = when {
+            uri?.startsWith("spotify://") == true -> android.net.Uri.parse(uri).lastPathSegment?.let { SPOTIFY_TRACK + it }
             // A YouTube id is a hash; the saved queue is what knows the video behind it.
             id <= -YT_ID_BASE -> null
             id < 0 -> "yandex:track:${-id - 1_000_000_000L}"
@@ -1808,17 +1968,19 @@ class MusicViewModel(
 
     /** Opens a YouTube Music set; a row of songs from home arrives with its tracks already. */
     fun openYtSet(set: SoundCloudPlaylist) {
+        ytSetJob?.cancel()
+        _ytSetLoading.value = false
         _ytOpenedSet.value = set
         _ytSetError.value = null
         _screen.value = AppScreen.YTM_SET_DETAIL
         if (set.knownTracks.isNotEmpty()) return
-        ytSetJob?.cancel()
         ytSetJob = viewModelScope.launch {
             _ytSetLoading.value = true
             try {
                 val tracks = when {
                     set.permalinkUrl?.startsWith("yandex:") == true -> loadYandexSetTracks(set)
                     set.permalinkUrl?.startsWith(YT_SET_REF) == true -> ytMusic.setTracks(set)
+                    set.permalinkUrl?.startsWith("spotify:") == true -> spotify.setTracks(set.permalinkUrl)
                     // A SoundCloud set, opened from a link.
                     else -> loadSoundCloudPlaylistTracks(set)
                 }
@@ -1830,9 +1992,10 @@ class MusicViewModel(
                 throw e
             } catch (e: Exception) {
                 Log.e("MusicViewModel", "YouTube Music set ${set.permalinkUrl} failed", e)
-                _ytSetError.value = readableMessage(e)
+                _ytSetError.value =
+                    if (set.permalinkUrl?.startsWith("spotify:") == true) spotifyMessage(e) else readableMessage(e)
             } finally {
-                _ytSetLoading.value = false
+                if (_ytOpenedSet.value === set || _ytOpenedSet.value?.id == set.id) _ytSetLoading.value = false
             }
         }
     }
@@ -1907,6 +2070,7 @@ class MusicViewModel(
         if (settingsRepository.oauthTokenValue().isNotBlank()) add(TogetherServices.SOUNDCLOUD)
         if (settingsRepository.yandexTokenValue().isNotBlank()) add(TogetherServices.YANDEX)
         if (settingsRepository.ytMusicAccount.value != null) add(TogetherServices.YOUTUBE)
+        if (spotifyAccount.value != null) add(TogetherServices.SPOTIFY)
     }
 
     // On a guest: the host's tracks this phone couldn't start, and why (see TogetherPlayer.failureOf);
@@ -1963,6 +2127,7 @@ class MusicViewModel(
     private fun serviceInAccusative(service: String): String = when (service) {
         TogetherServices.YANDEX -> tr("Яндекс Музыку")
         TogetherServices.YOUTUBE -> "YouTube Music"
+        TogetherServices.SPOTIFY -> "Spotify"
         else -> "SoundCloud"
     }
 
@@ -2073,7 +2238,12 @@ class MusicViewModel(
     private suspend fun guestStreamUrl(track: SoundCloudTrack, hostUrl: String?, resolve: Boolean): String? {
         localStreamUrl(track.id)?.takeIf { it.isNotBlank() }?.let { return it }
         if (track.urn?.startsWith("local:") == true) return null
-        if (track.urn?.startsWith("yandex:") == true && settingsRepository.yandexTokenValue().isBlank()) return hostUrl
+        if (track.urn?.startsWith("yandex:") == true && settingsRepository.yandexTokenValue().isBlank()) {
+            return hostUrl?.takeIf { url ->
+                val uri = android.net.Uri.parse(url)
+                uri.scheme == "https" && uri.host?.let { it == "yandex.net" || it.endsWith(".yandex.net") } == true
+            }
+        }
         serviceStreamUrl(track)?.let { return it }
         if (!resolve) return placeholderStreamUrl(track)
         return runCatching { playbackResolver.resolve(track, settingsRepository.clientId.value) }.getOrNull()
@@ -2161,6 +2331,18 @@ class MusicViewModel(
             }
             is SharedLink.YouTubeChannel -> openArtistFromLink {
                 openArtistDetails(0L, YT_ARTIST_REF + link.channelId, null)
+            }
+            is SharedLink.Spotify -> {
+                if (spotifyAccount.value == null) {
+                    openSpotifyLogin()
+                    return
+                }
+                when (link.type) {
+                    "track" -> playFromLink(spotify.track(link.id))
+                    "artist" -> openArtistFromLink { openArtistDetails(0L, SPOTIFY_ARTIST + link.id, null) }
+                    "album" -> openSetFromLink(spotify.set(SPOTIFY_ALBUM + link.id))
+                    "playlist" -> openSetFromLink(spotify.set(SPOTIFY_PLAYLIST + link.id))
+                }
             }
             is SharedLink.SoundCloud -> openSoundCloudLink(link.url)
             is SharedLink.Short -> Unit // followed already in openSharedText
@@ -2283,6 +2465,7 @@ class MusicViewModel(
     }
 
     private suspend fun findTrackAlbum(track: SoundCloudTrack): SoundCloudPlaylist? {
+        if (track.spotifyId != null) return spotify.albumOf(track)
         val urn = track.urn.orEmpty()
         if (urn.startsWith("yandex:track:")) {
             val parts = urn.removePrefix("yandex:track:").split(':')
@@ -2300,6 +2483,23 @@ class MusicViewModel(
         _ytOpenedSet.value = null
         _ytSetLoading.value = false
         _screen.value = AppScreen.HOME
+    }
+
+    fun playSpotifyRadio(track: SoundCloudTrack) {
+        if (track.spotifyId == null) return
+        spotifyRadioJob?.cancel()
+        val queueBefore = _activeQueue.value
+        spotifyRadioJob = viewModelScope.launch {
+            try {
+                val related = spotify.related(track)
+                if (_activeQueue.value !== queueBefore) return@launch
+                playQueueFrom(track, (listOf(track) + related).distinctBy { it.id })
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Toast.makeText(context, spotifyMessage(e), Toast.LENGTH_SHORT).show()
+            }
+        }
     }
 
     /** Plays YouTube Music's radio from [track]: the track, then what it would play after it. */
@@ -2539,6 +2739,12 @@ class MusicViewModel(
     ) {
         returnToSearchFromArtist = false
         lastArtistOpen = { openArtistDetails(userId, permalinkUrl, username, trackUrn, avatarUrl) }
+        spotifyArtistJob?.cancel()
+        spotifyAlbumJob?.cancel()
+        permalinkUrl.spotifyIdFor(SPOTIFY_ARTIST)?.let { id ->
+            openSpotifyArtist(id, username, avatarUrl)
+            return
+        }
         if (permalinkUrl?.startsWith(YT_ARTIST_REF) == true) {
             openYouTubeArtist(permalinkUrl.removePrefix(YT_ARTIST_REF), username, avatarUrl)
             return
@@ -2717,6 +2923,38 @@ class MusicViewModel(
     private var ytArtistSongs: SoundCloudPlaylist? = null
     private var ytArtistJob: Job? = null
 
+    private fun openSpotifyArtist(id: String, name: String?, avatarUrl: String?) {
+        val ref = SPOTIFY_ARTIST + id
+        _selectedTrack.value = null
+        _selectedMix.value = null
+        _currentArtist.value = SoundCloudUser(username = name, avatarUrl = avatarUrl, permalinkUrl = ref)
+        _currentArtistTracks.value = emptyList()
+        _currentArtistPlaylists.value = emptyList()
+        _selectedArtistPlaylist.value = null
+        _artistLoading.value = true
+        _artistError.value = null
+        _artistAlbumLoading.value = false
+        _isAllArtistTracksLoaded.value = true
+        resetArtistExtras()
+        _screen.value = AppScreen.ARTIST_DETAIL
+        spotifyArtistJob = viewModelScope.launch {
+            try {
+                val artist = spotify.artist(id)
+                if (_currentArtist.value?.permalinkUrl != ref) return@launch
+                _currentArtist.value = artist.artist
+                _currentArtistTracks.value = artist.topSongs
+                _currentArtistPlaylists.value = artist.releases
+                checkArtistFollow(artist.artist)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                if (_currentArtist.value?.permalinkUrl == ref) _artistError.value = spotifyMessage(e)
+            } finally {
+                if (_currentArtist.value?.permalinkUrl == ref) _artistLoading.value = false
+            }
+        }
+    }
+
     private fun openYouTubeArtist(channelId: String, name: String?, avatarUrl: String?) {
         // Not from search unless search says so after (see openArtistFromSearch).
         returnToSearchFromArtist = false
@@ -2806,6 +3044,8 @@ class MusicViewModel(
     }
 
     fun closeArtist() {
+        spotifyArtistJob?.cancel()
+        spotifyAlbumJob?.cancel()
         _currentArtist.value = null
         _currentArtistTracks.value = emptyList()
         _currentArtistPlaylists.value = emptyList()
@@ -2857,6 +3097,9 @@ class MusicViewModel(
     // Null: no account in the artist's service, or the artist is the account itself.
     private suspend fun isFollowing(artist: SoundCloudUser): Boolean? {
         val ref = artist.permalinkUrl.orEmpty()
+        if (ref.startsWith(SPOTIFY_ARTIST)) {
+            return if (spotifyAccount.value != null) spotify.inLibrary(ref) else null
+        }
         if (ref.startsWith("yandex:artist:")) {
             if (settingsRepository.yandexTokenValue().isBlank()) return null
             val uid = getYandexUid() ?: return null
@@ -2915,6 +3158,11 @@ class MusicViewModel(
     private suspend fun sendFollow(artist: SoundCloudUser, follow: Boolean): Boolean {
         val ref = artist.permalinkUrl.orEmpty()
         when {
+            ref.startsWith(SPOTIFY_ARTIST) -> {
+                if (spotifyAccount.value == null) return false
+                spotify.save(ref, follow)
+                return true
+            }
             ref.startsWith(YT_ARTIST_REF) -> {
                 // As the page's own button: YouTube Music's, with where the subscription is from.
                 ytMusic.subscribe(ref.removePrefix(YT_ARTIST_REF), follow, if (follow) ytFollowParams.first else ytFollowParams.second)
@@ -2945,7 +3193,26 @@ class MusicViewModel(
     }
 
     fun selectArtistPlaylist(playlist: SoundCloudPlaylist) {
+        spotifyAlbumJob?.cancel()
         _selectedArtistPlaylist.value = playlist
+        if (playlist.permalinkUrl?.startsWith("spotify:") == true) {
+            _artistAlbumLoading.value = true
+            spotifyAlbumJob = viewModelScope.launch {
+                try {
+                    val tracks = spotify.setTracks(playlist.permalinkUrl)
+                    if (_selectedArtistPlaylist.value?.id != playlist.id) return@launch
+                    _selectedArtistPlaylist.value = playlist.copy(tracks = tracks, trackCount = tracks.size)
+                    syncLikedAlbum(playlist.copy(tracks = tracks))
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    Toast.makeText(context, spotifyMessage(e), Toast.LENGTH_SHORT).show()
+                } finally {
+                    if (_selectedArtistPlaylist.value?.id == playlist.id) _artistAlbumLoading.value = false
+                }
+            }
+            return
+        }
         val isYandexAlbum = playlist.permalinkUrl?.startsWith("yandex:album:") == true
         if (playlist.permalinkUrl?.startsWith(YT_SET_REF) == true) {
             viewModelScope.launch {
@@ -3003,6 +3270,10 @@ class MusicViewModel(
     }
 
     fun deselectArtistPlaylist() {
+        if (_selectedArtistPlaylist.value?.permalinkUrl?.startsWith("spotify:") == true) {
+            spotifyAlbumJob?.cancel()
+            _artistAlbumLoading.value = false
+        }
         _selectedArtistPlaylist.value = null
     }
 
@@ -3109,7 +3380,9 @@ class MusicViewModel(
         
         val isYandex = track.urn?.startsWith("yandex:track:") == true
         val youTubeId = track.youTubeVideoId
-        if (youTubeId != null) {
+        if (track.spotifyId != null) {
+            saveOnSpotify(track, false)
+        } else if (youTubeId != null) {
             rateOnYouTube(youTubeId, like = false)
         } else if (isYandex) {
             val token = settingsRepository.yandexTokenValue()
@@ -3158,6 +3431,8 @@ class MusicViewModel(
                 val youTubeId = track.youTubeVideoId ?: track.liveVideoId
                 if (youTubeId != null) {
                     rateOnYouTube(youTubeId, like = false)
+                } else if (track.spotifyId != null) {
+                    saveOnSpotify(track, false)
                 } else if (track.urn?.startsWith("yandex:track:") == true) {
                     val token = settingsRepository.yandexTokenValue()
                     val uid = getYandexUid()
@@ -3200,7 +3475,9 @@ class MusicViewModel(
 
             val isYandex = track.urn?.startsWith("yandex:track:") == true
             val youTubeId = track.youTubeVideoId
-            if (youTubeId != null) {
+            if (track.spotifyId != null) {
+                saveOnSpotify(track, true)
+            } else if (youTubeId != null) {
                 rateOnYouTube(youTubeId, like = true)
             } else if (isYandex) {
                 val token = settingsRepository.yandexTokenValue()
@@ -3225,6 +3502,21 @@ class MusicViewModel(
             }
 
             downloadQueue.trySend(DownloadRequest(track, isRedownload = false))
+        }
+    }
+
+    private fun saveOnSpotify(track: SoundCloudTrack, saved: Boolean) {
+        if (spotifyAccount.value == null) return
+        val ref = track.urn ?: return
+        viewModelScope.launch {
+            try {
+                spotify.save(ref, saved)
+                loadSpotifyHome()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Toast.makeText(context, spotifyMessage(e), Toast.LENGTH_SHORT).show()
+            }
         }
     }
 
@@ -3461,6 +3753,8 @@ class MusicViewModel(
         }
         val newStartIndex = if (shuffleEnabled.value) 0 else startIndex
         
+        clearYandexRadio()
+        resolvedUrls.clear()
         _activeQueue.value = queueToPlay
         downloadedQueue.forEach { fav ->
             fav.streamUrl?.let { url ->
@@ -3740,7 +4034,7 @@ class MusicViewModel(
 
     // Unified playability check (#41: merged isPlayableMixTrack)
     private fun isPlayableTrack(track: SoundCloudTrack): Boolean {
-        if (track.urn?.startsWith("yandex:track:") == true || track.youTubeVideoId != null) {
+        if (track.urn?.startsWith("yandex:track:") == true || track.youTubeVideoId != null || track.spotifyId != null) {
             return track.streamable == true
         }
         // Blocked here, a Go+ preview, or a label's track with only DRM streams: listed, it would
@@ -3766,6 +4060,7 @@ class MusicViewModel(
     }
 
     private fun reloadMissingHome() {
+        if (_spotifyHome.value.isEmpty()) loadSpotifyHome()
         if (settingsRepository.ytMusicAuth() != null && !_ytHomeLoading.value && _ytHome.value.isEmpty()) loadYtHome()
         if (settingsRepository.oauthTokenValue().isNotBlank() && !_mixesLoading.value &&
             _mixSection.value == null && _stationSection.value == null && _trendingSection.value == null
@@ -3792,6 +4087,7 @@ class MusicViewModel(
                 else -> if (isYandex) tr("Ошибка Яндекс Музыки: HTTP %s.", error.code()) else tr("Ошибка SoundCloud: HTTP %s.", error.code())
             }
 
+            is SpotifyFailure -> error.message.orEmpty()
             is IOException -> tr("Нет соединения с сетью.")
             else -> if (isYandex) tr("Не удалось выполнить запрос к Яндекс Музыке.") else tr("Не удалось выполнить запрос к SoundCloud.")
         }
@@ -3822,6 +4118,7 @@ class MusicViewModel(
 
     /** The track's page on its service, as a link shared to it would be: for a friend to play it too. */
     private fun SoundCloudTrack.pageLink(): String? {
+        spotifyId?.let { return "https://open.spotify.com/track/$it" }
         youTubeVideoId?.let { return "https://music.youtube.com/watch?v=$it" }
         liveVideoId?.let { return "https://www.youtube.com/watch?v=$it" }
         if (urn?.startsWith("yandex:track:") == true) {
@@ -3837,6 +4134,7 @@ class MusicViewModel(
     private fun sourceOf(urn: String?): String = when {
         urn == null -> ""
         urn.startsWith("yandex:") -> "yandex"
+        urn.startsWith(SPOTIFY_TRACK) -> "spotify"
         urn.startsWith(YT_TRACK_URN) || urn.startsWith("ytmusic:") -> "youtube"
         urn.startsWith("soundcloud:") -> "soundcloud"
         urn.startsWith("local:") -> "phone"
@@ -3856,7 +4154,8 @@ class MusicViewModel(
             artist = displayArtist,
             artworkUrl = artworkUrl,
             leadArtist = artists?.firstNotNullOfOrNull { it.username?.takeIf(String::isNotBlank) } ?: artist,
-            source = sourceOf(urn)
+            source = sourceOf(urn),
+            link = toSoundCloudTrack().pageLink()
         )
     }
 
@@ -3935,7 +4234,7 @@ class MusicViewModel(
      * there too, or a saved album would still stream when played from its artist page.
      */
     private fun localStreamUrl(trackId: Long): String? =
-        favoritesRepository.get(trackId)?.streamUrl ?: playlistsRepository.downloadedStreamUrl(trackId)
+        favoritesRepository.get(trackId)?.streamUrl?.takeIf { it.isNotBlank() } ?: playlistsRepository.downloadedStreamUrl(trackId)
 
     /**
      * The heart on an album or set: saves it as a playlist in the library, next to "Скачанное",
@@ -4068,7 +4367,9 @@ class MusicViewModel(
         val isYandex = track.urn?.startsWith("yandex:track:") == true
         val youTubeId = track.youTubeVideoId
         try {
-            val stored: String? = if (youTubeId != null) {
+            val stored: String? = if (track.spotifyId != null) {
+                downloadSpotifyAudio(track, "pl_sp_${track.spotifyId}")
+            } else if (youTubeId != null) {
                 withContext(Dispatchers.IO) { YouTubeStreams.resolve(context, youTubeId, settingsRepository.ytMusicAuth(), urgent = { false }) }?.let { audio ->
                     val path = withContext(Dispatchers.IO) {
                         offlineMusicStore.downloadProgressive(audio.url, "pl_yt_$youTubeId", extension = "m4a", chunked = true, userAgent = audio.userAgent) { progress ->
@@ -4148,6 +4449,22 @@ class MusicViewModel(
             return false
         } finally {
             _downloadProgress.update { it - track.id }
+        }
+    }
+
+    private suspend fun downloadSpotifyAudio(track: SoundCloudTrack, key: String): String? {
+        val stream = SpotifyAudio.resolve(context, settingsRepository, track, urgent = false)
+        return withContext(Dispatchers.IO) {
+            val path = offlineMusicStore.downloadProgressive(
+                stream.url, key, extension = stream.extension, chunked = stream.chunked, userAgent = stream.userAgent
+            ) { progress -> updateDownloadProgress(track.id, progress) } ?: return@withContext null
+            val length = getMp3Duration(path)
+            if (length <= 0 || kotlin.math.abs(length - track.duration) > minOf(8_000L, track.duration / 12)) {
+                offlineMusicStore.removeProgressive(path)
+                null
+            } else {
+                path
+            }
         }
     }
 
@@ -4345,59 +4662,11 @@ class MusicViewModel(
     }
 
     fun playPlaylistTrack(playlist: Playlist, track: FavoriteTrack) {
-        if (relayFromLibrary(track.toSoundCloudTrack(), playlist.tracks)) return
-        viewModelScope.launch {
-            _errorMessage.value = null
-            val playable = track.toSoundCloudTrack()
-            val tracks = playlist.tracks
-            if (tracks.isEmpty()) return@launch
-
-            val mappedTracks = tracks.map { it.toSoundCloudTrack() }
-            originalQueue = mappedTracks
-            val startIndex = tracks.indexOfFirst { it.id == track.id }.coerceAtLeast(0)
-            val clickedTrack = mappedTracks.getOrNull(startIndex)
-            
-            val queueToPlay = if (shuffleEnabled.value && clickedTrack != null) {
-                val list = mappedTracks.toMutableList()
-                list.removeAt(startIndex)
-                listOf(clickedTrack) + list.shuffled(java.util.Random())
-            } else {
-                mappedTracks
-            }
-            val newStartIndex = if (shuffleEnabled.value) 0 else startIndex
-            
-            _activeQueue.value = queueToPlay
-            
-            tracks.forEach { fav ->
-                fav.streamUrl?.let { url ->
-                    resolvedUrls[fav.id] = url
-                }
-            }
-            
-            val startTrack = queueToPlay.getOrNull(newStartIndex)
-            if (startTrack != null) {
-                val hasLocal = localStreamUrl(startTrack.id) != null
-                if (!hasLocal && resolvedUrls[startTrack.id] == null && serviceStreamUrl(startTrack) == null) {
-                    val clientIdValue = settingsRepository.clientId.value
-                    val resolvedUrl = playbackResolver.resolve(startTrack, clientIdValue) ?: ""
-                    if (resolvedUrl.isNotEmpty()) {
-                        resolvedUrls[startTrack.id] = resolvedUrl
-                    }
-                }
-            }
-
-            val stubs = queueToPlay.map { t ->
-                val localUrl = localStreamUrl(t.id)
-                val fallbackUrl = placeholderStreamUrl(t)
-                t.toQueueTrack(localUrl ?: resolvedUrls[t.id] ?: fallbackUrl)
-            }
-
-            musicPlayer.playQueue(stubs, newStartIndex)
-            _playingMixId.value = null
-            _playingFrom.value = "playlist-${playlist.id}"
-            _currentPlayingTrack.value = playable
-            showPlayerFor(playable)
-        }
+        val playable = track.toSoundCloudTrack()
+        if (relayFromLibrary(playable, playlist.tracks)) return
+        val queue = playlist.tracks.map(FavoriteTrack::toSoundCloudTrack)
+        if (queue.none { it.id == track.id }) return
+        playQueuedTrack(playable, queue, source = "playlist-${playlist.id}")
     }
 
     fun importLocalTracks(uris: List<android.net.Uri>) {
@@ -4793,6 +5062,7 @@ class MusicViewModel(
             val defaultQueue = when {
                 isYandexTrack -> _yandexTracks.value
                 track.youTubeVideoId != null -> _ytSearch.value.page?.tracks.orEmpty()
+                track.spotifyId != null -> _spotifySearch.value.page?.tracks.orEmpty()
                 else -> _tracks.value
             }
             val qTracks = customQueue ?: defaultQueue
@@ -4803,7 +5073,7 @@ class MusicViewModel(
                 playTrack(track)
                 return@launch
             }
-            val playableTracks = if (listed.any { it.id == track.id }) listed else listOf(track)
+            val playableTracks = if (listed.any { it.id == track.id }) listed.distinctBy { it.id } else listOf(track)
             // This queue came straight from a listing, so it carries full credits — a good moment
             // to repair saved tracks that were downloaded before every artist was persisted.
             favoritesRepository.syncCredits(playableTracks)
@@ -4824,6 +5094,7 @@ class MusicViewModel(
                 }
                 val newStartIndex = if (shuffleEnabled.value && !isFromQueueManager) 0 else startIndex
                 
+                if (!fromQueueManager && !isYandexTrack) clearYandexRadio()
                 _activeQueue.value = queueToPlay
                 resolvedUrls.clear()
                 
@@ -4897,7 +5168,7 @@ class MusicViewModel(
 
         if (isRedownload) {
             favoritesRepository.get(track.id)?.let { favorite ->
-                if (favorite.streamUrl != null) {
+                if (favorite.streamUrl != null && !playlistsRepository.usesStream(favorite.streamUrl)) {
                     withContext(Dispatchers.IO) {
                         if (isProgressiveSource(favorite.urn)) {
                             offlineMusicStore.removeProgressive(favorite.streamUrl)
@@ -4920,6 +5191,22 @@ class MusicViewModel(
         val clientId = settingsRepository.clientId.value
 
         try {
+            if (track.spotifyId != null) {
+                val path = downloadSpotifyAudio(track, "sp_${track.spotifyId}")
+                if (path == null) {
+                    favoritesRepository.updateDownloadState(track.id, DownloadState.FAILED)
+                    _errorMessage.value = tr("Ошибка: Трек скачался не полностью.")
+                    return false
+                }
+                if (!favoritesRepository.isFavorite(track.id)) {
+                    withContext(Dispatchers.IO) { offlineMusicStore.removeProgressive(path) }
+                    return false
+                }
+                favoritesRepository.updateStreamUrl(track.id, path)
+                favoritesRepository.updateDownloadState(track.id, DownloadState.DOWNLOADED)
+                cacheArtwork(track)
+                return true
+            }
             val youTubeAudio = youTubeId?.let { id ->
                 // A download waits for what plays now.
                 withContext(Dispatchers.IO) { YouTubeStreams.resolve(context, id, settingsRepository.ytMusicAuth(), urgent = { false }) }
@@ -5053,10 +5340,12 @@ class MusicViewModel(
                     return false
                 }
             }
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             Log.e("MusicViewModel", "Error downloading track ${track.id}", e)
             favoritesRepository.updateDownloadState(track.id, DownloadState.FAILED)
-            _errorMessage.value = readableMessage(e, isYandex = isYandex)
+            _errorMessage.value = if (track.spotifyId != null) spotifyMessage(e) else readableMessage(e, isYandex = isYandex)
             return false
         } finally {
             _downloadProgress.update { it - track.id }
@@ -5406,6 +5695,11 @@ class MusicViewModel(
             given += id
             return true
         }
+    }
+
+    private fun clearYandexRadio() {
+        continuing?.cancel()
+        yandexRadio = null
     }
 
     private var yandexRadio: YandexRadio? = null
@@ -5865,6 +6159,7 @@ class MusicViewModel(
                 when {
                     urn.startsWith("yandex:track:") -> continueWithYandexRadio(track, urn.removePrefix("yandex:track:"))
                     youTubeId != null -> appendAfter(track, ytMusic.radio(youTubeId))
+                    track.spotifyId != null -> appendAfter(track, spotify.related(track))
                     urn.startsWith("soundcloud:tracks:") -> {
                         val clientId = settingsRepository.clientId.value.takeIf { it.isNotBlank() } ?: return@launch
                         appendAfter(track, service.getRelatedTracks(track.id, clientId).collection.filter(::isPlayableTrack))

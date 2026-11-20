@@ -134,7 +134,7 @@ val SoundCloudPlaylist.isYtLikedMusic: Boolean
 
 /** Kept on the device as a plain file (Yandex, YouTube), not in SoundCloud's HLS cache. */
 fun isProgressiveSource(urn: String?): Boolean =
-    urn != null && (urn.startsWith("yandex:") || urn.startsWith("ytmusic:"))
+    urn != null && (urn.startsWith("yandex:") || urn.startsWith("ytmusic:") || urn.startsWith(SPOTIFY_TRACK) || urn.startsWith("local:track:"))
 
 /**
  * YouTube Music's web API ("InnerTube") as music.youtube.com itself calls it — the same requests
@@ -303,6 +303,10 @@ class YouTubeMusicClient(private val authProvider: () -> YtAuth?) {
             continuation = songShelf.continuation()
         )
     }
+
+    /** Song results with duration, for matching a recording from another catalog. */
+    internal suspend fun searchAudioTracks(query: String): List<SoundCloudTrack> =
+        listRows(searchShelf(query, FILTER_SONGS)).mapNotNull { parseSongRow(it) }.distinctBy { it.id }
 
     private class MixedResults(
         val tracks: List<SoundCloudTrack>,

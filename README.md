@@ -278,6 +278,17 @@ youcloud.keyAlias=...
 youcloud.keyPassword=...
 ```
 
+### Spotify на Android
+
+В настройках аккаунтов или на вкладке Spotify введите Client ID приложения из Spotify Developer Dashboard.
+В Dashboard зарегистрируйте Redirect URI `http://127.0.0.1/callback`: при входе YouCloud откроет системный
+браузер и примет ответ Spotify на временном локальном порту. Client Secret для приложения не нужен.
+Spotify предоставляет каталог и медиатеку. Для воспроизведения и скачивания YouCloud ищет совпадающую
+запись в YouTube Music, Яндекс Музыке или SoundCloud по названию, исполнителю и длительности.
+Доступ к чужим плейлистам и рекомендациям зависит от режима доступа, назначенного Spotify приложению.
+Для синхронизации «Любимого» Spotify между устройствами примените миграцию
+[`20261120110000_spotify_favorites.sql`](supabase/migrations/20261120110000_spotify_favorites.sql).
+
 Друзья работают на Supabase. Чтобы поднять свой бэкенд, примените миграции из `supabase/migrations`, задеплойте функцию `supabase/functions/recover` и укажите адрес и публичный ключ проекта в `local.properties` как `supabase.url` и `supabase.key`.
 
 <br>

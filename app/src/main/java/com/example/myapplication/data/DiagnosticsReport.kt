@@ -71,10 +71,12 @@ object DiagnosticsReport {
     }.getOrElse { listOf("(журнал не прочитался: $it)") }
 
     private val URL_QUERY = Regex("""(https?://[^\s?"'<>]+)\?[^\s"'<>]*""")
-    private val SECRET = Regex("""(?i)\b(oauth|bearer|token|authorization|cookie|sapisid\w*|client_id|access_token)\b(\s*[:=]\s*|\s+)("[^"]*"|[^\s,;&]+)""")
+    private val CREDENTIAL_HEADER = Regex("""(?i)\b(authorization|proxy-authorization|set-cookie|cookie)["']?\s*[:=]\s*[^\r\n]+""")
+    private val SECRET = Regex("""(?i)\b(oauth|bearer|token|authorization|cookie|sapisid\w*|client_id|access_token|refresh_token|code_verifier|sp_dc)\b(\s*[:=]\s*|\s+)("[^"]*"|[^\s,;&]+)""")
 
     /** A line without what is no one else's: the queries of addresses, tokens, cookies. */
-    private fun redact(line: String): String = line
+    internal fun redact(line: String): String = line
         .replace(URL_QUERY, "$1?…")
+        .replace(CREDENTIAL_HEADER) { "${it.groupValues[1]}: …" }
         .replace(SECRET) { "${it.groupValues[1]}${it.groupValues[2]}…" }
 }

@@ -102,6 +102,7 @@ internal class NowPlayingPublisher(context: Context, private val player: Player)
             "soundcloud" -> "soundcloud"
             "yandex" -> "yandex"
             "ytmusic", "ytlive" -> "youtube"
+            "spotify" -> "spotify"
             "file", "content" -> "device"
             // A SoundCloud stream the app resolved already.
             else -> if (uri?.host?.contains("sndcdn") == true || uri?.host?.contains("soundcloud") == true) "soundcloud" else null

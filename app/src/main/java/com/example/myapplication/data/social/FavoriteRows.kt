@@ -2,6 +2,11 @@ package com.example.myapplication.data.social
 
 import com.example.myapplication.data.DownloadState
 import com.example.myapplication.data.FavoriteTrack
+import com.example.myapplication.data.SPOTIFY_ARTIST
+import com.example.myapplication.data.SPOTIFY_TRACK
+import com.example.myapplication.data.isSpotifyId
+import com.example.myapplication.data.spotifyIdFor
+import com.example.myapplication.data.spotifyKey
 import com.example.myapplication.data.SoundCloudUser
 import com.example.myapplication.data.YT_ARTIST_REF
 import com.example.myapplication.data.YT_LIVE_URN
@@ -56,6 +61,7 @@ internal object FavoriteRows {
             urn.startsWith("yandex:track:") -> urn.removePrefix("yandex:track:").let { rest ->
                 Key("yandex", rest.substringBefore(":"), rest.substringAfter(":", "").ifBlank { null })
             }
+            urn.startsWith(SPOTIFY_TRACK) -> urn.spotifyIdFor(SPOTIFY_TRACK)?.let { Key("spotify", it) }
             urn.startsWith(YT_TRACK_URN) -> Key("youtube", urn.removePrefix(YT_TRACK_URN))
             urn.startsWith(YT_LIVE_URN) -> Key("youtube", urn.removePrefix(YT_LIVE_URN), live = true)
             // SoundCloud's: its own ids, below the timestamps files from the phone get.
@@ -92,6 +98,7 @@ internal object FavoriteRows {
         "soundcloud" -> artist.id?.takeIf { it > 0 }?.toString()
         "yandex" -> artist.permalinkUrl?.takeIf { it.startsWith("yandex:artist:") }?.removePrefix("yandex:artist:")
             ?: artist.id?.takeIf { it > 0 }?.toString()
+        "spotify" -> artist.permalinkUrl.spotifyIdFor(SPOTIFY_ARTIST)
         else -> artist.permalinkUrl?.takeIf { it.startsWith(YT_ARTIST_REF) }?.removePrefix(YT_ARTIST_REF)
     }
 
@@ -104,6 +111,10 @@ internal object FavoriteRows {
             when (row.service) {
                 "soundcloud" -> SoundCloudUser(id = artist.id?.toLongOrNull(), username = name, permalinkUrl = artist.link)
                 "yandex" -> SoundCloudUser(id = artist.id?.toLongOrNull() ?: 0L, username = name, permalinkUrl = artist.id?.let { "yandex:artist:$it" })
+                "spotify" -> artist.id?.takeIf(String::isSpotifyId)?.let {
+                    val ref = SPOTIFY_ARTIST + it
+                    SoundCloudUser(id = spotifyKey(ref), username = name, permalinkUrl = ref)
+                } ?: SoundCloudUser(username = name)
                 else -> SoundCloudUser(username = name, permalinkUrl = artist.id?.let { YT_ARTIST_REF + it })
             }
         }
@@ -118,6 +129,11 @@ internal object FavoriteRows {
                 if (row.albumId != null) "yandex:track:$id:${row.albumId}" else "yandex:track:$id",
                 "https://music.yandex.ru/track/$id"
             )
+            "spotify" -> {
+                if (!id.isSpotifyId() || live) return null
+                val ref = SPOTIFY_TRACK + id
+                Triple(spotifyKey(ref), ref, "https://open.spotify.com/track/$id")
+            }
             "youtube" -> Triple(
                 youTubeTrackId(if (live) "live:$id" else id),
                 (if (live) YT_LIVE_URN else YT_TRACK_URN) + id,

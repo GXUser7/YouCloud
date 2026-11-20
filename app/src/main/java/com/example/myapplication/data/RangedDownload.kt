@@ -6,8 +6,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
-import kotlinx.coroutines.sync.Semaphore
-import kotlinx.coroutines.sync.withPermit
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -15,96 +14,114 @@ import java.io.File
 import java.io.IOException
 import java.io.RandomAccessFile
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicLong
 
-/**
- * Downloads a file a megabyte at a time, a few pieces at once. googlevideo sends a whole file at
- * about the pace it plays and a bounded range at full speed (yt-dlp downloads YouTube in pieces for
- * the same reason); it also leaves a request hanging now and then, and some of its hosts can't be
- * reached through a VPN at all while their mirrors can. So: ranges, each tried again when it
- * hangs, and the stream's mirrors when its own host doesn't answer.
- */
+/** Fetch a complete recording in bounded ranges, trying the stream's mirrors when needed. */
 object RangedDownload {
     private const val TAG = "RangedDownload"
-    private const val CHUNK_BYTES = 1L * 1024 * 1024
+    private const val CHUNK_BYTES = 1024L * 1024
     private const val ATTEMPTS = 2
     private const val AT_ONCE = 4
-
+    private val contentRange = Regex("""bytes (\d+)-(\d+)/(\d+)""")
     private val http = OkHttpClient.Builder()
         .connectTimeout(10, TimeUnit.SECONDS)
-        .readTimeout(10, TimeUnit.SECONDS)
+        .readTimeout(15, TimeUnit.SECONDS)
         .build()
 
-    /** [url] into [target], from its own host or a mirror. False if none of them would send it. */
-    suspend fun toFile(url: String, headers: Map<String, String>, target: File): Boolean = withContext(Dispatchers.IO) {
+    suspend fun toFile(
+        url: String,
+        headers: Map<String, String>,
+        target: File,
+        onProgress: (Float) -> Unit = {}
+    ): Boolean = withContext(Dispatchers.IO) {
         for (address in YouTubeStreams.withMirrors(url)) {
-            if (fetchFrom(address, headers, target)) return@withContext true
+            if (fetchFrom(address, headers, target, onProgress)) return@withContext true
         }
         false
     }
 
-    private suspend fun fetchFrom(url: String, headers: Map<String, String>, target: File): Boolean {
-        val started = System.currentTimeMillis()
+    private suspend fun fetchFrom(url: String, headers: Map<String, String>, target: File, progress: (Float) -> Unit): Boolean {
         return try {
-            target.delete()
-            val (first, total) = range(url, headers, 0)
-            RandomAccessFile(target, "rw").use { it.write(first) }
-            if (total != null && total > first.size) {
-                val gate = Semaphore(AT_ONCE)
+            val first = range(url, headers, offset = 0, total = null, fullFile = target)
+            if (first != null) {
+                val total = first.total
+                target.writeBytes(first.bytes)
+                val written = AtomicLong(first.bytes.size.toLong())
+                progress(written.get().toFloat() / total)
                 coroutineScope {
-                    (first.size.toLong() until total step CHUNK_BYTES).map { offset ->
-                        async(Dispatchers.IO) {
-                            gate.withPermit {
-                                val (bytes, _) = range(url, headers, offset)
+                    List(AT_ONCE) { worker ->
+                        async {
+                            var offset = first.bytes.size + worker * CHUNK_BYTES
+                            while (offset < total) {
+                                ensureActive()
+                                val part = range(url, headers, offset, total, fullFile = null)
+                                    ?: throw IOException("Expected a byte range")
                                 RandomAccessFile(target, "rw").use { out ->
                                     out.seek(offset)
-                                    out.write(bytes)
+                                    out.write(part.bytes)
                                 }
+                                progress(written.addAndGet(part.bytes.size.toLong()).toFloat() / total)
+                                offset += AT_ONCE * CHUNK_BYTES
                             }
                         }
                     }.awaitAll()
                 }
+                if (written.get() != total || target.length() != total) throw IOException("Incomplete recording")
             }
-            Log.d(TAG, "${target.length() / 1024} KB from ${url.substringAfter("//").substringBefore('/')} in ${System.currentTimeMillis() - started} ms")
+            progress(1f)
             true
         } catch (e: CancellationException) {
             target.delete()
             throw e
-        } catch (e: Exception) {
-            Log.w(TAG, "Couldn't fetch ${url.take(80)}: $e")
+        } catch (e: IOException) {
+            Log.w(TAG, "Recording download failed: ${e.javaClass.simpleName}")
             target.delete()
             false
         }
     }
 
-    /**
-     * [CHUNK_BYTES] of [url] from [offset], and the whole file's size when the server gave a range
-     * (null: it sent everything at once, which is then what came back).
-     */
-    private fun range(url: String, headers: Map<String, String>, offset: Long): Pair<ByteArray, Long?> {
+    private data class Part(val bytes: ByteArray, val total: Long)
+
+    private fun range(url: String, headers: Map<String, String>, offset: Long, total: Long?, fullFile: File?): Part? {
         var failure: IOException? = null
         repeat(ATTEMPTS) {
             try {
-                return rangeOnce(url, headers, offset)
+                return rangeOnce(url, headers, offset, total, fullFile)
             } catch (e: IOException) {
                 failure = e
             }
         }
-        throw failure!!
+        throw failure ?: IOException("Could not download recording")
     }
 
-    private fun rangeOnce(url: String, headers: Map<String, String>, offset: Long): Pair<ByteArray, Long?> {
-        val request = Request.Builder()
-            .url(url)
-            .header("Range", "bytes=$offset-${offset + CHUNK_BYTES - 1}")
+    /** A whole response is streamed to disk. Partial responses must match their declared range. */
+    private fun rangeOnce(url: String, headers: Map<String, String>, offset: Long, total: Long?, fullFile: File?): Part? {
+        val request = Request.Builder().url(url)
             .apply { headers.forEach { (name, value) -> header(name, value) } }
+            .header("Range", "bytes=$offset-${offset + CHUNK_BYTES - 1}")
+            .header("Accept-Encoding", "identity")
             .build()
         return http.newCall(request).execute().use { response ->
-            val bytes = response.body?.bytes() ?: throw IOException("no body")
-            when (response.code) {
-                200 -> bytes to null
-                206 -> bytes to response.header("Content-Range")?.substringAfter('/')?.toLongOrNull()
-                else -> throw IOException("HTTP ${response.code}")
+            val body = response.body ?: throw IOException("Missing recording body")
+            if (response.code == 200 && fullFile != null) {
+                val size = fullFile.outputStream().use { output -> body.byteStream().use { it.copyTo(output) } }
+                val declared = body.contentLength()
+                if (size <= 0L || (declared >= 0 && size != declared)) throw IOException("Incomplete recording")
+                return@use null
             }
+            if (response.code != 206) throw IOException("Unexpected HTTP ${response.code} for a byte range")
+            val parts = response.header("Content-Range")?.let(contentRange::matchEntire)?.groupValues
+                ?: throw IOException("Missing or malformed Content-Range")
+            val start = parts[1].toLongOrNull() ?: throw IOException("Invalid range start")
+            val end = parts[2].toLongOrNull()
+            val length = parts[3].toLongOrNull()
+            if (start != offset || end == null || length == null || length <= offset ||
+                end != minOf(offset + CHUNK_BYTES - 1, length - 1) || (total != null && total != length)
+            ) throw IOException("Unexpected Content-Range")
+            val source = body.source()
+            val bytes = source.readByteArray(end - start + 1)
+            if (!source.exhausted()) throw IOException("Body exceeds Content-Range")
+            Part(bytes, length)
         }
     }
 }

@@ -148,6 +148,7 @@ import androidx.compose.ui.input.pointer.PointerEventPass
 import com.example.myapplication.data.LyricLine
 import com.example.myapplication.data.YtAuth
 import com.example.myapplication.data.YtShelf
+import com.example.myapplication.data.spotifyId
 import com.example.myapplication.data.social.ShowcaseSlot
 import com.example.myapplication.data.isYtLikedMusic
 import com.example.myapplication.data.youTubeTrackId
@@ -471,6 +472,10 @@ fun MusicScreen(viewModel: MusicViewModel) {
     val ytHomeLoading by viewModel.ytHomeLoading.collectAsState()
     val ytHomeError by viewModel.ytHomeError.collectAsState()
     val ytMusicAccount by viewModel.ytMusicAccount.collectAsState()
+    val spotifyAccount by viewModel.spotifyAccount.collectAsState()
+    val spotifyHome by viewModel.spotifyHome.collectAsState()
+    val spotifyLoading by viewModel.spotifyHomeLoading.collectAsState()
+    val spotifyError by viewModel.spotifyHomeError.collectAsState()
     val ytLoginOpen by viewModel.ytLoginOpen.collectAsState()
     val mixesLoading by viewModel.mixesLoading.collectAsState()
     val loadingMixId by viewModel.loadingMixId.collectAsState()
@@ -766,6 +771,15 @@ fun MusicScreen(viewModel: MusicViewModel) {
                             trendingSection = trendingSection,
                             moreSections = moreSections,
                             ytShelves = ytHome,
+                            spotifyShelves = spotifyHome,
+                            spotifyConnected = spotifyAccount != null,
+                            spotifyLoading = spotifyLoading,
+                            spotifyError = spotifyError,
+                            onSpotifyLogin = viewModel::openSpotifyLogin,
+                            onReloadSpotify = viewModel::loadSpotifyHome,
+                            onOpenSpotifyArtist = { artist ->
+                                viewModel.openArtistDetails(artist.id ?: 0L, artist.permalinkUrl, artist.username, avatarUrl = artist.avatarUrl)
+                            },
                             ytConnected = ytMusicAccount != null,
                             yandexConnected = hasYandexToken,
                             soundCloudConnected = soundCloudConnected,
@@ -827,8 +841,9 @@ fun MusicScreen(viewModel: MusicViewModel) {
                             onAutoRefreshClientId = viewModel::tryAutoRefreshClientId,
                             selectedTab = homeSelectedTab,
                             onTabSelected = viewModel::setHomeSelectedTab,
-                            onOpenSearch = {
+                            onOpenSearch = { spotifySelected ->
                                 haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                if (spotifySelected) viewModel.setSearchSource(SearchSource.SPOTIFY)
                                 viewModel.openSearch()
                             },
                             onOpenDownloads = {
@@ -930,12 +945,14 @@ fun MusicScreen(viewModel: MusicViewModel) {
             val searchPage: @Composable () -> Unit = {
                 val searchSource by viewModel.searchSource.collectAsState()
                 val ytSearch by viewModel.ytSearch.collectAsState()
+                val spotifySearch by viewModel.spotifySearch.collectAsState()
                 // Each service once connected in settings, SoundCloud as the others. None at all:
                 // SoundCloud's page, which says to connect one.
                 val searchSources = buildList {
                     if (soundCloudConnected) add(SearchSource.SOUNDCLOUD)
                     if (hasYandexToken) add(SearchSource.YANDEX)
                     if (ytMusicAccount != null) add(SearchSource.YOUTUBE)
+                    if (spotifyAccount != null) add(SearchSource.SPOTIFY)
                 }.ifEmpty { listOf(SearchSource.SOUNDCLOUD) }
                 val yandexSearchQuery by viewModel.yandexSearchQuery.collectAsState()
                 val yandexTracks by viewModel.yandexTracks.collectAsState()
@@ -988,6 +1005,8 @@ fun MusicScreen(viewModel: MusicViewModel) {
                     yandexError = yandexError,
                     onYandexQueryChange = viewModel::onYandexSearchQueryChange,
                     ytSearch = ytSearch,
+                    spotifySearch = spotifySearch,
+                    onSpotifyQueryChange = viewModel::onSpotifySearchQueryChange,
                     onYtQueryChange = viewModel::onYtSearchQueryChange,
                     albums = searchAlbums,
                     playlists = searchPlaylists,
@@ -1003,11 +1022,13 @@ fun MusicScreen(viewModel: MusicViewModel) {
                         SearchSource.SOUNDCLOUD -> searchHasMore
                         SearchSource.YANDEX -> yandexHasMore
                         SearchSource.YOUTUBE -> ytSearch.page?.continuation != null
+                        SearchSource.SPOTIFY -> spotifySearch.page?.continuation != null
                     },
                     isLoadingMore = when (searchSource) {
                         SearchSource.SOUNDCLOUD -> searchLoadingMore
                         SearchSource.YANDEX -> yandexLoadingMore
                         SearchSource.YOUTUBE -> ytSearch.loadingMore
+                        SearchSource.SPOTIFY -> spotifySearch.loadingMore
                     },
                     onLoadMore = {
                         haptic.performHapticFeedback(HapticFeedbackType.LongPress)
@@ -1015,6 +1036,7 @@ fun MusicScreen(viewModel: MusicViewModel) {
                             SearchSource.SOUNDCLOUD -> viewModel.loadMoreSearchTracks()
                             SearchSource.YANDEX -> viewModel.loadMoreYandexSearchTracks()
                             SearchSource.YOUTUBE -> viewModel.loadMoreYtSearchTracks()
+                            SearchSource.SPOTIFY -> viewModel.loadMoreSpotifyTracks()
                         }
                     },
                     openedPlaylist = searchOpenedPlaylist,
@@ -1193,6 +1215,9 @@ fun MusicScreen(viewModel: MusicViewModel) {
                                 viewModel.logoutYandex()
                             },
                             ytMusicAccount = ytMusicAccount,
+                            spotifyAccount = spotifyAccount,
+                            onSpotifyLogin = viewModel::openSpotifyLogin,
+                            onSpotifyLogout = viewModel::logoutSpotify,
                             onYtMusicLoginClick = {
                                 haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                                 viewModel.openYtMusicLogin()
@@ -1476,7 +1501,7 @@ fun MusicScreen(viewModel: MusicViewModel) {
                 targetValue = when {
                     collectionShown -> HomeToolbarClearance
                     screen == AppScreen.HOME -> HomeToolbarClearance
-                    searchTabsShown -> searchDockHeight(hasYandexToken || ytMusicAccount != null) - 4.dp
+                    searchTabsShown -> searchDockHeight(listOf(soundCloudConnected, hasYandexToken, ytMusicAccount != null, spotifyAccount != null).count { it } > 1) - 4.dp
                     screen == AppScreen.FRIENDS && selectedMix == null -> searchDockHeight(tabs = true) - 4.dp
                     screen == AppScreen.PROFILE && socialSession != null && selectedMix == null -> searchDockHeight(tabs = true) - 4.dp
                     else -> 0.dp
@@ -1659,6 +1684,12 @@ fun MusicScreen(viewModel: MusicViewModel) {
     // The first time the app opens (and whenever asked for again in settings): the services, each a
     // tap from its sign-in — none of them a must, SoundCloud no more than the others — and what each
     // service's home opens on.
+    val spotifyLogin by viewModel.spotifyLogin.collectAsState()
+    if (spotifyLogin) {
+        val busy by viewModel.spotifyLoginBusy.collectAsState()
+        val error by viewModel.spotifyLoginError.collectAsState()
+        SpotifyLoginDialog(viewModel.spotifyClientId, busy, error, viewModel::signInToSpotify, viewModel::cancelSpotifyLogin)
+    }
     val homeSetupDone by viewModel.settingsRepo.homeSetupDone.collectAsState()
     val homeChoicesOpen by viewModel.settingsRepo.homeChoicesOpen.collectAsState()
     // The first time the app opens (and whenever asked for again in settings): the gestures
@@ -1687,9 +1718,16 @@ fun MusicScreen(viewModel: MusicViewModel) {
                     about = tr("Подборки, клипы и эфиры"),
                     connected = ytMusicAccount != null,
                     onConnect = viewModel::openYtMusicLogin
+                ),
+                SetupService(
+                    title = "Spotify",
+                    icon = ServiceIcons.Spotify,
+                    about = tr("Медиатека, плейлисты и исполнители"),
+                    connected = spotifyAccount != null,
+                    onConnect = viewModel::openSpotifyLogin
                 )
             ),
-            heroes = heroChoices(homeHeroes, soundCloudConnected, hasYandexToken, ytMusicAccount != null, ytHome, yandexShelves, playlists),
+            heroes = heroChoices(homeHeroes, soundCloudConnected, hasYandexToken, ytMusicAccount != null, ytHome, yandexShelves, spotifyHome, playlists),
             onPick = viewModel.settingsRepo::setHomeHero,
             onFinish = {
                 viewModel.settingsRepo.setHomeSetupDone(true)
@@ -1761,6 +1799,9 @@ fun MusicScreen(viewModel: MusicViewModel) {
                 .firstOrNull { it.id == capturedTrack.id && it.downloadState == DownloadState.DOWNLOADED }
                 ?.let { fav -> { viewModel.deleteDownloadedTrack(fav) } },
             onRadio = when {
+                capturedTrack.spotifyId != null && spotifyAccount != null -> {
+                    { viewModel.playSpotifyRadio(capturedTrack) }
+                }
                 capturedTrack.youTubeVideoId != null -> {
                     { viewModel.playYtRadio(capturedTrack) }
                 }
@@ -1769,10 +1810,10 @@ fun MusicScreen(viewModel: MusicViewModel) {
                 }
                 else -> null
             },
-            radioDescription = if (capturedTrack.youTubeVideoId != null) {
-                tr("Трек и то, что YouTube Music поставит за ним")
-            } else {
-                tr("Трек, а за ним радио Яндекс Музыки — без конца, под то, что слушаешь")
+            radioDescription = when {
+                capturedTrack.spotifyId != null -> tr("Трек и похожие записи из каталога Spotify")
+                capturedTrack.youTubeVideoId != null -> tr("Трек и то, что YouTube Music поставит за ним")
+                else -> tr("Трек, а за ним радио Яндекс Музыки — без конца, под то, что слушаешь")
             },
             onTogether = {
                 showTrackActionsDialog = false
@@ -1790,6 +1831,7 @@ private enum class HomeService(private val ru: String, val icon: (() -> ImageVec
     SoundCloud("SoundCloud", { ServiceIcons.SoundCloud }),
     Yandex("Яндекс Музыка", { ServiceIcons.YandexMusic }),
     YouTube("YouTube Music", { ServiceIcons.YouTubeMusic }),
+    Spotify("Spotify", { ServiceIcons.Spotify }),
     // Not only downloads: history and playlists too, a library.
     Downloads("Моя музыка", { Icons.Default.LibraryMusic });
 
@@ -1806,7 +1848,8 @@ private enum class HomeCategory(private val ru: String, val service: HomeService
     Library("Медиатека", HomeService.Yandex),
     MyMusic("Моя музыка", HomeService.Downloads),
     MyWave("Моя форма", HomeService.Yandex),
-    YandexShelf("Яндекс Музыка", HomeService.Yandex);
+    YandexShelf("Яндекс Музыка", HomeService.Yandex),
+    Spotify("Spotify", HomeService.Spotify);
 
     val title: String get() = tr(ru)
 }
@@ -1964,6 +2007,7 @@ private fun heroChoices(
     youTube: Boolean,
     ytRows: List<YtShelf>,
     yandexRows: List<YtShelf>,
+    spotifyRows: List<YtShelf>,
     playlists: List<Playlist>
 ): List<HeroChoices> {
     fun rows(rows: List<YtShelf>, count: Int) = rows
@@ -2016,6 +2060,18 @@ private fun heroChoices(
                 )
             )
         }
+        if (spotifyRows.isNotEmpty()) {
+            val choice = picked[HomeService.Spotify.name].orEmpty()
+            add(
+                HeroChoices(
+                    service = HomeService.Spotify.name,
+                    title = "Spotify",
+                    icon = ServiceIcons.Spotify,
+                    options = withPicked(rows(spotifyRows, 5), choice),
+                    picked = choice.ifBlank { rows(spotifyRows, 5).firstOrNull()?.first.orEmpty() }
+                )
+            )
+        }
         add(
             HeroChoices(
                 service = HomeService.Downloads.name,
@@ -2051,6 +2107,13 @@ private fun HomeScreen(
     // SoundCloud's other rows, each a shelf after the first three.
     moreSections: List<MoreSection>,
     ytShelves: List<YtShelf>,
+    spotifyShelves: List<YtShelf>,
+    spotifyConnected: Boolean,
+    spotifyLoading: Boolean,
+    spotifyError: String?,
+    onSpotifyLogin: () -> Unit,
+    onReloadSpotify: () -> Unit,
+    onOpenSpotifyArtist: (SoundCloudUser) -> Unit,
     ytConnected: Boolean,
     yandexConnected: Boolean,
     soundCloudConnected: Boolean,
@@ -2089,7 +2152,7 @@ private fun HomeScreen(
     onAutoRefreshClientId: () -> Unit,
     selectedTab: Int,
     onTabSelected: (Int) -> Unit,
-    onOpenSearch: () -> Unit,
+    onOpenSearch: (spotifySelected: Boolean) -> Unit,
     onOpenDownloads: () -> Unit,
     onOpenHistory: () -> Unit,
     onOpenSettings: () -> Unit,
@@ -2111,7 +2174,7 @@ private fun HomeScreen(
                 HomeService.SoundCloud -> soundCloudConnected
                 HomeService.Yandex -> yandexConnected
                 HomeService.YouTube -> ytConnected
-                HomeService.Downloads -> true
+                HomeService.Spotify, HomeService.Downloads -> true
             }
         }
     }
@@ -2286,6 +2349,33 @@ private fun HomeScreen(
             }.stageFirst()
         }
     }
+    val spotifyLead = heroes[HomeService.Spotify.name].orEmpty()
+    val spotifyFeed = remember(spotifyShelves, spotifyConnected, spotifyLoading, spotifyError, spotifyLead) {
+        val rows = spotifyShelves.filter { it.sets.isNotEmpty() || it.tracks.isNotEmpty() || it.artists.isNotEmpty() }
+        if (rows.isEmpty()) {
+            val note = when {
+                !spotifyConnected -> ShelfNote(tr("Войдите в Spotify, чтобы увидеть свою медиатеку."), tr("Войти"), onSpotifyLogin)
+                spotifyLoading -> null
+                else -> ShelfNote(spotifyError ?: tr("Подборки Spotify пока не загрузились."), tr("Обновить"), onReloadSpotify)
+            }
+            listOf(HomeShelf("spotify", "Spotify", ShelfKind.Stage, emptyList(), note = note, loading = spotifyLoading))
+        } else {
+            val lead = rows.indexOfFirst { "row:" + it.title == spotifyLead }.coerceAtLeast(0)
+            rows.mapIndexed { index, shelf ->
+                val artists = shelf.artists.map { artist ->
+                    HeroItem(
+                        key = artist.permalinkUrl ?: "spotify-artist-${artist.id}",
+                        title = artist.username ?: tr("Артист"),
+                        subtitle = tr("Артист"),
+                        artworkUrl = artist.avatarUrl,
+                        icon = Icons.Default.Person,
+                        onClick = { onOpenSpotifyArtist(artist) }
+                    )
+                }
+                rowShelf("spotify-$index-${shelf.title}", shelf, ytShelfItems(shelf, onOpenYtSet, onPlayYtTrack) + artists, lead = index == lead)
+            }.stageFirst()
+        }
+    }
     val myMusicFeed = remember(downloadedCount, downloadedFolderArtworkUri, history, playlists, dlLead) {
         fun item(playlist: Playlist): HeroItem {
             val count = plural(playlist.tracks.size, tr("трек"), tr("трека"), tr("треков"))
@@ -2363,6 +2453,7 @@ private fun HomeScreen(
         HomeService.SoundCloud -> soundCloudFeed
         HomeService.Yandex -> yandexFeed
         HomeService.YouTube -> youTubeFeed
+        HomeService.Spotify -> spotifyFeed
         HomeService.Downloads -> myMusicFeed
     }
     val openedShelf = opened?.let { (shown, key) -> shelvesOf(shown).firstOrNull { it.key == key }?.let { shown to it } }
@@ -2371,18 +2462,17 @@ private fun HomeScreen(
     val servicePager = rememberPagerState(initialPage = services.indexOf(service).coerceAtLeast(0)) { services.size }
     // The service the toolbar lights: the page the pager is on, even mid-swipe.
     val shownService = services.getOrElse(servicePager.currentPage) { service }
-    // A page come to rest is the service picked, kept for the next launch.
-    LaunchedEffect(servicePager.settledPage, services) {
-        val settled = services.getOrNull(servicePager.settledPage) ?: return@LaunchedEffect
-        if (settled != pickedService) {
-            pickedService = settled
-            HomeCategory.entries.firstOrNull { it.service == settled }?.let { onTabSelected(it.ordinal) }
-        }
-    }
-    // A service signed in or out of: the pages shift, the one shown stays.
+    // Restore by service before observing the page index when a login shifts the pages.
     LaunchedEffect(services) {
         val index = services.indexOf(service)
-        if (index >= 0 && index != servicePager.currentPage) servicePager.scrollToPage(index)
+        if (index >= 0 && index != servicePager.settledPage) servicePager.scrollToPage(index)
+        snapshotFlow { servicePager.settledPage }.collect { page ->
+            val settled = services.getOrNull(page) ?: return@collect
+            if (settled != pickedService) {
+                pickedService = settled
+                HomeCategory.entries.firstOrNull { it.service == settled }?.let { onTabSelected(it.ordinal) }
+            }
+        }
     }
 
     // SoundCloud's troubles, said only while signed in to it: not signed in is no trouble.
@@ -2452,7 +2542,7 @@ private fun HomeScreen(
                     scaleX = scale
                     scaleY = scale
                 },
-            key = { services[it] },
+            key = { services.getOrNull(it) ?: "missing-service-$it" },
             beyondViewportPageCount = 1,
             flingBehavior = androidx.compose.foundation.pager.PagerDefaults.flingBehavior(
                 state = servicePager,
@@ -2461,7 +2551,7 @@ private fun HomeScreen(
                 snapAnimationSpec = ServicePageSpring
             )
         ) { page ->
-            val shown = services[page]
+            val shown = services.getOrNull(page) ?: return@HorizontalPager
             val shelves = shelvesOf(shown)
             val line = feedLine(shown, shelves)
             val pageModifier = Modifier
@@ -2597,7 +2687,7 @@ private fun HomeScreen(
             },
             onSearch = {
                 haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                if (accountMenu.open) accountMenu.close() else onOpenSearch()
+                if (accountMenu.open) accountMenu.close() else onOpenSearch(shownService == HomeService.Spotify && spotifyConnected)
             },
             menu = accountMenu,
             menuItems = menuItems,
@@ -4062,6 +4152,7 @@ private fun HomeToolbar(
 ) {
     // The rest of the bar steps back while the avatar's menu is open; touched, it shuts the menu.
     val rest by animateFloatAsState(if (menu.open) 0.4f else 1f, tween(220), label = "toolbarRest")
+    val compact = services.size >= 4
     Row(
         modifier = modifier.fillMaxWidth(),
         verticalAlignment = Alignment.CenterVertically
@@ -4069,6 +4160,7 @@ private fun HomeToolbar(
         val glass = LocalGlass.current
         Surface(
             modifier = Modifier
+                .then(if (compact) Modifier.weight(1f) else Modifier)
                 .padding(end = 8.dp)
                 .graphicsLayer { alpha = rest }
                 .height(64.dp)
@@ -4079,12 +4171,12 @@ private fun HomeToolbar(
             shadowElevation = if (glass) 0.dp else 6.dp
         ) {
             // Where each service's mark lies across the bar, for a finger sliding along it.
-            val spans = remember { mutableMapOf<HomeService, ClosedFloatingPointRange<Float>>() }
+            val spans = remember(services) { mutableMapOf<HomeService, ClosedFloatingPointRange<Float>>() }
             val currentSelected by rememberUpdatedState(selected)
             val currentOnSelect by rememberUpdatedState(onSelect)
             Row(
                 modifier = Modifier
-                    .padding(8.dp)
+                    .padding(if (compact) 4.dp else 8.dp)
                     // Slid along, the bar picks whatever service is under the finger, as a
                     // segmented control does.
                     .pointerInput(services) {
@@ -4107,7 +4199,7 @@ private fun HomeToolbar(
                             }
                         )
                     },
-                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                horizontalArrangement = Arrangement.spacedBy(if (compact) 2.dp else 4.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 services.forEach { service ->
@@ -4115,7 +4207,8 @@ private fun HomeToolbar(
                         service = service,
                         selected = service == selected,
                         onClick = { onSelect(service) },
-                        modifier = Modifier.onGloballyPositioned { coordinates ->
+                        compact = compact,
+                        modifier = (if (compact) Modifier.weight(1f) else Modifier).onGloballyPositioned { coordinates ->
                             val left = coordinates.positionInParent().x
                             spans[service] = left..(left + coordinates.size.width)
                         }
@@ -4124,7 +4217,7 @@ private fun HomeToolbar(
             }
         }
         val searchFill = androidx.compose.ui.graphics.lerp(PanelColors.container, PanelColors.content, 0.08f)
-        Spacer(modifier = Modifier.weight(1f))
+        if (!compact) Spacer(modifier = Modifier.weight(1f))
         Surface(
             onClick = onSearch,
             modifier = Modifier
@@ -4154,6 +4247,7 @@ private fun HomeToolbarItem(
     service: HomeService,
     selected: Boolean,
     onClick: () -> Unit,
+    compact: Boolean,
     modifier: Modifier = Modifier
 ) {
     val container by animateColorAsState(
@@ -4181,7 +4275,8 @@ private fun HomeToolbarItem(
         contentColor = content
     ) {
         Row(
-            modifier = Modifier.padding(horizontal = 12.dp),
+            modifier = Modifier.padding(horizontal = if (compact) 1.dp else 12.dp),
+            horizontalArrangement = Arrangement.Center,
             verticalAlignment = Alignment.CenterVertically
         ) {
             val icon = service.icon
@@ -5127,6 +5222,9 @@ private fun SettingsScreen(
     onYandexLoginClick: () -> Unit,
     onYandexLogoutClick: () -> Unit,
     ytMusicAccount: String?,
+    spotifyAccount: String?,
+    onSpotifyLogin: () -> Unit,
+    onSpotifyLogout: () -> Unit,
     onYtMusicLoginClick: () -> Unit,
     onYtMusicLogoutClick: () -> Unit,
     updates: com.example.myapplication.data.UpdateRepository,
@@ -6078,6 +6176,11 @@ private fun SettingsScreen(
                                 }
                             }
                         }
+                        HorizontalDivider(
+                            color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.25f),
+                            modifier = Modifier.padding(vertical = 2.dp)
+                        )
+                        SpotifyAccountRow(spotifyAccount, onSpotifyLogin, onSpotifyLogout)
                     }
                 }
             }
@@ -6731,8 +6834,10 @@ private fun SearchScreen(
     yandexLoading: Boolean,
     yandexError: String?,
     onYandexQueryChange: (String) -> Unit,
-    ytSearch: YtSearchState,
+    ytSearch: CatalogSearchState,
     onYtQueryChange: (String) -> Unit,
+    spotifySearch: CatalogSearchState = CatalogSearchState(),
+    onSpotifyQueryChange: (String) -> Unit = {},
     albums: List<SoundCloudPlaylist> = emptyList(),
     playlists: List<SoundCloudPlaylist> = emptyList(),
     artists: List<SoundCloudUser> = emptyList(),
@@ -6783,11 +6888,21 @@ private fun SearchScreen(
             ytPage?.playlists.orEmpty(),
             ytPage?.artists.orEmpty()
         )
+        SearchSource.SPOTIFY -> SearchResults(
+            spotifySearch.query,
+            spotifySearch.page?.tracks.orEmpty(),
+            spotifySearch.loading,
+            spotifySearch.error,
+            spotifySearch.page?.albums.orEmpty(),
+            spotifySearch.page?.playlists.orEmpty(),
+            spotifySearch.page?.artists.orEmpty()
+        )
     }
     fun search(on: SearchSource, text: String) = when (on) {
         SearchSource.SOUNDCLOUD -> onQueryChange(text)
         SearchSource.YANDEX -> onYandexQueryChange(text)
         SearchSource.YOUTUBE -> onYtQueryChange(text)
+        SearchSource.SPOTIFY -> onSpotifyQueryChange(text)
     }
     val activeQuery = resultsOf(activeSource).query
     // The keyboard comes up by itself only for a search not yet typed: opened on results — coming
@@ -6906,7 +7021,7 @@ private fun SearchScreen(
                     .nestedScroll(dockHide)
                     // The results, recorded for the tabs floating over their end.
                     .frostSource(results),
-                key = { sources[it] },
+                key = { sources.getOrNull(it) ?: "missing-source-$it" },
                 beyondViewportPageCount = 1,
                 flingBehavior = androidx.compose.foundation.pager.PagerDefaults.flingBehavior(
                     state = sourcePager,
@@ -6914,7 +7029,7 @@ private fun SearchScreen(
                     snapAnimationSpec = ServicePageSpring
                 )
             ) { page ->
-                val pageSource = sources[page]
+                val pageSource = sources.getOrNull(page) ?: return@HorizontalPager
                 // The service shown is composed at once; those beside it, there to be swiped to, once
                 // search has come in — or as a swipe toward them begins. Composed together, search
                 // came in on one frame of 35 ms; a couple of frames later, their own long frame fell
@@ -7009,6 +7124,7 @@ private fun SearchScreen(
                             SearchSource.SOUNDCLOUD -> "SoundCloud"
                             SearchSource.YANDEX -> if (sources.size > 2) tr("Яндекс") else tr("Яндекс Музыка")
                             SearchSource.YOUTUBE -> if (sources.size > 2) "YouTube" else "YouTube Music"
+                            SearchSource.SPOTIFY -> "Spotify"
                         }
                     },
                     pager = sourcePager,
@@ -11326,7 +11442,7 @@ private fun PlayerPanel(
                 Spacer(modifier = Modifier.height(if (landscape) 8.dp else 12.dp))
                 // A track of Yandex Music or YouTube Music is from an album: its title opens it.
                 val hasAlbum = onAlbumClick != null && !live && !fromPhone &&
-                    (track.urn?.startsWith("yandex:track:") == true || track.youTubeVideoId != null)
+                    (track.urn?.startsWith("yandex:track:") == true || track.youTubeVideoId != null || track.spotifyId != null)
                 PlayerTitle(
                     title = track.title ?: "Unknown Track",
                     onClick = if (hasAlbum) {

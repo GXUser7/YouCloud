@@ -27,6 +27,9 @@ sealed interface SharedLink {
     data class YouTubeSet(val browseId: String, val playlistId: String) : SharedLink
     data class YouTubeChannel(val channelId: String) : SharedLink
 
+    /** Spotify's link types share the same base-62 id format. */
+    data class Spotify(val type: String, val id: String) : SharedLink
+
     /** Anything on soundcloud.com — a track, a set, a profile: SoundCloud's own `resolve` says which. */
     data class SoundCloud(val url: String) : SharedLink
 
@@ -45,7 +48,7 @@ object SharedLinks {
     )
 
     // Short links worth following: the services' own, and the shorteners they share through.
-    private val SHORTENERS = setOf("on.soundcloud.com", "soundcloud.app.goo.gl", "ya.cc", "clck.ru")
+    private val SHORTENERS = setOf("on.soundcloud.com", "soundcloud.app.goo.gl", "ya.cc", "clck.ru", "spotify.link")
 
     private val http by lazy {
         OkHttpClient.Builder()
@@ -88,6 +91,8 @@ object SharedLinks {
                 else -> null
             }
         }
+        ref.spotifyIdFor(SPOTIFY_ALBUM)?.let { return "https://open.spotify.com/album/$it" }
+        ref.spotifyIdFor(SPOTIFY_PLAYLIST)?.let { return "https://open.spotify.com/playlist/$it" }
         if (ref.startsWith("yandex:album:")) return "https://music.yandex.ru/album/${ref.removePrefix("yandex:album:")}"
         if (ref.startsWith("yandex:playlist:")) {
             val parts = ref.removePrefix("yandex:playlist:").split(':')
@@ -99,6 +104,7 @@ object SharedLinks {
     /** An artist's page on their service, likewise. */
     fun linkOf(artist: SoundCloudUser): String? {
         val ref = artist.permalinkUrl ?: return null
+        ref.spotifyIdFor(SPOTIFY_ARTIST)?.let { return "https://open.spotify.com/artist/$it" }
         if (ref.startsWith(YT_ARTIST_REF)) return "https://music.youtube.com/channel/${ref.removePrefix(YT_ARTIST_REF)}"
         if (ref.startsWith("yandex:artist:")) return "https://music.yandex.ru/artist/${ref.removePrefix("yandex:artist:")}"
         return ref.takeIf { it.startsWith("https://soundcloud.com/") }
@@ -107,6 +113,7 @@ object SharedLinks {
     /** Which service [link] is a page of, as the app names them ("youtube", "yandex", "soundcloud"). */
     fun serviceOf(link: String?): String? = when {
         link == null -> null
+        runCatching { URI(link).host }.getOrNull() == "open.spotify.com" -> "spotify"
         "youtube.com" in link || "youtu.be" in link -> "youtube"
         "music.yandex." in link -> "yandex"
         "soundcloud.com" in link -> "soundcloud"
@@ -125,6 +132,8 @@ object SharedLinks {
             host == "youtu.be" -> path.firstOrNull()?.takeIf(::isVideoId)?.let(SharedLink::YouTubeVideo)
             host == "youtube.com" || host == "music.youtube.com" -> parseYouTube(path, query)
             host == "soundcloud.com" -> parseSoundCloud(path)
+            host == "open.spotify.com" && uri.scheme.equals("https", ignoreCase = true) &&
+                uri.userInfo == null && uri.port in listOf(-1, 443) -> parseSpotify(path)
             else -> null
         }
     }
@@ -137,6 +146,13 @@ object SharedLinks {
         val request = Request.Builder().url(url).get().header("User-Agent", "Mozilla/5.0 (Android) YouCloud").build()
         val landed = runCatching { http.newCall(request).execute().use { it.request.url.toString() } }.getOrNull()
         landed?.let(::parse)?.takeIf { it !is SharedLink.Short }
+    }
+
+    private fun parseSpotify(path: List<String>): SharedLink.Spotify? {
+        val parts = if (path.firstOrNull()?.startsWith("intl-") == true) path.drop(1) else path
+        val type = parts.getOrNull(0)?.takeIf { it in setOf("track", "artist", "album", "playlist") } ?: return null
+        val id = parts.getOrNull(1)?.takeIf(String::isSpotifyId) ?: return null
+        return SharedLink.Spotify(type, id).takeIf { parts.size == 2 }
     }
 
     private fun parseYandex(path: List<String>): SharedLink? {

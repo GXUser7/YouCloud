@@ -140,11 +140,14 @@ internal class FavoritesSync private constructor(context: Context) : FavoritesRe
         val now = System.currentTimeMillis()
         val up = here.filter { (key, _) -> key.key !in remoteKeys }
             .mapIndexed { index, (key, track) -> FavoriteRows.rowOf(key, track, liked = true, at = now - index) }
-        send(up)
+        val deferred = send(up)
         synchronized(lock) {
             // Turned off meanwhile: nothing kept.
             if (!_enabled.value) return null
-            before.forEach { (key, change) -> if (pending[key] == change) pending.remove(key) }
+            before.forEach { (key, change) -> if (key !in deferred && pending[key] == change) pending.remove(key) }
+            up.filter { it.key in deferred }.forEach { row ->
+                pending.putIfAbsent(row.key, Pending(row.liked, row.changedAt?.let(::parseTime) ?: now))
+            }
             savePending()
             preferences.edit().putString(KEY_OWNER, userId).putString(KEY_UNTIL, look.until).putInt(KEY_VERSION, VERSION).apply()
         }
@@ -188,10 +191,10 @@ internal class FavoritesSync private constructor(context: Context) : FavoritesRe
                     FavoriteRow(service = service, trackId = trackId, liked = false, changedAt = iso(change.at))
                 }
             }
-            send(rows)
+            val deferred = send(rows)
             synchronized(lock) {
                 // Gone unless changed again meanwhile.
-                waiting.forEach { (key, change) -> if (pending[key] == change) pending.remove(key) }
+                waiting.forEach { (key, change) -> if (key !in deferred && pending[key] == change) pending.remove(key) }
                 savePending()
             }
         }
@@ -223,8 +226,20 @@ internal class FavoritesSync private constructor(context: Context) : FavoritesRe
         return if (answer.isJsonObject) gson.fromJson(answer, Look::class.java) else Look()
     }
 
-    private suspend fun send(rows: List<FavoriteRow>) {
-        rows.chunked(BATCH).forEach { batch -> supabase.rpc("save_favorites", mapOf("items" to batch)) }
+    private suspend fun send(rows: List<FavoriteRow>): Set<String> {
+        val (spotify, existing) = rows.partition { it.service == "spotify" }
+        existing.chunked(BATCH).forEach { supabase.rpc("save_favorites", mapOf("items" to it)) }
+        val deferred = mutableSetOf<String>()
+        spotify.chunked(BATCH).forEach { batch ->
+            try {
+                supabase.rpc("save_favorites", mapOf("items" to batch))
+            } catch (e: SupabaseException) {
+                // The previous schema rejects this service. Keep its changes queued until migrated.
+                if (e.code != "23514" || !e.message.orEmpty().contains("favorites_service_check")) throw e
+                deferred += batch.map { it.key }
+            }
+        }
+        return deferred
     }
 
     private fun readPending(): MutableMap<String, Pending> = preferences.getString(KEY_PENDING, null)?.let {

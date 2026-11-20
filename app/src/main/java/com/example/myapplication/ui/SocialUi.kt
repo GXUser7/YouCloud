@@ -708,6 +708,7 @@ internal fun inviteText(nick: String): String =
 internal fun serviceName(service: String?): String? = when (service) {
     "soundcloud" -> "SoundCloud"
     "youtube" -> "YouTube"
+    "spotify" -> "Spotify"
     "yandex" -> tr("Яндекс Музыка")
     "device" -> tr("На устройстве")
     else -> null

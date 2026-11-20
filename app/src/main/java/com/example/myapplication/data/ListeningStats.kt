@@ -64,6 +64,7 @@ class ListeningStats(plays: List<PlayLog.Play>) {
         fun sourceName(source: String): String = when (source) {
             "yandex" -> tr("Яндекс")
             "youtube" -> "YouTube"
+            "spotify" -> "Spotify"
             "soundcloud" -> "SoundCloud"
             "phone" -> tr("С телефона")
             else -> tr("Скачанное")

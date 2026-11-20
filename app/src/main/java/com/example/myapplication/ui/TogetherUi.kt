@@ -111,12 +111,14 @@ private fun plural(count: Int, one: String, few: String, many: String): String {
 private fun serviceAccusative(service: String): String = when (service) {
     TogetherServices.YANDEX -> tr("Яндекс Музыку")
     TogetherServices.YOUTUBE -> "YouTube Music"
+    TogetherServices.SPOTIFY -> "Spotify"
     else -> "SoundCloud"
 }
 
 private fun serviceName(service: String): String = when (service) {
     TogetherServices.YANDEX -> tr("Яндекс Музыка")
     TogetherServices.YOUTUBE -> "YouTube Music"
+    TogetherServices.SPOTIFY -> "Spotify"
     else -> "SoundCloud"
 }
 

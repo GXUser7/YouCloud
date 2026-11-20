@@ -109,17 +109,10 @@
                 <data android:host="www.youtube.com" />
                 <data android:host="m.youtube.com" />
                 <data android:host="youtu.be" />
+                <data android:host="open.spotify.com" />
+                <data android:host="spotify.link" />
             </intent-filter>
         </activity>
-
-        <!-- Serves cached cover art to the Android Auto host, which renders browse lists in its own
-             process and so cannot read our private files. Read-only, and it only ever opens JPEGs
-             from the artwork directory. -->
-        <provider
-            android:name=".data.ArtworkProvider"
-            android:authorities="com.example.myapplication.artwork"
-            android:exported="true"
-            android:grantUriPermissions="true" />
 
         <!-- Gives the package installer read access to a downloaded update, and to nothing else:
              scoped to one directory in @xml/update_paths, and not exported. -->

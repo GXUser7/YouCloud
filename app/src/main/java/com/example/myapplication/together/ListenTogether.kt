@@ -86,7 +86,8 @@ object TogetherServices {
     const val SOUNDCLOUD = "soundcloud"
     const val YANDEX = "yandex"
     const val YOUTUBE = "youtube"
-    val ALL = listOf(SOUNDCLOUD, YANDEX, YOUTUBE)
+    const val SPOTIFY = "spotify"
+    val ALL = listOf(SOUNDCLOUD, YANDEX, YOUTUBE, SPOTIFY)
 
     // Not services: why a track won't play — a file only on the other phone, or something else.
     const val LOCAL = "local"
@@ -96,6 +97,7 @@ object TogetherServices {
     fun of(track: SoundCloudTrack): String? = when {
         track.urn?.startsWith("local:") == true -> null
         track.urn?.startsWith("yandex:") == true -> YANDEX
+        track.urn?.startsWith("spotify:track:") == true -> SPOTIFY
         track.youTubeVideoId != null || track.liveVideoId != null -> YOUTUBE
         else -> SOUNDCLOUD
     }

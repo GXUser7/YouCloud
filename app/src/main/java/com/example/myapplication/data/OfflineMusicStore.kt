@@ -1,5 +1,7 @@
 package com.example.myapplication.data
 
+import kotlinx.coroutines.ensureActive
+
 import android.content.Context
 import androidx.media3.common.MediaItem
 import androidx.media3.common.util.UnstableApi
@@ -95,108 +97,55 @@ class OfflineMusicStore private constructor(context: Context) {
      * @param chunked fetch in [CHUNK_BYTES] ranges. YouTube serves a whole file at barely more than
      *   playback speed and a ranged request at full speed, so its audio comes down in pieces.
      */
-    fun downloadProgressive(
+    suspend fun downloadProgressive(
         url: String,
         trackId: String,
         extension: String = "mp3",
         chunked: Boolean = false,
         userAgent: String? = null,
         onProgress: (Float) -> Unit = {}
-    ): String? {
-        val tempFile = File(downloadDirectory, "track_${trackId}.$extension.tmp")
+    ): String? = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
         val finalFile = File(downloadDirectory, "track_${trackId}.$extension")
-        if (chunked) return downloadInChunks(url, tempFile, finalFile, userAgent, onProgress)
-        return try {
-            val client = http
-            val request = okhttp3.Request.Builder().url(url).build()
-            client.newCall(request).execute().use { response ->
-                if (!response.isSuccessful) return null
-                val body = response.body ?: return null
-                val contentLength = body.contentLength()
-                
-                tempFile.outputStream().use { outputStream ->
-                    body.byteStream().use { inputStream ->
-                        val buffer = ByteArray(8192)
-                        var bytesRead = 0L
-                        var read: Int
-                        while (inputStream.read(buffer).also { read = it } != -1) {
-                            outputStream.write(buffer, 0, read)
-                            bytesRead += read
-                            if (contentLength > 0) {
-                                val progress = bytesRead.toFloat() / contentLength
-                                onProgress(progress.coerceIn(0f, 1f))
+        val tempFile = File.createTempFile("track_${trackId}_", ".tmp", downloadDirectory)
+        try {
+            if (chunked) {
+                val headers = if (userAgent == null) emptyMap() else mapOf("User-Agent" to userAgent)
+                if (!RangedDownload.toFile(url, headers, tempFile, onProgress)) return@withContext null
+            } else {
+                val request = okhttp3.Request.Builder().url(url)
+                    .apply { userAgent?.let { header("User-Agent", it) } }.build()
+                http.newCall(request).execute().use { response ->
+                    if (response.code != 200) return@withContext null
+                    val body = response.body ?: return@withContext null
+                    val expected = body.contentLength()
+                    var size = 0L
+                    tempFile.outputStream().use { output ->
+                        body.byteStream().use { input ->
+                            val buffer = ByteArray(8192)
+                            while (true) {
+                                coroutineContext.ensureActive()
+                                val count = input.read(buffer)
+                                if (count < 0) break
+                                output.write(buffer, 0, count)
+                                size += count
+                                if (expected > 0) onProgress((size.toFloat() / expected).coerceIn(0f, 1f))
                             }
                         }
                     }
-                }
-                
-                if (contentLength > 0 && tempFile.length() != contentLength) {
-                    throw java.io.IOException("File download incomplete. Expected $contentLength bytes, but got ${tempFile.length()} bytes")
-                }
-
-                if (tempFile.length() <= 0L) {
-                    throw java.io.IOException("File download empty. Got 0 bytes.")
-                }
-                
-                if (tempFile.renameTo(finalFile)) {
-                    finalFile.absolutePath
-                } else {
-                    throw java.io.IOException("Failed to rename temp file to final file")
+                    if (size <= 0 || (expected >= 0 && size != expected)) {
+                        throw java.io.IOException("Incomplete recording")
+                    }
                 }
             }
-        } catch (e: Exception) {
-            Log.e("OfflineMusicStore", "Failed to download progressive track", e)
-            if (tempFile.exists()) {
-                tempFile.delete()
-            }
+            coroutineContext.ensureActive()
+            if (!tempFile.renameTo(finalFile)) throw java.io.IOException("Could not save recording")
+            finalFile.absolutePath
+        } catch (e: java.io.IOException) {
+            Log.w("OfflineMusicStore", "Failed to download progressive track: ${e.javaClass.simpleName}")
             null
+        } finally {
+            tempFile.delete()
         }
-    }
-
-    private fun downloadInChunks(
-        url: String,
-        tempFile: File,
-        finalFile: File,
-        userAgent: String?,
-        onProgress: (Float) -> Unit
-    ): String? = try {
-        val client = http
-        var position = 0L
-        var total = -1L
-        tempFile.outputStream().use { output ->
-            while (total < 0 || position < total) {
-                val request = okhttp3.Request.Builder()
-                    .url(url)
-                    .header("Range", "bytes=$position-${position + CHUNK_BYTES - 1}")
-                    .apply { if (userAgent != null) header("User-Agent", userAgent) }
-                    .build()
-                client.newCall(request).execute().use { response ->
-                    if (response.code != 206 && response.code != 200) {
-                        throw java.io.IOException("HTTP ${response.code} at byte $position")
-                    }
-                    val bytes = response.body?.bytes() ?: ByteArray(0)
-                    if (total < 0) {
-                        total = response.header("Content-Range")?.substringAfter('/')?.toLongOrNull()
-                            ?: bytes.size.toLong()
-                    }
-                    // A server that ignores Range sends everything at once.
-                    if (response.code == 200) total = bytes.size.toLong()
-                    if (bytes.isEmpty()) throw java.io.IOException("Empty chunk at byte $position")
-                    output.write(bytes)
-                    position += bytes.size
-                }
-                if (total > 0) onProgress((position.toFloat() / total).coerceIn(0f, 1f))
-            }
-        }
-        if (tempFile.length() <= 0L || tempFile.length() != total) {
-            throw java.io.IOException("Got ${tempFile.length()} of $total bytes")
-        }
-        if (!tempFile.renameTo(finalFile)) throw java.io.IOException("Failed to rename temp file")
-        finalFile.absolutePath
-    } catch (e: Exception) {
-        Log.e("OfflineMusicStore", "Failed to download track in chunks", e)
-        tempFile.delete()
-        null
     }
 
     /** Where the cached cover for [trackId] lives, whether or not it has been fetched yet. */
@@ -278,8 +227,6 @@ class OfflineMusicStore private constructor(context: Context) {
     }
 
     companion object {
-        private const val CHUNK_BYTES = 1L shl 20
-
         private const val MAX_ARTWORK_PX = 640
 
         @Volatile

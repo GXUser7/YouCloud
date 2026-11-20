@@ -544,7 +544,7 @@ class SettingsRepository(
         const val KEY_HOME_SETUP_DONE = "home_setup_done"
         const val KEY_HOME_HERO_PREFIX = "home_hero_"
         // Home's services as the carousels' choices are kept by.
-        val HOME_HERO_SERVICES = listOf("SoundCloud", "Yandex", "YouTube", "Downloads")
+        val HOME_HERO_SERVICES = listOf("SoundCloud", "Yandex", "YouTube", "Spotify", "Downloads")
         const val KEY_CONTENTS_TAUGHT = "contents_taught"
         const val KEY_THEME_MODE = "theme_mode"
         const val KEY_YT_WEB_SEARCH = "yt_web_search"

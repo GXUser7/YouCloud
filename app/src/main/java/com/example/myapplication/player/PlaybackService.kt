@@ -36,6 +36,7 @@ class PlaybackService : MediaLibraryService() {
     // plays there. It sets the volume of all a session plays as one, so the two are kept apart.
     private val equalizers = mutableMapOf<String, Equalizer>()
     private lateinit var preferences: SharedPreferences
+    private val spotifySettings by lazy { com.example.myapplication.data.SettingsRepository(this, com.example.myapplication.BuildConfig.DEFAULT_SOUNDCLOUD_CLIENT_ID, com.example.myapplication.BuildConfig.DEFAULT_SOUNDCLOUD_OAUTH_TOKEN) }
 
     // One at a time, so a prefetch never holds up the track that is actually starting.
     private val youTubePrefetch = java.util.concurrent.Executors.newSingleThreadExecutor()
@@ -148,6 +149,17 @@ class PlaybackService : MediaLibraryService() {
                                 return dataSpec.buildUpon().setUri(android.net.Uri.parse(resolvedUri)).build()
                             }
                         }
+                    } else if (uri.scheme == "spotify") {
+                        val track = com.example.myapplication.data.SpotifyAudio.fromUri(uri)
+                            ?: throw com.example.myapplication.data.TrackUnavailableException("Invalid Spotify track")
+                        val stream = kotlinx.coroutines.runBlocking {
+                            com.example.myapplication.data.SpotifyAudio.resolve(
+                                this@PlaybackService, spotifySettings, track, urgent = true
+                            )
+                        }
+                        return dataSpec.buildUpon().setUri(android.net.Uri.parse(stream.url))
+                            .apply { stream.userAgent?.let { setHttpRequestHeaders(dataSpec.httpRequestHeaders + ("User-Agent" to it)) } }
+                            .build()
                     } else if (uri.scheme == "ytmusic") {
                         val videoId = uri.lastPathSegment
                         if (videoId != null) {
