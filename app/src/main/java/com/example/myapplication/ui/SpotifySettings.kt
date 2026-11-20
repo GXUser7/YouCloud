@@ -1,27 +1,42 @@
 package com.example.myapplication.ui
 
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.material3.AlertDialog
+import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material3.Button
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import com.example.myapplication.data.SPOTIFY_REDIRECT
+import androidx.compose.ui.viewinterop.AndroidView
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
+import com.example.myapplication.data.SPOTIFY_LOGIN
+import com.example.myapplication.data.SpotifyLogin
+import com.example.myapplication.data.SpotifyWebSession
 import com.example.myapplication.i18n.tr
 
 @Composable
@@ -48,36 +63,71 @@ internal fun SpotifyAccountRow(account: String?, onLogin: () -> Unit, onLogout: 
 
 @Composable
 internal fun SpotifyLoginDialog(
-    initialClientId: String,
     busy: Boolean,
     error: String?,
-    onLogin: (String) -> Unit,
+    onSession: (SpotifyWebSession) -> Unit,
+    onRetry: () -> Unit,
     onDismiss: () -> Unit
 ) {
-    var clientId by rememberSaveable { mutableStateOf(initialClientId) }
-    AlertDialog(
+    var attempt by remember { mutableIntStateOf(0) }
+    var loading by remember { mutableStateOf(true) }
+    var pageError by remember { mutableStateOf(false) }
+    val currentOnSession by rememberUpdatedState(onSession)
+    Dialog(
         onDismissRequest = onDismiss,
-        icon = { Icon(ServiceIcons.Spotify, contentDescription = null) },
-        title = { Text(tr("Вход в Spotify")) },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                Text(tr("Возьмите Client ID в Spotify Developer Dashboard и добавьте в приложении Spotify этот Redirect URI."))
-                Text(SPOTIFY_REDIRECT, style = MaterialTheme.typography.labelLarge)
-                OutlinedTextField(
-                    value = clientId,
-                    onValueChange = { clientId = it },
-                    label = { Text("Client ID") },
-                    enabled = !busy,
-                    singleLine = true,
-                    isError = error != null
-                )
-                if (busy) Text(tr("Завершите вход в браузере."))
-                if (error != null) Text(error, color = MaterialTheme.colorScheme.error)
+        properties = DialogProperties(usePlatformDefaultWidth = false, dismissOnClickOutside = false)
+    ) {
+        Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
+            Column(Modifier.fillMaxSize()) {
+                Row(
+                    Modifier.fillMaxWidth().statusBarsPadding().padding(horizontal = 16.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    IconButton(onClick = onDismiss) {
+                        Icon(Icons.Default.Close, contentDescription = tr("Закрыть"))
+                    }
+                    Text(tr("Вход в Spotify"), style = MaterialTheme.typography.titleLarge)
+                }
+                val message = error ?: if (pageError) tr("Не удалось открыть страницу входа Spotify.") else null
+                if (message != null) {
+                    Row(
+                        Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        Text(message, Modifier.weight(1f), color = MaterialTheme.colorScheme.error)
+                        FilledTonalButton(onClick = {
+                            onRetry()
+                            pageError = false
+                            loading = true
+                            attempt++
+                        }, enabled = !busy) { Text(tr("Повторить")) }
+                    }
+                } else if (busy) {
+                    Text(tr("Подключаем Spotify…"), Modifier.padding(horizontal = 16.dp, vertical = 8.dp))
+                }
+                if (loading || busy) LinearProgressIndicator(Modifier.fillMaxWidth())
+                Box(Modifier.weight(1f).fillMaxWidth()) {
+                    key(attempt) {
+                        if (!pageError) AndroidView(
+                            factory = { context ->
+                                SpotifyLogin.webView(
+                                    context,
+                                    onSession = { currentOnSession(it) },
+                                    onLoading = { loading = it },
+                                    onError = {
+                                        loading = false
+                                        pageError = true
+                                    }
+                                ).apply { loadUrl(SPOTIFY_LOGIN) }
+                            },
+                            onRelease = { it.destroy() },
+                            modifier = Modifier.fillMaxSize()
+                        )
+                    }
+                }
             }
-        },
-        confirmButton = {
-            Button(onClick = { onLogin(clientId) }, enabled = !busy) { Text(tr("Войти")) }
-        },
-        dismissButton = { TextButton(onClick = onDismiss) { Text(tr("Отмена")) } }
-    )
+        }
+    }
 }

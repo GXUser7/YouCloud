@@ -11,4 +11,5 @@
    <exclude domain="sharedpref" path="device.xml"/>
 -->
     <exclude domain="sharedpref" path="spotify_session.xml" />
+    <exclude domain="root" path="app_webview" />
 </full-backup-content>

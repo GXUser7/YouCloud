@@ -35,6 +35,7 @@ import com.example.myapplication.data.SPOTIFY_TRACK
 import com.example.myapplication.data.SpotifyAudio
 import com.example.myapplication.data.SpotifyClient
 import com.example.myapplication.data.SpotifyFailure
+import com.example.myapplication.data.SpotifyWebSession
 import com.example.myapplication.data.spotifyId
 import com.example.myapplication.data.spotifyIdFor
 import com.example.myapplication.data.isProgressiveSource
@@ -199,7 +200,6 @@ class MusicViewModel(
 
     private val spotify = SpotifyClient.get(context)
     val spotifyAccount = spotify.account
-    val spotifyClientId get() = spotify.clientId
     private val _spotifyLogin = MutableStateFlow(false)
     val spotifyLogin = _spotifyLogin.asStateFlow()
     private val _spotifyLoginBusy = MutableStateFlow(false)
@@ -386,42 +386,41 @@ class MusicViewModel(
 
     fun cancelSpotifyLogin() {
         spotifyLoginJob?.cancel()
+        spotifyLoginJob = null
         _spotifyLogin.value = false
         _spotifyLoginBusy.value = false
+        _spotifyLoginError.value = null
     }
 
-    fun signInToSpotify(clientId: String) {
-        if (_spotifyLoginBusy.value) return
-        val id = clientId.trim()
-        if (!id.matches(Regex("[A-Fa-f0-9]{32}"))) {
-            _spotifyLoginError.value = tr("Введите Client ID приложения Spotify.")
-            return
-        }
+    fun retrySpotifyLogin() {
+        _spotifyLoginError.value = null
+    }
+
+    internal fun onSpotifySessionCaptured(session: SpotifyWebSession) {
+        if (!_spotifyLogin.value || _spotifyLoginBusy.value) return
         _spotifyLoginBusy.value = true
         _spotifyLoginError.value = null
         spotifyLoginJob = viewModelScope.launch {
             try {
-                spotify.signIn(id) { uri ->
-                    withContext(Dispatchers.Main) {
-                        val intent = android.content.Intent(android.content.Intent.ACTION_VIEW, uri)
-                            .addCategory(android.content.Intent.CATEGORY_BROWSABLE)
-                            .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
-                        context.startActivity(intent)
-                    }
-                }
+                spotify.signIn(session)
                 _spotifyLogin.value = false
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
                 _spotifyLoginError.value = spotifyMessage(e)
             } finally {
-                _spotifyLoginBusy.value = false
+                if (spotifyLoginJob === coroutineContext[Job]) _spotifyLoginBusy.value = false
             }
         }
     }
 
     fun logoutSpotify() {
         cancelSpotifyLogin()
+        spotifyHomeJob?.cancel()
+        spotifySearchJob?.cancel()
+        spotifyArtistJob?.cancel()
+        spotifyAlbumJob?.cancel()
+        spotifyRadioJob?.cancel()
         viewModelScope.launch { spotify.signOut() }
     }
 

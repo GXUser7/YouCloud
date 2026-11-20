@@ -42,35 +42,56 @@ internal fun JsonObject.number(key: String): Long? =
 private fun JsonObject.flag(key: String): Boolean? =
     get(key)?.takeIf { it.isJsonPrimitive && it.asJsonPrimitive.isBoolean }?.asBoolean
 
-private fun JsonObject.cover(): String? =
-    items("images").firstNotNullOfOrNull { it.string("url")?.takeIf { url -> url.startsWith("https://") } }
+private fun JsonObject.spotifyData(): JsonObject = obj("data") ?: this
+
+private fun JsonObject.serviceId(raw: JsonObject, ref: String): String? {
+    (string("uri") ?: raw.string("_uri"))?.let { return it.spotifyIdFor(ref) }
+    return string("id")?.takeIf(String::isSpotifyId)
+}
+
+private fun JsonObject.cover(): String? {
+    val images = items("images") + obj("coverArt")?.items("sources").orEmpty() +
+        obj("images")?.items("items")?.flatMap { it.items("sources") }.orEmpty() +
+        obj("visuals")?.obj("avatarImage")?.items("sources").orEmpty() +
+        obj("image")?.items("sources").orEmpty() +
+        obj("visualIdentity")?.obj("squareCoverImage")?.obj("image")?.obj("data")?.items("sources").orEmpty()
+    return images.firstNotNullOfOrNull { it.string("url")?.takeIf { url -> spotifyHttpsHost(url) != null } }
+}
+
+private fun JsonObject.credits(): List<JsonObject> =
+    obj("artists")?.items("items") ?: obj("firstArtist")?.items("items") ?: items("artists")
 
 internal fun spotifyArtist(raw: JsonObject): SoundCloudUser? {
-    val id = raw.string("id")?.takeIf(String::isSpotifyId) ?: return null
-    val name = raw.string("name") ?: return null
-    val ref = SPOTIFY_ARTIST + id
+    val data = raw.spotifyData()
+    val name = data.obj("profile")?.string("name") ?: data.string("name") ?: return null
+    val ref = data.serviceId(raw, SPOTIFY_ARTIST)?.let { SPOTIFY_ARTIST + it }
     return SoundCloudUser(
-        id = spotifyKey(ref),
+        id = ref?.let(::spotifyKey),
         username = name,
-        avatarUrl = raw.cover(),
+        avatarUrl = data.cover(),
+        followersCount = data.obj("stats")?.number("followers")?.coerceIn(0, Int.MAX_VALUE.toLong())?.toInt(),
         permalinkUrl = ref
     )
 }
 
-internal fun spotifyTrack(raw: JsonObject, album: JsonObject? = raw.obj("album")): SoundCloudTrack? {
-    if (raw.flag("is_local") == true || raw.flag("is_playable") == false || raw.obj("restrictions") != null) return null
-    if (raw.string("type")?.let { it != "track" } == true) return null
-    val id = raw.string("id")?.takeIf(String::isSpotifyId) ?: return null
-    val title = raw.string("name") ?: return null
-    val duration = raw.number("duration_ms")?.takeIf { it > 0 } ?: return null
-    val artists = raw.items("artists").mapNotNull(::spotifyArtist).distinctBy { it.permalinkUrl }
+internal fun spotifyTrack(raw: JsonObject, album: JsonObject? = null): SoundCloudTrack? {
+    val data = raw.spotifyData()
+    if (data.flag("is_local") == true || data.flag("is_playable") == false || data.obj("restrictions") != null) return null
+    if (data.string("__typename")?.let { it != "Track" } == true ||
+        data.string("type")?.let { !it.equals("track", ignoreCase = true) } == true) return null
+    val id = data.serviceId(raw, SPOTIFY_TRACK) ?: return null
+    val title = data.string("name") ?: return null
+    val duration = (data.obj("duration")?.number("totalMilliseconds")
+        ?: data.obj("trackDuration")?.number("totalMilliseconds")
+        ?: data.number("duration_ms"))?.takeIf { it > 0 } ?: return null
+    val artists = data.credits().mapNotNull(::spotifyArtist).distinctBy { it.permalinkUrl ?: it.username }
     val ref = SPOTIFY_TRACK + id
     return SoundCloudTrack(
         id = spotifyKey(ref),
         urn = ref,
         kind = "track",
         title = title,
-        artworkUrl = album?.cover(),
+        artworkUrl = (data.obj("albumOfTrack") ?: data.obj("album"))?.cover() ?: album?.cover(),
         permalinkUrl = "https://open.spotify.com/track/$id",
         user = artists.firstOrNull(),
         artists = artists,
@@ -80,23 +101,46 @@ internal fun spotifyTrack(raw: JsonObject, album: JsonObject? = raw.obj("album")
 }
 
 internal fun spotifySet(raw: JsonObject, isAlbum: Boolean): SoundCloudPlaylist? {
-    val id = raw.string("id")?.takeIf(String::isSpotifyId) ?: return null
-    val name = raw.string("name") ?: return null
-    val ref = (if (isAlbum) SPOTIFY_ALBUM else SPOTIFY_PLAYLIST) + id
-    val count = if (isAlbum) raw.number("total_tracks") else (raw.obj("items") ?: raw.obj("tracks"))?.number("total")
+    val data = raw.spotifyData()
+    val typename = data.string("__typename")
+    if (typename == "NotFound") return null
+    val prefix = if (isAlbum) SPOTIFY_ALBUM else SPOTIFY_PLAYLIST
+    if (typename in setOf("Track", "Artist", "Episode", "Show")) return null
+    val id = data.serviceId(raw, prefix) ?: return null
+    val name = data.string("name") ?: return null
+    val ref = prefix + id
+    val count = if (isAlbum) {
+        data.obj("tracksV2")?.number("totalCount") ?: data.number("total_tracks")
+    } else {
+        data.obj("content")?.number("totalCount") ?: (data.obj("items") ?: data.obj("tracks"))?.number("total")
+    }
     return SoundCloudPlaylist(
         id = spotifyKey(ref),
         title = name,
         trackCount = count?.coerceIn(0, Int.MAX_VALUE.toLong())?.toInt() ?: 0,
-        artworkUrl = raw.cover(),
+        artworkUrl = data.cover(),
         permalinkUrl = ref,
-        user = if (isAlbum) raw.items("artists").firstNotNullOfOrNull(::spotifyArtist)
-        else raw.obj("owner")?.let { SoundCloudUser(username = it.string("display_name") ?: it.string("id")) },
+        user = if (isAlbum) data.credits().firstNotNullOfOrNull(::spotifyArtist)
+        else (data.obj("ownerV2")?.obj("data") ?: data.obj("owner"))?.let {
+            SoundCloudUser(username = it.string("name") ?: it.string("display_name") ?: it.string("id"))
+        },
         isAlbum = isAlbum,
-        setType = raw.string("album_type"),
-        releaseDate = raw.string("release_date")
+        setType = data.string("type")?.lowercase(Locale.ROOT) ?: data.string("album_type"),
+        releaseDate = data.obj("date")?.string("isoString") ?: data.string("release_date")
     )
 }
+
+internal fun spotifyHomeRows(data: JsonObject): List<YtShelf> =
+    data.obj("home")?.obj("sectionContainer")?.obj("sections")?.items("items").orEmpty().mapNotNull { section ->
+        val title = section.obj("data")?.obj("title") ?: return@mapNotNull null
+        val name = title.string("transformedLabel") ?: title.string("text") ?: return@mapNotNull null
+        val cards = section.obj("sectionItems")?.items("items").orEmpty().mapNotNull { it.obj("content") }
+        val sets = cards.mapNotNull { card -> spotifySet(card, isAlbum = false) ?: spotifySet(card, isAlbum = true) }
+        val tracks = cards.mapNotNull(::spotifyTrack)
+        val artists = cards.filter { it.spotifyData().serviceId(it, SPOTIFY_ARTIST) != null }.mapNotNull(::spotifyArtist)
+        YtShelf(name, tracks.distinctBy { it.id }, sets.distinctBy { it.id }, artists.distinctBy { it.id })
+            .takeIf { it.tracks.isNotEmpty() || it.sets.isNotEmpty() || it.artists.isNotEmpty() }
+    }
 
 private val titleNotes = Regex(
     """\s*[\[(](?:feat\.?|ft\.?|featuring)\s+[^)\]]+[)\]]|\s+-\s+(?:\d{4}\s+)?remaster(?:ed)?(?:\s+\d{4})?$""",

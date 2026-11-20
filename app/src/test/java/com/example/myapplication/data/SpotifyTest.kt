@@ -9,6 +9,7 @@ import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.util.Base64
 
 class SpotifyTest {
     private val id = "4uLU6hMCjMI75M1A2tKUQC"
@@ -50,6 +51,64 @@ class SpotifyTest {
         assertNull(spotifyMatchScore(base, base.copy(user = SoundCloudUser(username = "Other Artist Group"), title = "Different")))
         assertNull(spotifyMatchScore(base, base.copy(user = SoundCloudUser(username = "Someone Else"))))
         assertNull(spotifyMatchScore(base, base.copy(duration = 30_000L)))
+    }
+
+    @Test
+    fun acceptsTheWebPlayerSessionOnlyForSpotifyRequests() {
+        val now = 100_000L
+        val claims = Base64.getUrlEncoder().withoutPadding().encodeToString("""{"exp":1200}""".toByteArray())
+        val token = "header.$claims.signature"
+        val url = "https://api-partner.spotify.com/pathfinder/v2/query"
+        val headers = mapOf("authorization" to "Bearer $token", "CLIENT-TOKEN" to "browser-client-token", "Origin" to SPOTIFY_ORIGIN)
+        val session = spotifyRequestSession(url, headers, now)!!
+        assertEquals(token, session.token)
+        assertEquals("browser-client-token", session.clientToken)
+        assertEquals(1_200_000L, session.expiresAt)
+
+        assertNull(spotifyRequestSession("https://api-partner.spotify.com.untrusted.test/query", headers, now))
+        assertNull(spotifyRequestSession("https://api-partner.spotify.com@untrusted.test/query", headers, now))
+        assertNull(spotifyRequestSession("http://api-partner.spotify.com/query", headers, now))
+        assertNull(spotifyRequestSession(url, headers + ("Origin" to "https://untrusted.test"), now))
+        assertNull(spotifyRequestSession(url, headers - "CLIENT-TOKEN", now))
+        assertNull(spotifyRequestSession(url, headers, now = 1_200_000L))
+    }
+
+    @Test
+    fun readsWebPlayerHomeWithWrappedTracksAndPlaylists() {
+        val playlistId = "37i9dQZF1DXcBWIGoYBM5M"
+        val response = JsonParser.parseString("""
+            {"home":{"sectionContainer":{"sections":{"items":[
+                {
+                    "data":{"title":{"transformedLabel":"Your picks"}},
+                    "sectionItems":{"items":[
+                        {"content":{"data":{"__typename":"Playlist","uri":"spotify:playlist:$playlistId","name":"Mix","content":{"totalCount":21}}}},
+                        {"content":{"data":{"__typename":"Track","uri":"spotify:track:$id","name":"A Song",
+                            "trackDuration":{"totalMilliseconds":210000},
+                            "artists":{"items":[{"uri":"spotify:artist:$artistId","profile":{"name":"An Artist"}}]},
+                            "albumOfTrack":{"coverArt":{"sources":[{"url":"https://i.scdn.co/cover"}]}}}}},
+                        {"content":{"data":{"__typename":"NotFound"}}}
+                    ]}
+                }
+            ]}}}}
+        """.trimIndent()).asJsonObject
+        val row = spotifyHomeRows(response).single()
+        assertEquals("Your picks", row.title)
+        assertEquals(SPOTIFY_PLAYLIST + playlistId, row.sets.single().permalinkUrl)
+        assertEquals(21, row.sets.single().trackCount)
+        val track = row.tracks.single()
+        assertEquals(SPOTIFY_TRACK + id, track.urn)
+        assertEquals(SPOTIFY_ARTIST + artistId, track.user?.permalinkUrl)
+        assertEquals(210_000L, track.duration)
+        assertEquals("https://i.scdn.co/cover", track.artworkUrl)
+    }
+
+    @Test
+    fun refreshesOnlyKnownCatalogOperations() {
+        val hash = "a".repeat(64)
+        assertEquals(
+            mapOf("profileAttributes" to hash),
+            SpotifyQueries.extractOperations("""x('profileAttributes','query','$hash');x('unrelated','query','$hash')""")
+        )
     }
 
     @Test

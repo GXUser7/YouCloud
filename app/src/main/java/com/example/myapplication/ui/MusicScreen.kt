@@ -1688,7 +1688,13 @@ fun MusicScreen(viewModel: MusicViewModel) {
     if (spotifyLogin) {
         val busy by viewModel.spotifyLoginBusy.collectAsState()
         val error by viewModel.spotifyLoginError.collectAsState()
-        SpotifyLoginDialog(viewModel.spotifyClientId, busy, error, viewModel::signInToSpotify, viewModel::cancelSpotifyLogin)
+        SpotifyLoginDialog(
+            busy = busy,
+            error = error,
+            onSession = viewModel::onSpotifySessionCaptured,
+            onRetry = viewModel::retrySpotifyLogin,
+            onDismiss = viewModel::cancelSpotifyLogin
+        )
     }
     val homeSetupDone by viewModel.settingsRepo.homeSetupDone.collectAsState()
     val homeChoicesOpen by viewModel.settingsRepo.homeChoicesOpen.collectAsState()
