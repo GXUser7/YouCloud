@@ -324,4 +324,22 @@ class ListenTogetherTest {
         // Nobody waited: the guest had it.
         assertTrue(p.hostPlayer.isPlaying.value)
     }
+
+    @Test
+    fun spotifyTracksDoNotRequireGuestSpotifySignIn() {
+        val spotifyTrack = SoundCloudTrack(
+            id = -9_000_000_001L,
+            urn = "spotify:track:4uLU6hMCjMI75M1A2tKUQC",
+            title = "Spotify Song",
+            duration = 210_000L,
+            user = SoundCloudUser(username = "Artist")
+        )
+        assertEquals(TogetherServices.SPOTIFY, TogetherServices.of(spotifyTrack))
+        assertFalse(TogetherServices.SPOTIFY in TogetherServices.ALL)
+        val slim = spotifyTrack.slim()
+        assertEquals(spotifyTrack.urn, slim.urn)
+        assertEquals(spotifyTrack.title, slim.title)
+        assertEquals(spotifyTrack.duration, slim.duration)
+        assertEquals("Artist", slim.user?.username)
+    }
 }

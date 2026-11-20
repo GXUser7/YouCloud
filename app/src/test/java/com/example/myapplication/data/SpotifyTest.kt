@@ -228,4 +228,41 @@ class SpotifyTest {
         assertTrue(imperfectYtVideo > perfectYandex)
         assertTrue(perfectYandex > perfectSoundCloud)
     }
+
+    @Test
+    fun infersCastMimeTypeFromCachedSpotifyStreamKeys() {
+        assertEquals("audio/webm", StreamCache.mimeTypeForSpotifyKey("stream:spotify:$id:yt_abc12345678_251"))
+        assertEquals("audio/mp4", StreamCache.mimeTypeForSpotifyKey("stream:spotify:$id:yt_abc12345678_140"))
+        assertEquals("audio/mpeg", StreamCache.mimeTypeForSpotifyKey("stream:spotify:$id:ya_98765"))
+        assertEquals("audio/mpeg", StreamCache.mimeTypeForSpotifyKey("stream:spotify:$id:sc_12345"))
+    }
+
+    @Test
+    fun parsesYouTubeLibraryPlaylistsSkippingAlbumsAndPodcasts() {
+        val json = JsonParser.parseString("""
+            {"items":[
+                {"musicTwoRowItemRenderer":{
+                    "title":{"runs":[{"text":"Liked Music"}]},
+                    "subtitle":{"runs":[{"text":"Auto playlist"}]},
+                    "navigationEndpoint":{"browseEndpoint":{"browseId":"VLLM","browseEndpointContextSupportedConfigs":{"browseEndpointContextMusicConfig":{"pageType":"MUSIC_PAGE_TYPE_PLAYLIST"}}}}
+                }},
+                {"musicTwoRowItemRenderer":{
+                    "title":{"runs":[{"text":"Episodes for Later"}]},
+                    "navigationEndpoint":{"browseEndpoint":{"browseId":"VLSE","browseEndpointContextSupportedConfigs":{"browseEndpointContextMusicConfig":{"pageType":"MUSIC_PAGE_TYPE_PLAYLIST"}}}}
+                }},
+                {"musicTwoRowItemRenderer":{
+                    "title":{"runs":[{"text":"My Mix"}]},
+                    "subtitle":{"runs":[{"text":"You"}]},
+                    "navigationEndpoint":{"browseEndpoint":{"browseId":"VLPL123","browseEndpointContextSupportedConfigs":{"browseEndpointContextMusicConfig":{"pageType":"MUSIC_PAGE_TYPE_PLAYLIST"}}}}
+                }},
+                {"musicTwoRowItemRenderer":{
+                    "title":{"runs":[{"text":"Some Album"}]},
+                    "navigationEndpoint":{"browseEndpoint":{"browseId":"MPREb_123","browseEndpointContextSupportedConfigs":{"browseEndpointContextMusicConfig":{"pageType":"MUSIC_PAGE_TYPE_ALBUM"}}}}
+                }}
+            ]}
+        """.trimIndent())
+        val parsed = YouTubeMusicClient { null }.parseLibraryPlaylists(json)
+        assertEquals(listOf("Liked Music", "My Mix"), parsed.map { it.title })
+        assertTrue(parsed.first().isYtLikedMusic)
+    }
 }

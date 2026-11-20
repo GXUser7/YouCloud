@@ -189,6 +189,20 @@ class YouTubeMusicClient(private val authProvider: () -> YtAuth?) {
         return listOf(first.copy(sets = listOf(liked) + first.sets)) + rest.drop(1)
     }
 
+    /** The account's playlists from the Library tab (Liked Music and user/saved playlists). */
+    suspend fun libraryPlaylists(): List<SoundCloudPlaylist> {
+        val root = post("browse", json { addProperty("browseId", "FEmusic_liked_playlists") })
+        return parseLibraryPlaylists(root)
+    }
+
+    internal fun parseLibraryPlaylists(root: JsonElement): List<SoundCloudPlaylist> =
+        root.findAll("musicTwoRowItemRenderer")
+            .mapNotNull(::parseTileSet)
+            .filter { set ->
+                set.isAlbum != true && parseSetRef(set.permalinkUrl)?.first != "VLSE"
+            }
+            .distinctBy { it.id }
+
     /** YouTube Music's radio from [videoId]: what it plays when that track is started. */
     suspend fun radio(videoId: String): List<SoundCloudTrack> = watchQueue(json {
         addProperty("videoId", videoId)

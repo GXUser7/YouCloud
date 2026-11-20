@@ -439,3 +439,58 @@ data class YandexRotorEvent(
     val trackId: String? = null,
     val totalPlayedSeconds: Double? = null
 )
+
+/**
+ * Tracks what a Yandex Rotor radio/wave session has already queued vs what earlier wave sessions
+ * played. Fresh tracks are always preferred, while [allowHeardBefore] lets narrow moods/modes
+ * ("Любимое", "Грустное + Популярное") keep playing instead of collapsing to 0–1 tracks.
+ */
+internal class YandexRotorFilter(
+    private val heardBefore: List<String> = emptyList(),
+    private val queueSentLimit: Int = 150
+) {
+    private val heardBeforeRaw = heardBefore.map { it.substringBefore(':') }.toHashSet()
+    private val sessionGiven = LinkedHashSet<String>()
+    private val sessionGivenRaw = HashSet<String>()
+
+    /** Seed track or already-queued track: never offered again during this session. */
+    fun markGiven(trackId: String) {
+        sessionGivenRaw.add(trackId.substringBefore(':'))
+        sessionGiven.add(trackId)
+    }
+
+    /** Latest track ids to send to Rotor as `queue`. */
+    fun heard(): List<String> = (heardBefore + sessionGiven).takeLast(queueSentLimit)
+
+    /**
+     * Picks playable tracks from [sequence]. When [allowHeardBefore] is false, skips tracks from
+     * both this session and [heardBefore]. When true, only skips tracks already given in this
+     * session so the wave never runs dry on narrow filters.
+     */
+    fun accept(sequence: List<YandexRotorItem>?, allowHeardBefore: Boolean = false): List<SoundCloudTrack> =
+        sequence.orEmpty()
+            .mapNotNull { it.track }
+            .filter { it.available != false }
+            .mapNotNull { yandexTrack ->
+                val track = yandexTrack.toSoundCloudTrack()
+                val id = track.urn?.removePrefix("yandex:track:") ?: return@mapNotNull null
+                val raw = id.substringBefore(':')
+                if (raw in sessionGivenRaw) return@mapNotNull null
+                if (!allowHeardBefore && raw in heardBeforeRaw) return@mapNotNull null
+                sessionGivenRaw.add(raw)
+                sessionGiven.add(id)
+                track
+            }
+
+    /**
+     * Last-resort reset when a very long narrow session has cycled through its entire pool:
+     * keeps only the most recent [keepRecent] tracks blocked so nothing repeats back-to-back.
+     */
+    fun relaxSessionHistory(keepRecent: Int = 10) {
+        val recent = sessionGiven.toList().takeLast(keepRecent)
+        sessionGiven.clear()
+        sessionGiven.addAll(recent)
+        sessionGivenRaw.clear()
+        recent.forEach { sessionGivenRaw.add(it.substringBefore(':')) }
+    }
+}

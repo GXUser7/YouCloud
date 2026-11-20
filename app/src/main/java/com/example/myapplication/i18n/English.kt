@@ -962,5 +962,9 @@ internal object English {
         put("Выбрано", "Selected")
         put("Мощная: полосы вдвое уже, точнее форма верха. Работает втрое тяжелее лёгкой — всё равно немного", "Strong: bands half as wide, the shape of the highs closer. Three times the light one's work — still little")
         put("Лёгкая встроена и почти не нагружает телефон. Мощная точнее передаёт форму верха, %s МБ — скачается по нажатию", "The light one is built in and barely loads the phone. The strong one gets the shape of the highs closer, %s MB — downloaded on a tap")
+        put("Плейлисты SoundCloud", "SoundCloud playlists")
+        put("Плейлисты Яндекс Музыки", "Yandex Music playlists")
+        put("Плейлисты YouTube Music", "YouTube Music playlists")
+        put("Плейлисты Spotify", "Spotify playlists")
     }
 }

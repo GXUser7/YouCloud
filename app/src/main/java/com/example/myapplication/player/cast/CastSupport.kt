@@ -338,6 +338,13 @@ internal class CastSupport(
 
     private fun contentTypeOf(uri: Uri): String = when (uri.scheme) {
         "ytmusic" -> "audio/mp4"
+        "spotify" -> {
+            val id = uri.lastPathSegment
+            id?.let(com.example.myapplication.data.SpotifyAudio::cachedMimeType)
+                ?: id?.let { com.example.myapplication.data.StreamCache.cachedSpotifyKey(context, it) }
+                    ?.let(com.example.myapplication.data.StreamCache::mimeTypeForSpotifyKey)
+                ?: "audio/mp4"
+        }
         "file" -> when (uri.lastPathSegment?.substringAfterLast('.', "")?.lowercase()) {
             "m4a", "mp4", "aac" -> "audio/mp4"
             "opus", "ogg" -> "audio/ogg"

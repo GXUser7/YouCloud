@@ -159,6 +159,12 @@ class PlaybackService : MediaLibraryService() {
                             Log.i("SpotifyAudio", "[${uri.lastPathSegment}] Playing downloaded file")
                             return dataSpec.buildUpon().setUri(android.net.Uri.parse(local)).build()
                         }
+                        uri.lastPathSegment?.let { spotifyId ->
+                            StreamCache.cachedSpotifyKey(this@PlaybackService, spotifyId)
+                        }?.let { key ->
+                            Log.d("SpotifyAudio", "[${uri.lastPathSegment}] Playing from stream cache ($key)")
+                            return dataSpec.buildUpon().setKey(key).build()
+                        }
                         val stream = kotlinx.coroutines.runBlocking {
                             com.example.myapplication.data.SpotifyAudio.resolve(
                                 this@PlaybackService, spotifySettings, track, urgent = true
@@ -358,16 +364,19 @@ class PlaybackService : MediaLibraryService() {
             override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
                 // A track its service won't play (blocked, withdrawn, DRM only): on to the next
                 // one at once, as if it weren't in the queue. Not for a guest listening together,
-                // whose queue is the host's to move.
-                if (com.example.myapplication.data.isTrackUnavailable(error) && !SessionBridge.followingHost.value) {
+                // whose queue is the host's to move — and never retried either, since all sources
+                // already failed.
+                if (com.example.myapplication.data.isTrackUnavailable(error)) {
                     retries = 0
-                    Log.w("PlaybackService", "Skipping a track that can't be played: ${error.cause?.message}")
-                    handler.post {
-                        if (player.playerError == null) return@post
-                        if (player.hasNextMediaItem()) {
-                            player.seekToNextMediaItem()
-                            player.prepare()
-                            player.play()
+                    Log.w("PlaybackService", "Track can't be played: ${error.cause?.message}")
+                    if (!SessionBridge.followingHost.value) {
+                        handler.post {
+                            if (player.playerError == null) return@post
+                            if (player.hasNextMediaItem()) {
+                                player.seekToNextMediaItem()
+                                player.prepare()
+                                player.play()
+                            }
                         }
                     }
                     return

@@ -131,4 +131,14 @@ data class SoundCloudStreamItem(
     val playlist: SoundCloudPlaylist? = null
 )
 
+data class SoundCloudLibraryResponse(
+    val collection: List<SoundCloudLibraryItem> = emptyList(),
+    @SerializedName("next_href") val nextHref: String? = null
+)
+
+data class SoundCloudLibraryItem(
+    val type: String = "",
+    val playlist: SoundCloudPlaylist? = null
+)
+
 

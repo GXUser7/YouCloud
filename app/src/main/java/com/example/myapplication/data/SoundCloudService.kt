@@ -183,6 +183,14 @@ interface SoundCloudService {
         @Query("client_id") clientId: String
     ): SoundCloudUser
 
+    @GET("me/library/all")
+    suspend fun getLibraryAll(
+        @Query("client_id") clientId: String,
+        @Query("limit") limit: Int = 50,
+        @Query("app_version") appVersion: String = SoundCloudApi.APP_VERSION,
+        @Query("app_locale") appLocale: String = "en"
+    ): SoundCloudLibraryResponse
+
     @GET("stream/users/{id}")
     suspend fun getStreamUserTracks(
         @Path("id") userId: Long,

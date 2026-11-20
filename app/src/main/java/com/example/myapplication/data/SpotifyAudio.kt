@@ -371,6 +371,29 @@ internal object SpotifyAudio {
         throw unavailable()
     }
 
+    private fun latestCachedStream(spotifyId: String): Stream? {
+        val now = android.os.SystemClock.elapsedRealtime()
+        val prefix = "$spotifyId:"
+        val snapshot = synchronized(cache) { cache.snapshot() }
+        return snapshot.entries
+            .filter { (key, entry) -> key.startsWith(prefix) && entry.first > now }
+            .maxByOrNull { (_, entry) -> entry.first }
+            ?.value?.second
+    }
+
+    fun cachedMimeType(spotifyId: String): String? = when (latestCachedStream(spotifyId)?.extension?.lowercase()) {
+        "webm" -> "audio/webm"
+        "m4a", "mp4", "aac" -> "audio/mp4"
+        "mp3" -> "audio/mpeg"
+        else -> null
+    }
+
+    fun cachedYouTubeVideoId(spotifyId: String): String? =
+        latestCachedStream(spotifyId)?.candidateKey?.takeIf { it.startsWith("yt:") }?.removePrefix("yt:")?.takeIf { it.isNotBlank() }
+
+    fun cachedYandexTrackId(spotifyId: String): String? =
+        latestCachedStream(spotifyId)?.candidateKey?.takeIf { it.startsWith("ya:") }?.removePrefix("ya:")?.takeIf { it.isNotBlank() }
+
     private fun remember(key: String, stream: Stream): Stream {
         cache.put(key, (android.os.SystemClock.elapsedRealtime() + CACHE_TTL_MS) to stream)
         return stream

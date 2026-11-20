@@ -361,6 +361,9 @@ class MusicPlayer(context: Context) {
     fun skipNext() {
         controller?.let { player ->
             if (!seekPastIncoming(player, next = true)) player.seekToNextMediaItem()
+            if (player.playbackState == Player.STATE_ENDED || player.playbackState == Player.STATE_IDLE) {
+                player.prepare()
+            }
             player.play()
         }
     }

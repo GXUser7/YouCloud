@@ -147,38 +147,65 @@ internal class CastStreamServer(
 
     private fun send(uri: Uri, range: String?, headOnly: Boolean, out: OutputStream) {
         val from = range?.let { RANGE.find(it)?.groupValues?.get(1)?.toLongOrNull() } ?: 0L
-        val spec = resolve(DataSpec(uri))
-        if (isHls(spec)) {
-            sendHls(spec, headOnly, out)
-            return
-        }
-        val source = dataSources.createDataSource()
-        try {
-            val length = source.open(spec.subrange(from))
-            val head = ByteArray(16)
-            val headRead = readFully(source, head)
-            val type = source.responseHeaders.entries
-                .firstOrNull { it.key.equals("Content-Type", ignoreCase = true) }
-                ?.value?.firstOrNull()?.takeIf { it.startsWith("audio/") || it.startsWith("video/") }
-                ?: sniff(head, headRead)
-            val headers = mutableMapOf("Content-Type" to type, "Accept-Ranges" to "bytes")
-            val status = if (length != C.LENGTH_UNSET.toLong()) {
-                headers["Content-Length"] = length.toString()
-                if (range != null) {
-                    headers["Content-Range"] = "bytes $from-${from + length - 1}/${from + length}"
-                    "206 Partial Content"
+        val spotifyId = uri.takeIf { it.scheme == "spotify" }?.lastPathSegment?.takeIf { it.isNotBlank() }
+        val maxAttempts = if (spotifyId != null) 2 else 1
+        for (attempt in 0 until maxAttempts) {
+            val spec = try {
+                resolve(DataSpec(uri))
+            } catch (e: IOException) {
+                Log.w(TAG, "Couldn't resolve Cast track $uri: ${e.message}")
+                respond(out, "404 Not Found", emptyMap())
+                return
+            }
+            if (isHls(spec)) {
+                sendHls(spec, headOnly, out)
+                return
+            }
+            val source = dataSources.createDataSource()
+            var headerSent = false
+            try {
+                val length = source.open(spec.subrange(from))
+                val head = ByteArray(16)
+                val headRead = readFully(source, head)
+                val type = source.responseHeaders.entries
+                    .firstOrNull { it.key.equals("Content-Type", ignoreCase = true) }
+                    ?.value?.firstOrNull()?.takeIf { it.startsWith("audio/") || it.startsWith("video/") }
+                    ?: sniff(head, headRead)
+                val headers = mutableMapOf("Content-Type" to type, "Accept-Ranges" to "bytes")
+                val status = if (length != C.LENGTH_UNSET.toLong()) {
+                    headers["Content-Length"] = length.toString()
+                    if (range != null) {
+                        headers["Content-Range"] = "bytes $from-${from + length - 1}/${from + length}"
+                        "206 Partial Content"
+                    } else {
+                        "200 OK"
+                    }
                 } else {
                     "200 OK"
                 }
-            } else {
-                "200 OK"
+                respond(out, status, headers)
+                headerSent = true
+                if (headOnly) return
+                out.write(head, 0, headRead)
+                copy(source, out)
+                return
+            } catch (e: IOException) {
+                if (headerSent) throw e
+                if (spotifyId != null && attempt + 1 < maxAttempts) {
+                    Log.w(TAG, "Cast upstream failed for spotify:$spotifyId, trying fallback: ${e.message}")
+                    com.example.myapplication.data.SpotifyAudio.markStreamFailed(
+                        spotifyId,
+                        context,
+                        reason = "Cast upstream: ${e.message}"
+                    )
+                    continue
+                }
+                Log.w(TAG, "Couldn't open Cast stream for $uri: ${e.message}")
+                respond(out, "404 Not Found", emptyMap())
+                return
+            } finally {
+                runCatching { source.close() }
             }
-            respond(out, status, headers)
-            if (headOnly) return
-            out.write(head, 0, headRead)
-            copy(source, out)
-        } finally {
-            runCatching { source.close() }
         }
     }
 

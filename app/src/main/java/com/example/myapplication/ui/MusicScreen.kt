@@ -149,6 +149,7 @@ import com.example.myapplication.data.LyricLine
 import com.example.myapplication.data.YtAuth
 import com.example.myapplication.data.YtShelf
 import com.example.myapplication.data.SPOTIFY_LIKED
+import com.example.myapplication.data.SPOTIFY_PLAYLIST
 import com.example.myapplication.data.spotifyId
 import com.example.myapplication.data.social.ShowcaseSlot
 import com.example.myapplication.data.isYtLikedMusic
@@ -470,6 +471,8 @@ fun MusicScreen(viewModel: MusicViewModel) {
     val moreSections by viewModel.moreSections.collectAsState()
     val lyrics by viewModel.lyrics.collectAsState()
     val ytHome by viewModel.ytHome.collectAsState()
+    val ytPlaylists by viewModel.ytPlaylists.collectAsState()
+    val soundCloudPlaylists by viewModel.soundCloudPlaylists.collectAsState()
     val ytHomeLoading by viewModel.ytHomeLoading.collectAsState()
     val ytHomeError by viewModel.ytHomeError.collectAsState()
     val ytMusicAccount by viewModel.ytMusicAccount.collectAsState()
@@ -771,12 +774,17 @@ fun MusicScreen(viewModel: MusicViewModel) {
                             stationSection = stationSection,
                             trendingSection = trendingSection,
                             moreSections = moreSections,
+                            soundCloudPlaylists = soundCloudPlaylists,
                             ytShelves = ytHome,
+                            ytPlaylists = ytPlaylists,
                             spotifyShelves = spotifyHome,
                             spotifyConnected = spotifyAccount != null,
                             spotifyLoading = spotifyLoading,
                             spotifyError = spotifyError,
-                            onSpotifyLogin = viewModel::openSpotifyLogin,
+                            onSpotifyLogin = {
+                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                viewModel.openSpotifyLogin()
+                            },
                             onReloadSpotify = viewModel::loadSpotifyHome,
                             onOpenSpotifyArtist = { artist ->
                                 viewModel.openArtistDetails(artist.id ?: 0L, artist.permalinkUrl, artist.username, avatarUrl = artist.avatarUrl)
@@ -1217,8 +1225,14 @@ fun MusicScreen(viewModel: MusicViewModel) {
                             },
                             ytMusicAccount = ytMusicAccount,
                             spotifyAccount = spotifyAccount,
-                            onSpotifyLogin = viewModel::openSpotifyLogin,
-                            onSpotifyLogout = viewModel::logoutSpotify,
+                            onSpotifyLogin = {
+                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                viewModel.openSpotifyLogin()
+                            },
+                            onSpotifyLogout = {
+                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                viewModel.logoutSpotify()
+                            },
                             onYtMusicLoginClick = {
                                 haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                                 viewModel.openYtMusicLogin()
@@ -1774,6 +1788,13 @@ fun MusicScreen(viewModel: MusicViewModel) {
     if (showTrackActionsDialog && selectedTrack != null) {
         // Capture to local val to prevent NPE if state changes (#3)
         val capturedTrack = selectedTrack ?: return
+        val favoriteEntry = favorites.firstOrNull { it.id == capturedTrack.id }
+        val downloadedInPlaylist = playlists.any { pl ->
+            pl.tracks.any { it.id == capturedTrack.id && it.downloadState == DownloadState.DOWNLOADED }
+        }
+        val canRedownload = capturedTrack.urn?.startsWith("local:") != true &&
+            capturedTrack.liveVideoId == null &&
+            (favoriteEntry != null || downloadedInPlaylist)
         TrackActionsDialog(
             track = capturedTrack,
             playlists = playlists,
@@ -1795,15 +1816,15 @@ fun MusicScreen(viewModel: MusicViewModel) {
                     context.startActivity(shareIntent)
                 }
             },
-            // A file added from the phone has nowhere to be downloaded again from, and a broadcast
-            // is never downloaded at all.
-            onRedownload = if (capturedTrack.urn?.startsWith("local:") == true || capturedTrack.liveVideoId != null) null else {
+            // A file added from the phone has nowhere to be downloaded again from, a broadcast is
+            // never downloaded at all, and an unliked track not on the device has nothing to redownload.
+            onRedownload = if (!canRedownload) null else {
                 { viewModel.redownloadTrack(capturedTrack) }
             },
             // The player has no menu of its own at the top any more: a downloaded track is taken
             // off the phone from here.
-            onDeleteDownload = favorites
-                .firstOrNull { it.id == capturedTrack.id && it.downloadState == DownloadState.DOWNLOADED }
+            onDeleteDownload = favoriteEntry
+                ?.takeIf { it.downloadState == DownloadState.DOWNLOADED }
                 ?.let { fav -> { viewModel.deleteDownloadedTrack(fav) } },
             onRadio = when {
                 capturedTrack.spotifyId != null && spotifyAccount != null -> {
@@ -2121,7 +2142,9 @@ private fun HomeScreen(
     trendingSection: MixSection?,
     // SoundCloud's other rows, each a shelf after the first three.
     moreSections: List<MoreSection>,
+    soundCloudPlaylists: List<SoundCloudPlaylist>,
     ytShelves: List<YtShelf>,
+    ytPlaylists: List<SoundCloudPlaylist>,
     spotifyShelves: List<YtShelf>,
     spotifyConnected: Boolean,
     spotifyLoading: Boolean,
@@ -2314,23 +2337,25 @@ private fun HomeScreen(
     val yandexFeed = remember(yandexPlaylists, yandexShelves, yaLead) {
         // The row picked, the first of that name.
         val leadRow = yandexShelves.indexOfFirst { "row:" + it.title == yaLead }
+        // User playlists live on the "Моя музыка" page; Yandex home keeps only "Мне нравится".
+        val likedOnly = yandexPlaylists.filter { it.id == -100L }
         (listOf(
             HomeShelf(
                 key = "library",
                 title = HomeCategory.Library.title,
                 kind = if (yaLead == "library") ShelfKind.Stage else ShelfKind.Squares,
-                items = yandexPlaylists.map { playlist ->
+                items = likedOnly.map { playlist ->
                     HeroItem(
                         key = "yandex-${playlist.id}",
                         title = playlist.title ?: tr("Без названия"),
                         subtitle = plural(playlist.trackCount, tr("трек"), tr("трека"), tr("треков")),
                         artworkUrl = playlist.artworkUrl,
-                        icon = if (playlist.id == -100L) Icons.Rounded.Favorite else Icons.Default.Album,
+                        icon = Icons.Rounded.Favorite,
                         source = "set-${playlist.id}",
                         onClick = { onOpenYandexPlaylist(playlist) }
                     )
                 },
-                note = if (yandexPlaylists.isEmpty()) ShelfNote(tr("Плейлисты Яндекс Музыки пока не загрузились."), tr("Обновить"), onReloadYandex) else null
+                note = if (likedOnly.isEmpty()) ShelfNote(tr("Плейлисты Яндекс Музыки пока не загрузились."), tr("Обновить"), onReloadYandex) else null
             )
         ) + yandexShelves.mapIndexed { index, shelf ->
             // Each row of Yandex Music's home a shelf of its own, as YouTube Music's are.
@@ -2392,7 +2417,21 @@ private fun HomeScreen(
             }.stageFirst()
         }
     }
-    val myMusicFeed = remember(downloadedCount, downloadedFolderArtworkUri, history, playlists, dlLead) {
+    val myMusicFeed = remember(
+        downloadedCount,
+        downloadedFolderArtworkUri,
+        history,
+        playlists,
+        dlLead,
+        soundCloudConnected,
+        soundCloudPlaylists,
+        yandexConnected,
+        yandexPlaylists,
+        ytConnected,
+        ytPlaylists,
+        spotifyConnected,
+        spotifyShelves
+    ) {
         fun item(playlist: Playlist): HeroItem {
             val count = plural(playlist.tracks.size, tr("трек"), tr("трека"), tr("треков"))
             return HeroItem(
@@ -2414,6 +2453,13 @@ private fun HomeScreen(
         // Liked albums on the stage only while there are some.
         val lead = dlLead.takeIf { it != "albums" || albums.isNotEmpty() } ?: "device"
         fun kind(key: String) = if (key == lead) ShelfKind.Stage else ShelfKind.Squares
+        val spotifyPlaylists = if (spotifyConnected) {
+            spotifyShelves.firstOrNull()?.sets.orEmpty().filter {
+                it.permalinkUrl == SPOTIFY_LIKED || it.permalinkUrl?.startsWith(SPOTIFY_PLAYLIST) == true
+            }
+        } else {
+            emptyList()
+        }
         buildList {
             // What is on the phone, on the stage as the other services lead with theirs: where
             // the listener goes most.
@@ -2463,6 +2509,95 @@ private fun HomeScreen(
                     )
                 )
             )
+            // Read-only playlists from each connected account, kept below local music.
+            if (soundCloudConnected && soundCloudPlaylists.isNotEmpty()) {
+                add(
+                    HomeShelf(
+                        key = "acc-soundcloud",
+                        title = tr("Плейлисты SoundCloud"),
+                        kind = ShelfKind.Squares,
+                        items = soundCloudPlaylists.map { set ->
+                            HeroItem(
+                                key = "dl-sc-${set.id}",
+                                title = set.title ?: tr("Без названия"),
+                                subtitle = set.trackCount.takeIf { it > 0 }?.let { plural(it, tr("трек"), tr("трека"), tr("треков")) }
+                                    ?: set.user?.username,
+                                artworkUrl = artworkUrlForSize(set.displayArtworkUrl, 210.dp),
+                                icon = Icons.AutoMirrored.Filled.QueueMusic,
+                                source = "set-${set.id}",
+                                onClick = { onOpenYtSet(set) }
+                            )
+                        }
+                    )
+                )
+            }
+            if (yandexConnected && yandexPlaylists.isNotEmpty()) {
+                add(
+                    HomeShelf(
+                        key = "acc-yandex",
+                        title = tr("Плейлисты Яндекс Музыки"),
+                        kind = ShelfKind.Squares,
+                        items = yandexPlaylists.map { playlist ->
+                            HeroItem(
+                                key = "dl-ya-${playlist.id}",
+                                title = playlist.title ?: tr("Без названия"),
+                                subtitle = plural(playlist.trackCount, tr("трек"), tr("трека"), tr("треков")),
+                                artworkUrl = playlist.artworkUrl,
+                                icon = if (playlist.id == -100L) Icons.Rounded.Favorite else Icons.Default.Album,
+                                source = "set-${playlist.id}",
+                                onClick = { onOpenYandexPlaylist(playlist) }
+                            )
+                        }
+                    )
+                )
+            }
+            if (ytConnected && ytPlaylists.isNotEmpty()) {
+                add(
+                    HomeShelf(
+                        key = "acc-youtube",
+                        title = tr("Плейлисты YouTube Music"),
+                        kind = ShelfKind.Squares,
+                        items = ytPlaylists.map { set ->
+                            HeroItem(
+                                key = "dl-yt-${set.id}",
+                                title = set.title ?: tr("Без названия"),
+                                subtitle = set.user?.username,
+                                artworkUrl = set.artworkUrl,
+                                icon = if (set.isYtLikedMusic) Icons.Rounded.Favorite else Icons.AutoMirrored.Filled.QueueMusic,
+                                source = "set-${set.id}",
+                                onClick = { onOpenYtSet(set) }
+                            )
+                        }
+                    )
+                )
+            }
+            if (spotifyConnected && spotifyPlaylists.isNotEmpty()) {
+                add(
+                    HomeShelf(
+                        key = "acc-spotify",
+                        title = tr("Плейлисты Spotify"),
+                        kind = ShelfKind.Squares,
+                        items = spotifyPlaylists.map { set ->
+                            val isSpotifyLiked = set.permalinkUrl == SPOTIFY_LIKED
+                            val collage = if (set.artworkUrl == null && isSpotifyLiked) recentCovers(set.knownTracks) else emptyList()
+                            HeroItem(
+                                key = "dl-sp-${set.id}",
+                                title = set.title ?: tr("Без названия"),
+                                subtitle = if (isSpotifyLiked && set.trackCount > 0) {
+                                    plural(set.trackCount, tr("трек"), tr("трека"), tr("треков"))
+                                } else {
+                                    set.user?.username
+                                },
+                                artworkUrl = set.artworkUrl,
+                                collage = collage,
+                                icon = if (isSpotifyLiked) Icons.Rounded.Favorite else Icons.AutoMirrored.Filled.QueueMusic,
+                                source = "set-${set.id}",
+                                onClick = { onOpenYtSet(set) }
+                            )
+                        }
+                    )
+                )
+            }
         }.stageFirst()
     }
     fun shelvesOf(shown: HomeService): List<HomeShelf> = when (shown) {
@@ -6026,7 +6161,7 @@ private fun SettingsScreen(
                                 contentAlignment = Alignment.Center
                             ) {
                                 Icon(
-                                    imageVector = Icons.Default.Person,
+                                    imageVector = ServiceIcons.SoundCloud,
                                     contentDescription = null,
                                     tint = AppTheme.brand.soundCloud.onContainer,
                                     modifier = Modifier.size(22.dp)
@@ -6090,7 +6225,7 @@ private fun SettingsScreen(
                                 contentAlignment = Alignment.Center
                             ) {
                                 Icon(
-                                    imageVector = Icons.Default.Person,
+                                    imageVector = ServiceIcons.YandexMusic,
                                     contentDescription = null,
                                     tint = MaterialTheme.colorScheme.onPrimaryContainer,
                                     modifier = Modifier.size(22.dp)
@@ -6149,7 +6284,7 @@ private fun SettingsScreen(
                                 contentAlignment = Alignment.Center
                             ) {
                                 Icon(
-                                    imageVector = Icons.Default.SmartDisplay,
+                                    imageVector = ServiceIcons.YouTubeMusic,
                                     contentDescription = null,
                                     tint = MaterialTheme.colorScheme.onTertiaryContainer,
                                     modifier = Modifier.size(22.dp)

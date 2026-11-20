@@ -112,6 +112,25 @@ object StreamCache {
     fun cachedYouTubeKey(context: Context, videoId: String): String? =
         YOUTUBE_AUDIO_ITAGS.map { youTubeKey(videoId, it) }.firstOrNull { isFullyCached(context, it) }
 
+    /** Which resolved stream for a Spotify track is kept whole in the stream cache, if any. */
+    fun cachedSpotifyKey(context: Context, spotifyId: String): String? {
+        val prefix = "${KEY_PREFIX}spotify:$spotifyId:"
+        return cache(context).keys.firstOrNull { it.startsWith(prefix) && isFullyCached(context, it) }
+    }
+
+    /** MIME type implied by a cached Spotify stream key (e.g. `stream:spotify:<id>:yt_<vid>_251`). */
+    fun mimeTypeForSpotifyKey(key: String): String {
+        val variant = key.substringAfterLast(':', "")
+        return when {
+            variant.startsWith("ya_") || variant.startsWith("sc_") -> "audio/mpeg"
+            variant.startsWith("yt_") -> {
+                val itag = variant.substringAfterLast('_', "")
+                if (itag in YOUTUBE_WEBM_ITAGS) "audio/webm" else "audio/mp4"
+            }
+            else -> "audio/mp4"
+        }
+    }
+
     /**
      * Takes out what was kept under the track alone, before the file or format was part of the
      * key: whatever of it is stitched from two files would play broken, and nothing reads it now.
@@ -129,6 +148,7 @@ object StreamCache {
     // The files Yandex offers a track as, best first; and YouTube's audio formats, Opus and AAC.
     private val YANDEX_VARIANTS = listOf("mp3-320", "mp3-192", "mp3-128", "aac-256", "aac-192", "aac-128", "aac-64")
     private val YOUTUBE_AUDIO_ITAGS = listOf("251", "140", "250", "249", "141", "139", "774", "171", "172")
+    private val YOUTUBE_WEBM_ITAGS = setOf("251", "250", "249", "171", "172")
 }
 
 /**

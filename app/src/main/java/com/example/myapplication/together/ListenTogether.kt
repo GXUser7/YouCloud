@@ -87,7 +87,9 @@ object TogetherServices {
     const val YANDEX = "yandex"
     const val YOUTUBE = "youtube"
     const val SPOTIFY = "spotify"
-    val ALL = listOf(SOUNDCLOUD, YANDEX, YOUTUBE, SPOTIFY)
+    // Services whose tracks may need a sign-in on a guest phone to play.
+    // Spotify tracks resolve via YouTube, Yandex or SoundCloud without requiring a Spotify account on guests.
+    val ALL = listOf(SOUNDCLOUD, YANDEX, YOUTUBE)
 
     // Not services: why a track won't play — a file only on the other phone, or something else.
     const val LOCAL = "local"
