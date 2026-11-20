@@ -95,7 +95,13 @@ internal object SpotifyAudio {
         }
     }
 
-    private enum class SourceKind { YOUTUBE, YANDEX, SOUNDCLOUD }
+    internal enum class SourceKind { YOUTUBE, YANDEX, SOUNDCLOUD }
+
+    internal const val BONUS_YT_SONG = 26_000L
+    internal const val BONUS_YT_VIDEO = 25_000L
+    internal const val BONUS_YT_WEB = 24_000L
+    internal const val BONUS_YANDEX = 10_000L
+    internal const val BONUS_SOUNDCLOUD = 0L
 
     private data class ScoredCandidate(
         val key: String,
@@ -179,7 +185,7 @@ internal object SpotifyAudio {
                 if (cKey in failed) continue
                 val score = spotifyMatchScore(track, song) ?: continue
                 ytMatched++
-                out += ScoredCandidate(cKey, SourceKind.YOUTUBE, song, score + 900L)
+                out += ScoredCandidate(cKey, SourceKind.YOUTUBE, song, score + BONUS_YT_SONG)
             }
             for (video in ytVideosRaw) {
                 val vid = video.youTubeVideoId ?: continue
@@ -187,7 +193,7 @@ internal object SpotifyAudio {
                 if (cKey in failed) continue
                 val score = spotifyMatchScore(track, video) ?: continue
                 ytMatched++
-                out += ScoredCandidate(cKey, SourceKind.YOUTUBE, video, score + 300L)
+                out += ScoredCandidate(cKey, SourceKind.YOUTUBE, video, score + BONUS_YT_VIDEO)
             }
 
             // If YouTube Music had nothing matching (e.g. region-restricted catalog), also check YouTube Web.
@@ -202,7 +208,7 @@ internal object SpotifyAudio {
                     if (cKey in failed) continue
                     val score = spotifyMatchScore(track, webTrack) ?: continue
                     ytMatched++
-                    out += ScoredCandidate(cKey, SourceKind.YOUTUBE, webTrack, score + 250L)
+                    out += ScoredCandidate(cKey, SourceKind.YOUTUBE, webTrack, score + BONUS_YT_WEB)
                 }
             }
 
@@ -216,7 +222,7 @@ internal object SpotifyAudio {
                 if (cKey in failed) continue
                 val score = spotifyMatchScore(track, matchTrack) ?: continue
                 yaMatched++
-                out += ScoredCandidate(cKey, SourceKind.YANDEX, mapped, score + 800L)
+                out += ScoredCandidate(cKey, SourceKind.YANDEX, mapped, score + BONUS_YANDEX)
             }
 
             val scRaw = scJob.await()
@@ -236,7 +242,7 @@ internal object SpotifyAudio {
                     continue
                 }
                 scMatched++
-                out += ScoredCandidate(cKey, SourceKind.SOUNDCLOUD, scTrack, score)
+                out += ScoredCandidate(cKey, SourceKind.SOUNDCLOUD, scTrack, score + BONUS_SOUNDCLOUD)
             }
 
             Log.i(
@@ -280,9 +286,11 @@ internal object SpotifyAudio {
             null
         }
 
-        // Cap slow YouTube stream extractions so a VPN bot-check quickly yields to Yandex/SoundCloud.
+        // Cap extraction attempts per source so YouTube leads when available, while Yandex/SoundCloud remain reachable.
         var ytAttempts = 0
-        for (cand in ranked.take(10)) {
+        var yaAttempts = 0
+        var scAttempts = 0
+        for (cand in ranked) {
             when (cand.kind) {
                 SourceKind.YOUTUBE -> {
                     if (ytAttempts >= 3) continue
@@ -316,6 +324,8 @@ internal object SpotifyAudio {
                     )
                 }
                 SourceKind.YANDEX -> {
+                    if (yaAttempts >= 3) continue
+                    yaAttempts++
                     val raw = cand.track.urn?.removePrefix("yandex:track:")?.substringBefore(':') ?: continue
                     val url = tryResolve(cand.key) { YandexMusicApi.resolveTrackStream(raw, yandexToken) }
                     if (url == null) {
@@ -330,6 +340,8 @@ internal object SpotifyAudio {
                     return remember(key, Stream(url = url, extension = "mp3", cacheKey = cacheKey, candidateKey = cand.key))
                 }
                 SourceKind.SOUNDCLOUD -> {
+                    if (scAttempts >= 3) continue
+                    scAttempts++
                     val resolver = scResolver ?: continue
                     // Playback uses DefaultMediaSourceFactory with a non-HLS spotify:// MediaItem: progressive only avoids M3U8 parser failures.
                     val url = tryResolve(cand.key) {

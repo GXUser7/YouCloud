@@ -218,4 +218,14 @@ class SpotifyTest {
         assertEquals(listOf("Lead Artist", "Second Artist"), track.artists?.map { it.username })
         assertEquals("Lead Artist Track Name", spotifyAudioQuery(track))
     }
+
+    @Test
+    fun prioritizesYouTubeOverYandexAndSoundCloudEvenForPartialMatches() {
+        val target = SoundCloudTrack(1L, title = "Track Title", duration = 180_000L, user = SoundCloudUser(username = "Artist"))
+        val imperfectYtVideo = spotifyMatchScore(target, target.copy(duration = 195_000L))!! + SpotifyAudio.BONUS_YT_VIDEO
+        val perfectYandex = spotifyMatchScore(target, target)!! + SpotifyAudio.BONUS_YANDEX
+        val perfectSoundCloud = spotifyMatchScore(target, target)!! + SpotifyAudio.BONUS_SOUNDCLOUD
+        assertTrue(imperfectYtVideo > perfectYandex)
+        assertTrue(perfectYandex > perfectSoundCloud)
+    }
 }
