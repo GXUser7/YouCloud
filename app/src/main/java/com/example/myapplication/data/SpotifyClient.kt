@@ -363,7 +363,7 @@ internal class SpotifyClient private constructor(private val context: Context) {
                     .addPathSegment(seed.urn.orEmpty()).addQueryParameter("response-format", "json").build()
                 execute(authenticatedRequest(url, auth).get().build())
             }.items("mediaItems").firstNotNullOfOrNull { it.string("uri")?.takeIf { uri -> uri.spotifyIdFor(SPOTIFY_PLAYLIST) != null } }
-                ?.let { setTracks(it) }
+                ?.let { setTracksSample(it, limit = 50) }
         }.orEmpty().filterNot { it.id == seed.id }
         if (radio.isNotEmpty()) return radio
         val artistId = (seed.artists?.firstOrNull() ?: seed.user)?.permalinkUrl.spotifyIdFor(SPOTIFY_ARTIST)

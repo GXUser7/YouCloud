@@ -464,6 +464,7 @@ class MusicViewModel(
 
     fun loadSpotifyHome() {
         if (spotifyAccount.value == null || spotifyHomeJob?.isActive == true) return
+        YtDlp.warmUp(context, settingsRepository.ytMusicAuth())
         spotifyHomeJob = viewModelScope.launch {
             _spotifyHomeLoading.value = true
             _spotifyHomeError.value = null
@@ -6145,7 +6146,13 @@ class MusicViewModel(
                 }
             }
             youTubeId != null -> youTubeVideo(track, youTubeId)
-            track.spotifyId != null -> youTubeVideo(track, SpotifyAudio.cachedYouTubeVideoId(track.spotifyId!!))
+            track.spotifyId != null -> {
+                val spId = track.spotifyId!!
+                if (SpotifyAudio.cachedYouTubeVideoId(spId) == null) {
+                    SpotifyAudio.awaitInFlight(spId)
+                }
+                youTubeVideo(track, SpotifyAudio.cachedYouTubeVideoId(spId))
+            }
             // A broadcast shows itself: its own picture, running along as it airs.
             track.liveVideoId != null -> liveVideo(track, track.liveVideoId!!)
             else -> null
@@ -7394,28 +7401,44 @@ class MusicViewModel(
             .map { it.toSoundCloudTrack() }
             .filter { it.spotifyId != null && !session.mixer.isDisliked(it) }
         val hist = history.value.filter { it.spotifyId != null && !session.mixer.isDisliked(it) }
-        val likedRemote = session.spLikedCache ?: run {
-            withTimeoutOrNull(4_500L) {
+        val localPool = (session.seedsFor(WaveSource.SPOTIFY) + favs + userPlaylistTracks + hist).distinctBy { it.id }
+        val bridgeQuery = if (localPool.size < 2) pickCrossServiceTasteQuery(session) else null
+        val likedDeferred = async {
+            session.spLikedCache ?: run {
+                withTimeoutOrNull(4_500L) {
+                    runCatching {
+                        spotify.setTracksSample(SPOTIFY_LIKED, limit = 50).filter { it.spotifyId != null }
+                    }.onFailure { if (it is CancellationException) throw it }.getOrNull()
+                }.orEmpty().also { if (it.isNotEmpty()) session.spLikedCache = it }
+            }
+        }
+        val bridgedDeferred = async {
+            if (bridgeQuery == null) null
+            else withTimeoutOrNull(4_500L) {
                 runCatching {
-                    spotify.setTracksSample(SPOTIFY_LIKED, limit = 50).filter { it.spotifyId != null }
+                    spotify.search(bridgeQuery).tracks
+                        .firstOrNull { it.spotifyId != null && !session.mixer.isDisliked(it) }
                 }.onFailure { if (it is CancellationException) throw it }.getOrNull()
-            }.orEmpty().also { if (it.isNotEmpty()) session.spLikedCache = it }
-        }.filterNot { session.mixer.isDisliked(it) }
-
-        val seedPool = (session.seedsFor(WaveSource.SPOTIFY) + favs + likedRemote + userPlaylistTracks + hist)
-            .distinctBy { it.id }
+            }
+        }
+        val likedRemote = likedDeferred.await().filterNot { session.mixer.isDisliked(it) }
+        val seedPool = (localPool + likedRemote).distinctBy { it.id }
         val seeds = session.mixer.pickSeeds(WaveSource.SPOTIFY, seedPool, count = if (seedPool.size >= 8) 2 else 1).toMutableList()
         if (seeds.size < 2) {
-            val query = pickCrossServiceTasteQuery(session)
-            if (query != null) {
-                val bridged = withTimeoutOrNull(4_500L) {
-                    runCatching {
-                        spotify.search(query).tracks
-                            .firstOrNull { it.spotifyId != null && !session.mixer.isDisliked(it) }
-                    }.onFailure { if (it is CancellationException) throw it }.getOrNull()
-                }
-                if (bridged != null && seeds.none { it.id == bridged.id }) seeds.add(bridged)
+            val bridged = bridgedDeferred.await() ?: run {
+                val fallbackQuery = if (bridgeQuery == null) pickCrossServiceTasteQuery(session) else null
+                if (fallbackQuery != null) {
+                    withTimeoutOrNull(4_500L) {
+                        runCatching {
+                            spotify.search(fallbackQuery).tracks
+                                .firstOrNull { it.spotifyId != null && !session.mixer.isDisliked(it) }
+                        }.onFailure { if (it is CancellationException) throw it }.getOrNull()
+                    }
+                } else null
             }
+            if (bridged != null && seeds.none { it.id == bridged.id }) seeds.add(bridged)
+        } else {
+            bridgedDeferred.cancel()
         }
         val seedIds = seeds.mapTo(HashSet()) { it.id }
         val seedSpotifyIds = seeds.mapNotNullTo(HashSet()) { it.spotifyId }

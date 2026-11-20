@@ -35,6 +35,16 @@ class MainActivity : ComponentActivity() {
     // A shortcut's, the quick settings tile's or the widget's action, until the screen has taken it.
     private val incomingAction = MutableStateFlow<String?>(null)
 
+    override fun attachBaseContext(newBase: android.content.Context) {
+        val config = android.content.res.Configuration(newBase.resources.configuration)
+        if (config.fontWeightAdjustment != 0) {
+            config.fontWeightAdjustment = 0
+            super.attachBaseContext(newBase.createConfigurationContext(config))
+        } else {
+            super.attachBaseContext(newBase)
+        }
+    }
+
     @OptIn(androidx.compose.ui.ExperimentalComposeUiApi::class)
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)

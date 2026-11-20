@@ -6,11 +6,14 @@ import android.util.Log
 import androidx.media3.common.util.UnstableApi
 import com.example.myapplication.i18n.tr
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
+import kotlinx.coroutines.cancelChildren
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
 import java.io.IOException
+import java.util.concurrent.atomic.AtomicBoolean
 
 /** Spotify supplies the catalog. The player resolves a matching complete recording using its other sources. */
 internal object SpotifyAudio {
@@ -36,18 +39,38 @@ internal object SpotifyAudio {
         val candidateKey: String = ""
     )
 
-    private const val CACHE_TTL_MS = 5 * 60_000L
+    private const val CACHE_TTL_MS = 25 * 60_000L
     private const val FAILED_TTL_MS = 10 * 60_000L
     private const val VARIANTS_FILE = "spotify_variants.json"
 
-    private val cache = android.util.LruCache<String, Pair<Long, Stream>>(64)
+    private class InFlightResolve(
+        val deferred: kotlinx.coroutines.CompletableDeferred<Stream>,
+        val urgent: AtomicBoolean
+    )
+
+    private val cache = android.util.LruCache<String, Pair<Long, Stream>>(128)
     private val failedCandidates = android.util.LruCache<String, MutableMap<String, Long>>(64)
-    private val inFlight = java.util.concurrent.ConcurrentHashMap<String, kotlinx.coroutines.CompletableDeferred<Stream>>()
+    private val inFlight = java.util.concurrent.ConcurrentHashMap<String, InFlightResolve>()
     private val resolvedVariants = java.util.concurrent.ConcurrentHashMap<String, ResolvedVariant>()
     @Volatile
     private var variantsLoaded = false
     private val gson = com.google.gson.Gson()
-    private val ytSearch = YouTubeMusicClient { null }
+    @Volatile
+    private var currentYtAuth: YtAuth? = null
+    private val ytClient = YouTubeMusicClient { currentYtAuth }
+    @Volatile
+    private var sharedSettings: SettingsRepository? = null
+    private val sharedYandexService by lazy {
+        YandexMusicApi.createService { sharedSettings?.yandexTokenValue().orEmpty() }
+    }
+    private val sharedSoundCloudService by lazy {
+        SoundCloudApi.createService(
+            oauthTokenProvider = { sharedSettings?.oauthTokenValue().orEmpty() },
+            clientIdProvider = { sharedSettings?.clientId?.value.orEmpty() },
+            onClientIdRefreshed = { refreshed -> sharedSettings?.saveClientId(refreshed) }
+        )
+    }
+    private val sharedScResolver by lazy { SoundCloudPlaybackResolver(sharedSoundCloudService) }
 
     /** Drops resolved Spotify audio links and temporary failure memory so tracks resolve afresh. */
     fun clearCache() {
@@ -185,6 +208,12 @@ internal object SpotifyAudio {
         val matchMode: String = "strict"
     )
 
+    suspend fun awaitInFlight(spotifyId: String) {
+        val prefix = "$spotifyId:"
+        val running = inFlight.entries.firstOrNull { it.key.startsWith(prefix) }?.value ?: return
+        runCatching { running.deferred.await() }
+    }
+
     suspend fun resolve(context: Context, settings: SettingsRepository, track: SoundCloudTrack, urgent: Boolean): Stream {
         val id = track.spotifyId ?: throw unavailable()
         val ytAuth = settings.ytMusicAuth()
@@ -198,24 +227,28 @@ internal object SpotifyAudio {
         }
         val existing = inFlight[key]
         if (existing != null) {
+            if (urgent) existing.urgent.set(true)
             Log.d(TAG, "[$id] Joining in-flight resolve (urgent=$urgent)")
-            return existing.await()
+            return existing.deferred.await()
         }
-        val deferred = kotlinx.coroutines.CompletableDeferred<Stream>()
-        val prev = inFlight.putIfAbsent(key, deferred)
+        val mine = InFlightResolve(kotlinx.coroutines.CompletableDeferred(), AtomicBoolean(urgent))
+        val prev = inFlight.putIfAbsent(key, mine)
         if (prev != null) {
+            if (urgent) prev.urgent.set(true)
             Log.d(TAG, "[$id] Joining in-flight resolve (urgent=$urgent)")
-            return prev.await()
+            return prev.deferred.await()
         }
         try {
-            val resolved = resolveInternal(context, settings, track, id, key, ytAuth, yandexToken, clientId, now, urgent)
-            deferred.complete(resolved)
+            val resolved = resolveInternal(context, settings, track, id, key, ytAuth, yandexToken, clientId, now) {
+                mine.urgent.get()
+            }
+            mine.deferred.complete(resolved)
             return resolved
         } catch (t: Throwable) {
-            deferred.completeExceptionally(t)
+            mine.deferred.completeExceptionally(t)
             throw t
         } finally {
-            inFlight.remove(key, deferred)
+            inFlight.remove(key, mine)
         }
     }
 
@@ -229,7 +262,7 @@ internal object SpotifyAudio {
         yandexToken: String,
         clientId: String,
         now: Long,
-        urgent: Boolean
+        urgent: () -> Boolean
     ): Stream {
         val primaryQuery = spotifyAudioQuery(track).trim()
         if (primaryQuery.isEmpty() || track.duration <= 0) {
@@ -242,25 +275,154 @@ internal object SpotifyAudio {
             .ifEmpty { listOfNotNull(track.user?.username) }.joinToString(", ")
         Log.i(
             TAG,
-            "[$id] Resolving '${track.title}' by [$artistsText] (${track.duration / 1000}s) urgent=$urgent " +
+            "[$id] Resolving '${track.title}' by [$artistsText] (${track.duration / 1000}s) urgent=${urgent()} " +
                 "auth={yt=${ytAuth != null}, ya=${yandexToken.isNotBlank()}, scId=${clientId.isNotBlank()}, scAuth=${settings.oauthTokenValue().isNotBlank()}} query='$primaryQuery'"
         )
 
+        ensureVariantsLoaded(context)
         val failed = activeFailedKeys(id, now)
         if (failed.isNotEmpty()) Log.d(TAG, "[$id] Skipping failed candidates: $failed")
         var networkError: IOException? = null
-        val yt = if (ytAuth == null) ytSearch else YouTubeMusicClient { ytAuth }
-        val yandexService = if (yandexToken.isNotBlank()) YandexMusicApi.createService(settings::yandexTokenValue) else null
-        val soundCloudService = if (clientId.isNotBlank()) {
-            SoundCloudApi.createService(
-                oauthTokenProvider = settings::oauthTokenValue,
-                clientIdProvider = { settings.clientId.value },
-                onClientIdRefreshed = settings::saveClientId
-            )
-        } else null
-        val scResolver = soundCloudService?.let(::SoundCloudPlaybackResolver)
+        currentYtAuth = ytAuth
+        sharedSettings = settings
+        val yt = ytClient
+        val yandexService = if (yandexToken.isNotBlank()) sharedYandexService else null
+        val soundCloudService = if (clientId.isNotBlank()) sharedSoundCloudService else null
+        val scResolver = if (clientId.isNotBlank()) sharedScResolver else null
 
-        suspend fun searchCandidates(query: String, label: String): List<ScoredCandidate> = coroutineScope {
+        suspend fun <T> tryResolve(source: String, call: suspend () -> T): T? = try {
+            call()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: IOException) {
+            Log.w(TAG, "[$id] $source stream IO error: $e")
+            networkError = e
+            null
+        } catch (e: Exception) {
+            Log.w(TAG, "[$id] $source stream error: ${e.javaClass.simpleName}: ${e.message}")
+            null
+        }
+
+        // Fast-path 0: if this Spotify track was already matched before (persisted in spotify_variants.json)
+        // and that candidate hasn't failed recently, resolve its stream straight away without 5 search calls.
+        val remembered = resolvedVariants[id]
+        if (remembered != null && remembered.candidateKey.isNotEmpty() && remembered.candidateKey !in failed) {
+            val cKey = remembered.candidateKey
+            if (cKey.startsWith("yt:")) {
+                val vid = cKey.removePrefix("yt:").takeIf { it.isNotBlank() }
+                if (vid != null) {
+                    val stream = tryResolve(cKey) {
+                        withContext(Dispatchers.IO) { YouTubeStreams.resolve(context, vid, ytAuth, urgent = urgent) }
+                    }
+                    if (stream != null) {
+                        val extension = if (stream.mimeType?.startsWith("audio/webm") == true) "webm" else "m4a"
+                        val itag = Uri.parse(stream.url).getQueryParameter("itag") ?: "0"
+                        val cacheKey = "${StreamCache.KEY_PREFIX}spotify:$id:yt_${vid}_$itag"
+                        Log.i(
+                            TAG,
+                            "[$id] Fast-path resolved remembered $cKey (ext=$extension) in ${android.os.SystemClock.elapsedRealtime() - startedAt} ms"
+                        )
+                        return remember(
+                            key,
+                            Stream(
+                                url = stream.url,
+                                extension = extension,
+                                userAgent = stream.userAgent,
+                                chunked = stream.contentLength > 0,
+                                cacheKey = cacheKey,
+                                candidateKey = cKey,
+                                expectedDurationMs = remembered.durationMs.takeIf { it > 0L } ?: track.duration
+                            )
+                        )
+                    }
+                }
+            } else if (cKey.startsWith("ya:") && yandexToken.isNotBlank()) {
+                val raw = cKey.removePrefix("ya:").takeIf { it.isNotBlank() }
+                if (raw != null) {
+                    val url = tryResolve(cKey) { YandexMusicApi.resolveTrackStream(raw, yandexToken) }
+                    if (url != null) {
+                        val cacheKey = "${StreamCache.KEY_PREFIX}spotify:$id:ya_$raw"
+                        Log.i(
+                            TAG,
+                            "[$id] Fast-path resolved remembered $cKey in ${android.os.SystemClock.elapsedRealtime() - startedAt} ms"
+                        )
+                        return remember(
+                            key,
+                            Stream(
+                                url = url,
+                                extension = "mp3",
+                                cacheKey = cacheKey,
+                                candidateKey = cKey,
+                                expectedDurationMs = remembered.durationMs.takeIf { it > 0L } ?: track.duration
+                            )
+                        )
+                    }
+                }
+            }
+        }
+
+        val triedKeys = HashSet<String>()
+        var ytAttempts = 0
+        var ytRejected = 0
+
+        suspend fun resolveYouTubeCandidate(cand: ScoredCandidate): Stream? {
+            if (cand.key in triedKeys || ytAttempts >= 5 || ytAttempts + ytRejected >= 8) return null
+            triedKeys += cand.key
+            val vid = cand.track.youTubeVideoId ?: return null
+            val stream = tryResolve(cand.key) {
+                withContext(Dispatchers.IO) { YouTubeStreams.resolve(context, vid, ytAuth, urgent = urgent) }
+            }
+            if (stream == null) {
+                ytAttempts++
+                Log.w(TAG, "[$id] ${cand.key} returned null stream (score=${cand.score})")
+                return null
+            }
+            val views = stream.viewCount ?: cand.track.playbackCount
+            if (spotifyYouTubeMetadataRejected(track, cand.officialChannel, stream.category, stream.tags, views)) {
+                ytRejected++
+                Log.w(
+                    TAG,
+                    "[$id] Rejected ${cand.key}: category=${stream.category}, views=$views, tags=${stream.tags.take(5)}"
+                )
+                return null
+            }
+            ytAttempts++
+            val extension = if (stream.mimeType?.startsWith("audio/webm") == true) "webm" else "m4a"
+            val itag = Uri.parse(stream.url).getQueryParameter("itag") ?: "0"
+            val cacheKey = "${StreamCache.KEY_PREFIX}spotify:$id:yt_${vid}_$itag"
+            Log.i(
+                TAG,
+                "[$id] Resolved via ${cand.key} (score=${cand.score}, ext=$extension, clen=${stream.contentLength}) " +
+                    "in ${android.os.SystemClock.elapsedRealtime() - startedAt} ms"
+            )
+            rememberVariant(
+                context,
+                id,
+                ResolvedVariant(
+                    source = cand.sourceLabel.ifBlank { "YouTube" },
+                    title = cand.track.title.orEmpty(),
+                    artist = cand.track.artistNames.orEmpty(),
+                    durationMs = cand.track.duration,
+                    views = views,
+                    matchMode = cand.matchMode,
+                    candidateKey = cand.key
+                )
+            )
+            return remember(
+                key,
+                Stream(
+                    url = stream.url,
+                    extension = extension,
+                    userAgent = stream.userAgent,
+                    chunked = stream.contentLength > 0,
+                    cacheKey = cacheKey,
+                    candidateKey = cand.key,
+                    expectedDurationMs = cand.track.duration
+                )
+            )
+        }
+
+        suspend fun searchCandidates(query: String, label: String, tryFastYtSongs: Boolean): Pair<Stream?, List<ScoredCandidate>> = coroutineScope {
             suspend fun <T> safeSearch(source: String, timeoutMs: Long, call: suspend () -> T): T? = try {
                 kotlinx.coroutines.withTimeoutOrNull(timeoutMs) { call() }
             } catch (e: CancellationException) {
@@ -274,27 +436,29 @@ internal object SpotifyAudio {
                 null
             }
 
-            val ytJob = async { safeSearch("YTM", 6_500L) { yt.searchAudioCandidates(query) } }
-            val ytWebJob = async {
-                safeSearch("YTWeb", 5_000L) { YouTubeWeb.search(query, ytAuth).tracks }
+            // Stage 1: launch YTM Songs, YTM Videos, Yandex and SoundCloud in parallel,
+            // but keep heavy YouTubeWeb (~500 KB HTML/JSON tree) lazy until needed.
+            val ytSongsJob = async { safeSearch("YTM-Songs", 4_500L) { yt.searchAudioSongs(query) }.orEmpty() }
+            val ytVideosJob = async { safeSearch("YTM-Videos", 5_000L) { yt.searchAudioVideos(query) }.orEmpty() }
+            val ytWebJob = async(start = CoroutineStart.LAZY) {
+                safeSearch("YTWeb", 4_500L) { YouTubeWeb.search(query, ytAuth).tracks }
                     .orEmpty()
                     .filter { it.youTubeVideoId != null && it.liveVideoId == null && it.duration > 0 }
             }
             val yandexJob = async {
                 if (yandexService == null) emptyList()
-                else safeSearch("Yandex", 4_500L) { yandexService.searchTracks(query).result?.tracks?.results.orEmpty() }.orEmpty()
+                else safeSearch("Yandex", 4_000L) { yandexService.searchTracks(query).result?.tracks?.results.orEmpty() }.orEmpty()
             }
             val scJob = async {
                 if (soundCloudService == null) emptyList()
-                else safeSearch("SoundCloud", 4_500L) { soundCloudService.searchTracks(query, settings.clientId.value, limit = 15).collection }.orEmpty()
+                else safeSearch("SoundCloud", 4_000L) { soundCloudService.searchTracks(query, settings.clientId.value, limit = 15).collection }.orEmpty()
             }
 
             val strictPool = mutableListOf<ScoredCandidate>()
             val loosePool = mutableListOf<ScoredCandidate>()
             val popularPool = mutableListOf<ScoredCandidate>()
-            val ytRes = ytJob.await()
-            val ytSongsRaw = ytRes?.songs.orEmpty()
-            val ytVideosRaw = ytRes?.videos.orEmpty()
+            val ytSongsRaw = ytSongsJob.await()
+            val songIds = ytSongsRaw.mapTo(HashSet()) { it.id }
             var ytSongsMatched = 0
             var ytMatched = 0
             for (song in ytSongsRaw) {
@@ -318,6 +482,27 @@ internal object SpotifyAudio {
                     }
                 }
             }
+
+            // Fast-path 1: YTM Songs carries the highest bonus (BONUS_YT_SONG = 26_000). As soon as it
+            // returns a strict match (~250 ms), start resolving its stream immediately instead of waiting
+            // 3–5 seconds at a barrier for YTWeb / SoundCloud / Yandex / YTM Videos to finish.
+            if (tryFastYtSongs && strictPool.isNotEmpty()) {
+                val topSongs = strictPool.sortedByDescending { it.score }.take(2)
+                for (topSong in topSongs) {
+                    val fastStream = resolveYouTubeCandidate(topSong)
+                    if (fastStream != null) {
+                        coroutineContext.cancelChildren()
+                        return@coroutineScope fastStream to emptyList()
+                    }
+                }
+            }
+
+            // Only start YouTubeWeb search if YTM Songs had no strict match (or its strict match failed).
+            if (ytSongsMatched == 0 || strictPool.all { it.key in triedKeys }) {
+                ytWebJob.start()
+            }
+
+            val ytVideosRaw = ytVideosJob.await().filterNot { it.id in songIds }
             for (video in ytVideosRaw) {
                 val vid = video.youTubeVideoId ?: continue
                 val cKey = "yt:$vid"
@@ -339,7 +524,7 @@ internal object SpotifyAudio {
                 }
             }
 
-            val ytWebTracks = ytWebJob.await()
+            val ytWebTracks = if (ytWebJob.isActive || ytWebJob.isCompleted) ytWebJob.await() else emptyList()
             val ytWebCount = ytWebTracks.size
             for (webTrack in ytWebTracks) {
                 val vid = webTrack.youTubeVideoId ?: continue
@@ -438,14 +623,17 @@ internal object SpotifyAudio {
                     Log.i(TAG, "[$id] Sample rejects($label): ${sampleRejects.joinToString(" | ")}")
                 }
             }
-            combined
+            null to combined
         }
 
-        var ranked = searchCandidates(primaryQuery, "primary")
-        val hasPrimaryStrictOrLoose = ranked.any { it.matchMode != "popular" }
+        val (fastStream, primaryRanked) = searchCandidates(primaryQuery, "primary", tryFastYtSongs = true)
+        if (fastStream != null) return fastStream
+        var ranked = primaryRanked
+        val hasPrimaryStrictOrLoose = ranked.any { it.matchMode != "popular" && it.key !in triedKeys }
         if (!hasPrimaryStrictOrLoose) {
             spotifyAudioFallbackQuery(track)?.let { fallbackQuery ->
-                val fallbackRanked = searchCandidates(fallbackQuery, "fallback")
+                val (fallbackFast, fallbackRanked) = searchCandidates(fallbackQuery, "fallback", tryFastYtSongs = true)
+                if (fallbackFast != null) return fallbackFast
                 if (fallbackRanked.isNotEmpty()) {
                     val fallbackStrictOrLoose = fallbackRanked.filter { it.matchMode != "popular" }
                     val fallbackPopular = fallbackRanked.filter { it.matchMode == "popular" }
@@ -454,80 +642,14 @@ internal object SpotifyAudio {
             }
         }
 
-        suspend fun <T> tryResolve(source: String, call: suspend () -> T): T? = try {
-            call()
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: IOException) {
-            Log.w(TAG, "[$id] $source stream IO error: $e")
-            networkError = e
-            null
-        } catch (e: Exception) {
-            Log.w(TAG, "[$id] $source stream error: ${e.javaClass.simpleName}: ${e.message}")
-            null
-        }
-
         // Cap extraction attempts per source so YouTube leads when available, while Yandex/SoundCloud remain reachable.
-        var ytAttempts = 0
-        var ytRejected = 0
         var yaAttempts = 0
         var scAttempts = 0
         for (cand in ranked) {
+            if (cand.key in triedKeys) continue
             when (cand.kind) {
                 SourceKind.YOUTUBE -> {
-                    if (ytAttempts >= 5 || ytAttempts + ytRejected >= 8) continue
-                    val vid = cand.track.youTubeVideoId ?: continue
-                    val stream = tryResolve(cand.key) {
-                        withContext(Dispatchers.IO) { YouTubeStreams.resolve(context, vid, ytAuth, urgent = { urgent }) }
-                    }
-                    if (stream == null) {
-                        ytAttempts++
-                        Log.w(TAG, "[$id] ${cand.key} returned null stream (score=${cand.score})")
-                        continue
-                    }
-                    val views = stream.viewCount ?: cand.track.playbackCount
-                    if (spotifyYouTubeMetadataRejected(track, cand.officialChannel, stream.category, stream.tags, views)) {
-                        ytRejected++
-                        Log.w(
-                            TAG,
-                            "[$id] Rejected ${cand.key}: category=${stream.category}, views=$views, tags=${stream.tags.take(5)}"
-                        )
-                        continue
-                    }
-                    ytAttempts++
-                    val extension = if (stream.mimeType?.startsWith("audio/webm") == true) "webm" else "m4a"
-                    val itag = Uri.parse(stream.url).getQueryParameter("itag") ?: "0"
-                    val cacheKey = "${StreamCache.KEY_PREFIX}spotify:$id:yt_${vid}_$itag"
-                    Log.i(
-                        TAG,
-                        "[$id] Resolved via ${cand.key} (score=${cand.score}, ext=$extension, clen=${stream.contentLength}) " +
-                            "in ${android.os.SystemClock.elapsedRealtime() - startedAt} ms"
-                    )
-                    rememberVariant(
-                        context,
-                        id,
-                        ResolvedVariant(
-                            source = cand.sourceLabel.ifBlank { "YouTube" },
-                            title = cand.track.title.orEmpty(),
-                            artist = cand.track.artistNames.orEmpty(),
-                            durationMs = cand.track.duration,
-                            views = views,
-                            matchMode = cand.matchMode,
-                            candidateKey = cand.key
-                        )
-                    )
-                    return remember(
-                        key,
-                        Stream(
-                            url = stream.url,
-                            extension = extension,
-                            userAgent = stream.userAgent,
-                            chunked = stream.contentLength > 0,
-                            cacheKey = cacheKey,
-                            candidateKey = cand.key,
-                            expectedDurationMs = cand.track.duration
-                        )
-                    )
+                    resolveYouTubeCandidate(cand)?.let { return it }
                 }
                 SourceKind.YANDEX -> {
                     if (yaAttempts >= 3) continue
@@ -638,10 +760,12 @@ internal object SpotifyAudio {
     }
 
     fun cachedYouTubeVideoId(spotifyId: String): String? =
-        latestCachedStream(spotifyId)?.candidateKey?.takeIf { it.startsWith("yt:") }?.removePrefix("yt:")?.takeIf { it.isNotBlank() }
+        (latestCachedStream(spotifyId)?.candidateKey ?: resolvedVariants[spotifyId]?.candidateKey)
+            ?.takeIf { it.startsWith("yt:") }?.removePrefix("yt:")?.takeIf { it.isNotBlank() }
 
     fun cachedYandexTrackId(spotifyId: String): String? =
-        latestCachedStream(spotifyId)?.candidateKey?.takeIf { it.startsWith("ya:") }?.removePrefix("ya:")?.takeIf { it.isNotBlank() }
+        (latestCachedStream(spotifyId)?.candidateKey ?: resolvedVariants[spotifyId]?.candidateKey)
+            ?.takeIf { it.startsWith("ya:") }?.removePrefix("ya:")?.takeIf { it.isNotBlank() }
 
     private fun remember(key: String, stream: Stream): Stream {
         cache.put(key, (android.os.SystemClock.elapsedRealtime() + CACHE_TTL_MS) to stream)

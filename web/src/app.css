@@ -2,12 +2,14 @@
   font-family: 'Onest';
   src: url('/fonts/onest.ttf') format('truetype');
   font-weight: 100 900;
+  font-style: normal;
   font-display: swap;
 }
 @font-face {
   font-family: 'Unbounded';
   src: url('/fonts/unbounded.ttf') format('truetype');
   font-weight: 200 900;
+  font-style: normal;
   font-display: swap;
 }
 
@@ -64,6 +66,7 @@
 
   color-scheme: dark;
   font-family: var(--font-body);
+  font-synthesis: none;
   font-size: 15px;
   line-height: 1.4;
   color: var(--on-surface);

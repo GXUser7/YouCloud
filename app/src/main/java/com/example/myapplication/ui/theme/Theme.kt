@@ -16,6 +16,8 @@ import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalFontFamilyResolver
+import androidx.compose.ui.text.font.createFontFamilyResolver
 
 private val DarkColorScheme = darkColorScheme(
     primary = DarkPrimary,
@@ -183,9 +185,19 @@ fun MyApplicationTheme(
         )
     }
 
+    // Lock fontWeightAdjustment to 0 so system "Bold text" or OEM font-thickness sliders never
+    // shift Unbounded / Onest weights away from the app's own type scale.
+    val fontFamilyResolver = remember(context) {
+        val fixedConfig = android.content.res.Configuration(context.resources.configuration).apply {
+            fontWeightAdjustment = 0
+        }
+        createFontFamilyResolver(context.createConfigurationContext(fixedConfig))
+    }
+
     CompositionLocalProvider(
         LocalBrandColors provides brandColors,
-        LocalPanelColors provides panelColors
+        LocalPanelColors provides panelColors,
+        LocalFontFamilyResolver provides fontFamilyResolver
     ) {
         MaterialTheme(
             colorScheme = colorScheme,

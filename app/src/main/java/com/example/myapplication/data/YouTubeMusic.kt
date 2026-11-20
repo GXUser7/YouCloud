@@ -145,13 +145,7 @@ fun isProgressiveSource(urn: String?): Boolean =
  * session YouTube still answers, with what it shows everyone.
  */
 class YouTubeMusicClient(private val authProvider: () -> YtAuth?) {
-    private val http = OkHttpClient.Builder()
-        .connectTimeout(15, TimeUnit.SECONDS)
-        .readTimeout(30, TimeUnit.SECONDS)
-        .build()
-
-    @Volatile
-    private var anonymousVisitor: String? = null
+    private val http = sharedHttp
 
     /** Home's rows, the personal ones included; they arrive a few at a time, so a few pages. */
     suspend fun home(): List<YtShelf> {
@@ -323,19 +317,21 @@ class YouTubeMusicClient(private val authProvider: () -> YtAuth?) {
         val videos: List<SoundCloudTrack>
     )
 
+    internal suspend fun searchAudioSongs(query: String): List<SoundCloudTrack> =
+        optional { listRows(searchShelf(query, FILTER_SONGS)).mapNotNull { parseSongRow(it) }.distinctBy { it.id } }.orEmpty()
+
+    internal suspend fun searchAudioVideos(query: String): List<SoundCloudTrack> =
+        optional {
+            listRows(searchShelf(query, FILTER_VIDEOS))
+                .mapNotNull { parseSongRow(it) }
+                .filter { it.liveVideoId == null && it.duration > 0 }
+                .distinctBy { it.id }
+        }.orEmpty()
+
     /** Song results (plus video uploads for tracks missing from Songs) with duration for matching. */
     internal suspend fun searchAudioCandidates(query: String): AudioSearchResult = coroutineScope {
-        val songs = async {
-            optional { listRows(searchShelf(query, FILTER_SONGS)).mapNotNull { parseSongRow(it) }.distinctBy { it.id } }.orEmpty()
-        }
-        val videos = async {
-            optional {
-                listRows(searchShelf(query, FILTER_VIDEOS))
-                    .mapNotNull { parseSongRow(it) }
-                    .filter { it.liveVideoId == null && it.duration > 0 }
-                    .distinctBy { it.id }
-            }.orEmpty()
-        }
+        val songs = async { searchAudioSongs(query) }
+        val videos = async { searchAudioVideos(query) }
         val songList = songs.await()
         val songIds = songList.mapTo(HashSet()) { it.id }
         AudioSearchResult(songList, videos.await().filterNot { it.id in songIds })
@@ -948,9 +944,9 @@ class YouTubeMusicClient(private val authProvider: () -> YtAuth?) {
                 .header("Origin", ORIGIN)
                 .header("X-Origin", ORIGIN)
                 .header("Referer", "$ORIGIN/")
-            val visitor = auth?.visitorData ?: anonymousVisitorData()
+            val visitor = if (auth != null) auth.visitorData else anonymousVisitorData()
             if (!visitor.isNullOrBlank()) builder.header("X-Goog-Visitor-Id", visitor)
-            if (auth != null) {
+            if (auth != null && auth.sapisid != null) {
                 builder.header("Cookie", auth.cookie)
                 builder.header("Authorization", sapisidAuthorization(auth.sapisid!!, ORIGIN))
                 builder.header("X-Goog-AuthUser", auth.authUser)
@@ -973,14 +969,21 @@ class YouTubeMusicClient(private val authProvider: () -> YtAuth?) {
 
     /** Signed-out requests still need a visitor id, which the site hands out in its page. */
     private fun anonymousVisitorData(): String? {
-        anonymousVisitor?.let { return it }
+        sharedAnonymousVisitor?.let { return it }
         return runCatching {
             http.newCall(Request.Builder().url(ORIGIN).header("User-Agent", USER_AGENT).build()).execute()
                 .use { response -> VISITOR_DATA.find(response.body?.string().orEmpty())?.groupValues?.get(1) }
-        }.getOrNull()?.also { anonymousVisitor = it }
+        }.getOrNull()?.also { sharedAnonymousVisitor = it }
     }
 
     companion object {
+        private val sharedHttp = OkHttpClient.Builder()
+            .connectTimeout(15, TimeUnit.SECONDS)
+            .readTimeout(30, TimeUnit.SECONDS)
+            .build()
+
+        @Volatile
+        private var sharedAnonymousVisitor: String? = null
         // The search page's filter chips, as it sends them.
         private const val FILTER_SONGS = "EgWKAQIIAWoQEAUQCRADEAQQChAREBAQFQ=="
         private const val FILTER_VIDEOS = "EgWKAQIQAWoQEAUQCRADEAQQChAREBAQFQ=="

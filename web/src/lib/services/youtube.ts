@@ -1181,9 +1181,9 @@ export interface YtSong {
 }
 
 async function searchYtmShelf(query: string, params: string, kind: 'song' | 'video'): Promise<YtSong[]> {
-  const id = await visitorData()
+  if (!visitor) void visitorData()
   const headers: Record<string, string> = { 'x-origin': ORIGIN }
-  if (id) headers['x-goog-visitor-id'] = id
+  if (visitor) headers['x-goog-visitor-id'] = visitor
   const answer = await postJson(
     `${API}search?prettyPrint=false`,
     { query, params, context: { client: { clientName: 'WEB_REMIX', clientVersion: clientVersion(), hl: i18n.lang }, user: {} } },
@@ -1219,6 +1219,10 @@ async function searchYtmShelf(query: string, params: string, kind: 'song' | 'vid
 /** Songs for [query] straight from InnerTube: the connection check's light probe. */
 export async function searchSongs(query: string): Promise<YtSong[]> {
   return searchYtmShelf(query, FILTER_SONGS, 'song')
+}
+
+export async function searchVideos(query: string): Promise<YtSong[]> {
+  return searchYtmShelf(query, FILTER_VIDEOS, 'video')
 }
 
 /** Both YTM Songs and YTM Videos for cross-service Spotify audio resolution. */

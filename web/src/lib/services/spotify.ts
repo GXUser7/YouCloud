@@ -959,8 +959,19 @@ export async function related(track: Track): Promise<string[]> {
     const plUri = mix?.mediaItems?.[0]?.uri
     const plId = idOfUri(plUri)
     if (plId) {
-      const set = await loadSet(`sp:pl:${plId}`)
-      if (set.tracks.length) return set.tracks.filter((id) => id !== track.id)
+      const page = await pathfinder<{ playlistV2?: any }>('fetchPlaylist', {
+        uri: `spotify:playlist:${plId}`,
+        offset: 0,
+        limit: 50,
+        enableWatchFeedEntrypoint: false,
+      })
+      const items: any[] = page?.playlistV2?.content?.items ?? []
+      const tracks: string[] = []
+      for (const item of items) {
+        const trk = item?.itemV2
+        if (trk?.data?.__typename === 'Track') tracks.push(putSpTrack(trk))
+      }
+      if (tracks.length) return [...new Set(tracks)].filter((id) => id !== track.id)
     }
   } catch {
     // Fall back to the primary artist's top tracks when inspiredby-mix rejects a track.
@@ -1028,20 +1039,62 @@ interface MatchState {
   candidates: Candidate[]
   index: number
   failed: Set<string>
+  partial?: boolean
 }
 
+interface StoredYtMatch {
+  videoId: string
+  score: number
+  label: string
+}
+
+const MATCH_CACHE_KEY = 'yc.sp.audioMatch.v1'
 const resolved = new Map<string, MatchState>()
 const resolving = new Map<string, Promise<MatchState>>()
+let storedMatches: Record<string, StoredYtMatch> | null = null
+
+function loadStoredMatches(): Record<string, StoredYtMatch> {
+  if (storedMatches) return storedMatches
+  try {
+    const raw = localStorage.getItem(MATCH_CACHE_KEY)
+    storedMatches = raw ? (JSON.parse(raw) as Record<string, StoredYtMatch>) : {}
+  } catch {
+    storedMatches = {}
+  }
+  return storedMatches
+}
+
+function rememberStoredYtMatch(trackId: string, cand: Extract<Candidate, { kind: 'yt' }>) {
+  const map = loadStoredMatches()
+  delete map[trackId]
+  map[trackId] = { videoId: cand.videoId, score: cand.score, label: cand.label }
+  const keys = Object.keys(map)
+  while (keys.length > 400) {
+    const oldest = keys.shift()
+    if (oldest) delete map[oldest]
+  }
+  try {
+    localStorage.setItem(MATCH_CACHE_KEY, JSON.stringify(map))
+  } catch {
+    // ignore storage quota errors
+  }
+}
 
 export function clearAudioCache() {
   resolved.clear()
   resolving.clear()
+  storedMatches = {}
+  try {
+    localStorage.removeItem(MATCH_CACHE_KEY)
+  } catch {
+    // ignore
+  }
 }
 
 export function playingVariant(trackId: string): string | null {
   const state = resolved.get(trackId)
-  if (!state) return null
-  return state.candidates[state.index]?.label ?? state.candidates[0]?.label ?? null
+  if (state) return state.candidates[state.index]?.label ?? state.candidates[0]?.label ?? null
+  return loadStoredMatches()[trackId]?.label ?? null
 }
 
 export function showPlayingVariant(trackId: string) {
@@ -1378,7 +1431,7 @@ const BONUS_YT_WEB = 24_000
 const BONUS_YANDEX = 10_000
 const BONUS_SOUNDCLOUD = 0
 
-async function buildMatchState(track: Track): Promise<MatchState> {
+async function buildMatchState(track: Track, full = false): Promise<MatchState> {
   const artist = track.artists[0]?.name && track.artists[0].name !== 'Spotify' ? track.artists[0].name : ''
   const cleanTitle = cleanAudioTitle(track.title)
   const query = artist ? `${artist} ${cleanTitle}` : cleanTitle
@@ -1388,15 +1441,16 @@ async function buildMatchState(track: Track): Promise<MatchState> {
   const loose: Candidate[] = []
   const popular: Candidate[] = []
 
-  const [ytRes, webVideos, scRes, yaRes] = await Promise.all([
-    youtube.searchAudioCandidates(query).catch(() => ({ songs: [] as youtube.YtSong[], videos: [] as youtube.YtSong[] })),
-    youtube.searchWebVideos(query).catch(() => [] as youtube.YtSong[]),
-    soundcloud.searchTracks(query, 15).catch(() => [] as soundcloud.ScTrack[]),
-    accounts.ya ? yandex.search(query).catch(() => null) : Promise.resolve(null),
-  ])
+  // Launch fast searches in parallel, but check YTM Songs as soon as it returns (~200 ms) so
+  // playback never blocks on slow SoundCloud / YouTube Web / YTM Videos when YTM Songs has a strict hit.
+  const ytSongsPromise = youtube.searchSongs(query).catch(() => [] as youtube.YtSong[])
+  const ytVideosPromise = youtube.searchVideos(query).catch(() => [] as youtube.YtSong[])
+  const scPromise = soundcloud.searchTracks(query, 15).catch(() => [] as soundcloud.ScTrack[])
+  const yaPromise = accounts.ya ? yandex.search(query).catch(() => null) : Promise.resolve(null)
 
+  const ytSongs = await ytSongsPromise
   let ytSongsMatched = 0
-  for (const s of ytRes.songs) {
+  for (const s of ytSongs) {
     const score = matchCandidateScore(track.title, targetArtists, track.duration, s.title, s.artists, s.duration, s.views, false)
     if (score !== null) {
       ytSongsMatched++
@@ -1431,7 +1485,23 @@ async function buildMatchState(track: Track): Promise<MatchState> {
       }
     }
   }
-  for (const v of ytRes.videos) {
+
+  if (!full && strict.length > 0) {
+    strict.sort((a, b) => b.score - a.score)
+    loose.sort((a, b) => b.score - a.score)
+    popular.sort((a, b) => b.score - a.score)
+    return { candidates: [...strict, ...loose, ...popular], index: 0, failed: new Set(), partial: true }
+  }
+
+  const songIds = new Set(ytSongs.map((s) => s.videoId))
+  const [rawVideos, webVideos, scRes, yaRes] = await Promise.all([
+    ytVideosPromise,
+    ytSongsMatched === 0 || full ? youtube.searchWebVideos(query).catch(() => [] as youtube.YtSong[]) : Promise.resolve([] as youtube.YtSong[]),
+    scPromise,
+    yaPromise,
+  ])
+  const ytVideos = rawVideos.filter((v) => !songIds.has(v.videoId) && (v.duration ?? 0) > 0)
+  for (const v of ytVideos) {
     const score = matchCandidateScore(track.title, targetArtists, track.duration, v.title, v.artists, v.duration, v.views, false)
     if (score !== null) {
       strict.push({
@@ -1575,18 +1645,37 @@ async function buildMatchState(track: Track): Promise<MatchState> {
   return { candidates, index: 0, failed: new Set() }
 }
 
-async function getMatchState(track: Track): Promise<MatchState> {
+async function getMatchState(track: Track, forceFull = false): Promise<MatchState> {
   const existing = resolved.get(track.id)
-  if (existing) return existing
-  let pending = resolving.get(track.id)
+  if (existing && (!forceFull || !existing.partial)) return existing
+  if (!forceFull) {
+    const stored = loadStoredMatches()[track.id]
+    if (stored?.videoId) {
+      const state: MatchState = {
+        candidates: [{ key: `yt:${stored.videoId}`, kind: 'yt', videoId: stored.videoId, score: stored.score, label: stored.label }],
+        index: 0,
+        failed: existing?.failed ?? new Set(),
+        partial: true,
+      }
+      if (!state.failed.has(`yt:${stored.videoId}`)) {
+        resolved.set(track.id, state)
+        return state
+      }
+    }
+  }
+  const pendingKey = forceFull ? `${track.id}:full` : track.id
+  let pending = resolving.get(pendingKey)
   if (!pending) {
-    pending = buildMatchState(track)
+    pending = buildMatchState(track, forceFull)
       .then((state) => {
+        if (existing?.failed.size) {
+          for (const f of existing.failed) state.failed.add(f)
+        }
         resolved.set(track.id, state)
         return state
       })
-      .finally(() => resolving.delete(track.id))
-    resolving.set(track.id, pending)
+      .finally(() => resolving.delete(pendingKey))
+    resolving.set(pendingKey, pending)
   }
   return pending
 }
@@ -1604,20 +1693,29 @@ function syntheticTrack(base: Track, cand: Candidate): Track {
 }
 
 export async function stream(track: Track): Promise<Stream> {
-  const state = await getMatchState(track)
+  let state = await getMatchState(track)
   let lastError: unknown = null
-  for (let i = state.index; i < state.candidates.length; i++) {
-    const cand = state.candidates[i]
-    if (state.failed.has(cand.key)) continue
-    state.index = i
-    try {
-      if (cand.kind === 'yt') return await youtube.stream(syntheticTrack(track, cand))
-      if (cand.kind === 'sc') return await soundcloud.stream(syntheticTrack(track, cand))
-      return { url: await yandex.stream(syntheticTrack(track, cand)), hls: false }
-    } catch (e) {
-      lastError = e
-      state.failed.add(cand.key)
+  for (let pass = 0; pass < 2; pass++) {
+    for (let i = state.index; i < state.candidates.length; i++) {
+      const cand = state.candidates[i]
+      if (state.failed.has(cand.key)) continue
+      state.index = i
+      try {
+        if (cand.kind === 'yt') {
+          const s = await youtube.stream(syntheticTrack(track, cand))
+          rememberStoredYtMatch(track.id, cand)
+          return s
+        }
+        if (cand.kind === 'sc') return await soundcloud.stream(syntheticTrack(track, cand))
+        return { url: await yandex.stream(syntheticTrack(track, cand)), hls: false }
+      } catch (e) {
+        lastError = e
+        state.failed.add(cand.key)
+      }
     }
+    if (!state.partial) break
+    state = await getMatchState(track, true).catch(() => ({ ...state, partial: false }))
+    state.index = 0
   }
   throw lastError instanceof Error ? lastError : new Error(tr('Не удалось включить трек Spotify'))
 }
@@ -1629,5 +1727,5 @@ export function streamFailed(track: Track): boolean {
   if (!current) return false
   if (current.kind === 'yt' && youtube.streamFailed(current.videoId)) return true
   state.failed.add(current.key)
-  return state.candidates.some((c) => !state.failed.has(c.key))
+  return state.candidates.some((c) => !state.failed.has(c.key)) || !!state.partial
 }

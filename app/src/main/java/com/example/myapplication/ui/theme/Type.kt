@@ -2,12 +2,15 @@ package com.example.myapplication.ui.theme
 
 import androidx.compose.material3.Typography
 import androidx.compose.ui.text.TextStyle
-import androidx.compose.ui.text.font.Font
+import androidx.compose.ui.text.font.AndroidFont
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontLoadingStrategy
+import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontVariation
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.sp
 import com.example.myapplication.R
+import java.util.concurrent.ConcurrentHashMap
 
 /*
  * The app's typographic voice, expressed as a full Material 3 type scale.
@@ -28,16 +31,77 @@ import com.example.myapplication.R
  * cost legibility.
  */
 
-/** Every weight of a variable font [res], so that whatever weight a text asks for is drawn at it. */
+/**
+ * Loads variable fonts straight through Android's native minikin [android.graphics.fonts.Font.Builder]
+ * and [android.graphics.Typeface.CustomFallbackBuilder] instead of [androidx.core.content.res.ResourcesCompat.getFont]
+ * + `Paint.setFontVariationSettings`:
+ * 1) OEM shells (MIUI / HyperOS, ColorOS, One UI, MagicOS) with a custom system theme font hook
+ *    `Resources.getFont` / `Paint.setTypeface` and replace app fonts with the phone's theme font;
+ * 2) Compose's `ResourceFont` path applies Android 12+ `Configuration.fontWeightAdjustment` twice
+ *    (once in `AndroidFontResolveInterceptor` and again in `PlatformFontVariationSettings`), pushing
+ *    weights past the TTF `fvar` range (e.g. 1000 > 900 or 100 < 200 on Unbounded) so the variation
+ *    call is rejected or bloated.
+ */
 @OptIn(androidx.compose.ui.text.ExperimentalTextApi::class)
-private fun variableFamily(res: Int): FontFamily = FontFamily(
+private class LockedVariableFont(
+    val resId: Int,
+    override val weight: FontWeight,
+    val axisWeight: Int
+) : AndroidFont(
+    loadingStrategy = FontLoadingStrategy.Blocking,
+    typefaceLoader = LockedTypefaceLoader,
+    variationSettings = FontVariation.Settings(FontVariation.weight(axisWeight))
+) {
+    override val style: FontStyle = FontStyle.Normal
+}
+
+private object LockedTypefaceLoader : AndroidFont.TypefaceLoader {
+    private val cache = ConcurrentHashMap<Long, android.graphics.Typeface>()
+
+    override fun loadBlocking(context: android.content.Context, font: AndroidFont): android.graphics.Typeface {
+        val locked = font as LockedVariableFont
+        val key = (locked.resId.toLong() shl 32) or (locked.axisWeight.toLong() and 0xFFFF_FFFFL)
+        cache[key]?.let { return it }
+        val built = buildLockedTypeface(context, locked.resId, locked.axisWeight)
+        cache[key] = built
+        return built
+    }
+
+    override suspend fun awaitLoad(context: android.content.Context, font: AndroidFont): android.graphics.Typeface =
+        loadBlocking(context, font)
+
+    private fun buildLockedTypeface(context: android.content.Context, resId: Int, axisWeight: Int): android.graphics.Typeface {
+        runCatching {
+            val platformFont = android.graphics.fonts.Font.Builder(context.resources, resId)
+                .setWeight(axisWeight)
+                .setSlant(android.graphics.fonts.FontStyle.FONT_SLANT_UPRIGHT)
+                .setFontVariationSettings(arrayOf(android.graphics.fonts.FontVariationAxis("wght", axisWeight.toFloat())))
+                .build()
+            val family = android.graphics.fonts.FontFamily.Builder(platformFont).build()
+            return android.graphics.Typeface.CustomFallbackBuilder(family)
+                .setSystemFallback("sans-serif")
+                .build()
+        }
+        val base = androidx.core.content.res.ResourcesCompat.getFont(context, resId)
+            ?: return android.graphics.Typeface.DEFAULT
+        val paint = android.graphics.Paint().apply {
+            typeface = base
+            fontVariationSettings = "'wght' $axisWeight"
+        }
+        return paint.typeface ?: base
+    }
+}
+
+/** Every weight of a variable font [res], clamped to its real `fvar` `wght` axis bounds. */
+private fun variableFamily(res: Int, minAxisWeight: Int = 100, maxAxisWeight: Int = 900): FontFamily = FontFamily(
     (100..900 step 100).map { weight ->
-        Font(res, weight = FontWeight(weight), variationSettings = FontVariation.Settings(FontVariation.weight(weight)))
+        val clamped = weight.coerceIn(minAxisWeight, maxAxisWeight)
+        LockedVariableFont(resId = res, weight = FontWeight(weight), axisWeight = clamped)
     }
 )
 
-private val Display = variableFamily(R.font.unbounded)
-private val Sans = variableFamily(R.font.onest)
+internal val Display = variableFamily(R.font.unbounded, minAxisWeight = 200, maxAxisWeight = 900)
+internal val Sans = variableFamily(R.font.onest, minAxisWeight = 100, maxAxisWeight = 900)
 
 val Typography = Typography(
     displayLarge = TextStyle(

@@ -719,19 +719,36 @@ class PlaybackService : MediaLibraryService() {
     }
 
     /**
-     * Finding a YouTube track's audio takes yt-dlp several seconds. For the next track in the queue
-     * that happens while this one plays, so skipping to it starts at once.
+     * Finding a YouTube or Spotify track's audio takes yt-dlp several seconds. For the next track in
+     * the queue that happens while this one plays, so skipping to it starts at once.
      */
     private fun prefetchNextYouTubeTrack(player: Player) {
         val next = player.nextMediaItemIndex.takeIf { it != C.INDEX_UNSET } ?: return
         val uri = player.getMediaItemAt(next).localConfiguration?.uri ?: return
-        if (uri.scheme != "ytmusic") return
-        val videoId = uri.lastPathSegment ?: return
-        if (downloadedYouTubeTrack(videoId) != null) return
-        val auth = youTubeAuth()
-        youTubePrefetch.execute {
-            // Fetched ahead: what plays now, and its video, go first.
-            com.example.myapplication.data.YouTubeStreams.resolve(this, videoId, auth, urgent = { false })
+        if (uri.scheme == "ytmusic") {
+            val videoId = uri.lastPathSegment ?: return
+            if (downloadedYouTubeTrack(videoId) != null) return
+            val auth = youTubeAuth()
+            youTubePrefetch.execute {
+                // Fetched ahead: what plays now, and its video, go first.
+                com.example.myapplication.data.YouTubeStreams.resolve(this, videoId, auth, urgent = { false })
+            }
+        } else if (uri.scheme == "spotify") {
+            val spotifyId = uri.lastPathSegment ?: return
+            if (downloadedSpotifyTrack(spotifyId) != null) return
+            val track = com.example.myapplication.data.SpotifyAudio.fromUri(uri) ?: return
+            youTubePrefetch.execute {
+                runCatching {
+                    kotlinx.coroutines.runBlocking {
+                        com.example.myapplication.data.SpotifyAudio.resolve(
+                            this@PlaybackService,
+                            spotifySettings,
+                            track,
+                            urgent = false
+                        )
+                    }
+                }
+            }
         }
     }
 
