@@ -167,6 +167,7 @@ function loadStack({ idb, scAuth = null, yaAuth = null, spAuth = null, lang = 'r
       }
       if (id.endsWith('/catalog') || id === './catalog') return catalogMod
       if (id.endsWith('/homeCache') || id === './homeCache') return homeCacheMod
+      if (id.endsWith('/pageCache') || id === './pageCache') return pageCacheMod
       if (id.endsWith('/extension') || id === './extension') {
         return {
           extension: async () => extVersion,
@@ -194,6 +195,7 @@ function loadStack({ idb, scAuth = null, yaAuth = null, spAuth = null, lang = 'r
 
   const catalogMod = runModule('../src/lib/catalog.ts')
   const homeCacheMod = runModule('../src/lib/homeCache.ts')
+  const pageCacheMod = runModule('../src/lib/pageCache.ts')
   const scMod = runModule('../src/lib/services/soundcloud.ts')
   const yaMod = runModule('../src/lib/services/yandex.ts')
   const ytMod = runModule('../src/lib/services/youtube.ts')

@@ -9,6 +9,7 @@
   import { fly } from 'svelte/transition'
   import { tr } from '../lib/i18n.svelte'
   import { serviceName, track } from '../lib/catalog'
+  import { showPlayingVariant } from '../lib/services/spotify'
   import { app, currentTrack, cycleRepeat, go, jump, player, remember, seek, startRadio } from '../lib/state.svelte'
   import { time } from '../lib/format'
   import { queueWindow, revealNow } from '../lib/queueView'
@@ -133,7 +134,19 @@
 
     <div class="info" bind:this={infoEl}>
       <div class="badges">
-        <span class="chip service"><ServiceGlyph service={t.service} size={16} />{serviceName(t.service)}</span>
+        {#if t.service === 'sp'}
+          <button
+            type="button"
+            class="chip service"
+            onclick={() => showPlayingVariant(t.id)}
+            oncontextmenu={(e) => {
+              e.preventDefault()
+              showPlayingVariant(t.id)
+            }}
+          ><ServiceGlyph service={t.service} size={16} />{serviceName(t.service)}</button>
+        {:else}
+          <span class="chip service"><ServiceGlyph service={t.service} size={16} />{serviceName(t.service)}</span>
+        {/if}
         {#if t.album}
           <button
             class="chip"

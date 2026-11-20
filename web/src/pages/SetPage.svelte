@@ -2,6 +2,7 @@
   import { tr } from '../lib/i18n.svelte'
   import { serviceName, sets, track } from '../lib/catalog'
   import { totalMinutes, tracksCount } from '../lib/format'
+  import { getCachedSet } from '../lib/pageCache'
   import * as live from '../lib/live'
   import { app, go, likedContext, player, shuffledTracks, playQueue, playSet, toggle } from '../lib/state.svelte'
   import { reason } from '../lib/toast.svelte'
@@ -28,15 +29,27 @@
   }
 
   let data = $derived(live.loadSet(id))
+  const cached = $derived(getCachedSet(id)?.set ?? null)
   // What the card that led here already knew, shown while the tracks load.
-  const known = $derived(sets.get(id))
+  const known = $derived(cached ?? sets.get(id))
 </script>
 
 {#await data}
-  {#if known}
-    {@render head(known, null)}
+  {#if cached}
+    {@const shown = cached.kind === 'liked' && !app.showLiveInLiked ? cached.tracks.filter((id) => !track(id).live) : cached.tracks}
+    {@const contextId = cached.kind === 'liked' ? likedContext(cached.id) : cached.id}
+    {@render head(cached, shown)}
+    <section class="list track-list glass rise">
+      {#each shown as t, i (t + i)}
+        <TrackRow id={t} list={shown} context={cached.title} contextId={contextId} number={i + 1} showAlbum={cached.kind !== 'album' && cached.kind !== 'single'} />
+      {/each}
+    </section>
+  {:else}
+    {#if known}
+      {@render head(known, null)}
+    {/if}
+    <Loading text={tr('Загружаю треки…')} tall={!known} />
   {/if}
-  <Loading text={tr('Загружаю треки…')} tall={!known} />
 {:then s}
   {@const shown = s.kind === 'liked' && !app.showLiveInLiked ? s.tracks.filter((id) => !track(id).live) : s.tracks}
   {@const contextId = s.kind === 'liked' ? likedContext(s.id) : s.id}

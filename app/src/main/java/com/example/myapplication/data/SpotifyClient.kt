@@ -297,6 +297,22 @@ internal class SpotifyClient private constructor(private val context: Context) {
         else -> emptyList()
     }
 
+    /** Fast single-page read of a Spotify playlist, album or Liked Songs for wave/radio seeding. */
+    suspend fun setTracksSample(ref: String, limit: Int = 30): List<SoundCloudTrack> = when {
+        ref == SPOTIFY_LIKED -> {
+            val page = likedPage(0, limit)
+            trackPage(page) { it.obj("track")?.let(::spotifyTrack) }.tracks
+        }
+        ref.spotifyIdFor(SPOTIFY_ALBUM) != null -> {
+            val data = album(ref, 0, limit)
+            trackPage(data.obj("tracksV2")) { spotifyTrack(it.obj("track") ?: it, data) }.tracks
+        }
+        ref.spotifyIdFor(SPOTIFY_PLAYLIST) != null -> {
+            trackPage(playlist(ref, 0, limit).obj("content")) { it.obj("itemV2")?.let(::spotifyTrack) }.tracks
+        }
+        else -> emptyList()
+    }.distinctBy { it.id }
+
     private data class TrackPage(val tracks: List<SoundCloudTrack>, val size: Int, val total: Long)
 
     private fun trackPage(data: JsonObject?, parse: (JsonObject) -> SoundCloudTrack?): TrackPage {

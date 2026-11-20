@@ -22,6 +22,7 @@ data class SoundCloudTrack(
     val streamable: Boolean? = null,
     val policy: String? = null,
     @SerializedName("track_authorization") val trackAuthorization: String? = null,
+    @SerializedName("playback_count") val playbackCount: Long? = null,
     val media: SoundCloudMedia? = null
 )
 

@@ -3,6 +3,7 @@
   import { tr } from '../lib/i18n.svelte'
   import { artist, artists, serviceName, set } from '../lib/catalog'
   import { plural, tracksCount } from '../lib/format'
+  import { getCachedArtist } from '../lib/pageCache'
   import * as live from '../lib/live'
   import { player, playQueue, startRadio, toggle } from '../lib/state.svelte'
   import { reason } from '../lib/toast.svelte'
@@ -43,10 +44,11 @@
     attempt
     const current = ++generation
     ++action
-    page = null
-    loading = true
+    const hit = getCachedArtist(artistId)
+    page = hit?.page ?? null
+    loading = !hit
     error = ''
-    top = []
+    top = hit ? [...new Set(hit.page.top)] : []
     visible = 10
     next = undefined
     paging = false

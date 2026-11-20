@@ -24,6 +24,7 @@ import {
 import { extension, extensionCall, spotifySupported } from '../extension'
 import type { ArtistPage, LibraryOptions, ResultPage, SearchResult, SearchSection, Section, Stream } from '../live'
 import { at, getJson, getText, HttpError, postJson } from '../net'
+import { toast } from '../toast.svelte'
 import * as soundcloud from './soundcloud'
 import * as yandex from './yandex'
 import * as youtube from './youtube'
@@ -485,7 +486,7 @@ function putSpTrack(raw: any, cat: CatalogContext = fallbackCatalog, fallbackAlb
     : fallbackAlbum
       ? { id: fallbackAlbum.id, title: fallbackAlbum.title }
       : undefined
-  const artistItems: any[] = data?.artists?.items ?? data?.firstArtist?.items ?? []
+  const artistItems: any[] = data?.artists?.items ?? [...(data?.firstArtist?.items ?? []), ...(data?.otherArtists?.items ?? [])]
   const artists = artistItems
     .map((a) => {
       const aUri = a?.uri ?? ''
@@ -1019,9 +1020,9 @@ export async function resolve(link: string): Promise<{ kind: 'track' | 'set' | '
 // ---------------------------------------------------------------------------------- audio matching
 
 type Candidate =
-  | { key: string; kind: 'yt'; videoId: string; score: number }
-  | { key: string; kind: 'sc'; track: soundcloud.ScTrack; score: number }
-  | { key: string; kind: 'ya'; track: Track; score: number }
+  | { key: string; kind: 'yt'; videoId: string; score: number; label: string }
+  | { key: string; kind: 'sc'; track: soundcloud.ScTrack; score: number; label: string }
+  | { key: string; kind: 'ya'; track: Track; score: number; label: string }
 
 interface MatchState {
   candidates: Candidate[]
@@ -1032,102 +1033,533 @@ interface MatchState {
 const resolved = new Map<string, MatchState>()
 const resolving = new Map<string, Promise<MatchState>>()
 
-const NOISE_WORDS = /\b(?:remix|live|cover|acoustic|instrumental|karaoke|slowed|reverb|sped\s*up|nightcore|8d|mashup)\b/i
-const CLEAN_TITLE = /\s*[(\[](?:feat\.?|ft\.?|featuring|with)\s+[^)\]]+[)\]]|\s+-\s+(?:remaster(?:ed)?(?:\s+\d{4})?|single version|radio edit|album version|explicit).*$/gi
+export function clearAudioCache() {
+  resolved.clear()
+  resolving.clear()
+}
 
-function normWords(s: string): string[] {
-  return s
+export function playingVariant(trackId: string): string | null {
+  const state = resolved.get(trackId)
+  if (!state) return null
+  return state.candidates[state.index]?.label ?? state.candidates[0]?.label ?? null
+}
+
+export function showPlayingVariant(trackId: string) {
+  const label = playingVariant(trackId) ?? tr('Вариант ещё подбирается…')
+  toast(tr('Источник Spotify: %s', label))
+}
+
+function formatVariantLabel(source: string, title: string, artist: string, durSec?: number, mode?: 'strict' | 'loose' | 'popular'): string {
+  const s = Math.max(0, Math.round(durSec ?? 0))
+  const dur = s > 0 ? `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}` : ''
+  const modeNote =
+    mode === 'popular'
+      ? tr('самый популярный на YouTube')
+      : mode === 'loose'
+        ? tr('свободная длительность')
+        : ''
+  const suffix = [dur, modeNote].filter(Boolean).join(' · ')
+  const artPart = artist.trim() ? ` — ${artist.trim()}` : ''
+  return `${source}: ${title}${artPart}${suffix ? ` (${suffix})` : ''}`
+}
+
+const BRACKET_NOISE =
+  /\s*[\[(](?:feat\.?|ft\.?|featuring|with|prod\.?|official\s*(?:music\s*)?(?:video|audio|lyric\s*video|visualizer|visualiser|mv|hd|4k)|music\s*video|lyric(?:s)?(?:\s*video)?|color\s*coded(?:\s*lyrics?)?|kan\s*[/|]\s*rom\s*[/|]\s*eng|rom\s*[/|]\s*eng|eng\s*sub(?:s)?|audio|visualizer|visualiser|hd|hq|4k|explicit|clean(?:\s+edit|\s+version)?|video\s+edit|remaster(?:ed)?(?:\s+\d{4})?|single\s+version|album\s+version|radio\s+edit|original\s+mix|full(?:\s+ver(?:sion)?)?|ost|op\d*|ed\d*)[^)\]]*[)\]]/gi
+const DASH_NOISE =
+  /\s+[-–—]\s+(?:\d{4}\s+)?(?:remaster(?:ed)?(?:\s+\d{4})?|single\s+version|album\s+version|radio\s+edit|original\s+version|explicit|clean(?:\s+version)?|from\s+["«].*)$/gi
+const TRAILING_FEAT = /\s+(?:feat\.?|ft\.?|featuring)\s+.+$/i
+const TRAILING_LYRICS = /\s+lyrics?$/i
+const SAFE_EDITION_NOISE = /\b(?:clean|video|radio)\s+edit\b|[\[(]\s*hd\s*[)\]]/gi
+
+const EDITION_WORDS =
+  /\b(?:live|remix|cover|karaoke|instrumental|acoustic|arrangement|soundfont|jammable|ai\s+cover|ai\s+version|version\s+by|sung\s+by|played\s+by|performed\s+by|in\s+the\s+style\s+of|sped[\s-]+up|slowed|nightcore|8d|mashup|demo|edit|reverb|bootleg|acapella|a\s+cappella|backing\s+track|minus(?:\s+one)?|off\s+vocal|no\s+vocal(?:s)?|without\s+vocal(?:s)?|vocal(?:s)?\s+only|guitar|piano|bass|drum(?:s)?|violin|cello|flute|saxophone|orchestra(?:l)?|symphonic|trio|quartet|duo|music\s+box|lullaby|city\s+pop|8[\s-]*bit|chiptune|lo[\s-]*fi|lofi|synthesia|tutorial|lesson|tabs?|chords?|midi|ringtone|pitched|pitch[\s-]+shifted|daycore|doomer|but|dance\s+practice|choreography|behind\s+the\s+scenes|making\s+of|teaser|trailer|reaction|analysis|review|breakdown|interview|commentary|snippet|preview|soviet\s+ver(?:sion)?|минус(?:овка)?|кавер|караоке|инструментал|под\s+гитару|на\s+пианино|на\s+гитаре|без\s+слов|без\s+вокала)\b|[+-]\d+\s*key\b|原曲歌手|カラオケ|弾いてみた|歌ってみた|叩いてみた|踊ってみた|吹いてみた|切り抜き|リアクション|ピアノ|ギター/gi
+const SUSPICIOUS_CHANNEL_WORDS =
+  /\b(?:backing\s+track(?:s)?|minus(?:\s+tracks?|\s+one)?|karaoke|instrumental(?:s)?|covers?|piano|guitar|violin|drum(?:s)?|bass|trio|quartet|orchestra|music\s+box|lullaby|acapella|a\s+cappella|jammable|soundfont|synthesia|tabs?|tutorial(?:s)?|nightcore|slowed|sped[\s-]+up|8d\s+audio|gameplay|liveplay|beatmaps?|typing|keyboard|asmr|beat\s+saber|clone\s+hero|geometry\s+dash|минус(?:овка|овки)?|караоке|кавер(?:ы)?|прохождение|геймплей)\b|(?<![\p{L}\p{N}])osu(?:![\p{L}]*)?(?![\p{L}\p{N}])|歌っちゃ王/giu
+const GAMEPLAY_PATTERNS =
+  /(?:^\s*\d{6}\s+|(?<![\p{L}\p{N}])osu(?:![\p{L}]*)?(?![\p{L}\p{N}])|\b(?:gameplay|playthrough|liveplay|handcam|beatmap|full\s+combo|all\s+perfect|beat\s+saber|geometry\s+dash|clone\s+hero|guitar\s+hero|rock\s+band|stepmania|etterna|quaver|muse\s+dash|project\s+sekai|proseka|arcaea|cytus|phigros|friday\s+night\s+funkin|fnf|maimai|chunithm|sound\s+voltex|sdvx|typing|keyboard|keycaps|sound\s+test|asmr|speedrun|прохождение|геймплей)\b|\b(?:hd|hr|dt|nc|ez|fl|ht){2,}\b|\+\s*(?:hd|hr|dt|nc|ez|fl|ht)+\b|\b\d{2,4}\s*pp\b|\b\d{2,3}\.\d{1,2}\s*%|[\[(]\s*(?:fc|ss|choke|nomod|nm|dt|hr)\s*[)\]])/giu
+
+const TITLE_SPLIT = /\s*[-–—|]\s+|\s+[-–—|:]\s*|:\s+/
+const BY_SPLIT = /\s+by\s+/i
+const ARTIST_SEPARATORS = /\s*(?:,|&|\+|\/|\bfeat\.?\b|\bft\.?\b|\bfeaturing\b|\bwith\b|\band\b|\bx\b|\bи\b)\s*/i
+
+function normalized(text: string): string {
+  return text
     .toLowerCase()
+    .normalize('NFKD')
+    .replace(/\p{M}+/gu, '')
+    .replace(/['’`ʼ]/g, '')
+    .replace(/(?<=[\p{L}\p{N}])!(?=[\p{L}\p{N}])/gu, 'i')
+    .replace(/(?<=[\p{L}\p{N}])\$(?=[\p{L}\p{N}])/gu, 's')
+    .replace(/&/g, ' and ')
     .replace(/[^\p{L}\p{N}]+/gu, ' ')
     .trim()
-    .split(/\s+/)
-    .filter(Boolean)
 }
 
-function jaccard(a: string[], b: string[]): number {
-  if (!a.length || !b.length) return 0
-  const sb = new Set(b)
-  const hit = a.filter((w) => sb.has(w)).length
-  return hit / new Set([...a, ...b]).size
+function cleanAudioTitle(raw: string): string {
+  let result = raw.trim()
+  for (let i = 0; i < 3; i++) {
+    const next = result
+      .replace(BRACKET_NOISE, '')
+      .replace(DASH_NOISE, '')
+      .replace(TRAILING_FEAT, '')
+      .replace(TRAILING_LYRICS, '')
+      .trim()
+    if (next === result) break
+    result = next
+  }
+  return result || raw.trim()
 }
 
-function scoreCandidate(targetTitle: string, targetArtists: string[], targetDur: number, candTitle: string, candArtist: string, candDur?: number): number {
-  const cleanTarget = targetTitle.replace(CLEAN_TITLE, '').trim() || targetTitle
-  const nt = normWords(cleanTarget)
-  const nc = normWords(candTitle.replace(CLEAN_TITLE, '').trim() || candTitle)
-  let score = 0
-  const jt = jaccard(nt, nc)
-  if (nt.join(' ') === nc.join(' ')) score += 55
-  else if (nc.join(' ').includes(nt.join(' ')) || nt.join(' ').includes(nc.join(' '))) score += 30
-  score += Math.round(jt * 25)
+function durationToleranceSec(targetDurSec: number): number {
+  return Math.max(12, Math.min(25, Math.floor(targetDurSec / 8)))
+}
 
-  const targetArtNorm = targetArtists.map((a) => normWords(a).join(' ')).filter(Boolean)
-  const candArtNorm = normWords(candArtist).join(' ')
-  const candWhole = `${candArtNorm} ${nc.join(' ')}`
-  if (targetArtNorm.some((a) => a && (candArtNorm.includes(a) || candWhole.includes(a)))) score += 30
+function officialMvToleranceSec(targetDurSec: number): number {
+  return Math.max(durationToleranceSec(targetDurSec), Math.min(60, Math.floor(targetDurSec / 3)))
+}
 
-  if (targetDur > 0 && candDur && candDur > 0) {
-    const diff = Math.abs(targetDur - candDur)
-    if (diff <= 3) score += 45
-    else if (diff <= 8) score += 25
-    else if (diff <= 15) score += 10
-    else if (diff > 45) score -= 80
-    else if (diff > 25) score -= 40
+function editionTags(title: string): Set<string> {
+  const cleaned = title.replace(SAFE_EDITION_NOISE, ' ')
+  const out = new Set<string>()
+  for (const m of cleaned.matchAll(EDITION_WORDS)) {
+    out.add(m[0].toLowerCase().replace(/[\s-]+/g, ' ').trim())
+  }
+  for (const m of cleaned.matchAll(GAMEPLAY_PATTERNS)) {
+    out.add('game:' + m[0].toLowerCase().replace(/[\s-]+/g, ' ').trim())
+  }
+  return out
+}
+
+function channelVariantTags(rawArtist: string): Set<string> {
+  const out = new Set<string>()
+  for (const m of rawArtist.matchAll(SUSPICIOUS_CHANNEL_WORDS)) {
+    out.add(m[0].toLowerCase().replace(/[\s-]+/g, ' ').trim())
+  }
+  return out
+}
+
+function sameSet(a: Set<string>, b: Set<string>): boolean {
+  if (a.size !== b.size) return false
+  for (const x of a) if (!b.has(x)) return false
+  return true
+}
+
+function addArtistVariants(out: Set<string>, raw: string) {
+  const cleaned = normalized(raw)
+    .replace(/\s*(?:-\s*)?topic$/, '')
+    .replace(/\s*vevo$/, '')
+    .replace(/\s*official$/, '')
+    .trim()
+  if (!cleaned) return
+  out.add(cleaned)
+  const words = cleaned.split(' ').filter(Boolean)
+  const latin = words.filter((w) => /[a-z]/.test(w) && ![...w].some((c) => c.charCodeAt(0) > 127))
+  const nonLatin = words.filter((w) => [...w].some((c) => c.charCodeAt(0) > 127))
+  if (latin.length && nonLatin.length) {
+    const l = latin.join(' ')
+    const nl = nonLatin.join(' ')
+    if (l.length >= 2) out.add(l)
+    if (nl.length >= 2) out.add(nl)
+  }
+}
+
+function splitArtistCredits(names: string[]): string[] {
+  const out = new Set<string>()
+  for (const raw of names) {
+    if (!raw?.trim()) continue
+    addArtistVariants(out, raw)
+    for (const part of raw.split(ARTIST_SEPARATORS)) {
+      addArtistVariants(out, part)
+    }
+  }
+  return [...out]
+}
+
+function artistPartVariants(part: string): string[] {
+  const out = new Set<string>()
+  addArtistVariants(out, part)
+  for (const sub of part.split(ARTIST_SEPARATORS)) {
+    addArtistVariants(out, sub)
+  }
+  return [...out].filter((x) => x.length >= 2)
+}
+
+function artistMatchBonus(targetArtists: string[], candArtists: string[], leadTarget: string): number | null {
+  if (!targetArtists.length || !candArtists.length) return null
+  if (candArtists.includes(leadTarget)) return 2_000
+  if (targetArtists.some((a) => candArtists.includes(a))) return 1_400
+  return null
+}
+
+function titleSimilarityScore(targetTitle: string, candidateTitle: string): number | null {
+  if (!targetTitle || !candidateTitle) return null
+  if (targetTitle === candidateTitle) return 10_000
+  if (targetTitle.replace(/\s+/g, '') === candidateTitle.replace(/\s+/g, '')) return 9_500
+  const tWords = targetTitle.split(' ').filter(Boolean)
+  const cWords = candidateTitle.split(' ').filter(Boolean)
+  if (!tWords.length || !cWords.length) return null
+  if (tWords.length === 1) {
+    return cWords.length === 1 && tWords[0] === cWords[0] ? 10_000 : null
+  }
+  const cSet = new Set(cWords)
+  const tSet = new Set(tWords)
+  let intersection = 0
+  for (const w of tSet) if (cSet.has(w)) intersection++
+  const union = new Set([...tSet, ...cSet]).size
+  const jaccard = intersection / union
+  const extraWords = Math.abs(cWords.length - tWords.length)
+  const targetContained = ` ${candidateTitle} `.includes(` ${targetTitle} `) && extraWords <= 3
+  const candContained = ` ${targetTitle} `.includes(` ${candidateTitle} `) && extraWords <= 2
+  if (!targetContained && !candContained && jaccard < 0.72) return null
+  const bonus = targetContained || candContained ? 1_000 : 0
+  return 6_000 + Math.round(jaccard * 2_500) + bonus
+}
+
+function matchCandidateScore(
+  targetTitle: string,
+  targetArtistsRaw: string[],
+  targetDurSec: number,
+  candTitle: string,
+  candArtistRaw: string,
+  candDurSec: number | undefined,
+  candViews: number | undefined,
+  looseDuration: boolean,
+): number | null {
+  if (!candDurSec || candDurSec <= 0 || targetDurSec <= 0) return null
+
+  const targetEditions = editionTags(targetTitle)
+  if (!sameSet(targetEditions, editionTags(candTitle))) return null
+
+  const candChannelVariants = channelVariantTags(candArtistRaw)
+  if (candChannelVariants.size) {
+    const allowed = new Set([...channelVariantTags(targetArtistsRaw.join(' ')), ...targetEditions])
+    for (const v of candChannelVariants) if (!allowed.has(v)) return null
   }
 
-  if (!NOISE_WORDS.test(targetTitle) && NOISE_WORDS.test(candTitle)) score -= 45
-  return score
+  const targetArtists = splitArtistCredits(targetArtistsRaw)
+  const leadTarget = targetArtists[0]
+  if (!leadTarget) return null
+  const cleanTarget = normalized(cleanAudioTitle(targetTitle))
+  if (!cleanTarget) return null
+
+  const candCredits = splitArtistCredits([candArtistRaw])
+  const channelArtistBonus = artistMatchBonus(targetArtists, candCredits, leadTarget)
+
+  const diffSec = Math.abs(targetDurSec - candDurSec)
+  const strictTol = durationToleranceSec(targetDurSec)
+  const isOfficialMvOverrun =
+    !looseDuration &&
+    channelArtistBonus !== null &&
+    candDurSec > targetDurSec &&
+    diffSec > strictTol &&
+    diffSec <= officialMvToleranceSec(targetDurSec)
+
+  if (looseDuration) {
+    if (candDurSec < 50) return null
+    const ratio = candDurSec / targetDurSec
+    if (ratio < 0.55 || ratio > 1.45) return null
+  } else if (!isOfficialMvOverrun && diffSec > strictTol) {
+    return null
+  }
+
+  let bestTitleScore = titleSimilarityScore(cleanTarget, normalized(cleanAudioTitle(candTitle)))
+  let bestArtistBonus = channelArtistBonus
+
+  const considerSplit = (artistPart: string, titlePart: string) => {
+    const partArtists = artistPartVariants(artistPart)
+    const partArtistBonus = artistMatchBonus(targetArtists, partArtists, leadTarget)
+    const partTitleScore = titleSimilarityScore(cleanTarget, normalized(cleanAudioTitle(titlePart)))
+    if (partTitleScore !== null && (partArtistBonus !== null || bestArtistBonus !== null)) {
+      const combined = Math.max(partArtistBonus ?? 0, bestArtistBonus ?? 0)
+      if (bestTitleScore === null || bestArtistBonus === null || partTitleScore > bestTitleScore) {
+        bestTitleScore = partTitleScore
+        bestArtistBonus = combined
+      }
+    }
+  }
+
+  const allParts = candTitle.split(TITLE_SPLIT).map((p) => p.trim()).filter(Boolean)
+  if (allParts.length >= 2) {
+    considerSplit(allParts[0], allParts.slice(1).join(' - '))
+    considerSplit(allParts[allParts.length - 1], allParts.slice(0, -1).join(' - '))
+    for (let i = 0; i < allParts.length - 1; i++) {
+      considerSplit(allParts[i], allParts[i + 1])
+      considerSplit(allParts[i + 1], allParts[i])
+    }
+  }
+  const byIdx = candTitle.search(BY_SPLIT)
+  if (byIdx > 0) {
+    const byParts = candTitle.split(BY_SPLIT)
+    if (byParts.length >= 2) considerSplit(byParts.slice(1).join(' '), byParts[0])
+  }
+
+  if (bestTitleScore === null || bestArtistBonus === null) return null
+  if ((looseDuration || isOfficialMvOverrun) && (bestTitleScore < 9_500 || bestArtistBonus < 2_000)) return null
+
+  const officialChannelBonus = channelArtistBonus !== null ? 2_500 : 0
+  let viewsAdjustment = 0
+  if (candViews !== undefined) {
+    if (channelArtistBonus !== null) {
+      if (candViews >= 1_000) viewsAdjustment = Math.min(1_500, Math.round((Math.log10(candViews) - 2) * 250))
+    } else if (candViews < 500) {
+      viewsAdjustment = -3_000
+    } else if (candViews < 2_000) {
+      viewsAdjustment = -1_000
+    } else if (candViews >= 10_000) {
+      viewsAdjustment = Math.min(1_200, Math.round((Math.log10(candViews) - 3) * 300))
+    }
+  }
+  const diffMs = diffSec * 1000
+  const durationPenalty = isOfficialMvOverrun ? Math.min(2_500, Math.floor(diffMs / 10)) : Math.floor(diffMs / 10)
+  return Math.max(1, bestTitleScore + bestArtistBonus + officialChannelBonus + viewsAdjustment - durationPenalty)
 }
+
+const POPULAR_BLOCKED_EDITIONS = new Set([
+  'karaoke', 'backing track', 'minus', 'minus one', 'off vocal', 'no vocal', 'no vocals',
+  'without vocal', 'without vocals', 'tutorial', 'lesson', 'tab', 'tabs', 'chord', 'chords',
+  'synthesia', 'midi', 'ringtone', 'reaction', 'analysis', 'review', 'breakdown', 'interview',
+  'commentary', 'teaser', 'trailer', 'snippet', 'preview', 'минус', 'минусовка', 'караоке',
+  'под гитару', 'на пианино', 'на гитаре', 'без слов', 'без вокала', 'прохождение', 'геймплей',
+  'カラオケ', '原曲歌手', 'リアクション', '切り抜き',
+])
+
+function popularYouTubeFallbackScore(
+  targetTitle: string,
+  targetArtistsRaw: string[],
+  targetDurSec: number,
+  candTitle: string,
+  candArtistRaw: string,
+  candDurSec: number | undefined,
+  candViews: number | undefined,
+): number | null {
+  if (!candDurSec || candDurSec < 45 || candDurSec > 900 || !candTitle.trim()) return null
+
+  const targetEditions = editionTags(targetTitle)
+  for (const tag of editionTags(candTitle)) {
+    if (!targetEditions.has(tag) && (tag.startsWith('game:') || POPULAR_BLOCKED_EDITIONS.has(tag))) return null
+  }
+  const allowedChannel = new Set([...channelVariantTags(targetArtistsRaw.join(' ')), ...targetEditions])
+  for (const v of channelVariantTags(candArtistRaw)) {
+    if (!allowedChannel.has(v)) return null
+  }
+
+  const targetTitleWords = normalized(cleanAudioTitle(targetTitle)).split(' ').filter((w) => w.length >= 2)
+  const targetArtists = splitArtistCredits(targetArtistsRaw)
+  const targetArtistWords = targetArtists.flatMap((a) => a.split(' ')).filter((w) => w.length >= 2)
+  const candCredits = splitArtistCredits([candArtistRaw])
+  const candWords = new Set(
+    [...normalized(candTitle).split(' '), ...candCredits.flatMap((a) => a.split(' '))].filter((w) => w.length >= 2),
+  )
+  const wanted = new Set([...targetTitleWords, ...targetArtistWords])
+  if (wanted.size > 0 && ![...wanted].some((w) => candWords.has(w))) return null
+
+  const titleHits = targetTitleWords.filter((w) => candWords.has(w)).length
+  const artistHits = targetArtistWords.filter((w) => candWords.has(w)).length
+  const leadTarget = targetArtists[0]
+  const officialBonus = leadTarget && artistMatchBonus(targetArtists, candCredits, leadTarget) !== null ? 5_000 : 0
+  const views = Math.max(0, candViews ?? 0)
+  const viewsScore = views > 0 ? Math.round(Math.log10(views + 1) * 2_000) : 0
+  const durPenalty = targetDurSec > 0 ? Math.floor((Math.abs(targetDurSec - candDurSec) * 1000) / 50) : 0
+  return Math.max(1, 1_000 + viewsScore + officialBonus + titleHits * 800 + artistHits * 600 - durPenalty)
+}
+
+const BONUS_YT_SONG = 26_000
+const BONUS_YT_VIDEO = 25_000
+const BONUS_YT_WEB = 24_000
+const BONUS_YANDEX = 10_000
+const BONUS_SOUNDCLOUD = 0
 
 async function buildMatchState(track: Track): Promise<MatchState> {
   const artist = track.artists[0]?.name && track.artists[0].name !== 'Spotify' ? track.artists[0].name : ''
-  const cleanTitle = track.title.replace(CLEAN_TITLE, '').trim() || track.title
+  const cleanTitle = cleanAudioTitle(track.title)
   const query = artist ? `${artist} ${cleanTitle}` : cleanTitle
-  const targetArtists = track.artists.map((a) => a.name)
+  const targetArtists = track.artists.map((a) => a.name).filter((n) => n && n !== 'Spotify')
 
-  const candidates: Candidate[] = []
-  try {
-    const ytHits = await youtube.searchSongs(query)
-    for (const s of ytHits.slice(0, 6)) {
-      const score = scoreCandidate(track.title, targetArtists, track.duration, s.title, s.artists, s.duration)
-      candidates.push({ key: `yt:${s.videoId}`, kind: 'yt', videoId: s.videoId, score })
-    }
-  } catch {
-    // Fall through to SoundCloud/Yandex fallback
-  }
+  const strict: Candidate[] = []
+  const loose: Candidate[] = []
+  const popular: Candidate[] = []
 
-  try {
-    const scHits = await soundcloud.searchTracks(query, 6)
-    for (const s of scHits) {
-      const streams = s.media?.transcodings ?? []
-      if (s.streamable === false || s.policy === 'BLOCK') continue
-      if (streams.length && !streams.some((x) => !x.format.protocol.includes('encrypted'))) continue
-      if (streams.length && streams.every((x) => x.snipped)) continue
-      const candArtist = s.publisher_metadata?.artist?.trim() || s.user?.username || ''
-      const candDur = Math.round((s.full_duration ?? s.duration ?? 0) / 1000)
-      const score = scoreCandidate(track.title, targetArtists, track.duration, s.title ?? '', candArtist, candDur) - 5
-      candidates.push({ key: `sc:${s.id}`, kind: 'sc', track: s, score })
-    }
-  } catch {
-    // SoundCloud optional fallback
-  }
+  const [ytRes, scRes, yaRes] = await Promise.all([
+    youtube.searchAudioCandidates(query).catch(() => ({ songs: [] as youtube.YtSong[], videos: [] as youtube.YtSong[] })),
+    soundcloud.searchTracks(query, 15).catch(() => [] as soundcloud.ScTrack[]),
+    accounts.ya ? yandex.search(query).catch(() => null) : Promise.resolve(null),
+  ])
 
-  if (accounts.ya) {
-    try {
-      const yaHits = await yandex.search(query)
-      for (const yid of yaHits.tracks.slice(0, 4)) {
-        const yt = catalogTracks.get(yid)
-        if (!yt || yt.playable === false) continue
-        const candArtist = yt.artists.map((a) => a.name).join(', ')
-        const score = scoreCandidate(track.title, targetArtists, track.duration, yt.title, candArtist, yt.duration) - 3
-        candidates.push({ key: yid, kind: 'ya', track: yt, score })
+  let ytSongsMatched = 0
+  for (const s of ytRes.songs) {
+    const score = matchCandidateScore(track.title, targetArtists, track.duration, s.title, s.artists, s.duration, s.views, false)
+    if (score !== null) {
+      ytSongsMatched++
+      strict.push({
+        key: `yt:${s.videoId}`,
+        kind: 'yt',
+        videoId: s.videoId,
+        score: score + BONUS_YT_SONG,
+        label: formatVariantLabel('YouTube Music', s.title, s.artists, s.duration, 'strict'),
+      })
+    } else {
+      const l = matchCandidateScore(track.title, targetArtists, track.duration, s.title, s.artists, s.duration, s.views, true)
+      if (l !== null) {
+        loose.push({
+          key: `yt:${s.videoId}`,
+          kind: 'yt',
+          videoId: s.videoId,
+          score: l + BONUS_YT_SONG,
+          label: formatVariantLabel('YouTube Music', s.title, s.artists, s.duration, 'loose'),
+        })
+      } else {
+        const p = popularYouTubeFallbackScore(track.title, targetArtists, track.duration, s.title, s.artists, s.duration, s.views)
+        if (p !== null) {
+          popular.push({
+            key: `yt:${s.videoId}`,
+            kind: 'yt',
+            videoId: s.videoId,
+            score: p,
+            label: formatVariantLabel('YouTube Music', s.title, s.artists, s.duration, 'popular'),
+          })
+        }
       }
-    } catch {
-      // Yandex optional fallback
+    }
+  }
+  for (const v of ytRes.videos) {
+    const score = matchCandidateScore(track.title, targetArtists, track.duration, v.title, v.artists, v.duration, v.views, false)
+    if (score !== null) {
+      strict.push({
+        key: `yt:${v.videoId}`,
+        kind: 'yt',
+        videoId: v.videoId,
+        score: score + BONUS_YT_VIDEO,
+        label: formatVariantLabel('YouTube Music', v.title, v.artists, v.duration, 'strict'),
+      })
+    } else {
+      const l = matchCandidateScore(track.title, targetArtists, track.duration, v.title, v.artists, v.duration, v.views, true)
+      if (l !== null) {
+        loose.push({
+          key: `yt:${v.videoId}`,
+          kind: 'yt',
+          videoId: v.videoId,
+          score: l + BONUS_YT_VIDEO,
+          label: formatVariantLabel('YouTube Music', v.title, v.artists, v.duration, 'loose'),
+        })
+      } else {
+        const p = popularYouTubeFallbackScore(track.title, targetArtists, track.duration, v.title, v.artists, v.duration, v.views)
+        if (p !== null) {
+          popular.push({
+            key: `yt:${v.videoId}`,
+            kind: 'yt',
+            videoId: v.videoId,
+            score: p,
+            label: formatVariantLabel('YouTube', v.title, v.artists, v.duration, 'popular'),
+          })
+        }
+      }
     }
   }
 
-  candidates.sort((a, b) => b.score - a.score)
+  if (ytSongsMatched === 0) {
+    const webVideos = await youtube.searchWebVideos(query).catch(() => [] as youtube.YtSong[])
+    for (const w of webVideos) {
+      const score = matchCandidateScore(track.title, targetArtists, track.duration, w.title, w.artists, w.duration, w.views, false)
+      if (score !== null) {
+        strict.push({
+          key: `yt:${w.videoId}`,
+          kind: 'yt',
+          videoId: w.videoId,
+          score: score + BONUS_YT_WEB,
+          label: formatVariantLabel('YouTube', w.title, w.artists, w.duration, 'strict'),
+        })
+      } else {
+        const l = matchCandidateScore(track.title, targetArtists, track.duration, w.title, w.artists, w.duration, w.views, true)
+        if (l !== null) {
+          loose.push({
+            key: `yt:${w.videoId}`,
+            kind: 'yt',
+            videoId: w.videoId,
+            score: l + BONUS_YT_WEB,
+            label: formatVariantLabel('YouTube', w.title, w.artists, w.duration, 'loose'),
+          })
+        } else {
+          const p = popularYouTubeFallbackScore(track.title, targetArtists, track.duration, w.title, w.artists, w.duration, w.views)
+          if (p !== null) {
+            popular.push({
+              key: `yt:${w.videoId}`,
+              kind: 'yt',
+              videoId: w.videoId,
+              score: p,
+              label: formatVariantLabel('YouTube', w.title, w.artists, w.duration, 'popular'),
+            })
+          }
+        }
+      }
+    }
+  }
+
+  if (yaRes) {
+    for (const yid of yaRes.tracks.slice(0, 10)) {
+      const yt = catalogTracks.get(yid)
+      if (!yt || yt.playable === false) continue
+      const candArtist = yt.artists.map((a) => a.name).join(', ')
+      const score = matchCandidateScore(track.title, targetArtists, track.duration, yt.title, candArtist, yt.duration, undefined, false)
+      if (score !== null) {
+        strict.push({
+          key: yid,
+          kind: 'ya',
+          track: yt,
+          score: score + BONUS_YANDEX,
+          label: formatVariantLabel(tr('Яндекс Музыка'), yt.title, candArtist, yt.duration, 'strict'),
+        })
+      } else {
+        const l = matchCandidateScore(track.title, targetArtists, track.duration, yt.title, candArtist, yt.duration, undefined, true)
+        if (l !== null) {
+          loose.push({
+            key: yid,
+            kind: 'ya',
+            track: yt,
+            score: l + BONUS_YANDEX,
+            label: formatVariantLabel(tr('Яндекс Музыка'), yt.title, candArtist, yt.duration, 'loose'),
+          })
+        }
+      }
+    }
+  }
+
+  for (const s of scRes) {
+    const streams = s.media?.transcodings ?? []
+    if (s.streamable === false || s.policy === 'BLOCK' || s.policy === 'SNIP') continue
+    if (streams.length && !streams.some((x) => !x.format.protocol.includes('encrypted') && !x.snipped)) continue
+    const candArtist = s.publisher_metadata?.artist?.trim() || s.user?.username || ''
+    const candDur = Math.round((s.full_duration ?? s.duration ?? 0) / 1000)
+    const score = matchCandidateScore(track.title, targetArtists, track.duration, s.title ?? '', candArtist, candDur, undefined, false)
+    if (score !== null) {
+      strict.push({
+        key: `sc:${s.id}`,
+        kind: 'sc',
+        track: s,
+        score: score + BONUS_SOUNDCLOUD,
+        label: formatVariantLabel('SoundCloud', s.title ?? '', candArtist, candDur, 'strict'),
+      })
+    } else {
+      const l = matchCandidateScore(track.title, targetArtists, track.duration, s.title ?? '', candArtist, candDur, undefined, true)
+      if (l !== null) {
+        loose.push({
+          key: `sc:${s.id}`,
+          kind: 'sc',
+          track: s,
+          score: l + BONUS_SOUNDCLOUD,
+          label: formatVariantLabel('SoundCloud', s.title ?? '', candArtist, candDur, 'loose'),
+        })
+      }
+    }
+  }
+
+  const pool = strict.length ? strict : loose.length ? loose : popular
+  pool.sort((a, b) => b.score - a.score)
+  const seen = new Set<string>()
+  const candidates = pool.filter((c) => {
+    if (seen.has(c.key)) return false
+    seen.add(c.key)
+    return true
+  })
   if (!candidates.length) throw new Error(tr('Spotify не нашёл источник звука для «%s»', track.title))
   return { candidates, index: 0, failed: new Set() }
 }

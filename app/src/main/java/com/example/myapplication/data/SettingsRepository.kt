@@ -285,6 +285,15 @@ class SettingsRepository(
         preferences.edit().putBoolean(KEY_AUTO_CONTINUE, enabled).apply()
     }
 
+    // Turns "Моя форма" into a cross-service wave blending recommendations from every connected
+    // service (Yandex, SoundCloud, YouTube Music, Spotify) into a single endless stream.
+    val multiServiceWave = MutableStateFlow(preferences.getBoolean(KEY_MULTI_SERVICE_WAVE, false))
+
+    fun setMultiServiceWave(enabled: Boolean) {
+        multiServiceWave.value = enabled
+        preferences.edit().putBoolean(KEY_MULTI_SERVICE_WAVE, enabled).apply()
+    }
+
     /**
      * Restoring lossy tracks (MP3 and AAC cut off under 18 kHz) with a model, in the player itself.
      * The playback service reads these preferences as they change.
@@ -542,6 +551,7 @@ class SettingsRepository(
         const val KEY_RESTORE_ENABLED = com.example.myapplication.player.restore.RestoreModels.KEY_ENABLED
         const val KEY_RESTORE_STRONG = com.example.myapplication.player.restore.RestoreModels.KEY_STRONG
         const val KEY_AUTO_CONTINUE = "auto_continue"
+        const val KEY_MULTI_SERVICE_WAVE = "multi_service_wave"
         const val KEY_OPEN_PLAYER_ON_TAP = "open_player_on_tap"
         const val KEY_SMOOTH_MOTION = "smooth_motion"
         const val KEY_ONBOARDING_DONE = "onboarding_done"

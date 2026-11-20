@@ -176,6 +176,125 @@ class SpotifyTest {
         val dont = SoundCloudTrack(5L, title = "Don't Stop", duration = 180_000L, user = SoundCloudUser(username = "Artist"))
         val dontCand = dont.copy(title = "Dont Stop")
         assertNotNull(spotifyMatchRejectReason(dont, dontCand), spotifyMatchScore(dont, dontCand))
+
+        // Reuploads with "Title by Artist" or "Title - Artist" on a third-party channel match when duration agrees.
+        val byTarget = SoundCloudTrack(6L, title = "ФРУКТОВЫЙ 2.0", duration = 126_000L, user = SoundCloudUser(username = "soit pas jaloux"))
+        val byCand = SoundCloudTrack(7L, title = "ФРУКТОВЫЙ 2.0 by soit pas jaloux", duration = 126_000L, user = SoundCloudUser(username = "Зиач"))
+        assertNotNull(spotifyMatchRejectReason(byTarget, byCand), spotifyMatchScore(byTarget, byCand))
+        val dashRevCand = SoundCloudTrack(8L, title = "ФРУКТОВЫЙ 2.0 - soit pas jaloux", duration = 126_000L, user = SoundCloudUser(username = "Зиач"))
+        assertNotNull(spotifyMatchRejectReason(byTarget, dashRevCand), spotifyMatchScore(byTarget, dashRevCand))
+
+        // Shorter reupload (1:20 vs 2:06) is rejected strictly, accepted ONLY via loose-duration exact fallback, never for 30s previews.
+        val shortCand = byCand.copy(duration = 80_000L)
+        assertNull(spotifyMatchScore(byTarget, shortCand))
+        assertNotNull(spotifyLooseDurationMatchScore(byTarget, shortCand))
+        assertNull(spotifyLooseDurationMatchScore(byTarget, byCand.copy(duration = 30_000L)))
+
+        // Backing tracks, instrumentals, minus channels, and tutorials must be rejected strictly AND loosely.
+        val bloody = SoundCloudTrack(9L, title = "BLOODY STREAM", duration = 261_000L, user = SoundCloudUser(username = "Coda"))
+        val guitarMinus = SoundCloudTrack(
+            10L,
+            title = "Coda - Bloody Stream (guitar backing track)",
+            duration = 261_000L,
+            user = SoundCloudUser(username = "Guitar Minus Tracks")
+        )
+        assertNull(spotifyMatchScore(bloody, guitarMinus))
+        assertNull(spotifyLooseDurationMatchScore(bloody, guitarMinus))
+        // Even if the title omits "(backing track)", a Minus / Karaoke uploader channel is still rejected.
+        val hiddenMinus = SoundCloudTrack(
+            11L,
+            title = "Coda - Bloody Stream",
+            duration = 261_000L,
+            user = SoundCloudUser(username = "Guitar Minus Tracks")
+        )
+        assertNull(spotifyMatchScore(bloody, hiddenMinus))
+        assertNull(spotifyLooseDurationMatchScore(bloody, hiddenMinus))
+        // Original songs whose own title contains an instrument word ("Piano Man") still match.
+        val pianoMan = SoundCloudTrack(12L, title = "Piano Man", duration = 339_000L, user = SoundCloudUser(username = "Billy Joel"))
+        assertNotNull(spotifyMatchScore(pianoMan, pianoMan.copy(title = "Billy Joel - Piano Man (Official Video)")))
+
+        // Rhythm-game playthroughs (osu!, HDDT/HDHR, pp, accuracy %, handcam/typing) must be rejected, while (HD)/(4K) music videos stay valid.
+        val osuTitle = SoundCloudTrack(13L, title = "Coda - BLOODY STREAM [osu! +HDDT 99.42% FC 512pp]", duration = 261_000L, user = SoundCloudUser(username = "Player123"))
+        assertNull(spotifyMatchScore(bloody, osuTitle))
+        assertNull(spotifyLooseDurationMatchScore(bloody, osuTitle))
+        val osuHandcam = SoundCloudTrack(14L, title = "Coda - BLOODY STREAM (handcam typing)", duration = 261_000L, user = SoundCloudUser(username = "osu! liveplays"))
+        assertNull(spotifyMatchScore(bloody, osuHandcam))
+        val osuChannelOnly = SoundCloudTrack(15L, title = "Coda - BLOODY STREAM", duration = 261_000L, user = SoundCloudUser(username = "Best osu! replays"))
+        assertNull(spotifyMatchScore(bloody, osuChannelOnly))
+        val officialHd = SoundCloudTrack(16L, title = "Coda - BLOODY STREAM (Official Video) [HD] (4K)", duration = 261_000L, user = SoundCloudUser(username = "Coda - Topic"))
+        assertNotNull(spotifyMatchRejectReason(bloody, officialHd), spotifyMatchScore(bloody, officialHd))
+
+        // Live-verified anime cases:
+        // 1) Official bilingual channel "Kenshi Yonezu  米津玄師" matches "KICK BACK" even with its real 3:48 MV length
+        //    (+35s intro/outro), decisively outranks a 47-view random upload titled "Kenshi Yonezu - KICK BACK",
+        //    and rejects Dance Practice / Live / short teasers / dated replays / arrangements / AI / piano covers.
+        val kickBack = SoundCloudTrack(17L, title = "KICK BACK", duration = 193_000L, user = SoundCloudUser(username = "Kenshi Yonezu"))
+        val officialMv = SoundCloudTrack(
+            18L,
+            title = "米津玄師 Kenshi Yonezu - KICKBACK",
+            duration = 228_000L,
+            user = SoundCloudUser(username = "Kenshi Yonezu  米津玄師"),
+            playbackCount = 246_557_783L
+        )
+        val officialMvScore = spotifyMatchScore(kickBack, officialMv)
+        assertNotNull(spotifyMatchRejectReason(kickBack, officialMv), officialMvScore)
+        val lowViewOsuCandidate = SoundCloudTrack(
+            27L,
+            title = "Kenshi Yonezu - KICK BACK",
+            duration = 202_000L,
+            user = SoundCloudUser(username = "얼붕쓰"),
+            playbackCount = 47L
+        )
+        val lowViewScore = spotifyMatchScore(kickBack, lowViewOsuCandidate)!!
+        assertTrue(
+            "Expected official 246M-view MV (${officialMvScore!! + SpotifyAudio.BONUS_YT_WEB}) to outrank 47-view random upload (${lowViewScore + SpotifyAudio.BONUS_YT_VIDEO})",
+            officialMvScore + SpotifyAudio.BONUS_YT_WEB > lowViewScore + SpotifyAudio.BONUS_YT_VIDEO
+        )
+        // Exact-length official Topic Art Track still outranks a longer Official MV.
+        val officialTopic = SoundCloudTrack(
+            28L,
+            title = "KICK BACK",
+            duration = 193_000L,
+            user = SoundCloudUser(username = "Kenshi Yonezu - Topic"),
+            playbackCount = 10_000_000L
+        )
+        assertTrue(
+            spotifyMatchScore(kickBack, officialTopic)!! + SpotifyAudio.BONUS_YT_SONG >
+                officialMvScore + SpotifyAudio.BONUS_YT_WEB
+        )
+        // Non-song official channel videos (Dance Practice, Live, 33s teaser) stay rejected.
+        assertNull(spotifyMatchScore(kickBack, SoundCloudTrack(29L, title = "Kenshi Yonezu – KICK BACK (Dance Practice)", duration = 208_000L, user = SoundCloudUser(username = "Kenshi Yonezu  米津玄師"))))
+        assertNull(spotifyMatchScore(kickBack, SoundCloudTrack(30L, title = "Kenshi Yonezu - KICK BACK（Live with Daiki Tsuneta）", duration = 203_000L, user = SoundCloudUser(username = "Kenshi Yonezu  米津玄師"))))
+        assertNull(spotifyMatchScore(kickBack, SoundCloudTrack(31L, title = "米津玄師 Kenshi Yonezu - KICKBACK", duration = 33_000L, user = SoundCloudUser(username = "Kenshi Yonezu  米津玄師"))))
+        assertNull(spotifyMatchScore(kickBack, SoundCloudTrack(19L, title = "260912 Kenshi Yonezu - KICK BACK", duration = 193_000L, user = SoundCloudUser(username = "극초음속 코끼리"))))
+        assertNull(spotifyMatchScore(kickBack, SoundCloudTrack(20L, title = "Kenshi Yonezu - KICK BACK (arrangement)", duration = 193_000L, user = SoundCloudUser(username = "Jay1212"))))
+        assertNull(spotifyMatchScore(kickBack, SoundCloudTrack(21L, title = "jammable ai: Kenshi Yonezu - KICK BACK", duration = 193_000L, user = SoundCloudUser(username = "cat"))))
+        assertNull(spotifyMatchScore(kickBack, SoundCloudTrack(22L, title = "KICK BACK (Kenshi Yonezu)", duration = 193_000L, user = SoundCloudUser(username = "Ru's Piano - Topic"))))
+        assertNull(spotifyMatchScore(kickBack, SoundCloudTrack(23L, title = "Kenshi Yonezu - Kick Back but in the Sonic soundfont", duration = 193_000L, user = SoundCloudUser(username = "Scepty"))))
+
+        // Post-extraction metadata filter rejects third-party Gaming/osu! uploads while sparing official channels and normal Music/People & Blogs uploads.
+        assertTrue(spotifyYouTubeMetadataRejected(kickBack, isOfficialChannel = false, category = "Gaming", tags = emptyList(), viewCount = 47L))
+        assertTrue(spotifyYouTubeMetadataRejected(kickBack, isOfficialChannel = false, category = "Entertainment", tags = listOf("osu!", "beatmap"), viewCount = 120_000L))
+        assertFalse(spotifyYouTubeMetadataRejected(kickBack, isOfficialChannel = true, category = "Music", tags = listOf("Kenshi Yonezu"), viewCount = 246_557_783L))
+        assertFalse(spotifyYouTubeMetadataRejected(bloody, isOfficialChannel = false, category = "People & Blogs", tags = listOf("jojo", "bloody stream"), viewCount = 3_809L))
+
+        // Last-resort popular YouTube fallback ranks the highest-viewed matching video first while still rejecting osu!/karaoke/minus tracks.
+        val popular10M = SoundCloudTrack(32L, title = "BLOODY STREAM - Special Anime Upload", duration = 260_000L, user = SoundCloudUser(username = "AnimeChannel"), playbackCount = 10_000_000L)
+        val popular500 = SoundCloudTrack(33L, title = "BLOODY STREAM - Upload", duration = 260_000L, user = SoundCloudUser(username = "SmallChannel"), playbackCount = 500L)
+        assertTrue(spotifyPopularYouTubeFallbackScore(bloody, popular10M)!! > spotifyPopularYouTubeFallbackScore(bloody, popular500)!!)
+        assertNull(spotifyPopularYouTubeFallbackScore(bloody, osuTitle))
+        assertNull(spotifyPopularYouTubeFallbackScore(bloody, guitarMinus))
+
+        // 2) Full Bloody Stream lyric video (4:19) matches despite anime prefix + "(Color Coded Lyrics ...)", while Piano Trio / +4Key karaoke are rejected.
+        val bloodyFullLyric = SoundCloudTrack(
+            24L,
+            title = "JoJo's Bizarre Adventure OP2: Coda - BLOODY STREAM Lyrics (Color Coded Lyrics Kan/Rom/Eng)",
+            duration = 259_000L,
+            user = SoundCloudUser(username = "Anime Lyrics")
+        )
+        assertNotNull(spotifyMatchRejectReason(bloody, bloodyFullLyric), spotifyMatchScore(bloody, bloodyFullLyric))
+        assertNull(spotifyMatchScore(bloody, SoundCloudTrack(25L, title = "BLOODY STREAM", duration = 261_000L, user = SoundCloudUser(username = "Coda Piano Trio - Topic"))))
+        assertNull(spotifyMatchScore(bloody, SoundCloudTrack(26L, title = "BLOODY STREAM +4Key (原曲歌手:Coda)", duration = 261_000L, user = SoundCloudUser(username = "歌っちゃ王 - Topic"))))
     }
 
     @Test

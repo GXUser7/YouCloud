@@ -8,6 +8,7 @@
   // surface moving to the music, the ink its text colour — the bright paper only without it.
   import { tr } from '../../lib/i18n.svelte'
   import { serviceName, track } from '../../lib/catalog'
+  import { showPlayingVariant } from '../../lib/services/spotify'
   import { fit } from '../../lib/fit'
   import { time } from '../../lib/format'
   import { queueWindow, revealNow } from '../../lib/queueView'
@@ -63,7 +64,18 @@
 
   <div class="top">
     <span class="ellipsis">{player.wave ? tr('Моя волна') : tr('Играет из')} — {player.wave ? tr('Яндекс Музыка') : player.context || serviceName(t.service)}</span>
-    <span class="ellipsis mid">{serviceName(t.service)}{#if t.album} · {t.album.title || tr('Альбом')}{/if}</span>
+    <!-- svelte-ignore a11y_click_events_have_key_events -->
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
+    <span
+      class="ellipsis mid"
+      onclick={() => t.service === 'sp' && showPlayingVariant(t.id)}
+      oncontextmenu={(e) => {
+        if (t.service === 'sp') {
+          e.preventDefault()
+          showPlayingVariant(t.id)
+        }
+      }}
+    >{serviceName(t.service)}{#if t.album} · {t.album.title || tr('Альбом')}{/if}</span>
     <span class="count">{player.index + 1} / {player.queue.length}</span>
   </div>
   <div class="rule"></div>

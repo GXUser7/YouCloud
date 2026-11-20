@@ -1154,22 +1154,39 @@ async function visitorData(): Promise<string | null> {
 }
 
 const FILTER_SONGS = 'EgWKAQIIAWoQEAUQCRADEAQQChAREBAQFQ=='
+const FILTER_VIDEOS = 'EgWKAQIQAWoQEAUQCRADEAQQChAREBAQFQ=='
+const VIEW_COUNT_RUN = /\d.*(?:просмотр|прослушив|views|plays)/i
+const SHORT_VIEWS = /(\d+(?:[.,]\d+)?)\s*(тыс|млн|млрд|k|m|b)?/i
+const EXACT_VIEWS = /\d[\d\s\u00a0\u202f,]*/
+
+function parseViewCountText(raw: string | undefined | null): number | undefined {
+  if (!raw) return undefined
+  const text = raw.replace(/\u00a0|\u202f/g, ' ').replace(/(?<=\d)\s+(?=\d)/g, '')
+  const m = text.match(SHORT_VIEWS)
+  if (!m) return undefined
+  const num = Number(m[1].replace(',', '.'))
+  if (!Number.isFinite(num)) return undefined
+  const scale = m[2]?.toLowerCase()
+  const mult = scale === 'тыс' || scale === 'k' ? 1_000 : scale === 'млн' || scale === 'm' ? 1_000_000 : scale === 'млрд' || scale === 'b' ? 1_000_000_000 : 1
+  return Math.round(num * mult)
+}
 
 export interface YtSong {
   videoId: string
   title: string
   artists: string
   duration?: number
+  views?: number
+  kind?: 'song' | 'video' | 'web'
 }
 
-/** Songs for [query] straight from InnerTube: the connection check's light probe. */
-export async function searchSongs(query: string): Promise<YtSong[]> {
+async function searchYtmShelf(query: string, params: string, kind: 'song' | 'video'): Promise<YtSong[]> {
   const id = await visitorData()
   const headers: Record<string, string> = { 'x-origin': ORIGIN }
   if (id) headers['x-goog-visitor-id'] = id
   const answer = await postJson(
     `${API}search?prettyPrint=false`,
-    { query, params: FILTER_SONGS, context: { client: { clientName: 'WEB_REMIX', clientVersion: clientVersion(), hl: i18n.lang }, user: {} } },
+    { query, params, context: { client: { clientName: 'WEB_REMIX', clientVersion: clientVersion(), hl: i18n.lang }, user: {} } },
     { headers },
   )
   const tabs = at(answer, 'contents', 'tabbedSearchResultsRenderer', 'tabs', 0, 'tabRenderer', 'content', 'sectionListRenderer', 'contents') ?? []
@@ -1177,15 +1194,87 @@ export async function searchSongs(query: string): Promise<YtSong[]> {
   for (const section of tabs) {
     for (const item of at(section, 'musicShelfRenderer', 'contents') ?? []) {
       const row = item.musicResponsiveListItemRenderer
-      const videoId = at(row, 'playlistItemData', 'videoId')
-      const title = at(row, 'flexColumns', 0, 'musicResponsiveListItemFlexColumnRenderer', 'text', 'runs', 0, 'text')
-      const byline = (at(row, 'flexColumns', 1, 'musicResponsiveListItemFlexColumnRenderer', 'text', 'runs') ?? [])
-        .map((r: { text: string }) => r.text)
-        .join('')
+      const videoId =
+        at(row, 'playlistItemData', 'videoId') ??
+        at(row, 'overlay', 'musicItemThumbnailOverlayRenderer', 'content', 'musicPlayButtonRenderer', 'playNavigationEndpoint', 'watchEndpoint', 'videoId')
+      const titleRuns: { text: string }[] = at(row, 'flexColumns', 0, 'musicResponsiveListItemFlexColumnRenderer', 'text', 'runs') ?? []
+      const title = titleRuns.map((r) => r.text).join('')
+      const bylineRuns: { text: string }[] = at(row, 'flexColumns', 1, 'musicResponsiveListItemFlexColumnRenderer', 'text', 'runs') ?? []
+      const byline = bylineRuns.map((r) => r.text).join('')
       const durMatch = byline.match(/(?:(\d+):)?(\d{1,2}):(\d{2})\s*$/)
-      const duration = durMatch ? (Number(durMatch[1] || 0) * 3600 + Number(durMatch[2]) * 60 + Number(durMatch[3])) : undefined
-      if (videoId && title) songs.push({ videoId, title, artists: byline.split(' • ')[0] ?? '', duration })
+      const duration = durMatch ? Number(durMatch[1] || 0) * 3600 + Number(durMatch[2]) * 60 + Number(durMatch[3]) : undefined
+      let views: number | undefined
+      for (const r of bylineRuns) {
+        if (r?.text && VIEW_COUNT_RUN.test(r.text)) {
+          views = parseViewCountText(r.text)
+          if (views !== undefined) break
+        }
+      }
+      if (videoId && title) songs.push({ videoId, title, artists: byline.split(' • ')[0] ?? '', duration, views, kind })
     }
   }
   return songs
+}
+
+/** Songs for [query] straight from InnerTube: the connection check's light probe. */
+export async function searchSongs(query: string): Promise<YtSong[]> {
+  return searchYtmShelf(query, FILTER_SONGS, 'song')
+}
+
+/** Both YTM Songs and YTM Videos for cross-service Spotify audio resolution. */
+export async function searchAudioCandidates(query: string): Promise<{ songs: YtSong[]; videos: YtSong[] }> {
+  const [songs, rawVideos] = await Promise.all([
+    searchYtmShelf(query, FILTER_SONGS, 'song').catch(() => [] as YtSong[]),
+    searchYtmShelf(query, FILTER_VIDEOS, 'video').catch(() => [] as YtSong[]),
+  ])
+  const songIds = new Set(songs.map((s) => s.videoId))
+  const videos = rawVideos.filter((v) => !songIds.has(v.videoId) && (v.duration ?? 0) > 0)
+  return { songs, videos }
+}
+
+/** Plain YouTube Web search fallback when YouTube Music Songs lack the original recording. */
+export async function searchWebVideos(query: string): Promise<YtSong[]> {
+  const answer = await postJson(
+    'https://www.youtube.com/youtubei/v1/search?prettyPrint=false',
+    {
+      query,
+      context: { client: { clientName: 'WEB', clientVersion: '2.20260925.01.00', hl: 'ru', gl: 'RU' } },
+    },
+    { headers: { 'x-origin': 'https://www.youtube.com' } },
+  )
+  const renderers: any[] = []
+  const collect = (node: any) => {
+    if (!node || typeof node !== 'object') return
+    if (Array.isArray(node)) {
+      for (const x of node) collect(x)
+      return
+    }
+    if (node.videoRenderer) renderers.push(node.videoRenderer)
+    for (const v of Object.values(node)) collect(v)
+  }
+  collect(answer)
+  const out: YtSong[] = []
+  const seen = new Set<string>()
+  for (const v of renderers) {
+    const videoId: string | undefined = v?.videoId
+    if (!videoId || seen.has(videoId)) continue
+    const title = ((v?.title?.runs ?? []) as { text?: string }[]).map((r) => r.text ?? '').join('') || v?.title?.simpleText || ''
+    const artists =
+      ((v?.ownerText?.runs ?? v?.longBylineText?.runs ?? []) as { text?: string }[])[0]?.text ?? ''
+    const lenText: string | undefined = v?.lengthText?.simpleText
+    if (!title || !lenText) continue
+    const parts = lenText.split(':').map((p) => Number(p.trim()))
+    if (parts.some((n) => !Number.isFinite(n))) continue
+    const duration = parts.reduce((acc, p) => acc * 60 + p, 0)
+    if (duration <= 0) continue
+    const exactRaw: string | undefined = v?.viewCountText?.simpleText
+    const exactMatch = exactRaw ? EXACT_VIEWS.exec(exactRaw)?.[0]?.replace(/\D/g, '') : undefined
+    const views =
+      exactMatch && exactMatch.length
+        ? Number(exactMatch)
+        : parseViewCountText(v?.shortViewCountText?.simpleText)
+    seen.add(videoId)
+    out.push({ videoId, title, artists, duration, views, kind: 'web' })
+  }
+  return out
 }

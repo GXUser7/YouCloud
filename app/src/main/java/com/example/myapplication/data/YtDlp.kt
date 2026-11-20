@@ -129,7 +129,7 @@ try:
 except Exception:
     pass
 
-KEEP = ("url", "ext", "format_id", "filesize", "filesize_approx", "http_headers", "vcodec", "height", "fps")
+KEEP = ("url", "ext", "format_id", "filesize", "filesize_approx", "http_headers", "vcodec", "height", "fps", "categories", "view_count")
 YOUTUBE_ARGS = "youtube"
 FORMAT_KEEP = ("format_id", "url", "vcodec", "acodec", "protocol", "abr", "height", "fps")
 
@@ -166,6 +166,7 @@ def main():
             if info is None:
                 raise Exception("yt-dlp found nothing")
             reply = {key: info.get(key) for key in KEEP}
+            reply["tags"] = (info.get("tags") or [])[:30]
             reply["formats"] = [{key: f.get(key) for key in FORMAT_KEEP} for f in info.get("formats") or []]
             print(json.dumps({"id": request.get("id"), "info": reply}), flush=True)
         except Exception as e:  # one failed request must not end the server
@@ -491,6 +492,13 @@ main()
         }
         val length = (field("filesize") ?: field("filesize_approx"))?.asLong ?: -1L
         val codec = field("vcodec")?.asString?.takeUnless { it == "none" }
+        val category = field("categories")?.takeIf { it.isJsonArray }?.asJsonArray
+            ?.firstNotNullOfOrNull { el -> el.takeIf { it.isJsonPrimitive }?.asString?.takeIf(String::isNotBlank) }
+        val tags = field("tags")?.takeIf { it.isJsonArray }?.asJsonArray
+            ?.mapNotNull { el -> el.takeIf { it.isJsonPrimitive }?.asString?.takeIf(String::isNotBlank) }
+            ?.take(30)
+            .orEmpty()
+        val viewCount = field("view_count")?.takeIf { it.isJsonPrimitive }?.asString?.toLongOrNull()?.takeIf { it >= 0L }
         // A video's sound comes with the same answer: every format is listed, deciphered. It is
         // only analysed ([ClipAligner]), so the smallest is tried first: over a VPN the download,
         // not the decoding, is what takes the time. The others are there for when a server won't
@@ -506,9 +514,9 @@ main()
             ?.mapNotNull { it.get("url")?.takeUnless { url -> url.isJsonNull }?.asString }
             .orEmpty()
         return if (userAgent != null) {
-            YouTubeStreams.Stream(url, mimeType, length, userAgent, audioUrls, codec)
+            YouTubeStreams.Stream(url, mimeType, length, userAgent, audioUrls, codec, category, tags, viewCount)
         } else {
-            YouTubeStreams.Stream(url, mimeType, length, audioUrls = audioUrls, codec = codec)
+            YouTubeStreams.Stream(url, mimeType, length, audioUrls = audioUrls, codec = codec, category = category, tags = tags, viewCount = viewCount)
         }
     }
 

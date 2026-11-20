@@ -11,6 +11,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.gestures.animateScrollBy
 import androidx.compose.animation.core.animateDecay
+import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.LibraryAdd
 import androidx.compose.material.icons.rounded.AccountCircle
 import androidx.compose.material.icons.rounded.Key
@@ -421,6 +422,8 @@ import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.ScreenRotation
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
+import com.example.myapplication.data.WaveSource
+import com.example.myapplication.data.isSoundCloudTrack
 import com.example.myapplication.data.sourceKey
 import androidx.compose.material.icons.filled.Radio
 
@@ -589,6 +592,8 @@ fun MusicScreen(viewModel: MusicViewModel) {
     val yandexShelves by viewModel.yandexShelves.collectAsState()
     // What each service's home opens on, in its big carousel (see HomeSetupOverlay).
     val homeHeroes by viewModel.settingsRepo.homeHeroes.collectAsState()
+    val multiServiceWave by viewModel.settingsRepo.multiServiceWave.collectAsState()
+    val activeRadioKind by viewModel.activeRadioKind.collectAsState()
     val yandexWaveOn by viewModel.yandexWaveOn.collectAsState()
     val yandexRadioOn by viewModel.yandexRadioOn.collectAsState()
     val yandexWavePicks by viewModel.yandexWavePicks.collectAsState()
@@ -828,6 +833,13 @@ fun MusicScreen(viewModel: MusicViewModel) {
                                 on = yandexWaveOn,
                                 starting = yandexWaveStarting,
                                 picks = yandexWavePicks,
+                                multiMode = multiServiceWave,
+                                multiSources = if (multiServiceWave) buildList {
+                                    if (soundCloudConnected) add(WaveSource.SOUNDCLOUD)
+                                    if (hasYandexToken) add(WaveSource.YANDEX)
+                                    if (ytMusicAccount != null) add(WaveSource.YOUTUBE)
+                                    if (spotifyAccount != null) add(WaveSource.SPOTIFY)
+                                } else emptyList(),
                                 onToggle = {
                                     haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                                     viewModel.toggleYandexWave()
@@ -1213,7 +1225,7 @@ fun MusicScreen(viewModel: MusicViewModel) {
                             },
                             onClearCache = {
                                 haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                viewModel.refreshMixesAndStations()
+                                viewModel.clearAppCache()
                             },
                             onYandexLoginClick = {
                                 haptic.performHapticFeedback(HapticFeedbackType.LongPress)
@@ -1329,7 +1341,7 @@ fun MusicScreen(viewModel: MusicViewModel) {
                                 subtitle = set.user?.username.orEmpty(),
                                 isLoading = ytSetLoading,
                                 error = ytSetError,
-                                onRetry = { viewModel.openYtSet(set) },
+                                onRetry = { viewModel.openYtSet(set, forceRefresh = true) },
                                 favorites = favorites,
                                 currentTrackId = currentTrackId,
                                 isPlaying = isPlaying,
@@ -1610,12 +1622,22 @@ fun MusicScreen(viewModel: MusicViewModel) {
                     TrackDetailScreen(
                         track = track,
                         activeQueue = activeQueue,
-                        // A Yandex radio's order is the radio's; picking a track in it still plays it.
+                        // A radio/wave queue defines its own order; picking a track in it still plays it.
                         onReorderQueue = if (yandexRadioOn) null else viewModel::reorderActiveQueue,
-                        queueNote = if (yandexRadioOn) {
-                            tr("%s подбирает Яндекс и сам добавляет новые треки. Нажмите на трек, чтобы перейти к нему", if (yandexWaveOn) tr("Порядок «Моей волны»") else tr("Порядок радио"))
-                        } else {
-                            null
+                        queueNote = when (activeRadioKind) {
+                            ActiveRadioKind.YANDEX_WAVE -> tr(
+                                "%s подбирает Яндекс и сам добавляет новые треки. Нажмите на трек, чтобы перейти к нему",
+                                tr("Порядок «Моей волны»")
+                            )
+                            ActiveRadioKind.MULTI_WAVE -> tr("Порядок «Моей волны» собирается из подключённых сервисов и пополняется сам. Нажмите на трек, чтобы перейти к нему")
+                            ActiveRadioKind.YANDEX_TRACK -> tr(
+                                "%s подбирает Яндекс и сам добавляет новые треки. Нажмите на трек, чтобы перейти к нему",
+                                tr("Порядок радио")
+                            )
+                            ActiveRadioKind.SOUNDCLOUD_TRACK -> tr("Порядок радио подбирает SoundCloud и сам добавляет новые треки. Нажмите на трек, чтобы перейти к нему")
+                            ActiveRadioKind.SPOTIFY_TRACK -> tr("Порядок радио подбирает Spotify и сам добавляет новые треки. Нажмите на трек, чтобы перейти к нему")
+                            ActiveRadioKind.YOUTUBE_TRACK -> tr("Порядок радио подбирает YouTube Music и сам добавляет новые треки. Нажмите на трек, чтобы перейти к нему")
+                            null -> null
                         },
                         onPlayTrackFromQueue = { qTrack ->
                             viewModel.playQueuedTrack(qTrack, activeQueue, fromQueueManager = true)
@@ -1629,7 +1651,9 @@ fun MusicScreen(viewModel: MusicViewModel) {
                         repeatMode = repeatMode,
                         shuffleEnabled = shuffleEnabled,
                         positionMs = { playbackPosition.value },
-                        durationMs = max(playbackDurationMs, track.duration),
+                        // Prefer the actual playing stream's duration once ExoPlayer knows it, so a
+                        // shorter resolved audio (e.g. 1:20 vs Spotify's 2:06 metadata) shrinks the seekbar cleanly.
+                        durationMs = if (currentTrackId == track.id && playbackDurationMs > 0L) playbackDurationMs else track.duration,
                         lyrics = lyrics?.takeIf { it.trackId == track.id }?.lines,
                         video = trackVideo?.takeIf { it.trackId == track.id },
                         upcomingVideo = pendingTrackVideo?.takeIf { it.trackId == track.id },
@@ -1670,8 +1694,8 @@ fun MusicScreen(viewModel: MusicViewModel) {
                             haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                             viewModel.toggleShuffle()
                         },
-                        // The wave has no order to shuffle: in its place, "not for me".
-                        onDislike = if (yandexWaveOn) viewModel::dislikeYandexTrack else null,
+                        // A radio or wave has no order to shuffle: in its place, "not for me".
+                        onDislike = if (yandexRadioOn) viewModel::dislikeRadioTrack else null,
                         trackFx = trackFx.takeIf { playerFxButton },
                         onTrackFxChange = viewModel::setTrackFx,
                         ytAuth = viewModel.settingsRepo::ytMusicAuth,
@@ -1836,11 +1860,15 @@ fun MusicScreen(viewModel: MusicViewModel) {
                 capturedTrack.urn?.startsWith("yandex:track:") == true -> {
                     { viewModel.playYandexRadio(capturedTrack) }
                 }
+                isSoundCloudTrack(capturedTrack) && clientId.isNotBlank() -> {
+                    { viewModel.playSoundCloudRadio(capturedTrack) }
+                }
                 else -> null
             },
             radioDescription = when {
-                capturedTrack.spotifyId != null -> tr("Трек и похожие записи из каталога Spotify")
-                capturedTrack.youTubeVideoId != null -> tr("Трек и то, что YouTube Music поставит за ним")
+                capturedTrack.spotifyId != null -> tr("Трек и похожие записи из каталога Spotify — без конца")
+                capturedTrack.youTubeVideoId != null -> tr("Трек и то, что YouTube Music поставит за ним — без конца")
+                isSoundCloudTrack(capturedTrack) -> tr("Трек, а за ним похожие треки SoundCloud — без конца")
                 else -> tr("Трек, а за ним радио Яндекс Музыки — без конца, под то, что слушаешь")
             },
             onTogether = {
@@ -1882,11 +1910,13 @@ private enum class HomeCategory(private val ru: String, val service: HomeService
     val title: String get() = tr(ru)
 }
 
-/** Yandex's wave as home shows it, as "Моя форма"; see [MyWavePage]. */
+/** Yandex's wave (or Multi-Service Wave when enabled) as home shows it, as "Моя форма". */
 private class HomeWave(
     val on: Boolean,
     val starting: Boolean,
     val picks: Map<String, String>,
+    val multiMode: Boolean = false,
+    val multiSources: List<WaveSource> = emptyList(),
     val onToggle: () -> Unit,
     val onPick: (key: String, seed: String) -> Unit,
     val onReset: () -> Unit
@@ -2725,13 +2755,15 @@ private fun HomeScreen(
                 { feedCovered() || (servicePager.settledPage != page && !servicePager.isScrollInProgress) }
             }
             val feed: @Composable (Modifier, Boolean) -> Unit = { feedModifier, header ->
+                val waveTab = if (yandexConnected) HomeService.Yandex else services.firstOrNull { it != HomeService.Downloads }
+                val showWave = shown == HomeService.Yandex || (wave.multiMode && wave.multiSources.isNotEmpty() && shown == waveTab)
                 androidx.compose.runtime.CompositionLocalProvider(LocalCovered provides pageCovered) {
                 ServiceFeed(
                     service = shown,
                     line = line,
                     shelves = shelves,
-                    wave = wave.takeIf { shown == HomeService.Yandex },
-                    waveLeads = yandexWaveLeads,
+                    wave = wave.takeIf { showWave },
+                    waveLeads = if (shown == HomeService.Yandex) yandexWaveLeads else false,
                     isPlaying = isPlaying,
                     listState = feedStates.getValue(shown),
                     header = header,
@@ -3051,7 +3083,8 @@ private fun ServiceFeed(
                             HeroTitle(
                                 service = service,
                                 title = if (waveHero) tr("Моя форма") else heroShelf?.title.orEmpty(),
-                                live = heroShelf?.live == true
+                                live = heroShelf?.live == true,
+                                multiSources = if (waveHero && wave.multiMode && wave.multiSources.size > 1) wave.multiSources else emptyList()
                             )
                             notices()
                         },
@@ -3230,8 +3263,20 @@ private val HeroTitleHeight = 64.dp
  * section's name large in the middle — in a box as tall for one line as for two, for every
  * service's hero to stand at the same height.
  */
+private fun waveSourceIcon(source: WaveSource): ImageVector = when (source) {
+    WaveSource.SOUNDCLOUD -> ServiceIcons.SoundCloud
+    WaveSource.YANDEX -> ServiceIcons.YandexMusic
+    WaveSource.YOUTUBE -> ServiceIcons.YouTubeMusic
+    WaveSource.SPOTIFY -> ServiceIcons.Spotify
+}
+
 @Composable
-private fun HeroTitle(service: HomeService, title: String, live: Boolean) {
+private fun HeroTitle(
+    service: HomeService,
+    title: String,
+    live: Boolean,
+    multiSources: List<WaveSource> = emptyList()
+) {
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -3243,10 +3288,22 @@ private fun HeroTitle(service: HomeService, title: String, live: Boolean) {
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(6.dp)
         ) {
-            service.icon?.let { icon ->
-                Icon(imageVector = icon(), contentDescription = null, tint = PanelColors.accent, modifier = Modifier.size(16.dp))
+            if (multiSources.size > 1) {
+                multiSources.forEach { source ->
+                    Icon(
+                        imageVector = waveSourceIcon(source),
+                        contentDescription = null,
+                        tint = PanelColors.accent,
+                        modifier = Modifier.size(15.dp)
+                    )
+                }
+                Kicker(text = tr("Мультиволна"))
+            } else {
+                service.icon?.let { icon ->
+                    Icon(imageVector = icon(), contentDescription = null, tint = PanelColors.accent, modifier = Modifier.size(16.dp))
+                }
+                Kicker(text = service.title)
             }
-            Kicker(text = service.title)
         }
         Box(
             modifier = Modifier.padding(top = 6.dp).height(HeroTitleHeight),
@@ -3289,6 +3346,25 @@ private fun WaveShelfRow(wave: HomeWave, isPlaying: Boolean) {
                 { TextButton(onClick = wave.onReset) { Text(tr("Сбросить")) } }
             }
         )
+        if (wave.multiMode && wave.multiSources.size > 1) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 4.dp),
+                horizontalArrangement = Arrangement.spacedBy(6.dp, Alignment.CenterHorizontally),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                wave.multiSources.forEach { source ->
+                    Icon(
+                        imageVector = waveSourceIcon(source),
+                        contentDescription = null,
+                        tint = PanelColors.accent,
+                        modifier = Modifier.size(14.dp)
+                    )
+                }
+                Kicker(text = tr("Мультиволна"))
+            }
+        }
         MyWaveShelf(
             waveOn = wave.on,
             isPlaying = isPlaying,
@@ -5773,13 +5849,13 @@ private fun SettingsScreen(
                                 Box(
                                     modifier = Modifier
                                         .size(42.dp)
-                                        .background(AppTheme.brand.soundCloud.container, CircleShape),
+                                        .background(MaterialTheme.colorScheme.primaryContainer, CircleShape),
                                     contentAlignment = Alignment.Center
                                 ) {
                                     Icon(
                                         imageVector = Icons.Default.CloudSync,
                                         contentDescription = null,
-                                        tint = AppTheme.brand.soundCloud.onContainer,
+                                        tint = MaterialTheme.colorScheme.onPrimaryContainer,
                                         modifier = Modifier.size(22.dp)
                                     )
                                 }
@@ -5809,7 +5885,7 @@ private fun SettingsScreen(
                                     text = statusText,
                                     style = MaterialTheme.typography.bodyMedium,
                                     fontWeight = FontWeight.Medium,
-                                    color = if (soundcloudLikesSyncStatus.state == SyncState.FAILED) MaterialTheme.colorScheme.error else AppTheme.brand.soundCloud.color
+                                    color = if (soundcloudLikesSyncStatus.state == SyncState.FAILED) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
                                 )
 
                                 if (soundcloudLikesSyncStatus.state == SyncState.DOWNLOADING) {
@@ -5827,8 +5903,6 @@ private fun SettingsScreen(
 
                                     AppLinearProgress(
                                         progress = progress,
-                                        color = AppTheme.brand.soundCloud.color,
-                                        trackColor = AppTheme.brand.soundCloud.container,
                                         modifier = Modifier
                                             .fillMaxWidth()
                                     )
@@ -5863,8 +5937,8 @@ private fun SettingsScreen(
                                         modifier = Modifier.weight(1f),
                                         shape = MaterialTheme.shapes.large,
                                         colors = androidx.compose.material3.ButtonDefaults.buttonColors(
-                                            containerColor = AppTheme.brand.soundCloud.color,
-                                            contentColor = AppTheme.brand.soundCloud.onColor
+                                            containerColor = MaterialTheme.colorScheme.primary,
+                                            contentColor = MaterialTheme.colorScheme.onPrimary
                                         )
                                     ) {
                                         Text(
@@ -5897,13 +5971,13 @@ private fun SettingsScreen(
                                 Box(
                                     modifier = Modifier
                                         .size(42.dp)
-                                        .background(AppTheme.brand.soundCloud.container, CircleShape),
+                                        .background(MaterialTheme.colorScheme.primaryContainer, CircleShape),
                                     contentAlignment = Alignment.Center
                                 ) {
                                     Icon(
                                         imageVector = Icons.Default.CloudUpload,
                                         contentDescription = null,
-                                        tint = AppTheme.brand.soundCloud.onContainer,
+                                        tint = MaterialTheme.colorScheme.onPrimaryContainer,
                                         modifier = Modifier.size(22.dp)
                                     )
                                 }
@@ -5936,7 +6010,7 @@ private fun SettingsScreen(
                                     text = statusText,
                                     style = MaterialTheme.typography.bodyMedium,
                                     fontWeight = FontWeight.Medium,
-                                    color = if (likesPushStatus.state == LikesPushState.FAILED) MaterialTheme.colorScheme.error else AppTheme.brand.soundCloud.color
+                                    color = if (likesPushStatus.state == LikesPushState.FAILED) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
                                 )
                                 if (likesPushStatus.state == LikesPushState.PAUSED && likesPushStatus.message != null) {
                                     Text(
@@ -5950,8 +6024,6 @@ private fun SettingsScreen(
                                 ) {
                                     AppLinearProgress(
                                         progress = likesPushStatus.sent.toFloat() / likesPushStatus.total,
-                                        color = AppTheme.brand.soundCloud.color,
-                                        trackColor = AppTheme.brand.soundCloud.container,
                                         modifier = Modifier.fillMaxWidth()
                                     )
                                 }
@@ -5967,8 +6039,8 @@ private fun SettingsScreen(
                                     modifier = Modifier.weight(1f),
                                     shape = MaterialTheme.shapes.large,
                                     colors = androidx.compose.material3.ButtonDefaults.buttonColors(
-                                        containerColor = AppTheme.brand.soundCloud.color,
-                                        contentColor = AppTheme.brand.soundCloud.onColor
+                                        containerColor = MaterialTheme.colorScheme.primary,
+                                        contentColor = MaterialTheme.colorScheme.onPrimary
                                     )
                                 ) {
                                     Text(
@@ -6157,13 +6229,13 @@ private fun SettingsScreen(
                             Box(
                                 modifier = Modifier
                                     .size(42.dp)
-                                    .background(AppTheme.brand.soundCloud.container, CircleShape),
+                                    .background(MaterialTheme.colorScheme.primaryContainer, CircleShape),
                                 contentAlignment = Alignment.Center
                             ) {
                                 Icon(
                                     imageVector = ServiceIcons.SoundCloud,
                                     contentDescription = null,
-                                    tint = AppTheme.brand.soundCloud.onContainer,
+                                    tint = MaterialTheme.colorScheme.onPrimaryContainer,
                                     modifier = Modifier.size(22.dp)
                                 )
                             }
@@ -6460,7 +6532,7 @@ private fun SettingsScreen(
                                 style = MaterialTheme.typography.titleMedium
                             )
                             Text(
-                                text = tr("Сброс кэша миксов и станций"),
+                                text = tr("Аудио, клипы, обложки, страницы и подборки (скачанное останется)"),
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
@@ -6506,6 +6578,7 @@ private fun SettingsScreen(
                     colors = CardDefaults.cardColors(containerColor = glassFill(MaterialTheme.colorScheme.surfaceContainer))
                 ) {
                     val autoContinue by settingsRepository.autoContinue.collectAsState()
+                    val multiServiceWave by settingsRepository.multiServiceWave.collectAsState()
                     Column(modifier = Modifier.padding(vertical = 4.dp)) {
                         SettingsSwitchRow(
                             icon = Icons.Rounded.Tune,
@@ -6524,6 +6597,17 @@ private fun SettingsScreen(
                             subtitle = tr("Альбом, плейлист или поиск закончились — дальше играет радио от последнего трека"),
                             checked = autoContinue,
                             onCheckedChange = settingsRepository::setAutoContinue
+                        )
+                        HorizontalDivider(
+                            color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.25f),
+                            modifier = Modifier.padding(horizontal = 18.dp)
+                        )
+                        SettingsSwitchRow(
+                            icon = Icons.Rounded.AutoAwesome,
+                            title = tr("Мультиволна"),
+                            subtitle = tr("«Моя форма» смешивает рекомендации всех подключённых сервисов в один бесконечный поток"),
+                            checked = multiServiceWave,
+                            onCheckedChange = settingsRepository::setMultiServiceWave
                         )
                     }
                 }
@@ -11558,7 +11642,9 @@ private fun PlayerPanel(
                 // a name in the file: there is no page to go to.
                 val fromPhone = track.urn?.startsWith("local:") == true
                 val live = track.liveVideoId != null
+                val context = LocalContext.current
                 var fxOpen by remember { mutableStateOf(false) }
+                var spotifyVariantOpen by remember(track.id) { mutableStateOf(false) }
                 Row(verticalAlignment = Alignment.CenterVertically) {
                 // Gives way first when the row is full: the session's chip and the effects stay.
                 Box(modifier = Modifier.weight(1f)) {
@@ -11567,6 +11653,7 @@ private fun PlayerPanel(
                 // Decided once a track and held to its end (see RestoreState.badge).
                 val restoreBadge by com.example.myapplication.player.restore.RestoreState.badge.collectAsState()
                 val enhanced = restoreBadge?.let { it.restored && it.mediaId == track.id.toString() } == true
+                val spId = track.spotifyId
                 OnPanelChip(
                     text = trackServiceName(track),
                     trailingIcon = if (downloaded) ServiceIcons.OnPhone else null,
@@ -11575,8 +11662,62 @@ private fun PlayerPanel(
                     badge = if (enhanced) "+AI" else null,
                     badgeDescription = tr("Улучшено моделью"),
                     // Slides in with a new track; found while one plays, it is just there.
-                    badgeSlides = restoreBadge?.fromStart != false
+                    badgeSlides = restoreBadge?.fromStart != false,
+                    modifier = if (spId != null) {
+                        Modifier
+                            .clip(RoundedCornerShape(12.dp))
+                            .combinedClickable(
+                                onClick = {
+                                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                    val summary = com.example.myapplication.data.SpotifyAudio.resolvedVariantSummary(context, spId)
+                                    android.widget.Toast.makeText(context, summary, android.widget.Toast.LENGTH_LONG).show()
+                                },
+                                onLongClick = {
+                                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                    val summary = com.example.myapplication.data.SpotifyAudio.resolvedVariantSummary(context, spId)
+                                    android.widget.Toast.makeText(context, summary, android.widget.Toast.LENGTH_LONG).show()
+                                    spotifyVariantOpen = true
+                                }
+                            )
+                    } else {
+                        Modifier
+                    }
                 )
+                }
+                if (spotifyVariantOpen && track.spotifyId != null) {
+                    val spId = track.spotifyId!!
+                    val v = com.example.myapplication.data.SpotifyAudio.resolvedVariant(context, spId)
+                    AlertDialog(
+                        onDismissRequest = { spotifyVariantOpen = false },
+                        title = { Text(tr("Источник звука (Spotify)")) },
+                        text = {
+                            if (v == null) {
+                                Text(tr("Вариант ещё подбирается…"))
+                            } else {
+                                val sec = (v.durationMs / 1000L).coerceAtLeast(0L)
+                                val dur = "%d:%02d".format(sec / 60L, sec % 60L)
+                                val modeText = when (v.matchMode) {
+                                    "popular" -> tr("Самый популярный на YouTube")
+                                    "loose" -> tr("Свободная длительность")
+                                    else -> tr("Точное совпадение")
+                                }
+                                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                    Text("${tr("Сервис")}: ${v.source}", style = MaterialTheme.typography.bodyMedium)
+                                    Text("${tr("Вариант")}: ${v.title}", style = MaterialTheme.typography.bodyMedium)
+                                    if (v.artist.isNotBlank()) {
+                                        Text("${tr("Канал / артист")}: ${v.artist}", style = MaterialTheme.typography.bodyMedium)
+                                    }
+                                    Text("${tr("Длительность")}: $dur", style = MaterialTheme.typography.bodyMedium)
+                                    Text("${tr("Подбор")}: $modeText", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                }
+                            }
+                        },
+                        confirmButton = {
+                            TextButton(onClick = { spotifyVariantOpen = false }) {
+                                Text(tr("Понятно"))
+                            }
+                        }
+                    )
                 }
                 LocalTogether.current?.let { badge ->
                     Spacer(modifier = Modifier.width(8.dp))
@@ -15659,9 +15800,28 @@ fun TrackActionsDialog(
             ) {
                 TrackArtwork(artworkUrl = track.artworkUrl, size = 64.dp, useMorphing = false)
                 Column(modifier = Modifier.weight(1f)) {
+                    val actionCtx = LocalContext.current
+                    val actionHaptic = LocalHapticFeedback.current
+                    val spId = track.spotifyId
                     Kicker(
                         text = trackServiceName(track),
-                        color = PanelColors.accent
+                        color = PanelColors.accent,
+                        modifier = if (spId != null) {
+                            Modifier.combinedClickable(
+                                onClick = {
+                                    actionHaptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                    val summary = com.example.myapplication.data.SpotifyAudio.resolvedVariantSummary(actionCtx, spId)
+                                    android.widget.Toast.makeText(actionCtx, summary, android.widget.Toast.LENGTH_LONG).show()
+                                },
+                                onLongClick = {
+                                    actionHaptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                    val summary = com.example.myapplication.data.SpotifyAudio.resolvedVariantSummary(actionCtx, spId)
+                                    android.widget.Toast.makeText(actionCtx, summary, android.widget.Toast.LENGTH_LONG).show()
+                                }
+                            )
+                        } else {
+                            Modifier
+                        }
                     )
                     Text(
                         text = track.title ?: tr("Без названия"),

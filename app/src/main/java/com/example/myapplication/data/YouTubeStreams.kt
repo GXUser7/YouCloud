@@ -39,7 +39,11 @@ object YouTubeStreams {
         val userAgent: String = USER_AGENT,
         val audioUrls: List<String> = emptyList(),
         // A video's codec as YouTube names it ("vp09.00.31.08", "avc1.4d401f").
-        val codec: String? = null
+        val codec: String? = null,
+        // YouTube metadata for filtering non-music uploads (e.g. "Gaming" osu! replays).
+        val category: String? = null,
+        val tags: List<String> = emptyList(),
+        val viewCount: Long? = null
     )
 
     private const val TAG = "YouTubeStreams"
@@ -53,6 +57,10 @@ object YouTubeStreams {
 
     @Volatile
     private var initialised = false
+
+    fun clearCache() {
+        cache.clear()
+    }
 
     /**
      * Blocking — seconds for a track not heard lately; call it off the main thread.
@@ -122,7 +130,10 @@ object YouTubeStreams {
             Stream(
                 url = best.content,
                 mimeType = best.format?.mimeType,
-                contentLength = Uri.parse(best.content).getQueryParameter("clen")?.toLongOrNull() ?: -1L
+                contentLength = Uri.parse(best.content).getQueryParameter("clen")?.toLongOrNull() ?: -1L,
+                category = info.category?.takeIf(String::isNotBlank),
+                tags = info.tags.orEmpty().filter { it.isNotBlank() }.take(30),
+                viewCount = info.viewCount.takeIf { it >= 0L }
             )
         } catch (e: Exception) {
             // One line: YouTube's bot check on a VPN address is the usual case, not news.

@@ -118,6 +118,14 @@ object StreamCache {
         return cache(context).keys.firstOrNull { it.startsWith(prefix) && isFullyCached(context, it) }
     }
 
+    /** Evicts all temporary streamed audio entries without touching offline downloads. */
+    fun clear(context: Context) {
+        val c = cache(context)
+        for (key in c.keys.toList()) {
+            runCatching { c.removeResource(key) }
+        }
+    }
+
     /** MIME type implied by a cached Spotify stream key (e.g. `stream:spotify:<id>:yt_<vid>_251`). */
     fun mimeTypeForSpotifyKey(key: String): String {
         val variant = key.substringAfterLast(':', "")

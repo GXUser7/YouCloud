@@ -70,4 +70,12 @@ object VideoCache {
             OfflineMusicStore.getInstance(context).databaseProvider
         ).also { cache = it }
     }
+
+    /** Evicts all temporary streamed video/videoshot entries without touching offline videos. */
+    fun clear(context: Context) {
+        val c = cache(context)
+        for (key in c.keys.toList()) {
+            runCatching { c.removeResource(key) }
+        }
+    }
 }

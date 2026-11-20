@@ -87,6 +87,7 @@ export const app = $state({
   waveHears: stored('waveHears', true),
   playerLook: stored<PlayerLook>('playerLook', 'classic'),
   showLiveInLiked: stored('showLiveInLiked', true),
+  multiServiceWave: stored('multiServiceWave', false),
   query: '',
   waveMood: stored<string | null>('waveMood', null),
   waveMode: stored<string | null>('waveMode', null),
@@ -120,10 +121,11 @@ export function openPanel(panel: Panel) {
 
 // ------------------------------------------------------------------------------------ player
 
-/** A radio that keeps the queue going: Yandex's Rotor session, or the tracks related to the last
- *  (SoundCloud's related, YouTube Music's up next). */
+/** A radio that keeps the queue going: Yandex's Rotor session, Multi-Service Wave across all
+ *  connected services, or the tracks related to the last (SoundCloud/YouTube/Spotify). */
 export type Radio =
   | { kind: 'ya'; sessionId: string; batchOf: Record<string, string | undefined>; uid: number }
+  | { kind: 'multi'; sessionId?: string; batchOf: Record<string, string | undefined>; uid: number }
   | { kind: 'related' }
 
 export const player = $state({
@@ -575,6 +577,12 @@ export function next(auto = false, disliked = false) {
   else {
     audio.pause()
     player.playing = false
+    if (!player.radio && auto && (t.sc || t.yt || t.sp || (t.ya && accounts.ya))) {
+      player.radio = { kind: 'related' }
+      player.shuffle = false
+      unshuffled = null
+      saveQueue()
+    }
     const radio = player.radio
     const index = player.index
     if (radio) {
@@ -639,6 +647,7 @@ let unshuffled: string[] | null = null
  * the end.
  */
 export function toggleShuffle() {
+  if (player.radio) return
   player.shuffle = !player.shuffle
   if (player.shuffle) {
     unshuffled = [...player.queue]
@@ -934,6 +943,122 @@ function batchExclusions(queued: () => string[], favourites = () => player.wave 
   }
 }
 
+function trackFingerprint(id: string): string {
+  const t = trackOf(id)
+  if (!t) return id
+  const art = (t.artists[0]?.name ?? '').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, '')
+  const title = (t.title ?? '').toLowerCase().replace(/\s*[(\[][^)\]]*[)\]]/g, '').replace(/[^\p{L}\p{N}]+/gu, '')
+  return art && title ? `${art}:${title}` : id
+}
+
+async function fetchMultiWaveTracks(
+  radio: Extract<Radio, { kind: 'multi' }>,
+  existingIds: string[],
+): Promise<string[]> {
+  const seenIds = new Set(existingIds)
+  const seenFp = new Set(existingIds.map(trackFingerprint))
+  const pools: string[][] = []
+
+  const tasks: Promise<string[]>[] = []
+
+  if (accounts.ya) {
+    tasks.push(
+      (async () => {
+        try {
+          await flushReports()
+          if (!radio.sessionId) {
+            const seeds = waveSeeds()
+            let batch: yandex.RadioBatch
+            try {
+              batch = await yandex.radioStart(seeds, radioQueue(heard))
+            } catch {
+              batch = await yandex.radioStart(['user:onyourwave'], radioQueue(heard))
+            }
+            radio.sessionId = batch.sessionId
+            const fresh = await freshRadioTracks(
+              batch,
+              () => yandex.radioMore(batch.sessionId, radioQueue(heard)),
+              batchExclusions(() => existingIds),
+            )
+            Object.assign(radio.batchOf, fresh.batchOf)
+            return fresh.tracks
+          } else {
+            const fresh = await freshRadioTracks(
+              null,
+              () => yandex.radioMore(radio.sessionId!, radioQueue(heard)),
+              batchExclusions(() => existingIds),
+            )
+            Object.assign(radio.batchOf, fresh.batchOf)
+            return fresh.tracks
+          }
+        } catch {
+          return []
+        }
+      })(),
+    )
+  }
+
+  for (const svc of ['yt', 'sc', 'sp'] as Service[]) {
+    if (!live.signedIn(svc)) continue
+    tasks.push(
+      (async () => {
+        try {
+          const seedFromQueue = [...existingIds].reverse().find((id) => trackOf(id)?.service === svc)
+          if (seedFromQueue) {
+            const rel = welcome(await live.relatedTo(trackOf(seedFromQueue)))
+            if (rel.length) return shuffledTracks(rel).slice(0, 8)
+          }
+          const lib = await live.library(svc).catch(() => null)
+          const pool: string[] = [...(lib?.likedIds ?? []).slice(0, 40)]
+          if (pool.length < 10) {
+            const sections = await live.home(svc).catch(() => [])
+            for (const s of sections) {
+              if (s.tracks?.length) pool.push(...s.tracks)
+            }
+            const firstSet = sections.flatMap((s) => s.sets)[0]
+            if (firstSet && pool.length < 8) {
+              const loaded = await live.loadSet(firstSet).catch(() => null)
+              if (loaded?.tracks.length) pool.push(...loaded.tracks.slice(0, 20))
+            }
+          }
+          const picked = shuffledTracks(welcome(pool))
+          if (picked[0] && picked.length < 6) {
+            const rel = welcome(await live.relatedTo(trackOf(picked[0])).catch(() => []))
+            picked.push(...rel)
+          }
+          return picked.slice(0, 10)
+        } catch {
+          return []
+        }
+      })(),
+    )
+  }
+
+  const results = await Promise.all(tasks)
+  for (const list of results) {
+    if (list.length) pools.push(list)
+  }
+  const out: string[] = []
+  let added = true
+  while (added && out.length < 24) {
+    added = false
+    for (const pool of pools) {
+      while (pool.length) {
+        const candidate = pool.shift()!
+        if (disliked.has(candidate) || seenIds.has(candidate)) continue
+        const fp = trackFingerprint(candidate)
+        if (seenFp.has(fp)) continue
+        seenIds.add(candidate)
+        seenFp.add(fp)
+        out.push(candidate)
+        added = true
+        break
+      }
+    }
+  }
+  return out
+}
+
 /** Tops the queue up from its radio when only a couple of tracks are left. */
 function refill(): Promise<void> {
   const radio = player.radio
@@ -949,9 +1074,17 @@ function refill(): Promise<void> {
         const batch = await freshRadioTracks(null, () => yandex.radioMore(radio.sessionId, radioQueue(heard)), batchExclusions(() => player.queue))
         more = batch.tracks
         Object.assign(radio.batchOf, batch.batchOf)
+      } else if (radio.kind === 'multi') {
+        more = await fetchMultiWaveTracks(radio, player.queue)
       } else {
         const have = new Set(player.queue)
-        more = welcome(await live.relatedTo(trackOf(player.queue[player.queue.length - 1]))).filter((id) => !have.has(id))
+        const last = trackOf(player.queue[player.queue.length - 1])
+        if (last?.ya && accounts.ya) {
+          const batch = await yandex.radioStart([`track:${last.ya.trackId}`], radioQueue(heard))
+          more = welcome(batch.tracks).filter((id) => !have.has(id))
+        } else {
+          more = welcome(await live.relatedTo(last)).filter((id) => !have.has(id))
+        }
       }
       if (more.length && player.radio === radio) {
         player.queue = player.queue.concat(more)
@@ -973,14 +1106,31 @@ const waveSeeds = () => [
   ...(app.waveMode ? [`settingDiversity:${app.waveMode}`] : []),
 ]
 
-/** «Моя волна»: Yandex's endless radio for this listener, tuned by the mood and mode picked. */
+/** «Моя волна»: Yandex's endless radio for this listener (or Multi-Service Wave across all connected services). */
 export async function startWave(retune = false) {
-  if (!retune && player.wave && player.radio?.kind === 'ya') {
+  if (!retune && player.wave && (player.radio?.kind === 'ya' || player.radio?.kind === 'multi')) {
     if (!player.playing) toggle()
     return
   }
   const request = ++radioRequest
   const uid = accounts.ya?.uid ?? 0
+
+  if (app.multiServiceWave) {
+    try {
+      const radio: Extract<Radio, { kind: 'multi' }> = { kind: 'multi', batchOf: {}, uid }
+      const tracks = await fetchMultiWaveTracks(radio, [])
+      if (request !== radioRequest) return
+      if (!tracks.length) throw new Error(tr('волна ничего не предложила'))
+      playQueue(tracks, 0, tr('Моя волна'), 'ya-wave', radio, true)
+      return
+    } catch (e) {
+      if (request === radioRequest && !accounts.ya) {
+        toast(tr('Волна не запустилась: %s', reason(e)))
+        return
+      }
+    }
+  }
+
   const seeds = waveSeeds()
   try {
     let batch: yandex.RadioBatch
@@ -1082,7 +1232,14 @@ function saveQueue() {
     const index = player.index - Math.max(0, player.index - 50)
     localStorage.setItem(
       QUEUE_KEY,
-      JSON.stringify({ tracks: keep.map(trackOf), index, context: player.context, contextId: player.contextId }),
+      JSON.stringify({
+        tracks: keep.map(trackOf),
+        index,
+        context: player.context,
+        contextId: player.contextId,
+        wave: player.wave,
+        radio: player.radio,
+      }),
     )
   } catch {
     // the queue just won't come back after a reload
@@ -1091,13 +1248,28 @@ function saveQueue() {
 
 function restoreQueue() {
   try {
-    const saved = JSON.parse(localStorage.getItem(QUEUE_KEY) ?? 'null') as { tracks: Track[]; index: number; context: string; contextId: string | null } | null
+    const saved = JSON.parse(localStorage.getItem(QUEUE_KEY) ?? 'null') as {
+      tracks: Track[]
+      index: number
+      context: string
+      contextId: string | null
+      wave?: boolean
+      radio?: Radio | null
+    } | null
     if (!saved?.tracks?.length) return
     saved.tracks.forEach((t) => putTrack(t))
     player.queue = saved.tracks.map((t) => t.id)
     player.index = Math.min(saved.index, player.queue.length - 1)
     player.context = saved.context
     player.contextId = saved.contextId
+    player.wave = !!saved.wave || saved.contextId === 'ya-wave'
+    player.radio =
+      saved.radio ??
+      (player.wave
+        ? app.multiServiceWave
+          ? { kind: 'multi', batchOf: {}, uid: accounts.ya?.uid ?? 0 }
+          : { kind: 'related' }
+        : null)
     player.live = !!currentTrack()?.live
     player.position = player.live ? 0 : stored('position', 0)
     player.duration = currentTrack()?.duration ?? 0

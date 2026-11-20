@@ -4,7 +4,9 @@
 import { tr } from './i18n.svelte'
 import { accounts } from './accounts.svelte'
 import { artist, defaultCatalog, serviceOf, track, type CatalogContext, type Service, type Track, type TrackSet } from './catalog'
+import { invalidateServiceHomeCache } from './homeCache'
 import * as mock from './mock'
+import { clearPageCache, getCachedArtist, getCachedSet, putCachedArtist, putCachedSet } from './pageCache'
 import * as soundcloud from './services/soundcloud'
 import * as spotify from './services/spotify'
 import * as yandex from './services/yandex'
@@ -103,7 +105,7 @@ export async function home(svc: Service, cat: CatalogContext = defaultCatalog): 
   return tidy(await youtube.home(cat))
 }
 
-export async function loadSet(id: string, cat: CatalogContext = defaultCatalog): Promise<TrackSet> {
+async function fetchRawSet(id: string, cat: CatalogContext = defaultCatalog): Promise<TrackSet> {
   const svc = serviceOf(id)
   if (svc === 'sc') return soundcloud.loadSet(id, cat)
   if (svc === 'ya') return yandex.loadSet(id, cat)
@@ -112,9 +114,49 @@ export async function loadSet(id: string, cat: CatalogContext = defaultCatalog):
   return cat.set(id)
 }
 
-export async function loadArtist(id: string): Promise<ArtistPage> {
+export async function loadSet(id: string, cat: CatalogContext = defaultCatalog, opts?: { force?: boolean }): Promise<TrackSet> {
+  if (cat === defaultCatalog && !opts?.force) {
+    const cached = getCachedSet(id, cat)
+    if (cached) {
+      if (cached.stale) {
+        void fetchRawSet(id, cat)
+          .then((fresh) => putCachedSet(fresh, cat))
+          .catch(() => {})
+      }
+      return cached.set
+    }
+  }
+  const set = await fetchRawSet(id, cat)
+  if (cat === defaultCatalog) putCachedSet(set, cat)
+  return set
+}
+
+async function fetchRawArtist(id: string): Promise<ArtistPage> {
   const page = await artistIn(id)
   return { ...page, top: unique(page.top), releases: unique(page.releases), playlists: unique(page.playlists), similar: unique(page.similar) }
+}
+
+export async function loadArtist(id: string, opts?: { force?: boolean }): Promise<ArtistPage> {
+  if (!opts?.force) {
+    const cached = getCachedArtist(id, defaultCatalog)
+    if (cached) {
+      if (cached.stale) {
+        void fetchRawArtist(id)
+          .then((fresh) => putCachedArtist(fresh, defaultCatalog))
+          .catch(() => {})
+      }
+      return cached.page
+    }
+  }
+  const page = await fetchRawArtist(id)
+  putCachedArtist(page, defaultCatalog)
+  return page
+}
+
+export async function clearAllCaches(): Promise<void> {
+  clearPageCache()
+  spotify.clearAudioCache()
+  await Promise.all((['sc', 'ya', 'yt', 'sp'] as Service[]).map((s) => invalidateServiceHomeCache(s).catch(() => {})))
 }
 
 async function artistIn(id: string): Promise<ArtistPage> {

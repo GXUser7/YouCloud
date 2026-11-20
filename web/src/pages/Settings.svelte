@@ -7,6 +7,7 @@
   import { avatarUrl, setShareListening, shownName, signOut, social, socialMessage, type ShowcaseItem } from '../lib/social.svelte'
   import AccountForm from '../components/AccountForm.svelte'
   import { accounts } from '../lib/accounts.svelte'
+  import * as live from '../lib/live'
   import { connect, connectSoundCloud, connectSpotify, disconnect, refreshYouTube } from '../lib/login'
   import { diagnose } from '../lib/services/youtube'
   import { app, PLAYER_LOOKS, remember, WAVE_LOOKS, type PlayerLook, type ThemeMode } from '../lib/state.svelte'
@@ -228,6 +229,24 @@
         app.showLiveInLiked = v
         remember('showLiveInLiked', v)
       }} />
+    </div>
+    <div class="toggle">
+      <div>
+        <span class="t-name">{tr('Мультиволна — из всех сервисов')}</span>
+        <span class="muted t-sub">{tr('Смешивать «Мою волну» из Яндекс Музыки, YouTube Music, SoundCloud и Spotify')}</span>
+      </div>
+      <Switch checked={app.multiServiceWave} label={tr('Мультиволна — из всех сервисов')} onchange={(v) => {
+        app.multiServiceWave = v
+        remember('multiServiceWave', v)
+      }} />
+    </div>
+    <div class="row-actions">
+      <button class="btn tonal small" onclick={async () => {
+        await live.clearAllCaches()
+        toast(tr('Кэш страниц и треков очищен'))
+      }}>
+        <Icon name="delete" size={18} />{tr('Очистить кэш')}
+      </button>
     </div>
   </section>
 

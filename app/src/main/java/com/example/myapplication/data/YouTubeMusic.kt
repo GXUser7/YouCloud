@@ -612,6 +612,13 @@ class YouTubeMusicClient(private val authProvider: () -> YtAuth?) {
         })
     }
 
+    /** Thumbs down, so YouTube Music's own recommendations steer away from this track. */
+    suspend fun dislike(videoId: String) {
+        post("like/dislike", json {
+            add("target", json { addProperty("videoId", videoId) })
+        })
+    }
+
     private suspend fun watchQueue(body: JsonObject): List<SoundCloudTrack> {
         body.addProperty("enablePersistentPlaylistPanel", true)
         body.addProperty("isAudioOnly", true)
@@ -668,7 +675,10 @@ class YouTubeMusicClient(private val authProvider: () -> YtAuth?) {
             ?.let(::parseDuration) ?: 0L
         val artwork = bestThumbnail(row.arr("thumbnail", "musicThumbnailRenderer", "thumbnail", "thumbnails"))
             ?: fallbackArtwork
-        return track(videoId, title, artists, duration, artwork, live = isLive(row, byline.runsText()))
+        val views = byline.arr("runs").firstNotNullOfOrNull { run ->
+            run.str("text")?.takeIf { VIEW_COUNT_RUN.containsMatchIn(it) }?.let(::parseLongCount)
+        }
+        return track(videoId, title, artists, duration, artwork, live = isLive(row, byline.runsText()), playbackCount = views)
     }
 
     /**
@@ -828,7 +838,8 @@ class YouTubeMusicClient(private val authProvider: () -> YtAuth?) {
         artists: List<SoundCloudUser>,
         durationMs: Long,
         artwork: String?,
-        live: Boolean = false
+        live: Boolean = false,
+        playbackCount: Long? = null
     ) = SoundCloudTrack(
         // Apart from the same video as a track, should it ever be one.
         id = youTubeTrackId(if (live) "live:$videoId" else videoId),
@@ -841,7 +852,8 @@ class YouTubeMusicClient(private val authProvider: () -> YtAuth?) {
         artists = artists,
         duration = if (live) 0L else durationMs,
         streamable = true,
-        policy = "ALLOW"
+        policy = "ALLOW",
+        playbackCount = playbackCount
     )
 
     /** The linked artists of a byline; its other runs are separators, albums, years, plays. */
@@ -883,9 +895,11 @@ class YouTubeMusicClient(private val authProvider: () -> YtAuth?) {
         return absolute.replace(SIZE_SUFFIX, "=w$size-h$size")
     }
 
-    /** "411 тыс. слушателей в месяц", "1,2 млн" → a count. */
-    private fun parseCount(text: String): Int? {
-        val match = COUNT.find(text.replace('\u00a0', ' ')) ?: return null
+    /** "411 тыс. слушателей в месяц", "1,2 млн", "246 млн просмотров" → a count. */
+    private fun parseLongCount(text: String): Long? {
+        val cleaned = text.replace('\u00a0', ' ').replace('\u202f', ' ')
+            .replace(DIGIT_GROUP_SPACE, "")
+        val match = COUNT.find(cleaned) ?: return null
         val number = match.groupValues[1].replace(',', '.').toDoubleOrNull() ?: return null
         val scale = when (match.groupValues[2].lowercase()) {
             "тыс", "k" -> 1_000.0
@@ -893,8 +907,11 @@ class YouTubeMusicClient(private val authProvider: () -> YtAuth?) {
             "млрд", "b" -> 1_000_000_000.0
             else -> 1.0
         }
-        return (number * scale).toLong().coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
+        return (number * scale).toLong()
     }
+
+    private fun parseCount(text: String): Int? =
+        parseLongCount(text)?.coerceAtMost(Int.MAX_VALUE.toLong())?.toInt()
 
     /** Letters and digits only, lower case: titles compared past their punctuation. */
     private fun normalized(text: String?): String =
@@ -981,6 +998,8 @@ class YouTubeMusicClient(private val authProvider: () -> YtAuth?) {
         // What a search row's byline starts with before naming anyone.
         private val KIND_WORDS = setOf("композиция", "песня", "аудио", "видео", "трек", "song", "video", "audio", "эпизод", "episode", "выпуск")
         private val COUNT = Regex("(\\d+(?:[.,]\\d+)?)\\s*(тыс|млн|млрд|k|m|b)?", RegexOption.IGNORE_CASE)
+        private val DIGIT_GROUP_SPACE = Regex("(?<=\\d)[ \\u00a0\\u202f]+(?=\\d)")
+        private val VIEW_COUNT_RUN = Regex("\\d.*(?:просмотр|прослушив|views|plays)", RegexOption.IGNORE_CASE)
         private val NON_WORD = Regex("[^\\p{L}\\p{N}]+")
         // What a byline part is when it isn't a name: a date, a year, a length, a count of plays,
         // views or watchers.

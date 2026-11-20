@@ -43,6 +43,8 @@ object YouTubeWeb {
     private const val PLAYLISTS_TAB = "EglwbGF5bGlzdHPyBgQKAkIA"
     // A video's length on its picture: "13:13", "1:02:45".
     private val LENGTH = Regex("""^\d+(:\d{2})+$""")
+    private val EXACT_VIEWS = Regex("""\d[\d\s\u00a0\u202f,]*""")
+    private val SHORT_VIEWS = Regex("""(\d+(?:[.,]\d+)?)\s*(тыс|млн|млрд|k|m|b)?""", RegexOption.IGNORE_CASE)
 
     private val http: OkHttpClient = OkHttpClient.Builder()
         .connectTimeout(15, TimeUnit.SECONDS)
@@ -269,6 +271,7 @@ object YouTubeWeb {
             )
         val duration = length?.split(':')?.fold(0L) { total, part -> total * 60 + (part.toLongOrNull() ?: 0L) }?.times(1000) ?: 0L
         val artwork = video.arr("thumbnail", "thumbnails").lastOrNull().str("url")?.substringBefore('?')
+        val views = parseViewCount(video)
         return SoundCloudTrack(
             id = youTubeTrackId(if (live) "live:$videoId" else videoId),
             urn = (if (live) YT_LIVE_URN else YT_TRACK_URN) + videoId,
@@ -280,8 +283,26 @@ object YouTubeWeb {
             artists = listOfNotNull(owner),
             duration = if (live) 0L else duration,
             streamable = true,
-            policy = "ALLOW"
+            policy = "ALLOW",
+            playbackCount = views
         )
+    }
+
+    private fun parseViewCount(video: JsonElement): Long? {
+        val exact = video.str("viewCountText", "simpleText")
+            ?.let { EXACT_VIEWS.find(it)?.value?.filter(Char::isDigit)?.toLongOrNull() }
+        if (exact != null) return exact
+        val short = video.str("shortViewCountText", "simpleText")
+            ?.replace('\u00a0', ' ')?.replace('\u202f', ' ') ?: return null
+        val match = SHORT_VIEWS.find(short) ?: return null
+        val number = match.groupValues[1].replace(',', '.').toDoubleOrNull() ?: return null
+        val scale = when (match.groupValues[2].lowercase()) {
+            "тыс", "k" -> 1_000.0
+            "млн", "m" -> 1_000_000.0
+            "млрд", "b" -> 1_000_000_000.0
+            else -> 1.0
+        }
+        return (number * scale).toLong()
     }
 }
 

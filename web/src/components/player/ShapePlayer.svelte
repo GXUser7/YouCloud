@@ -8,6 +8,7 @@
   // the cover's colours — or, with «Волна в плеере» on, the wave moves there instead.
   import { tr } from '../../lib/i18n.svelte'
   import { serviceName, track } from '../../lib/catalog'
+  import { showPlayingVariant } from '../../lib/services/spotify'
   import { fit } from '../../lib/fit'
   import { time } from '../../lib/format'
   import { clipPolygon, shapePath, type ShapeName } from '../../lib/shapes'
@@ -189,7 +190,19 @@
 
     <div class="info">
       <div class="chips">
-        <span class="chip service"><ServiceGlyph service={t.service} size={16} />{serviceName(t.service)}</span>
+        {#if t.service === 'sp'}
+          <button
+            type="button"
+            class="chip service"
+            onclick={() => showPlayingVariant(t.id)}
+            oncontextmenu={(e) => {
+              e.preventDefault()
+              showPlayingVariant(t.id)
+            }}
+          ><ServiceGlyph service={t.service} size={16} />{serviceName(t.service)}</button>
+        {:else}
+          <span class="chip service"><ServiceGlyph service={t.service} size={16} />{serviceName(t.service)}</span>
+        {/if}
         {#if t.album}
           <button class="chip" onclick={() => leave('set/' + t.album!.id)}><Icon name="album" size={18} /><span class="ellipsis album">{t.album.title || tr('Альбом')}</span></button>
         {/if}
