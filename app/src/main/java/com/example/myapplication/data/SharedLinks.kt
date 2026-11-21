@@ -49,6 +49,36 @@ object SharedLinks {
 
     // Short links worth following: the services' own, and the shorteners they share through.
     private val SHORTENERS = setOf("on.soundcloud.com", "soundcloud.app.goo.gl", "ya.cc", "clck.ru", "spotify.link")
+    private val YOUTUBE_PERSONAL_PLAYLISTS = setOf("LM", "LL", "WL", "SE", "SS")
+    private val YOUTUBE_PERSONAL_BROWSE = setOf("VLLM", "VLLL", "VLWL", "VLSE", "VLSS")
+
+    internal fun isPersonalYouTubeSet(browseId: String, playlistId: String): Boolean {
+        val b = browseId.trim()
+        val p = playlistId.trim()
+        return b in YOUTUBE_PERSONAL_BROWSE ||
+            p in YOUTUBE_PERSONAL_PLAYLISTS ||
+            b.startsWith("FE") ||
+            p.startsWith("FE")
+    }
+
+    /** True if [url] points at an account-private section (e.g. YouTube Liked Music or SoundCloud /you). */
+    fun isPersonalUrl(url: String?): Boolean {
+        val raw = url?.trim()?.takeIf { it.isNotEmpty() } ?: return false
+        val parsed = parse(raw)
+        if (parsed is SharedLink.YouTubeSet) {
+            return isPersonalYouTubeSet(parsed.browseId, parsed.playlistId)
+        }
+        val svc = serviceOf(raw)
+        if (svc == "soundcloud" && parsed !is SharedLink.SoundCloud) return true
+        if (svc == "youtube") {
+            val uri = runCatching { URI(raw) }.getOrNull() ?: return false
+            val path = uri.rawPath.orEmpty().split('/').filter { it.isNotEmpty() }.map(::decode)
+            if (path.getOrNull(0) == "browse" && path.getOrNull(1)?.let { isPersonalYouTubeSet(it, "") } == true) {
+                return true
+            }
+        }
+        return false
+    }
 
     private val http by lazy {
         OkHttpClient.Builder()
@@ -85,6 +115,7 @@ object SharedLinks {
     fun linkOfRef(ref: String?): String? {
         ref ?: return null
         YouTubeMusicClient.parseSetRef(ref)?.let { (browseId, playlistId) ->
+            if (isPersonalYouTubeSet(browseId, playlistId)) return null
             return when {
                 browseId.isNotBlank() -> "https://music.youtube.com/browse/$browseId"
                 playlistId.isNotBlank() -> "https://music.youtube.com/playlist?list=$playlistId"
@@ -98,7 +129,7 @@ object SharedLinks {
             val parts = ref.removePrefix("yandex:playlist:").split(':')
             return if (parts.size == 2) "https://music.yandex.ru/users/${parts[0]}/playlists/${parts[1]}" else null
         }
-        return ref.takeIf { it.startsWith("https://soundcloud.com/") }
+        return ref.takeIf { it.startsWith("https://soundcloud.com/") && parse(it) is SharedLink.SoundCloud }
     }
 
     /** An artist's page on their service, likewise. */

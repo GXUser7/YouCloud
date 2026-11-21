@@ -994,5 +994,11 @@ internal object English {
         put("Длительность", "Duration")
         put("Подбор", "Matching")
         put("Понятно", "Got it")
+        put("Чат с друзьями", "Friend chat")
+        put("Треки и альбомы от друзей", "Tracks and albums from friends")
+        put("%s отправил трек", "%s sent a track")
+        put("%s отправил альбом", "%s sent an album")
+        put("%s · новых: %d", "%s · %d new")
+        put("Друг", "Friend")
     }
 }

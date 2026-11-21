@@ -10,7 +10,8 @@
   import * as live from '../lib/live'
   import { connect, connectSoundCloud, connectSpotify, disconnect, refreshYouTube } from '../lib/login'
   import { diagnose } from '../lib/services/youtube'
-  import { app, PLAYER_LOOKS, remember, WAVE_LOOKS, type PlayerLook, type ThemeMode } from '../lib/state.svelte'
+  import { clearAudioCache as clearSpotifyAudioCache } from '../lib/services/spotify'
+  import { app, PLAYER_LOOKS, remember, WAVE_LOOKS, type PlayerLook, type SpotifyAudioPriority, type ThemeMode } from '../lib/state.svelte'
   import { reason, toast } from '../lib/toast.svelte'
   import Avatar from '../components/Avatar.svelte'
   import ButtonGroup from '../components/ButtonGroup.svelte'
@@ -108,6 +109,23 @@
   }
 
   const transparent = $derived(transparentInMasaki())
+  const spotifyPriorityHint = $derived.by(() => {
+    const ytConnected = accounts.yt
+    const scConnected = !!accounts.sc
+    const yaConnected = !!accounts.ya
+    if (!ytConnected && !scConnected && !yaConnected) {
+      return tr('Ни один сервис воспроизведения не подключён — войди в YouTube Music, SoundCloud или Яндекс Музыку в «Сервисах»')
+    }
+    if (app.spotifyAudioPriority === 'sc' && !scConnected) {
+      return tr('SoundCloud не подключён — треки Spotify будут подбираться через подключённые сервисы')
+    }
+    if (app.spotifyAudioPriority === 'yt' && !ytConnected) {
+      return tr('YouTube Music не подключён — треки Spotify будут подбираться через подключённые сервисы')
+    }
+    return app.spotifyAudioPriority === 'sc'
+      ? tr('Сначала ищет на SoundCloud (с допуском несовпадения имени канала), при отсутствии — YouTube и Яндекс')
+      : tr('Сначала ищет на YouTube Music, при отсутствии — SoundCloud и Яндекс')
+  })
 </script>
 
 <PageHeader title={tr('Настройки')} subtitle={tr('Аккаунты, оформление и сайт')} />
@@ -240,6 +258,22 @@
         remember('multiServiceWave', v)
       }} />
     </div>
+    <p class="overline label">{tr('Источник звука для Spotify')}</p>
+    <ButtonGroup
+      options={[
+        { value: 'yt', label: 'YouTube' },
+        { value: 'sc', label: 'SoundCloud' },
+      ]}
+      value={app.spotifyAudioPriority}
+      stretch
+      onchange={(v) => {
+        if (!v) return
+        app.spotifyAudioPriority = v as SpotifyAudioPriority
+        remember('spotifyAudioPriority', v)
+        clearSpotifyAudioCache()
+      }}
+    />
+    <p class="muted t-sub layout-hint">{spotifyPriorityHint}</p>
     <div class="row-actions">
       <button class="btn tonal small" onclick={async () => {
         await live.clearAllCaches()

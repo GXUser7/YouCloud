@@ -21,7 +21,10 @@ import { WAVE_MODES, WAVE_MOODS } from './mock'
 import { HttpError } from './net'
 import * as yandex from './services/yandex'
 import { freshRadioTracks, radioEndType, radioHistory, radioQueue, rememberRadioTrack } from './radioHistory'
+import type { SpotifyAudioPriority } from './services/spotifyMatch'
 import { reason, toast } from './toast.svelte'
+
+export type { SpotifyAudioPriority }
 
 export type RouteName = 'home' | 'search' | 'liked' | 'friends' | 'settings' | 'set' | 'artist'
 export type Route = { name: RouteName; id?: string }
@@ -88,6 +91,7 @@ export const app = $state({
   playerLook: stored<PlayerLook>('playerLook', 'classic'),
   showLiveInLiked: stored('showLiveInLiked', true),
   multiServiceWave: stored('multiServiceWave', false),
+  spotifyAudioPriority: stored<SpotifyAudioPriority>('spotifyAudioPriority', 'yt'),
   query: '',
   waveMood: stored<string | null>('waveMood', null),
   waveMode: stored<string | null>('waveMode', null),

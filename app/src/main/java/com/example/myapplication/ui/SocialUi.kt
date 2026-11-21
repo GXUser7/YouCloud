@@ -212,9 +212,15 @@ internal fun MenuGlyph() {
     val social = remember { Social.get(context) }
     val session by social.session.collectAsState()
     val friends by social.friends.collectAsState()
-    // Once a start, for the dot: the friends screen asks again on its own.
-    LaunchedEffect(session?.userId) { if (session != null) social.reloadFriends() }
-    val waiting = session != null && friends.orEmpty().any { it.relationKind == Relation.INCOMING }
+    val unreadChats by social.unreadChatCount.collectAsState()
+    // Once a start, for the dot: the friends and chat screens ask again on their own.
+    LaunchedEffect(session?.userId) {
+        if (session != null) {
+            social.reloadFriends()
+            social.reloadChatInbox()
+        }
+    }
+    val waiting = session != null && (friends.orEmpty().any { it.relationKind == Relation.INCOMING } || unreadChats > 0)
     Box(modifier = Modifier.size(32.dp), contentAlignment = Alignment.Center) {
         Icon(ServiceIcons.Menu, contentDescription = null, tint = PanelColors.content, modifier = Modifier.size(26.dp))
         if (waiting) {

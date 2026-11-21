@@ -25,6 +25,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.AccountCircle
 import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.Forum
 import androidx.compose.material.icons.rounded.Group
 import androidx.compose.material.icons.automirrored.rounded.Login
 import androidx.compose.material.icons.rounded.PersonAdd
@@ -153,6 +154,7 @@ internal fun accountMenuItems(
     onOpenProfile: () -> Unit,
     onOpenSettings: () -> Unit,
     onOpenFriends: (requests: Boolean) -> Unit,
+    onOpenChats: () -> Unit,
     onOpenPerson: (String) -> Unit
 ): List<AccountMenuItem> {
     val context = LocalContext.current
@@ -160,9 +162,13 @@ internal fun accountMenuItems(
     val session by social.session.collectAsState()
     val me by social.me.collectAsState()
     val all by social.friends.collectAsState()
+    val unreadChats by social.unreadChatCount.collectAsState()
     // What friends play: asked again as the menu opens, and told as it changes while it is open.
     LaunchedEffect(open, session?.userId) {
-        if (open && session != null) social.reloadFriends()
+        if (open && session != null) {
+            social.reloadFriends()
+            social.reloadChatInbox()
+        }
     }
     DisposableEffect(open, session?.userId) {
         val live = if (open) social.watchLive() else null
@@ -195,6 +201,7 @@ internal fun accountMenuItems(
         if (incoming > 0) {
             add(AccountMenuItem("requests", tr("Заявки"), Icons.Rounded.PersonAdd, count = incoming, urgent = true, onClick = { onOpenFriends(true) }))
         }
+        add(AccountMenuItem("chat", tr("Чат"), Icons.Rounded.Forum, count = unreadChats, urgent = unreadChats > 0, onClick = onOpenChats))
         add(AccountMenuItem("friends", tr("Друзья"), Icons.Rounded.Group, count = friends.size, onClick = { onOpenFriends(false) }))
         add(AccountMenuItem("profile", tr("Профиль"), Icons.Rounded.AccountCircle, onClick = onOpenProfile))
         add(settings)

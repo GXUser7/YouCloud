@@ -33,6 +33,7 @@ glance = "1.1.1"
 # Google Cast: the track played on a TV or a speaker with Chromecast built in. Media3's CastPlayer
 # (with Google's Cast framework under it) and the router that finds the devices on the network.
 mediarouter = "1.7.0"
+workRuntimeKtx = "2.7.1"
 
 [libraries]
 androidx-glance-appwidget = { group = "androidx.glance", name = "glance-appwidget", version.ref = "glance" }
@@ -66,6 +67,7 @@ coil-compose = { group = "io.coil-kt", name = "coil-compose", version.ref = "coi
 material-color-utilities = { group = "com.materialkolor", name = "material-color-utilities", version.ref = "materialColorUtilities" }
 newpipe-extractor = { group = "com.github.teamnewpipe", name = "NewPipeExtractor", version.ref = "newpipeExtractor" }
 youtubedl-android = { group = "io.github.junkfood02.youtubedl-android", name = "library", version.ref = "youtubedlAndroid" }
+androidx-work-runtime-ktx = { group = "androidx.work", name = "work-runtime-ktx", version.ref = "workRuntimeKtx" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }

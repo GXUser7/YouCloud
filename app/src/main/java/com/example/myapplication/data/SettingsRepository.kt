@@ -11,6 +11,9 @@ import kotlinx.coroutines.flow.asStateFlow
  */
 enum class GlowStyle { Ambilight, Copies }
 
+/** Preferred service to resolve Spotify tracks from when multiple services are connected. */
+enum class SpotifyAudioPriority { YOUTUBE, SOUNDCLOUD }
+
 class SettingsRepository(
     context: Context,
     val defaultClientId: String,
@@ -133,6 +136,26 @@ class SettingsRepository(
         playerCoverColors.value = enabled
         preferences.edit().putBoolean(KEY_PLAYER_COVER_COLORS, enabled).apply()
     }
+
+    val spotifyAudioPriority = MutableStateFlow(readSpotifyAudioPriority())
+
+    fun setSpotifyAudioPriority(priority: SpotifyAudioPriority) {
+        if (spotifyAudioPriority.value == priority) return
+        spotifyAudioPriority.value = priority
+        preferences.edit().putString(KEY_SPOTIFY_AUDIO_PRIORITY, priority.name).apply()
+        SpotifyAudio.clearCache()
+    }
+
+    private fun readSpotifyAudioPriority(): SpotifyAudioPriority =
+        SpotifyAudioPriority.entries.firstOrNull { it.name == preferences.getString(KEY_SPOTIFY_AUDIO_PRIORITY, null) }
+            ?: SpotifyAudioPriority.YOUTUBE
+
+    fun isSoundCloudConnected(): Boolean =
+        _clientId.value.isNotBlank() && _oauthToken.value.isNotBlank() && _userId.value.isNotBlank()
+
+    fun isYouTubeConnected(): Boolean = ytMusicAuth() != null
+
+    fun isYandexConnected(): Boolean = yandexTokenValue().isNotBlank()
 
     // Music videos in the cover's place, and Yandex's looping videoshots behind the player.
     val playerVideos = MutableStateFlow(preferences.getBoolean(KEY_PLAYER_VIDEOS, true))
@@ -585,6 +608,7 @@ class SettingsRepository(
         const val KEY_VIDEO_DOWNLOAD = "video_download"
         const val KEY_VIDEO_DOWNLOAD_ANY_NETWORK = "video_download_any_network"
         const val KEY_PLAYER_COVER_COLORS = "player_cover_colors"
+        const val KEY_SPOTIFY_AUDIO_PRIORITY = "spotify_audio_priority"
         const val KEY_UPDATE_AUTO_CHECK = "update_auto_check"
         const val KEY_LAST_UPDATE_CHECK = "last_update_check"
     }

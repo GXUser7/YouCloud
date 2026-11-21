@@ -12,6 +12,7 @@
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <!-- Hands a downloaded update to the system installer; the user still confirms it there. -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <!-- Listening together: the phones nearby found and talked to directly (Nearby Connections),
          over Bluetooth and Wi-Fi Direct. One "Nearby devices" prompt covers them; none of it is used

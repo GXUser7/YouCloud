@@ -203,5 +203,6 @@ export function disconnect(svc: Service) {
   }
   if (svc === 'ya') setYandex(null)
   if (svc === 'sp') setSpotify(null)
+  if (svc === 'sc' || svc === 'ya' || svc === 'sp') spotify.clearAudioCache()
   void invalidateServiceHomeCache(svc)
 }

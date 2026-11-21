@@ -19,7 +19,7 @@ fun localProperty(name: String): String =
 
 // Follows the GitHub release tags (v3.1 → 3.1), which is what the in-app updater compares
 // against. The code is derived from it so it can never fall behind: 4.0 → 40000.
-val appVersionName = "8.0.1"
+val appVersionName = "8.1"
 val appVersionCode = appVersionName.split(".").map { it.toInt() }.let { parts ->
     parts.getOrElse(0) { 0 } * 10_000 + parts.getOrElse(1) { 0 } * 100 + parts.getOrElse(2) { 0 }
 }
@@ -154,6 +154,7 @@ dependencies {
     implementation(libs.play.services.nearby)
     implementation(libs.androidx.glance.appwidget)
     implementation(libs.androidx.glance.material3)
+    implementation(libs.androidx.work.runtime.ktx)
     testImplementation(libs.junit)
     // Android's own org.json is only a stub in unit tests: the restoration models' headers are read with it.
     testImplementation("org.json:json:20240303")

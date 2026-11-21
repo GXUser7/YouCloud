@@ -5,12 +5,16 @@ import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.net.Uri
 import android.util.Log
+import android.util.LruCache
 import androidx.media3.common.C
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DataSource
 import androidx.media3.datasource.DataSpec
+import okhttp3.OkHttpClient
+import okhttp3.Request
 import java.io.BufferedInputStream
 import java.io.ByteArrayOutputStream
+import java.io.File
 import java.io.IOException
 import java.io.OutputStream
 import java.net.Inet4Address
@@ -20,17 +24,14 @@ import java.net.Socket
 import java.security.SecureRandom
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 
 /**
  * What a Cast device plays, served by the phone itself over the home network: the TV fetches
- * `http://<phone>:<port>/t/<token>` and the phone reads the track as it would play it — from the
- * download, the stream cache or the service, through the same resolver ([resolve]) and data
- * sources ([dataSources]). So a downloaded track plays on the TV too, and so does YouTube's audio,
- * whose links work only from the address that asked for them: the phone's.
- *
- * Only what is in the Cast queue is served, each track (and a download's cover) under a token of
- * its own, random and long: nothing else on the phone can be asked for. A track the service streams as HLS is sent on as one
- * file, its segments one after another — the TV plays it through, though it can't seek in it.
+ * `http://<phone>:<port>/t/<token>` (or `/h/<token>.m3u8` for HLS streams, `/i/<token>` for covers)
+ * and the phone reads the track as it would play it — from the download, the stream cache or the
+ * service, through the same resolver ([resolve]) and data sources ([dataSources]). So a downloaded
+ * track plays on the TV too, and so do audio/covers that require the phone's network or VPN.
  */
 @UnstableApi
 internal class CastStreamServer(
@@ -38,13 +39,31 @@ internal class CastStreamServer(
     private val resolve: (DataSpec) -> DataSpec,
     private val dataSources: DataSource.Factory
 ) {
+    private data class ImageTarget(val primary: Uri, val fallback: Uri?)
+    private data class CachedImage(val bytes: ByteArray, val contentType: String)
+    private data class SegmentTarget(val uri: Uri, val headers: Map<String, String>)
+    private class OpenFailedException(cause: IOException) : IOException(cause.message, cause)
+
     private var socket: ServerSocket? = null
     private val pool = Executors.newCachedThreadPool { r -> Thread(r, "CastStream").apply { isDaemon = true } }
     private val tokens = ConcurrentHashMap<String, Uri>()
     private val byUri = ConcurrentHashMap<String, String>()
-    // Covers on the phone (a download's), served as they are: the TV shows them beside the track.
-    private val images = ConcurrentHashMap<String, Uri>()
+    private val hlsTokens = ConcurrentHashMap<String, Uri>()
+    private val hlsByUri = ConcurrentHashMap<String, String>()
+    private val segments = ConcurrentHashMap<String, SegmentTarget>()
+    private val segmentByKey = ConcurrentHashMap<String, String>()
+    private val images = ConcurrentHashMap<String, ImageTarget>()
     private val imageByUri = ConcurrentHashMap<String, String>()
+    private val imageCache = object : LruCache<String, CachedImage>(IMAGE_CACHE_BYTES) {
+        override fun sizeOf(key: String, value: CachedImage): Int = value.bytes.size.coerceAtLeast(1)
+    }
+    private val imageHttp by lazy {
+        OkHttpClient.Builder()
+            .connectTimeout(10, TimeUnit.SECONDS)
+            .readTimeout(10, TimeUnit.SECONDS)
+            .followRedirects(true)
+            .build()
+    }
     private val random = SecureRandom()
 
     @Synchronized
@@ -69,33 +88,64 @@ internal class CastStreamServer(
         socket = null
         tokens.clear()
         byUri.clear()
+        hlsTokens.clear()
+        hlsByUri.clear()
+        segments.clear()
+        segmentByKey.clear()
         images.clear()
         imageByUri.clear()
+        synchronized(imageCache) { imageCache.evictAll() }
     }
 
     /** The address a Cast device fetches [uri] at; null without an address on Wi-Fi or Ethernet. */
     fun urlFor(uri: Uri): String? {
-        val port = socket?.localPort ?: return null
-        val host = localAddress() ?: return null
-        val key = uri.toString()
-        val token = byUri.getOrPut(key) {
-            val bytes = ByteArray(16).also(random::nextBytes)
-            bytes.joinToString("") { "%02x".format(it) }.also { tokens[it] = uri }
+        val base = serverBaseUrl() ?: return null
+        val token = byUri.getOrPut(uri.toString()) {
+            newToken().also { tokens[it] = uri }
         }
-        return "http://$host:$port/t/$token"
+        return "$base/t/$token"
     }
 
-    /** The address a Cast device fetches the picture at [uri] (a file or content on the phone) at. */
-    fun imageUrlFor(uri: Uri): String? {
-        val port = socket?.localPort ?: return null
-        val host = localAddress() ?: return null
-        val token = imageByUri.getOrPut(uri.toString()) {
-            val bytes = ByteArray(16).also(random::nextBytes)
-            bytes.joinToString("") { "%02x".format(it) }.also { images[it] = uri }
+    /** The address a Cast device fetches an HLS playlist [uri] at, rewritten through this proxy. */
+    fun hlsUrlFor(uri: Uri): String? {
+        val base = serverBaseUrl() ?: return null
+        val token = hlsByUri.getOrPut(uri.toString()) {
+            newToken().also { hlsTokens[it] = uri }
         }
-        return "http://$host:$port/i/$token"
+        return "$base/h/$token.m3u8"
     }
 
+    /** The address a Cast device fetches a cover image [uri] (file, content, or HTTPS via phone VPN) at. */
+    fun imageUrlFor(uri: Uri, fallback: Uri? = null): String? {
+        val base = serverBaseUrl() ?: return null
+        val key = "$uri|${fallback ?: ""}"
+        val token = imageByUri.getOrPut(key) {
+            newToken().also { images[it] = ImageTarget(uri, fallback) }
+        }
+        return "$base/i/$token"
+    }
+
+    private fun registerSegmentUrl(uri: Uri, headers: Map<String, String>): String? {
+        val base = serverBaseUrl() ?: return null
+        val headerKey = headers.entries.sortedBy { it.key }.joinToString("|") { "${it.key}=${it.value}" }
+        val token = segmentByKey.getOrPut("$uri|$headerKey") {
+            newToken().also { segments[it] = SegmentTarget(uri, headers) }
+        }
+        return "$base/s/$token"
+    }
+
+    private fun serverBaseUrl(): String? {
+        val port = socket?.localPort ?: return null
+        val host = localAddress() ?: return null
+        return "http://$host:$port"
+    }
+
+    private fun newToken(): String {
+        val bytes = ByteArray(16).also(random::nextBytes)
+        return bytes.joinToString("") { "%02x".format(it) }
+    }
+
+    @Suppress("DEPRECATION")
     private fun localAddress(): String? {
         val connectivity = context.getSystemService(ConnectivityManager::class.java) ?: return null
         for (network in connectivity.allNetworks) {
@@ -126,17 +176,43 @@ internal class CastStreamServer(
                 val method = parts.getOrNull(0).orEmpty()
                 val path = parts.getOrNull(1).orEmpty()
                 val out = socket.getOutputStream()
-                if ((method == "GET" || method == "HEAD") && path.startsWith("/i/")) {
-                    val image = path.removePrefix("/i/").substringBefore('?').let(images::get)
-                    if (image == null) respond(out, "404 Not Found", emptyMap()) else sendImage(image, method == "HEAD", out)
+                if (method == "OPTIONS") {
+                    respond(
+                        out,
+                        "204 No Content",
+                        mapOf(
+                            "Access-Control-Allow-Methods" to "GET, HEAD, OPTIONS",
+                            "Access-Control-Allow-Headers" to "Range, Content-Type, Accept",
+                            "Access-Control-Max-Age" to "3600"
+                        )
+                    )
                     return
                 }
-                val uri = path.removePrefix("/t/").substringBefore('?').let(tokens::get)
-                if ((method != "GET" && method != "HEAD") || !path.startsWith("/t/") || uri == null) {
+                if (method != "GET" && method != "HEAD") {
                     respond(out, "404 Not Found", emptyMap())
                     return
                 }
-                send(uri, headers["range"], method == "HEAD", out)
+                val headOnly = method == "HEAD"
+                when {
+                    path.startsWith("/i/") -> {
+                        val image = path.removePrefix("/i/").substringBefore('?').let(images::get)
+                        if (image == null) respond(out, "404 Not Found", emptyMap()) else sendImage(image, headOnly, out)
+                    }
+                    path.startsWith("/h/") -> {
+                        val token = path.removePrefix("/h/").substringBefore('?').removeSuffix(".m3u8")
+                        val uri = hlsTokens[token]
+                        if (uri == null) respond(out, "404 Not Found", emptyMap()) else sendHlsPlaylist(uri, headers["range"], headOnly, out)
+                    }
+                    path.startsWith("/s/") -> {
+                        val segment = path.removePrefix("/s/").substringBefore('?').let(segments::get)
+                        if (segment == null) respond(out, "404 Not Found", emptyMap()) else sendSegment(segment, headers["range"], headOnly, out)
+                    }
+                    path.startsWith("/t/") -> {
+                        val uri = path.removePrefix("/t/").substringBefore('?').let(tokens::get)
+                        if (uri == null) respond(out, "404 Not Found", emptyMap()) else send(uri, headers["range"], headOnly, out)
+                    }
+                    else -> respond(out, "404 Not Found", emptyMap())
+                }
             } catch (e: IOException) {
                 // The TV let go: it seeks by asking again.
             } catch (e: Exception) {
@@ -146,7 +222,6 @@ internal class CastStreamServer(
     }
 
     private fun send(uri: Uri, range: String?, headOnly: Boolean, out: OutputStream) {
-        val from = range?.let { RANGE.find(it)?.groupValues?.get(1)?.toLongOrNull() } ?: 0L
         val spotifyId = uri.takeIf { it.scheme == "spotify" }?.lastPathSegment?.takeIf { it.isNotBlank() }
         val maxAttempts = if (spotifyId != null) 2 else 1
         for (attempt in 0 until maxAttempts) {
@@ -161,36 +236,10 @@ internal class CastStreamServer(
                 sendHls(spec, headOnly, out)
                 return
             }
-            val source = dataSources.createDataSource()
-            var headerSent = false
             try {
-                val length = source.open(spec.subrange(from))
-                val head = ByteArray(16)
-                val headRead = readFully(source, head)
-                val type = source.responseHeaders.entries
-                    .firstOrNull { it.key.equals("Content-Type", ignoreCase = true) }
-                    ?.value?.firstOrNull()?.takeIf { it.startsWith("audio/") || it.startsWith("video/") }
-                    ?: sniff(head, headRead)
-                val headers = mutableMapOf("Content-Type" to type, "Accept-Ranges" to "bytes")
-                val status = if (length != C.LENGTH_UNSET.toLong()) {
-                    headers["Content-Length"] = length.toString()
-                    if (range != null) {
-                        headers["Content-Range"] = "bytes $from-${from + length - 1}/${from + length}"
-                        "206 Partial Content"
-                    } else {
-                        "200 OK"
-                    }
-                } else {
-                    "200 OK"
-                }
-                respond(out, status, headers)
-                headerSent = true
-                if (headOnly) return
-                out.write(head, 0, headRead)
-                copy(source, out)
+                streamSpec(spec, range, headOnly, out)
                 return
-            } catch (e: IOException) {
-                if (headerSent) throw e
+            } catch (e: OpenFailedException) {
                 if (spotifyId != null && attempt + 1 < maxAttempts) {
                     Log.w(TAG, "Cast upstream failed for spotify:$spotifyId, trying fallback: ${e.message}")
                     com.example.myapplication.data.SpotifyAudio.markStreamFailed(
@@ -203,36 +252,178 @@ internal class CastStreamServer(
                 Log.w(TAG, "Couldn't open Cast stream for $uri: ${e.message}")
                 respond(out, "404 Not Found", emptyMap())
                 return
-            } finally {
-                runCatching { source.close() }
             }
         }
     }
 
-    private fun sendImage(uri: Uri, headOnly: Boolean, out: OutputStream) {
-        val bytes = context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
-        if (bytes == null || bytes.size > 8_000_000) {
+    private fun sendHlsPlaylist(uri: Uri, range: String?, headOnly: Boolean, out: OutputStream) {
+        val spec = try {
+            resolve(DataSpec(uri))
+        } catch (e: IOException) {
+            Log.w(TAG, "Couldn't resolve Cast HLS track $uri: ${e.message}")
             respond(out, "404 Not Found", emptyMap())
             return
         }
-        fun at(i: Int) = if (i < bytes.size) bytes[i].toInt() and 0xFF else -1
-        val type = when {
-            at(0) == 0x89 && at(1) == 0x50 && at(2) == 0x4E && at(3) == 0x47 -> "image/png"
-            at(8) == 'W'.code && at(9) == 'E'.code && at(10) == 'B'.code && at(11) == 'P'.code -> "image/webp"
-            else -> "image/jpeg"
+        if (!isHls(spec)) {
+            try {
+                streamSpec(spec, range, headOnly, out)
+            } catch (e: OpenFailedException) {
+                Log.w(TAG, "Couldn't open resolved non-HLS stream for $uri: ${e.message}")
+                respond(out, "404 Not Found", emptyMap())
+            }
+            return
         }
-        respond(out, "200 OK", mapOf("Content-Type" to type, "Content-Length" to bytes.size.toString(), "Cache-Control" to "max-age=3600"))
+        try {
+            var playlistUri = spec.uri
+            var text = readText(spec)
+            if (text.contains("#EXT-X-STREAM-INF")) {
+                val variant = text.lines().map(String::trim).firstOrNull { it.isNotEmpty() && !it.startsWith("#") }
+                if (variant == null) {
+                    respond(out, "404 Not Found", emptyMap())
+                    return
+                }
+                playlistUri = resolveAgainst(playlistUri, variant)
+                text = readText(spec.buildUpon().setUri(playlistUri).setKey(null).build())
+            }
+            val rewritten = rewriteHlsPlaylist(playlistUri.toString(), text) { segUriStr ->
+                registerSegmentUrl(Uri.parse(segUriStr), spec.httpRequestHeaders) ?: segUriStr
+            }
+            val bytes = rewritten.toByteArray(Charsets.UTF_8)
+            respond(
+                out,
+                "200 OK",
+                mapOf(
+                    "Content-Type" to "application/vnd.apple.mpegurl; charset=utf-8",
+                    "Content-Length" to bytes.size.toString(),
+                    "Cache-Control" to "no-cache"
+                )
+            )
+            if (!headOnly) {
+                out.write(bytes)
+                out.flush()
+            }
+            Log.d(TAG, "Served Cast HLS playlist for $uri (${bytes.size} B)")
+        } catch (e: IOException) {
+            Log.w(TAG, "Couldn't serve Cast HLS playlist for $uri: ${e.message}")
+            respond(out, "404 Not Found", emptyMap())
+        }
+    }
+
+    private fun sendSegment(target: SegmentTarget, range: String?, headOnly: Boolean, out: OutputStream) {
+        val spec = DataSpec.Builder()
+            .setUri(target.uri)
+            .setHttpRequestHeaders(target.headers)
+            .build()
+        try {
+            streamSpec(spec, range, headOnly, out)
+        } catch (e: OpenFailedException) {
+            Log.w(TAG, "Couldn't serve Cast HLS segment ${target.uri}: ${e.message}")
+            respond(out, "404 Not Found", emptyMap())
+        }
+    }
+
+    private fun streamSpec(spec: DataSpec, range: String?, headOnly: Boolean, out: OutputStream) {
+        val from = range?.let { RANGE.find(it)?.groupValues?.get(1)?.toLongOrNull() } ?: 0L
+        val source = dataSources.createDataSource()
+        var headerSent = false
+        try {
+            val length = source.open(spec.subrange(from))
+            val head = ByteArray(16)
+            val headRead = readFully(source, head)
+            val type = source.responseHeaders.entries
+                .firstOrNull { it.key.equals("Content-Type", ignoreCase = true) }
+                ?.value?.firstOrNull()?.takeIf { it.startsWith("audio/") || it.startsWith("video/") }
+                ?: sniff(head, headRead)
+            val headers = mutableMapOf("Content-Type" to type, "Accept-Ranges" to "bytes")
+            val status = if (length != C.LENGTH_UNSET.toLong()) {
+                headers["Content-Length"] = length.toString()
+                if (range != null) {
+                    headers["Content-Range"] = "bytes $from-${from + length - 1}/${from + length}"
+                    "206 Partial Content"
+                } else {
+                    "200 OK"
+                }
+            } else {
+                "200 OK"
+            }
+            respond(out, status, headers)
+            headerSent = true
+            if (headOnly) return
+            out.write(head, 0, headRead)
+            copy(source, out)
+        } catch (e: IOException) {
+            if (headerSent) throw e else throw OpenFailedException(e)
+        } finally {
+            runCatching { source.close() }
+        }
+    }
+
+    private fun sendImage(target: ImageTarget, headOnly: Boolean, out: OutputStream) {
+        val cached = loadImage(target.primary) ?: target.fallback?.let(::loadImage)
+        if (cached == null) {
+            Log.w(TAG, "Cast cover fetch failed: ${target.primary}")
+            respond(out, "404 Not Found", emptyMap())
+            return
+        }
+        respond(
+            out,
+            "200 OK",
+            mapOf(
+                "Content-Type" to cached.contentType,
+                "Content-Length" to cached.bytes.size.toString(),
+                "Cache-Control" to "max-age=3600"
+            )
+        )
         if (!headOnly) {
-            out.write(bytes)
+            out.write(cached.bytes)
             out.flush()
         }
     }
 
-    /** An HLS stream as one file: its init segment, if any, then each segment in turn. */
+    private fun loadImage(uri: Uri): CachedImage? {
+        val key = uri.toString()
+        synchronized(imageCache) { imageCache.get(key) }?.let { return it }
+
+        val loaded: CachedImage? = when (uri.scheme) {
+            "http", "https" -> {
+                val localBytes = com.example.myapplication.data.ArtworkUrls.local(key)?.let { path ->
+                    runCatching { File(path).takeIf { it.isFile && it.length() <= MAX_IMAGE_BYTES }?.readBytes() }.getOrNull()
+                }
+                if (localBytes != null && localBytes.isNotEmpty()) {
+                    CachedImage(localBytes, sniffImage(localBytes))
+                } else {
+                    runCatching {
+                        val req = Request.Builder()
+                            .url(key)
+                            .header("User-Agent", IMAGE_UA)
+                            .build()
+                        imageHttp.newCall(req).execute().use { resp ->
+                            if (!resp.isSuccessful) return@runCatching null
+                            val bytes = resp.body?.bytes() ?: return@runCatching null
+                            if (bytes.isEmpty() || bytes.size > MAX_IMAGE_BYTES) return@runCatching null
+                            CachedImage(bytes, sniffImage(bytes))
+                        }
+                    }.getOrNull()
+                }
+            }
+            "file" -> runCatching {
+                uri.path?.let { File(it).takeIf { f -> f.isFile && f.length() <= MAX_IMAGE_BYTES }?.readBytes() }
+            }.getOrNull()?.takeIf { it.isNotEmpty() }?.let { CachedImage(it, sniffImage(it)) }
+            else -> runCatching {
+                context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
+            }.getOrNull()?.takeIf { it.isNotEmpty() && it.size <= MAX_IMAGE_BYTES }?.let { CachedImage(it, sniffImage(it)) }
+        }
+
+        if (loaded != null) {
+            synchronized(imageCache) { imageCache.put(key, loaded) }
+        }
+        return loaded
+    }
+
+    /** Fallback for an unresolved placeholder URI that turned out to be HLS on demand. */
     private fun sendHls(spec: DataSpec, headOnly: Boolean, out: OutputStream) {
         var playlistUri = spec.uri
         var text = readText(spec)
-        // A master playlist: its first variant.
         if (text.contains("#EXT-X-STREAM-INF")) {
             val variant = text.lines().map(String::trim).firstOrNull { it.isNotEmpty() && !it.startsWith("#") } ?: return
             playlistUri = resolveAgainst(playlistUri, variant)
@@ -309,8 +500,10 @@ internal class CastStreamServer(
         val text = buildString {
             append("HTTP/1.1 ").append(status).append("\r\n")
             headers.forEach { (k, v) -> append(k).append(": ").append(v).append("\r\n") }
-            // The Cast receiver is a web page: it may read the stream only if the phone allows it.
+            // The Cast receiver is an HTTPS web page: allow cross-origin & local private network fetches.
             append("Access-Control-Allow-Origin: *\r\n")
+            append("Access-Control-Allow-Private-Network: true\r\n")
+            append("Cross-Origin-Resource-Policy: cross-origin\r\n")
             append("Connection: close\r\n\r\n")
         }
         out.write(text.toByteArray(Charsets.ISO_8859_1))
@@ -328,20 +521,34 @@ internal class CastStreamServer(
         }
     }
 
-    private fun isHls(spec: DataSpec): Boolean {
-        val path = spec.uri.path.orEmpty()
-        return path.endsWith(".m3u8") || spec.uri.toString().contains("m3u8")
-    }
+    private fun isHls(spec: DataSpec): Boolean = isHlsCastUri(spec.uri)
 
     private fun resolveAgainst(base: Uri, ref: String): Uri =
         Uri.parse(java.net.URI(base.toString()).resolve(ref).toString())
 
-    private fun DataSpec.subrange(from: Long): DataSpec = buildUpon().setPosition(from).setLength(C.LENGTH_UNSET.toLong()).build()
+    private fun DataSpec.subrange(from: Long): DataSpec =
+        buildUpon().setPosition(from).setLength(C.LENGTH_UNSET.toLong()).build()
 
     companion object {
         private const val TAG = "CastStreamServer"
+        private const val MAX_IMAGE_BYTES = 8_000_000
+        private const val IMAGE_CACHE_BYTES = 8 * 1024 * 1024
+        private const val IMAGE_UA =
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36"
         private val RANGE = Regex("bytes=(\\d+)-")
         private val MAP_URI = Regex("URI=\"([^\"]+)\"")
+
+        /** What an image is by its first bytes. */
+        internal fun sniffImage(bytes: ByteArray): String {
+            fun at(i: Int) = if (i < bytes.size) bytes[i].toInt() and 0xFF else -1
+            return when {
+                at(0) == 0x89 && at(1) == 0x50 && at(2) == 0x4E && at(3) == 0x47 -> "image/png"
+                at(0) == 'G'.code && at(1) == 'I'.code && at(2) == 'F'.code -> "image/gif"
+                at(0) == 'R'.code && at(1) == 'I'.code && at(2) == 'F'.code && at(3) == 'F'.code &&
+                    at(8) == 'W'.code && at(9) == 'E'.code && at(10) == 'B'.code && at(11) == 'P'.code -> "image/webp"
+                else -> "image/jpeg"
+            }
+        }
 
         /** What a file is by its first bytes, for the TV, which plays it by what it's told. */
         fun sniff(head: ByteArray, n: Int): String {

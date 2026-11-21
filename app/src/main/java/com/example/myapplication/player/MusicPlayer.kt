@@ -496,6 +496,7 @@ class MusicPlayer(context: Context) {
                     .setArtist(track.artist)
                     .apply {
                         track.artworkUrl?.let { setArtworkUri(Uri.parse(it)) }
+                        if (track.durationMs > 0L) setDurationMs(track.durationMs)
                         if (track.leadArtist != null || track.source != null || track.link != null) {
                             setExtras(android.os.Bundle().apply {
                                 track.leadArtist?.let { putString(PlayLog.EXTRA_LEAD_ARTIST, it) }
@@ -559,6 +560,7 @@ class MusicPlayer(context: Context) {
         }
 
         override fun onTimelineChanged(timeline: androidx.media3.common.Timeline, reason: Int) {
+            syncState()
             mendQueueSoon()
         }
     }
@@ -569,6 +571,7 @@ class MusicPlayer(context: Context) {
         val title: String,
         val artist: String,
         val artworkUrl: String?,
+        val durationMs: Long = 0L,
         // For "Итоги" (see PlayLog): the first artist alone, and the track's service.
         val leadArtist: String? = null,
         val source: String? = null,

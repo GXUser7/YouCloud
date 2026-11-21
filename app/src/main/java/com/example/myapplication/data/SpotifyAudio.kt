@@ -212,6 +212,10 @@ internal object SpotifyAudio {
     internal const val BONUS_YT_WEB = 24_000L
     internal const val BONUS_YANDEX = 10_000L
     internal const val BONUS_SOUNDCLOUD = 0L
+    internal const val BONUS_SC_PRIORITY = 36_000L
+    internal const val BONUS_YT_FALLBACK_SONG = 18_000L
+    internal const val BONUS_YT_FALLBACK_VIDEO = 17_000L
+    internal const val BONUS_YT_FALLBACK_WEB = 16_000L
 
     private data class ScoredCandidate(
         val key: String,
@@ -240,7 +244,11 @@ internal object SpotifyAudio {
         val ytAuth = settings.ytMusicAuth()
         val yandexToken = settings.yandexTokenValue()
         val clientId = settings.clientId.value
-        val key = "$id:${ytAuth?.cookie.orEmpty().hashCode()}:${clientId.isNotEmpty()}:${yandexToken.isNotEmpty()}"
+        val priorityPref = settings.spotifyAudioPriority.value
+        val ytConnected = ytAuth != null
+        val scConnected = settings.isSoundCloudConnected()
+        val yaConnected = yandexToken.isNotBlank()
+        val key = "$id:${priorityPref.name}:${ytAuth?.cookie.orEmpty().hashCode()}:$scConnected:$yaConnected"
         val now = android.os.SystemClock.elapsedRealtime()
         cache.get(key)?.takeIf { (expires, _) -> expires > now }?.let {
             Log.d(TAG, "[$id] Cache hit -> ${it.second.candidateKey}")
@@ -260,7 +268,21 @@ internal object SpotifyAudio {
             return prev.deferred.await()
         }
         try {
-            val resolved = resolveInternal(context, settings, track, id, key, ytAuth, yandexToken, clientId, now) {
+            val resolved = resolveInternal(
+                context = context,
+                settings = settings,
+                track = track,
+                id = id,
+                key = key,
+                ytAuth = ytAuth,
+                yandexToken = yandexToken,
+                clientId = clientId,
+                priorityPref = priorityPref,
+                ytConnected = ytConnected,
+                scConnected = scConnected,
+                yaConnected = yaConnected,
+                now = now
+            ) {
                 mine.priority.get()
             }
             mine.deferred.complete(resolved)
@@ -282,6 +304,10 @@ internal object SpotifyAudio {
         ytAuth: YtAuth?,
         yandexToken: String,
         clientId: String,
+        priorityPref: SpotifyAudioPriority,
+        ytConnected: Boolean,
+        scConnected: Boolean,
+        yaConnected: Boolean,
         now: Long,
         priority: () -> YtDlp.Priority
     ): Stream {
@@ -291,13 +317,29 @@ internal object SpotifyAudio {
             throw unavailable()
         }
 
+        if (!ytConnected && !scConnected && !yaConnected) {
+            Log.w(TAG, "[$id] No playback service connected (yt=$ytConnected, sc=$scConnected, ya=$yaConnected)")
+            throw TrackUnavailableException(
+                tr("Подключите YouTube Music, SoundCloud или Яндекс Музыку в настройках, чтобы слушать треки Spotify.")
+            )
+        }
+
+        val effectivePriority = when {
+            priorityPref == SpotifyAudioPriority.SOUNDCLOUD && scConnected -> SpotifyAudioPriority.SOUNDCLOUD
+            ytConnected -> SpotifyAudioPriority.YOUTUBE
+            scConnected -> SpotifyAudioPriority.SOUNDCLOUD
+            else -> SpotifyAudioPriority.YOUTUBE
+        }
+        val preferSoundCloud = effectivePriority == SpotifyAudioPriority.SOUNDCLOUD && scConnected
+
         val startedAt = now
         val artistsText = track.artists.orEmpty().mapNotNull { it.username }
             .ifEmpty { listOfNotNull(track.user?.username) }.joinToString(", ")
         Log.i(
             TAG,
             "[$id] Resolving '${track.title}' by [$artistsText] (${track.duration / 1000}s) priority=${priority()} " +
-                "auth={yt=${ytAuth != null}, ya=${yandexToken.isNotBlank()}, scId=${clientId.isNotBlank()}, scAuth=${settings.oauthTokenValue().isNotBlank()}} query='$primaryQuery'"
+                "pref=${priorityPref.name} effective=${effectivePriority.name} " +
+                "connected={yt=$ytConnected, ya=$yaConnected, sc=$scConnected, scId=${clientId.isNotBlank()}} query='$primaryQuery'"
         )
 
         ensureVariantsLoaded(context)
@@ -306,10 +348,10 @@ internal object SpotifyAudio {
         var networkError: IOException? = null
         currentYtAuth = ytAuth
         sharedSettings = settings
-        val yt = ytClient
-        val yandexService = if (yandexToken.isNotBlank()) sharedYandexService else null
-        val soundCloudService = if (clientId.isNotBlank()) sharedSoundCloudService else null
-        val scResolver = if (clientId.isNotBlank()) sharedScResolver else null
+        val yt = if (ytConnected) ytClient else null
+        val yandexService = if (yaConnected) sharedYandexService else null
+        val soundCloudService = if (scConnected) sharedSoundCloudService else null
+        val scResolver = if (scConnected) sharedScResolver else null
 
         suspend fun <T> tryResolve(source: String, call: suspend () -> T): T? = try {
             call()
@@ -325,11 +367,12 @@ internal object SpotifyAudio {
         }
 
         // Fast-path 0: if this Spotify track was already matched before (persisted in spotify_variants.json)
-        // and that candidate hasn't failed recently, resolve its stream straight away without 5 search calls.
+        // on an active connected service matching the current priority and hasn't failed recently,
+        // resolve its stream straight away without repeating search calls.
         val remembered = resolvedVariants[id]
         if (remembered != null && remembered.candidateKey.isNotEmpty() && remembered.candidateKey !in failed) {
             val cKey = remembered.candidateKey
-            if (cKey.startsWith("yt:")) {
+            if (cKey.startsWith("yt:") && ytConnected && !preferSoundCloud) {
                 val vid = cKey.removePrefix("yt:").takeIf { it.isNotBlank() }
                 if (vid != null) {
                     val stream = tryResolve(cKey) {
@@ -359,7 +402,7 @@ internal object SpotifyAudio {
                         )
                     }
                 }
-            } else if (cKey.startsWith("ya:") && yandexToken.isNotBlank()) {
+            } else if (cKey.startsWith("ya:") && yaConnected && !preferSoundCloud) {
                 val raw = cKey.removePrefix("ya:").takeIf { it.isNotBlank() }
                 if (raw != null) {
                     val url = tryResolve(cKey) { YandexMusicApi.resolveTrackStream(raw, yandexToken) }
@@ -387,8 +430,10 @@ internal object SpotifyAudio {
         val triedKeys = HashSet<String>()
         var ytAttempts = 0
         var ytRejected = 0
+        var scAttempts = 0
 
         suspend fun resolveYouTubeCandidate(cand: ScoredCandidate): Stream? {
+            if (yt == null) return null
             if (cand.key in triedKeys || ytAttempts >= 5 || ytAttempts + ytRejected >= 8) return null
             triedKeys += cand.key
             val vid = cand.track.youTubeVideoId ?: return null
@@ -447,7 +492,50 @@ internal object SpotifyAudio {
             )
         }
 
-        suspend fun searchCandidates(query: String, label: String, tryFastYtSongs: Boolean): Pair<Stream?, List<ScoredCandidate>> = coroutineScope {
+        suspend fun resolveSoundCloudCandidate(cand: ScoredCandidate): Stream? {
+            val resolver = scResolver ?: return null
+            if (cand.key in triedKeys || scAttempts >= 3) return null
+            triedKeys += cand.key
+            scAttempts++
+            // Playback uses DefaultMediaSourceFactory with a non-HLS spotify:// MediaItem: progressive only avoids M3U8 parser failures.
+            val url = tryResolve(cand.key) {
+                resolver.resolve(cand.track, settings.clientId.value, progressiveFirst = true, progressiveOnly = true)
+            }
+            if (url == null) {
+                Log.w(TAG, "[$id] ${cand.key} returned null progressive stream (score=${cand.score})")
+                return null
+            }
+            val cacheKey = "${StreamCache.KEY_PREFIX}spotify:$id:sc_${cand.track.id}"
+            Log.i(
+                TAG,
+                "[$id] Resolved via ${cand.key} (score=${cand.score}) in ${android.os.SystemClock.elapsedRealtime() - startedAt} ms"
+            )
+            rememberVariant(
+                context,
+                id,
+                ResolvedVariant(
+                    source = "SoundCloud",
+                    title = cand.track.title.orEmpty(),
+                    artist = cand.track.artistNames.orEmpty(),
+                    durationMs = cand.track.duration,
+                    views = cand.track.playbackCount,
+                    matchMode = cand.matchMode,
+                    candidateKey = cand.key
+                )
+            )
+            return remember(
+                key,
+                Stream(
+                    url = url,
+                    extension = "mp3",
+                    cacheKey = cacheKey,
+                    candidateKey = cand.key,
+                    expectedDurationMs = cand.track.duration
+                )
+            )
+        }
+
+        suspend fun searchCandidates(query: String, label: String, tryFastPrimary: Boolean): Pair<Stream?, List<ScoredCandidate>> = coroutineScope {
             suspend fun <T> safeSearch(source: String, timeoutMs: Long, call: suspend () -> T): T? = try {
                 kotlinx.coroutines.withTimeoutOrNull(timeoutMs) { call() }
             } catch (e: CancellationException) {
@@ -461,12 +549,18 @@ internal object SpotifyAudio {
                 null
             }
 
-            // Stage 1: launch YTM Songs, YTM Videos, Yandex and SoundCloud in parallel,
-            // but keep heavy YouTubeWeb (~500 KB HTML/JSON tree) lazy until needed.
-            val ytSongsJob = async { safeSearch("YTM-Songs", 4_500L) { yt.searchAudioSongs(query) }.orEmpty() }
-            val ytVideosJob = async { safeSearch("YTM-Videos", 5_000L) { yt.searchAudioVideos(query) }.orEmpty() }
+            // Stage 1: launch connected services in parallel, keeping heavy YouTubeWeb lazy until needed.
+            val ytSongsJob = async {
+                if (yt == null) emptyList()
+                else safeSearch("YTM-Songs", 4_500L) { yt.searchAudioSongs(query) }.orEmpty()
+            }
+            val ytVideosJob = async {
+                if (yt == null) emptyList()
+                else safeSearch("YTM-Videos", 5_000L) { yt.searchAudioVideos(query) }.orEmpty()
+            }
             val ytWebJob = async(start = CoroutineStart.LAZY) {
-                safeSearch("YTWeb", 4_500L) { YouTubeWeb.search(query, ytAuth).tracks }
+                if (yt == null) emptyList()
+                else safeSearch("YTWeb", 4_500L) { YouTubeWeb.search(query, ytAuth).tracks }
                     .orEmpty()
                     .filter { it.youTubeVideoId != null && it.liveVideoId == null && it.duration > 0 }
             }
@@ -479,9 +573,63 @@ internal object SpotifyAudio {
                 else safeSearch("SoundCloud", 4_000L) { soundCloudService.searchTracks(query, settings.clientId.value, limit = 15).collection }.orEmpty()
             }
 
+            val ytSongBonus = if (preferSoundCloud) BONUS_YT_FALLBACK_SONG else BONUS_YT_SONG
+            val ytVideoBonus = if (preferSoundCloud) BONUS_YT_FALLBACK_VIDEO else BONUS_YT_VIDEO
+            val ytWebBonus = if (preferSoundCloud) BONUS_YT_FALLBACK_WEB else BONUS_YT_WEB
+            val scBonus = if (preferSoundCloud) BONUS_SC_PRIORITY else BONUS_SOUNDCLOUD
+
             val strictPool = mutableListOf<ScoredCandidate>()
             val loosePool = mutableListOf<ScoredCandidate>()
             val popularPool = mutableListOf<ScoredCandidate>()
+
+            // Pre-process SoundCloud early if it holds priority, so we resolve it in ~250 ms without waiting for YTWeb/Yandex.
+            var scRaw: List<SoundCloudTrack> = emptyList()
+            var scPlayable: List<SoundCloudTrack> = emptyList()
+            var scProgressive: List<SoundCloudTrack> = emptyList()
+            var scMatched = 0
+            var scHlsOnlyMatched = 0
+            var scConsumed = false
+            fun collectSoundCloud(raw: List<SoundCloudTrack>) {
+                scRaw = raw
+                scPlayable = raw.filter(::soundCloudPlaysWhole)
+                scProgressive = scPlayable.filter { sc ->
+                    sc.media?.transcodings.orEmpty().any { isWholeStream(it) && it.format?.protocol == "progressive" }
+                }
+                for (scTrack in scPlayable) {
+                    val hasProgressive = scTrack in scProgressive
+                    val cKey = "sc:${scTrack.id}"
+                    if (cKey in failed) continue
+                    val score = spotifyMatchScore(track, scTrack, allowArtistMismatch = true)
+                    if (score != null) {
+                        if (!hasProgressive) {
+                            scHlsOnlyMatched++
+                            continue
+                        }
+                        scMatched++
+                        strictPool += ScoredCandidate(cKey, SourceKind.SOUNDCLOUD, scTrack, TIER_STRICT + score + scBonus, sourceLabel = "SoundCloud", matchMode = "strict")
+                    } else if (hasProgressive) {
+                        spotifyLooseDurationMatchScore(track, scTrack, allowArtistMismatch = true)?.let { loose ->
+                            loosePool += ScoredCandidate(cKey, SourceKind.SOUNDCLOUD, scTrack, TIER_LOOSE + loose + scBonus, sourceLabel = "SoundCloud", matchMode = "loose")
+                        }
+                    }
+                }
+                scConsumed = true
+            }
+
+            if (preferSoundCloud) {
+                collectSoundCloud(scJob.await())
+                if (tryFastPrimary && strictPool.isNotEmpty()) {
+                    val topSc = strictPool.sortedByDescending { it.score }.take(2)
+                    for (cand in topSc) {
+                        val fastStream = resolveSoundCloudCandidate(cand)
+                        if (fastStream != null) {
+                            coroutineContext.cancelChildren()
+                            return@coroutineScope fastStream to emptyList()
+                        }
+                    }
+                }
+            }
+
             val ytSongsRaw = ytSongsJob.await()
             val songIds = ytSongsRaw.mapTo(HashSet()) { it.id }
             var ytSongsMatched = 0
@@ -495,11 +643,11 @@ internal object SpotifyAudio {
                 if (score != null) {
                     ytSongsMatched++
                     ytMatched++
-                    strictPool += ScoredCandidate(cKey, SourceKind.YOUTUBE, song, TIER_STRICT + score + BONUS_YT_SONG, official, "YouTube Music", "strict")
+                    strictPool += ScoredCandidate(cKey, SourceKind.YOUTUBE, song, TIER_STRICT + score + ytSongBonus, official, "YouTube Music", "strict")
                 } else {
                     val loose = spotifyLooseDurationMatchScore(track, song)
                     if (loose != null) {
-                        loosePool += ScoredCandidate(cKey, SourceKind.YOUTUBE, song, TIER_LOOSE + loose + BONUS_YT_SONG, official, "YouTube Music", "loose")
+                        loosePool += ScoredCandidate(cKey, SourceKind.YOUTUBE, song, TIER_LOOSE + loose + ytSongBonus, official, "YouTube Music", "loose")
                     } else {
                         spotifyPopularYouTubeFallbackScore(track, song)?.let { pop ->
                             popularPool += ScoredCandidate(cKey, SourceKind.YOUTUBE, song, pop + 1_000L, official, "YouTube Music", "popular")
@@ -508,22 +656,23 @@ internal object SpotifyAudio {
                 }
             }
 
-            // Fast-path 1: YTM Songs carries the highest bonus (BONUS_YT_SONG = 26_000). As soon as it
-            // returns a strict match (~250 ms), start resolving its stream immediately instead of waiting
-            // 3–5 seconds at a barrier for YTWeb / SoundCloud / Yandex / YTM Videos to finish.
-            if (tryFastYtSongs && strictPool.isNotEmpty()) {
-                val topSongs = strictPool.sortedByDescending { it.score }.take(2)
-                for (topSong in topSongs) {
-                    val fastStream = resolveYouTubeCandidate(topSong)
-                    if (fastStream != null) {
-                        coroutineContext.cancelChildren()
-                        return@coroutineScope fastStream to emptyList()
+            // Fast-path 1 (YouTube priority): resolve YTM Songs strict match immediately instead of waiting on YTWeb/Yandex/SC.
+            if (!preferSoundCloud && tryFastPrimary) {
+                val ytStrict = strictPool.filter { it.kind == SourceKind.YOUTUBE }
+                if (ytStrict.isNotEmpty()) {
+                    val topSongs = ytStrict.sortedByDescending { it.score }.take(2)
+                    for (topSong in topSongs) {
+                        val fastStream = resolveYouTubeCandidate(topSong)
+                        if (fastStream != null) {
+                            coroutineContext.cancelChildren()
+                            return@coroutineScope fastStream to emptyList()
+                        }
                     }
                 }
             }
 
-            // Only start YouTubeWeb search if YTM Songs had no strict match (or its strict match failed).
-            if (ytSongsMatched == 0 || strictPool.all { it.key in triedKeys }) {
+            // Only start YouTubeWeb search when YouTube is connected and YTM Songs didn't yield an actionable strict match.
+            if (yt != null && (ytSongsMatched == 0 || strictPool.all { it.kind != SourceKind.YOUTUBE || it.key in triedKeys })) {
                 ytWebJob.start()
             }
 
@@ -536,11 +685,11 @@ internal object SpotifyAudio {
                 val score = spotifyMatchScore(track, video)
                 if (score != null) {
                     ytMatched++
-                    strictPool += ScoredCandidate(cKey, SourceKind.YOUTUBE, video, TIER_STRICT + score + BONUS_YT_VIDEO, official, "YouTube Music", "strict")
+                    strictPool += ScoredCandidate(cKey, SourceKind.YOUTUBE, video, TIER_STRICT + score + ytVideoBonus, official, "YouTube Music", "strict")
                 } else {
                     val loose = spotifyLooseDurationMatchScore(track, video)
                     if (loose != null) {
-                        loosePool += ScoredCandidate(cKey, SourceKind.YOUTUBE, video, TIER_LOOSE + loose + BONUS_YT_VIDEO, official, "YouTube Music", "loose")
+                        loosePool += ScoredCandidate(cKey, SourceKind.YOUTUBE, video, TIER_LOOSE + loose + ytVideoBonus, official, "YouTube Music", "loose")
                     } else {
                         spotifyPopularYouTubeFallbackScore(track, video)?.let { pop ->
                             popularPool += ScoredCandidate(cKey, SourceKind.YOUTUBE, video, pop, official, "YouTube", "popular")
@@ -560,14 +709,14 @@ internal object SpotifyAudio {
                 if (score != null) {
                     if (ytSongsMatched == 0) {
                         ytMatched++
-                        strictPool += ScoredCandidate(cKey, SourceKind.YOUTUBE, webTrack, TIER_STRICT + score + BONUS_YT_WEB, official, "YouTube", "strict")
+                        strictPool += ScoredCandidate(cKey, SourceKind.YOUTUBE, webTrack, TIER_STRICT + score + ytWebBonus, official, "YouTube", "strict")
                     } else {
-                        loosePool += ScoredCandidate(cKey, SourceKind.YOUTUBE, webTrack, TIER_LOOSE + score + BONUS_YT_WEB, official, "YouTube", "strict")
+                        loosePool += ScoredCandidate(cKey, SourceKind.YOUTUBE, webTrack, TIER_LOOSE + score + ytWebBonus, official, "YouTube", "strict")
                     }
                 } else {
                     val loose = spotifyLooseDurationMatchScore(track, webTrack)
                     if (loose != null) {
-                        loosePool += ScoredCandidate(cKey, SourceKind.YOUTUBE, webTrack, TIER_LOOSE + loose + BONUS_YT_WEB, official, "YouTube", "loose")
+                        loosePool += ScoredCandidate(cKey, SourceKind.YOUTUBE, webTrack, TIER_LOOSE + loose + ytWebBonus, official, "YouTube", "loose")
                     } else {
                         spotifyPopularYouTubeFallbackScore(track, webTrack)?.let { pop ->
                             popularPool += ScoredCandidate(cKey, SourceKind.YOUTUBE, webTrack, pop, official, "YouTube", "popular")
@@ -595,35 +744,10 @@ internal object SpotifyAudio {
                 }
             }
 
-            val scRaw = scJob.await()
-            val scPlayable = scRaw.filter(::soundCloudPlaysWhole)
-            val scProgressive = scPlayable.filter { sc ->
-                sc.media?.transcodings.orEmpty().any { isWholeStream(it) && it.format?.protocol == "progressive" }
-            }
-            var scMatched = 0
-            var scHlsOnlyMatched = 0
-            for (scTrack in scPlayable) {
-                val hasProgressive = scTrack in scProgressive
-                val cKey = "sc:${scTrack.id}"
-                if (cKey in failed) continue
-                val score = spotifyMatchScore(track, scTrack)
-                if (score != null) {
-                    if (!hasProgressive) {
-                        scHlsOnlyMatched++
-                        continue
-                    }
-                    scMatched++
-                    strictPool += ScoredCandidate(cKey, SourceKind.SOUNDCLOUD, scTrack, TIER_STRICT + score + BONUS_SOUNDCLOUD, sourceLabel = "SoundCloud", matchMode = "strict")
-                } else if (hasProgressive) {
-                    spotifyLooseDurationMatchScore(track, scTrack)?.let { loose ->
-                        loosePool += ScoredCandidate(cKey, SourceKind.SOUNDCLOUD, scTrack, TIER_LOOSE + loose + BONUS_SOUNDCLOUD, sourceLabel = "SoundCloud", matchMode = "loose")
-                    }
-                }
+            if (!scConsumed) {
+                collectSoundCloud(scJob.await())
             }
 
-            // Keep all three tiers in descending score order so if a strict candidate fails
-            // extraction or post-extraction Gaming metadata validation, we seamlessly fall through
-            // to loose-duration and popular YouTube candidates instead of skipping the track.
             val combined = buildList {
                 addAll(strictPool.sortedByDescending { it.score })
                 addAll(loosePool.sortedByDescending { it.score })
@@ -642,7 +766,7 @@ internal object SpotifyAudio {
                     yaRaw.firstOrNull()?.let { ya ->
                         add("ya:${spotifyMatchRejectReason(track, ya.toSoundCloudTrack().copy(title = ya.fullTitle()))}")
                     }
-                    scPlayable.firstOrNull()?.let { add("sc:${spotifyMatchRejectReason(track, it)}") }
+                    scPlayable.firstOrNull()?.let { add("sc:${spotifyMatchRejectReason(track, it, allowArtistMismatch = true)}") }
                 }
                 if (sampleRejects.isNotEmpty()) {
                     Log.i(TAG, "[$id] Sample rejects($label): ${sampleRejects.joinToString(" | ")}")
@@ -651,13 +775,13 @@ internal object SpotifyAudio {
             null to combined
         }
 
-        val (fastStream, primaryRanked) = searchCandidates(primaryQuery, "primary", tryFastYtSongs = true)
+        val (fastStream, primaryRanked) = searchCandidates(primaryQuery, "primary", tryFastPrimary = true)
         if (fastStream != null) return fastStream
         var ranked = primaryRanked
         val hasPrimaryStrictOrLoose = ranked.any { it.matchMode != "popular" && it.key !in triedKeys }
         if (!hasPrimaryStrictOrLoose) {
             spotifyAudioFallbackQuery(track)?.let { fallbackQuery ->
-                val (fallbackFast, fallbackRanked) = searchCandidates(fallbackQuery, "fallback", tryFastYtSongs = true)
+                val (fallbackFast, fallbackRanked) = searchCandidates(fallbackQuery, "fallback", tryFastPrimary = true)
                 if (fallbackFast != null) return fallbackFast
                 if (fallbackRanked.isNotEmpty()) {
                     val fallbackStrictOrLoose = fallbackRanked.filter { it.matchMode != "popular" }
@@ -667,9 +791,8 @@ internal object SpotifyAudio {
             }
         }
 
-        // Cap extraction attempts per source so YouTube leads when available, while Yandex/SoundCloud remain reachable.
+        // Cap extraction attempts per source so prioritized source leads while connected fallbacks stay reachable.
         var yaAttempts = 0
-        var scAttempts = 0
         for (cand in ranked) {
             if (cand.key in triedKeys) continue
             when (cand.kind) {
@@ -677,7 +800,7 @@ internal object SpotifyAudio {
                     resolveYouTubeCandidate(cand)?.let { return it }
                 }
                 SourceKind.YANDEX -> {
-                    if (yaAttempts >= 3) continue
+                    if (!yaConnected || yaAttempts >= 3) continue
                     yaAttempts++
                     val raw = cand.track.urn?.removePrefix("yandex:track:")?.substringBefore(':') ?: continue
                     val url = tryResolve(cand.key) { YandexMusicApi.resolveTrackStream(raw, yandexToken) }
@@ -714,45 +837,7 @@ internal object SpotifyAudio {
                     )
                 }
                 SourceKind.SOUNDCLOUD -> {
-                    if (scAttempts >= 3) continue
-                    scAttempts++
-                    val resolver = scResolver ?: continue
-                    // Playback uses DefaultMediaSourceFactory with a non-HLS spotify:// MediaItem: progressive only avoids M3U8 parser failures.
-                    val url = tryResolve(cand.key) {
-                        resolver.resolve(cand.track, settings.clientId.value, progressiveFirst = true, progressiveOnly = true)
-                    }
-                    if (url == null) {
-                        Log.w(TAG, "[$id] ${cand.key} returned null progressive stream (score=${cand.score})")
-                        continue
-                    }
-                    val cacheKey = "${StreamCache.KEY_PREFIX}spotify:$id:sc_${cand.track.id}"
-                    Log.i(
-                        TAG,
-                        "[$id] Resolved via ${cand.key} (score=${cand.score}) in ${android.os.SystemClock.elapsedRealtime() - startedAt} ms"
-                    )
-                    rememberVariant(
-                        context,
-                        id,
-                        ResolvedVariant(
-                            source = "SoundCloud",
-                            title = cand.track.title.orEmpty(),
-                            artist = cand.track.artistNames.orEmpty(),
-                            durationMs = cand.track.duration,
-                            views = cand.track.playbackCount,
-                            matchMode = cand.matchMode,
-                            candidateKey = cand.key
-                        )
-                    )
-                    return remember(
-                        key,
-                        Stream(
-                            url = url,
-                            extension = "mp3",
-                            cacheKey = cacheKey,
-                            candidateKey = cand.key,
-                            expectedDurationMs = cand.track.duration
-                        )
-                    )
+                    resolveSoundCloudCandidate(cand)?.let { return it }
                 }
             }
         }

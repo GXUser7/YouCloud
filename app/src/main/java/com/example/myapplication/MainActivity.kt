@@ -35,6 +35,9 @@ class MainActivity : ComponentActivity() {
     // A shortcut's, the quick settings tile's or the widget's action, until the screen has taken it.
     private val incomingAction = MutableStateFlow<String?>(null)
 
+    private data class ChatNavRequest(val peerId: String?)
+    private val incomingChat = MutableStateFlow<ChatNavRequest?>(null)
+
     override fun attachBaseContext(newBase: android.content.Context) {
         val config = android.content.res.Configuration(newBase.resources.configuration)
         if (config.fontWeightAdjustment != 0) {
@@ -109,6 +112,12 @@ class MainActivity : ComponentActivity() {
                         ACTION_SEARCH -> viewModel.openSearch()
                     }
                 }
+                val chatReq by incomingChat.collectAsState()
+                LaunchedEffect(chatReq) {
+                    val req = chatReq ?: return@LaunchedEffect
+                    incomingChat.value = null
+                    viewModel.openChatFromNotification(req.peerId)
+                }
 
                 // What a Surface in the background colour gave, without its fill: the backdrop
                 // covers it on every screen, and it too was painted on every frame for nothing.
@@ -132,6 +141,10 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun takeAction(intent: Intent?) {
+        if (intent?.action == ACTION_OPEN_CHAT) {
+            incomingChat.value = ChatNavRequest(intent.getStringExtra(EXTRA_CHAT_PEER_ID))
+            return
+        }
         intent?.action?.takeIf { it in ACTIONS }?.let { incomingAction.value = it }
     }
 
@@ -140,6 +153,8 @@ class MainActivity : ComponentActivity() {
         const val ACTION_WAVE = "com.example.myapplication.action.WAVE"
         const val ACTION_MY_MUSIC = "com.example.myapplication.action.MY_MUSIC"
         const val ACTION_SEARCH = "com.example.myapplication.action.SEARCH"
+        const val ACTION_OPEN_CHAT = "com.example.myapplication.action.OPEN_CHAT"
+        const val EXTRA_CHAT_PEER_ID = "chat_peer_id"
         private val ACTIONS = setOf(ACTION_WAVE, ACTION_MY_MUSIC, ACTION_SEARCH)
     }
 

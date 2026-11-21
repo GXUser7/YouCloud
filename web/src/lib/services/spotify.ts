@@ -26,8 +26,19 @@ import type { ArtistPage, LibraryOptions, ResultPage, SearchResult, SearchSectio
 import { at, getJson, getText, HttpError, postJson } from '../net'
 import { toast } from '../toast.svelte'
 import * as soundcloud from './soundcloud'
+import {
+  cleanAudioTitle,
+  matchCandidateScore,
+  popularYouTubeFallbackScore,
+  resolveSpotifyPriorityBonuses,
+  TIER_LOOSE,
+  TIER_STRICT,
+  type SpotifyAudioPriority,
+} from './spotifyMatch'
 import * as yandex from './yandex'
 import * as youtube from './youtube'
+
+export type { SpotifyAudioPriority }
 
 const fallbackCatalog: CatalogContext = defaultCatalog ?? {
   tracks: catalogTracks,
@@ -1116,322 +1127,31 @@ function formatVariantLabel(source: string, title: string, artist: string, durSe
   return `${source}: ${title}${artPart}${suffix ? ` (${suffix})` : ''}`
 }
 
-const BRACKET_NOISE =
-  /\s*[\[(](?:feat\.?|ft\.?|featuring|with|prod\.?|official\s*(?:music\s*)?(?:video|audio|lyric\s*video|visualizer|visualiser|mv|hd|4k)|music\s*video|lyric(?:s)?(?:\s*video)?|color\s*coded(?:\s*lyrics?)?|kan\s*[/|]\s*rom\s*[/|]\s*eng|rom\s*[/|]\s*eng|eng\s*sub(?:s)?|audio|visualizer|visualiser|hd|hq|4k|explicit|clean(?:\s+edit|\s+version)?|video\s+edit|remaster(?:ed)?(?:\s+\d{4})?|single\s+version|album\s+version|radio\s+edit|original\s+mix|full(?:\s+ver(?:sion)?)?|ost|op\d*|ed\d*)[^)\]]*[)\]]/gi
-const DASH_NOISE =
-  /\s+[-–—]\s+(?:\d{4}\s+)?(?:remaster(?:ed)?(?:\s+\d{4})?|single\s+version|album\s+version|radio\s+edit|original\s+version|explicit|clean(?:\s+version)?|from\s+["«].*)$/gi
-const TRAILING_FEAT = /\s+(?:feat\.?|ft\.?|featuring)\s+.+$/i
-const TRAILING_LYRICS = /\s+lyrics?$/i
-const SAFE_EDITION_NOISE = /\b(?:clean|video|radio)\s+edit\b|[\[(]\s*hd\s*[)\]]/gi
+const PRIORITY_KEY = 'yc.spotifyAudioPriority'
 
-const EDITION_WORDS =
-  /\b(?:live|remix|cover|karaoke|instrumental|acoustic|arrangement|soundfont|jammable|ai\s+cover|ai\s+version|version\s+by|sung\s+by|played\s+by|performed\s+by|in\s+the\s+style\s+of|sped[\s-]+up|slowed|nightcore|8d|mashup|demo|edit|reverb|bootleg|acapella|a\s+cappella|backing\s+track|minus(?:\s+one)?|off\s+vocal|no\s+vocal(?:s)?|without\s+vocal(?:s)?|vocal(?:s)?\s+only|guitar|piano|bass|drum(?:s)?|violin|cello|flute|saxophone|orchestra(?:l)?|symphonic|trio|quartet|duo|music\s+box|lullaby|city\s+pop|8[\s-]*bit|chiptune|lo[\s-]*fi|lofi|synthesia|tutorial|lesson|tabs?|chords?|midi|ringtone|pitched|pitch[\s-]+shifted|daycore|doomer|but|dance\s+practice|choreography|behind\s+the\s+scenes|making\s+of|teaser|trailer|reaction|analysis|review|breakdown|interview|commentary|snippet|preview|soviet\s+ver(?:sion)?|минус(?:овка)?|кавер|караоке|инструментал|под\s+гитару|на\s+пианино|на\s+гитаре|без\s+слов|без\s+вокала)\b|[+-]\d+\s*key\b|原曲歌手|カラオケ|弾いてみた|歌ってみた|叩いてみた|踊ってみた|吹いてみた|切り抜き|リアクション|ピアノ|ギター/gi
-const SUSPICIOUS_CHANNEL_WORDS =
-  /\b(?:backing\s+track(?:s)?|minus(?:\s+tracks?|\s+one)?|karaoke|instrumental(?:s)?|covers?|piano|guitar|violin|drum(?:s)?|bass|trio|quartet|orchestra|music\s+box|lullaby|acapella|a\s+cappella|jammable|soundfont|synthesia|tabs?|tutorial(?:s)?|nightcore|slowed|sped[\s-]+up|8d\s+audio|gameplay|liveplay|beatmaps?|typing|keyboard|asmr|beat\s+saber|clone\s+hero|geometry\s+dash|минус(?:овка|овки)?|караоке|кавер(?:ы)?|прохождение|геймплей)\b|(?<![\p{L}\p{N}])osu(?:![\p{L}]*)?(?![\p{L}\p{N}])|歌っちゃ王/giu
-const GAMEPLAY_PATTERNS =
-  /(?:^\s*\d{6}\s+|(?<![\p{L}\p{N}])osu(?:![\p{L}]*)?(?![\p{L}\p{N}])|\b(?:gameplay|playthrough|liveplay|handcam|beatmap|full\s+combo|all\s+perfect|beat\s+saber|geometry\s+dash|clone\s+hero|guitar\s+hero|rock\s+band|stepmania|etterna|quaver|muse\s+dash|project\s+sekai|proseka|arcaea|cytus|phigros|friday\s+night\s+funkin|fnf|maimai|chunithm|sound\s+voltex|sdvx|typing|keyboard|keycaps|sound\s+test|asmr|speedrun|прохождение|геймплей)\b|\b(?:hd|hr|dt|nc|ez|fl|ht){2,}\b|\+\s*(?:hd|hr|dt|nc|ez|fl|ht)+\b|\b\d{2,4}\s*pp\b|\b\d{2,3}\.\d{1,2}\s*%|[\[(]\s*(?:fc|ss|choke|nomod|nm|dt|hr)\s*[)\]])/giu
-
-const TITLE_SPLIT = /\s*[-–—|]\s+|\s+[-–—|:]\s*|:\s+/
-const BY_SPLIT = /\s+by\s+/i
-const ARTIST_SEPARATORS = /\s*(?:,|&|\+|\/|\bfeat\.?\b|\bft\.?\b|\bfeaturing\b|\bwith\b|\band\b|\bx\b|\bи\b)\s*/i
-
-function normalized(text: string): string {
-  return text
-    .toLowerCase()
-    .normalize('NFKD')
-    .replace(/\p{M}+/gu, '')
-    .replace(/['’`ʼ]/g, '')
-    .replace(/(?<=[\p{L}\p{N}])!(?=[\p{L}\p{N}])/gu, 'i')
-    .replace(/(?<=[\p{L}\p{N}])\$(?=[\p{L}\p{N}])/gu, 's')
-    .replace(/&/g, ' and ')
-    .replace(/[^\p{L}\p{N}]+/gu, ' ')
-    .trim()
-}
-
-function cleanAudioTitle(raw: string): string {
-  let result = raw.trim()
-  for (let i = 0; i < 3; i++) {
-    const next = result
-      .replace(BRACKET_NOISE, '')
-      .replace(DASH_NOISE, '')
-      .replace(TRAILING_FEAT, '')
-      .replace(TRAILING_LYRICS, '')
-      .trim()
-    if (next === result) break
-    result = next
-  }
-  return result || raw.trim()
-}
-
-function durationToleranceSec(targetDurSec: number): number {
-  return Math.max(12, Math.min(25, Math.floor(targetDurSec / 8)))
-}
-
-function officialMvToleranceSec(targetDurSec: number): number {
-  return Math.max(durationToleranceSec(targetDurSec), Math.min(60, Math.floor(targetDurSec / 3)))
-}
-
-function editionTags(title: string): Set<string> {
-  const cleaned = title.replace(SAFE_EDITION_NOISE, ' ')
-  const out = new Set<string>()
-  for (const m of cleaned.matchAll(EDITION_WORDS)) {
-    out.add(m[0].toLowerCase().replace(/[\s-]+/g, ' ').trim())
-  }
-  for (const m of cleaned.matchAll(GAMEPLAY_PATTERNS)) {
-    out.add('game:' + m[0].toLowerCase().replace(/[\s-]+/g, ' ').trim())
-  }
-  return out
-}
-
-function channelVariantTags(rawArtist: string): Set<string> {
-  const out = new Set<string>()
-  for (const m of rawArtist.matchAll(SUSPICIOUS_CHANNEL_WORDS)) {
-    out.add(m[0].toLowerCase().replace(/[\s-]+/g, ' ').trim())
-  }
-  return out
-}
-
-function sameSet(a: Set<string>, b: Set<string>): boolean {
-  if (a.size !== b.size) return false
-  for (const x of a) if (!b.has(x)) return false
-  return true
-}
-
-function addArtistVariants(out: Set<string>, raw: string) {
-  const cleaned = normalized(raw)
-    .replace(/\s*(?:-\s*)?topic$/, '')
-    .replace(/\s*vevo$/, '')
-    .replace(/\s*official$/, '')
-    .trim()
-  if (!cleaned) return
-  out.add(cleaned)
-  const words = cleaned.split(' ').filter(Boolean)
-  const latin = words.filter((w) => /[a-z]/.test(w) && ![...w].some((c) => c.charCodeAt(0) > 127))
-  const nonLatin = words.filter((w) => [...w].some((c) => c.charCodeAt(0) > 127))
-  if (latin.length && nonLatin.length) {
-    const l = latin.join(' ')
-    const nl = nonLatin.join(' ')
-    if (l.length >= 2) out.add(l)
-    if (nl.length >= 2) out.add(nl)
+/** Returns user preference for primary Spotify audio source resolution. */
+export function getSpotifyAudioPriority(): SpotifyAudioPriority {
+  try {
+    const raw = localStorage.getItem(PRIORITY_KEY)
+    if (!raw) return 'yt'
+    const parsed = raw.startsWith('"') ? (JSON.parse(raw) as unknown) : raw
+    return parsed === 'sc' ? 'sc' : 'yt'
+  } catch {
+    return 'yt'
   }
 }
-
-function splitArtistCredits(names: string[]): string[] {
-  const out = new Set<string>()
-  for (const raw of names) {
-    if (!raw?.trim()) continue
-    addArtistVariants(out, raw)
-    for (const part of raw.split(ARTIST_SEPARATORS)) {
-      addArtistVariants(out, part)
-    }
-  }
-  return [...out]
-}
-
-function artistPartVariants(part: string): string[] {
-  const out = new Set<string>()
-  addArtistVariants(out, part)
-  for (const sub of part.split(ARTIST_SEPARATORS)) {
-    addArtistVariants(out, sub)
-  }
-  return [...out].filter((x) => x.length >= 2)
-}
-
-function artistMatchBonus(targetArtists: string[], candArtists: string[], leadTarget: string): number | null {
-  if (!targetArtists.length || !candArtists.length) return null
-  if (candArtists.includes(leadTarget)) return 2_000
-  if (targetArtists.some((a) => candArtists.includes(a))) return 1_400
-  return null
-}
-
-function titleSimilarityScore(targetTitle: string, candidateTitle: string): number | null {
-  if (!targetTitle || !candidateTitle) return null
-  if (targetTitle === candidateTitle) return 10_000
-  if (targetTitle.replace(/\s+/g, '') === candidateTitle.replace(/\s+/g, '')) return 9_500
-  const tWords = targetTitle.split(' ').filter(Boolean)
-  const cWords = candidateTitle.split(' ').filter(Boolean)
-  if (!tWords.length || !cWords.length) return null
-  if (tWords.length === 1) {
-    return cWords.length === 1 && tWords[0] === cWords[0] ? 10_000 : null
-  }
-  const cSet = new Set(cWords)
-  const tSet = new Set(tWords)
-  let intersection = 0
-  for (const w of tSet) if (cSet.has(w)) intersection++
-  const union = new Set([...tSet, ...cSet]).size
-  const jaccard = intersection / union
-  const extraWords = Math.abs(cWords.length - tWords.length)
-  const targetContained = ` ${candidateTitle} `.includes(` ${targetTitle} `) && extraWords <= 3
-  const candContained = ` ${targetTitle} `.includes(` ${candidateTitle} `) && extraWords <= 2
-  if (!targetContained && !candContained && jaccard < 0.72) return null
-  const bonus = targetContained || candContained ? 1_000 : 0
-  return 6_000 + Math.round(jaccard * 2_500) + bonus
-}
-
-function matchCandidateScore(
-  targetTitle: string,
-  targetArtistsRaw: string[],
-  targetDurSec: number,
-  candTitle: string,
-  candArtistRaw: string,
-  candDurSec: number | undefined,
-  candViews: number | undefined,
-  looseDuration: boolean,
-): number | null {
-  if (!candDurSec || candDurSec <= 0 || targetDurSec <= 0) return null
-
-  const targetEditions = editionTags(targetTitle)
-  if (!sameSet(targetEditions, editionTags(candTitle))) return null
-
-  const candChannelVariants = channelVariantTags(candArtistRaw)
-  if (candChannelVariants.size) {
-    const allowed = new Set([...channelVariantTags(targetArtistsRaw.join(' ')), ...targetEditions])
-    for (const v of candChannelVariants) if (!allowed.has(v)) return null
-  }
-
-  const targetArtists = splitArtistCredits(targetArtistsRaw)
-  const leadTarget = targetArtists[0]
-  if (!leadTarget) return null
-  const cleanTarget = normalized(cleanAudioTitle(targetTitle))
-  if (!cleanTarget) return null
-
-  const candCredits = splitArtistCredits([candArtistRaw])
-  const channelArtistBonus = artistMatchBonus(targetArtists, candCredits, leadTarget)
-
-  const diffSec = Math.abs(targetDurSec - candDurSec)
-  const strictTol = durationToleranceSec(targetDurSec)
-  const isOfficialMvOverrun =
-    !looseDuration &&
-    channelArtistBonus !== null &&
-    candDurSec > targetDurSec &&
-    diffSec > strictTol &&
-    diffSec <= officialMvToleranceSec(targetDurSec)
-
-  if (looseDuration) {
-    if (candDurSec < 50) return null
-    const ratio = candDurSec / targetDurSec
-    if (ratio < 0.55 || ratio > 1.45) return null
-  } else if (!isOfficialMvOverrun && diffSec > strictTol) {
-    return null
-  }
-
-  let bestTitleScore = titleSimilarityScore(cleanTarget, normalized(cleanAudioTitle(candTitle)))
-  let bestArtistBonus = channelArtistBonus
-
-  const considerSplit = (artistPart: string, titlePart: string) => {
-    const partArtists = artistPartVariants(artistPart)
-    const partArtistBonus = artistMatchBonus(targetArtists, partArtists, leadTarget)
-    const partTitleScore = titleSimilarityScore(cleanTarget, normalized(cleanAudioTitle(titlePart)))
-    if (partTitleScore !== null && (partArtistBonus !== null || bestArtistBonus !== null)) {
-      const combined = Math.max(partArtistBonus ?? 0, bestArtistBonus ?? 0)
-      if (bestTitleScore === null || bestArtistBonus === null || partTitleScore > bestTitleScore) {
-        bestTitleScore = partTitleScore
-        bestArtistBonus = combined
-      }
-    }
-  }
-
-  const allParts = candTitle.split(TITLE_SPLIT).map((p) => p.trim()).filter(Boolean)
-  if (allParts.length >= 2) {
-    considerSplit(allParts[0], allParts.slice(1).join(' - '))
-    considerSplit(allParts[allParts.length - 1], allParts.slice(0, -1).join(' - '))
-    for (let i = 0; i < allParts.length - 1; i++) {
-      considerSplit(allParts[i], allParts[i + 1])
-      considerSplit(allParts[i + 1], allParts[i])
-    }
-  }
-  const byIdx = candTitle.search(BY_SPLIT)
-  if (byIdx > 0) {
-    const byParts = candTitle.split(BY_SPLIT)
-    if (byParts.length >= 2) considerSplit(byParts.slice(1).join(' '), byParts[0])
-  }
-
-  if (bestTitleScore === null || bestArtistBonus === null) return null
-  if ((looseDuration || isOfficialMvOverrun) && (bestTitleScore < 9_500 || bestArtistBonus < 2_000)) return null
-
-  const officialChannelBonus = channelArtistBonus !== null ? 2_500 : 0
-  let viewsAdjustment = 0
-  if (candViews !== undefined) {
-    if (channelArtistBonus !== null) {
-      if (candViews >= 1_000) viewsAdjustment = Math.min(1_500, Math.round((Math.log10(candViews) - 2) * 250))
-    } else if (candViews < 500) {
-      viewsAdjustment = -3_000
-    } else if (candViews < 2_000) {
-      viewsAdjustment = -1_000
-    } else if (candViews >= 10_000) {
-      viewsAdjustment = Math.min(1_200, Math.round((Math.log10(candViews) - 3) * 300))
-    }
-  }
-  const diffMs = diffSec * 1000
-  const durationPenalty = isOfficialMvOverrun ? Math.min(2_500, Math.floor(diffMs / 10)) : Math.floor(diffMs / 10)
-  return Math.max(1, bestTitleScore + bestArtistBonus + officialChannelBonus + viewsAdjustment - durationPenalty)
-}
-
-const POPULAR_BLOCKED_EDITIONS = new Set([
-  'karaoke', 'backing track', 'minus', 'minus one', 'off vocal', 'no vocal', 'no vocals',
-  'without vocal', 'without vocals', 'tutorial', 'lesson', 'tab', 'tabs', 'chord', 'chords',
-  'synthesia', 'midi', 'ringtone', 'reaction', 'analysis', 'review', 'breakdown', 'interview',
-  'commentary', 'teaser', 'trailer', 'snippet', 'preview', 'минус', 'минусовка', 'караоке',
-  'под гитару', 'на пианино', 'на гитаре', 'без слов', 'без вокала', 'прохождение', 'геймплей',
-  'カラオケ', '原曲歌手', 'リアクション', '切り抜き',
-])
-
-function popularYouTubeFallbackScore(
-  targetTitle: string,
-  targetArtistsRaw: string[],
-  targetDurSec: number,
-  candTitle: string,
-  candArtistRaw: string,
-  candDurSec: number | undefined,
-  candViews: number | undefined,
-): number | null {
-  const minDur = targetDurSec >= 15 && targetDurSec <= 45 ? Math.max(12, Math.floor(targetDurSec / 2)) : 30
-  const maxDur = targetDurSec > 450 ? targetDurSec * 2 : 900
-  if (!candTitle.trim() || (candDurSec && (candDurSec < minDur || candDurSec > maxDur))) return null
-
-  const targetEditions = editionTags(targetTitle)
-  for (const tag of editionTags(candTitle)) {
-    if (!targetEditions.has(tag) && (tag.startsWith('game:') || POPULAR_BLOCKED_EDITIONS.has(tag))) return null
-  }
-  const allowedChannel = new Set([...channelVariantTags(targetArtistsRaw.join(' ')), ...targetEditions])
-  let channelPenalty = 0
-  for (const v of channelVariantTags(candArtistRaw)) {
-    if (!allowedChannel.has(v)) {
-      channelPenalty = 4_000
-      break
-    }
-  }
-
-  const targetTitleWords = normalized(cleanAudioTitle(targetTitle)).split(' ').filter((w) => w.length >= 2)
-  const targetArtists = splitArtistCredits(targetArtistsRaw)
-  const targetArtistWords = targetArtists.flatMap((a) => a.split(' ')).filter((w) => w.length >= 2)
-  const candCredits = splitArtistCredits([candArtistRaw])
-  const candWords = new Set(
-    [...normalized(candTitle).split(' '), ...candCredits.flatMap((a) => a.split(' '))].filter((w) => w.length >= 2),
-  )
-
-  const titleHits = targetTitleWords.filter((w) => candWords.has(w)).length
-  const artistHits = targetArtistWords.filter((w) => candWords.has(w)).length
-  const leadTarget = targetArtists[0]
-  const officialBonus = leadTarget && artistMatchBonus(targetArtists, candCredits, leadTarget) !== null ? 5_000 : 0
-  const hasOverlap = titleHits > 0 || artistHits > 0 || officialBonus > 0
-  const tierBase = hasOverlap ? 15_000 : 1_000
-  const views = Math.max(0, candViews ?? 0)
-  const viewsScore = views > 0 ? Math.round(Math.log10(views + 1) * 2_000) : 0
-  const durPenalty =
-    targetDurSec > 0 && candDurSec ? Math.min(6_000, Math.floor((Math.abs(targetDurSec - candDurSec) * 1000) / 50)) : 0
-  return Math.max(1, tierBase + viewsScore + officialBonus + titleHits * 800 + artistHits * 600 - durPenalty - channelPenalty)
-}
-
-const TIER_STRICT = 150_000
-const TIER_LOOSE = 80_000
-const BONUS_YT_SONG = 26_000
-const BONUS_YT_VIDEO = 25_000
-const BONUS_YT_WEB = 24_000
-const BONUS_YANDEX = 10_000
-const BONUS_SOUNDCLOUD = 0
 
 async function buildMatchState(track: Track, full = false): Promise<MatchState> {
+  const ytConnected = accounts.yt || (await youtube.signedIn().catch(() => false))
+  const scConnected = !!accounts.sc
+  const yaConnected = !!accounts.ya
+  if (!ytConnected && !scConnected && !yaConnected) {
+    throw new Error(tr('Подключи YouTube Music, SoundCloud или Яндекс Музыку в Настройках, чтобы слушать треки Spotify'))
+  }
+
+  const priority = getSpotifyAudioPriority()
+  const bonuses = resolveSpotifyPriorityBonuses(priority, scConnected)
+
   const artist = track.artists[0]?.name && track.artists[0].name !== 'Spotify' ? track.artists[0].name : ''
   const cleanTitle = cleanAudioTitle(track.title)
   const query = artist ? `${artist} ${cleanTitle}` : cleanTitle
@@ -1441,133 +1161,195 @@ async function buildMatchState(track: Track, full = false): Promise<MatchState> 
   const loose: Candidate[] = []
   const popular: Candidate[] = []
 
-  // Launch fast searches in parallel, but check YTM Songs as soon as it returns (~200 ms) so
-  // playback never blocks on slow SoundCloud / YouTube Web / YTM Videos when YTM Songs has a strict hit.
-  const ytSongsPromise = youtube.searchSongs(query).catch(() => [] as youtube.YtSong[])
-  const ytVideosPromise = youtube.searchVideos(query).catch(() => [] as youtube.YtSong[])
-  const scPromise = soundcloud.searchTracks(query, 15).catch(() => [] as soundcloud.ScTrack[])
-  const yaPromise = accounts.ya ? yandex.search(query).catch(() => null) : Promise.resolve(null)
+  const ytSongsPromise = ytConnected ? youtube.searchSongs(query).catch(() => [] as youtube.YtSong[]) : Promise.resolve([] as youtube.YtSong[])
+  const ytVideosPromise = ytConnected ? youtube.searchVideos(query).catch(() => [] as youtube.YtSong[]) : Promise.resolve([] as youtube.YtSong[])
+  const scPromise = scConnected ? soundcloud.searchTracks(query, 15).catch(() => [] as soundcloud.ScTrack[]) : Promise.resolve([] as soundcloud.ScTrack[])
+  const yaPromise = yaConnected ? yandex.search(query).catch(() => null) : Promise.resolve(null)
 
-  const ytSongs = await ytSongsPromise
-  let ytSongsMatched = 0
-  for (const s of ytSongs) {
-    const score = matchCandidateScore(track.title, targetArtists, track.duration, s.title, s.artists, s.duration, s.views, false)
-    if (score !== null) {
-      ytSongsMatched++
-      strict.push({
-        key: `yt:${s.videoId}`,
-        kind: 'yt',
-        videoId: s.videoId,
-        score: TIER_STRICT + score + BONUS_YT_SONG,
-        label: formatVariantLabel('YouTube Music', s.title, s.artists, s.duration, 'strict'),
-      })
-    } else {
-      const l = matchCandidateScore(track.title, targetArtists, track.duration, s.title, s.artists, s.duration, s.views, true)
-      if (l !== null) {
-        loose.push({
+  const collectYtSongs = (ytSongs: youtube.YtSong[]): { matched: number; songIds: Set<string> } => {
+    let matched = 0
+    const songIds = new Set<string>()
+    for (const s of ytSongs) {
+      songIds.add(s.videoId)
+      const score = matchCandidateScore(track.title, targetArtists, track.duration, s.title, s.artists, s.duration, s.views, false)
+      if (score !== null) {
+        matched++
+        strict.push({
           key: `yt:${s.videoId}`,
           kind: 'yt',
           videoId: s.videoId,
-          score: TIER_LOOSE + l + BONUS_YT_SONG,
-          label: formatVariantLabel('YouTube Music', s.title, s.artists, s.duration, 'loose'),
+          score: TIER_STRICT + score + bonuses.ytSong,
+          label: formatVariantLabel('YouTube Music', s.title, s.artists, s.duration, 'strict'),
         })
       } else {
-        const p = popularYouTubeFallbackScore(track.title, targetArtists, track.duration, s.title, s.artists, s.duration, s.views)
-        if (p !== null) {
-          popular.push({
+        const l = matchCandidateScore(track.title, targetArtists, track.duration, s.title, s.artists, s.duration, s.views, true)
+        if (l !== null) {
+          loose.push({
             key: `yt:${s.videoId}`,
             kind: 'yt',
             videoId: s.videoId,
-            score: p + 1_000,
-            label: formatVariantLabel('YouTube Music', s.title, s.artists, s.duration, 'popular'),
+            score: TIER_LOOSE + l + bonuses.ytSong,
+            label: formatVariantLabel('YouTube Music', s.title, s.artists, s.duration, 'loose'),
+          })
+        } else {
+          const p = popularYouTubeFallbackScore(track.title, targetArtists, track.duration, s.title, s.artists, s.duration, s.views)
+          if (p !== null) {
+            popular.push({
+              key: `yt:${s.videoId}`,
+              kind: 'yt',
+              videoId: s.videoId,
+              score: p + 1_000,
+              label: formatVariantLabel('YouTube Music', s.title, s.artists, s.duration, 'popular'),
+            })
+          }
+        }
+      }
+    }
+    return { matched, songIds }
+  }
+
+  const collectSoundCloud = (scTracks: soundcloud.ScTrack[]) => {
+    for (const s of scTracks) {
+      const streams = s.media?.transcodings ?? []
+      if (s.streamable === false || s.policy === 'BLOCK' || s.policy === 'SNIP') continue
+      if (streams.length && !streams.some((x) => !x.format.protocol.includes('encrypted') && !x.snipped)) continue
+      const candArtist = s.publisher_metadata?.artist?.trim() || s.user?.username || ''
+      const candDur = Math.round((s.full_duration ?? s.duration ?? 0) / 1000)
+      const score = matchCandidateScore(track.title, targetArtists, track.duration, s.title ?? '', candArtist, candDur, undefined, false, true)
+      if (score !== null) {
+        strict.push({
+          key: `sc:${s.id}`,
+          kind: 'sc',
+          track: s,
+          score: TIER_STRICT + score + bonuses.sc,
+          label: formatVariantLabel('SoundCloud', s.title ?? '', candArtist, candDur, 'strict'),
+        })
+      } else {
+        const l = matchCandidateScore(track.title, targetArtists, track.duration, s.title ?? '', candArtist, candDur, undefined, true, true)
+        if (l !== null) {
+          loose.push({
+            key: `sc:${s.id}`,
+            kind: 'sc',
+            track: s,
+            score: TIER_LOOSE + l + bonuses.sc,
+            label: formatVariantLabel('SoundCloud', s.title ?? '', candArtist, candDur, 'loose'),
           })
         }
       }
     }
   }
 
-  if (!full && strict.length > 0) {
-    strict.sort((a, b) => b.score - a.score)
-    loose.sort((a, b) => b.score - a.score)
-    popular.sort((a, b) => b.score - a.score)
-    return { candidates: [...strict, ...loose, ...popular], index: 0, failed: new Set(), partial: true }
+  let scCollected = false
+  let ytSongsCollected = false
+  let ytSongsMatched = 0
+  let songIds = new Set<string>()
+
+  if (!full) {
+    if (bonuses.preferSoundCloud) {
+      collectSoundCloud(await scPromise)
+      scCollected = true
+      if (strict.length > 0) {
+        strict.sort((a, b) => b.score - a.score)
+        loose.sort((a, b) => b.score - a.score)
+        return { candidates: [...strict, ...loose], index: 0, failed: new Set(), partial: true }
+      }
+    } else if (ytConnected) {
+      const res = collectYtSongs(await ytSongsPromise)
+      ytSongsMatched = res.matched
+      songIds = res.songIds
+      ytSongsCollected = true
+      if (strict.length > 0) {
+        strict.sort((a, b) => b.score - a.score)
+        loose.sort((a, b) => b.score - a.score)
+        popular.sort((a, b) => b.score - a.score)
+        return { candidates: [...strict, ...loose, ...popular], index: 0, failed: new Set(), partial: true }
+      }
+    }
   }
 
-  const songIds = new Set(ytSongs.map((s) => s.videoId))
+  if (ytConnected && !ytSongsCollected) {
+    const res = collectYtSongs(await ytSongsPromise)
+    ytSongsMatched = res.matched
+    songIds = res.songIds
+  }
+
   const [rawVideos, webVideos, scRes, yaRes] = await Promise.all([
     ytVideosPromise,
-    ytSongsMatched === 0 || full ? youtube.searchWebVideos(query).catch(() => [] as youtube.YtSong[]) : Promise.resolve([] as youtube.YtSong[]),
-    scPromise,
+    ytConnected && (ytSongsMatched === 0 || full) ? youtube.searchWebVideos(query).catch(() => [] as youtube.YtSong[]) : Promise.resolve([] as youtube.YtSong[]),
+    scCollected ? Promise.resolve([] as soundcloud.ScTrack[]) : scPromise,
     yaPromise,
   ])
-  const ytVideos = rawVideos.filter((v) => !songIds.has(v.videoId) && (v.duration ?? 0) > 0)
-  for (const v of ytVideos) {
-    const score = matchCandidateScore(track.title, targetArtists, track.duration, v.title, v.artists, v.duration, v.views, false)
-    if (score !== null) {
-      strict.push({
-        key: `yt:${v.videoId}`,
-        kind: 'yt',
-        videoId: v.videoId,
-        score: TIER_STRICT + score + BONUS_YT_VIDEO,
-        label: formatVariantLabel('YouTube Music', v.title, v.artists, v.duration, 'strict'),
-      })
-    } else {
-      const l = matchCandidateScore(track.title, targetArtists, track.duration, v.title, v.artists, v.duration, v.views, true)
-      if (l !== null) {
-        loose.push({
+
+  if (ytConnected) {
+    const ytVideos = rawVideos.filter((v) => !songIds.has(v.videoId) && (v.duration ?? 0) > 0)
+    for (const v of ytVideos) {
+      const score = matchCandidateScore(track.title, targetArtists, track.duration, v.title, v.artists, v.duration, v.views, false)
+      if (score !== null) {
+        strict.push({
           key: `yt:${v.videoId}`,
           kind: 'yt',
           videoId: v.videoId,
-          score: TIER_LOOSE + l + BONUS_YT_VIDEO,
-          label: formatVariantLabel('YouTube Music', v.title, v.artists, v.duration, 'loose'),
+          score: TIER_STRICT + score + bonuses.ytVideo,
+          label: formatVariantLabel('YouTube Music', v.title, v.artists, v.duration, 'strict'),
         })
       } else {
-        const p = popularYouTubeFallbackScore(track.title, targetArtists, track.duration, v.title, v.artists, v.duration, v.views)
-        if (p !== null) {
-          popular.push({
+        const l = matchCandidateScore(track.title, targetArtists, track.duration, v.title, v.artists, v.duration, v.views, true)
+        if (l !== null) {
+          loose.push({
             key: `yt:${v.videoId}`,
             kind: 'yt',
             videoId: v.videoId,
-            score: p,
-            label: formatVariantLabel('YouTube', v.title, v.artists, v.duration, 'popular'),
+            score: TIER_LOOSE + l + bonuses.ytVideo,
+            label: formatVariantLabel('YouTube Music', v.title, v.artists, v.duration, 'loose'),
           })
+        } else {
+          const p = popularYouTubeFallbackScore(track.title, targetArtists, track.duration, v.title, v.artists, v.duration, v.views)
+          if (p !== null) {
+            popular.push({
+              key: `yt:${v.videoId}`,
+              kind: 'yt',
+              videoId: v.videoId,
+              score: p,
+              label: formatVariantLabel('YouTube', v.title, v.artists, v.duration, 'popular'),
+            })
+          }
         }
       }
     }
-  }
 
-  for (const w of webVideos) {
-    const score = matchCandidateScore(track.title, targetArtists, track.duration, w.title, w.artists, w.duration, w.views, false)
-    if (score !== null) {
-      const targetList = ytSongsMatched === 0 ? strict : loose
-      const tierBase = ytSongsMatched === 0 ? TIER_STRICT : TIER_LOOSE
-      targetList.push({
-        key: `yt:${w.videoId}`,
-        kind: 'yt',
-        videoId: w.videoId,
-        score: tierBase + score + BONUS_YT_WEB,
-        label: formatVariantLabel('YouTube', w.title, w.artists, w.duration, 'strict'),
-      })
-    } else {
-      const l = matchCandidateScore(track.title, targetArtists, track.duration, w.title, w.artists, w.duration, w.views, true)
-      if (l !== null) {
-        loose.push({
+    for (const w of webVideos) {
+      const score = matchCandidateScore(track.title, targetArtists, track.duration, w.title, w.artists, w.duration, w.views, false)
+      if (score !== null) {
+        const targetList = ytSongsMatched === 0 ? strict : loose
+        const tierBase = ytSongsMatched === 0 ? TIER_STRICT : TIER_LOOSE
+        targetList.push({
           key: `yt:${w.videoId}`,
           kind: 'yt',
           videoId: w.videoId,
-          score: TIER_LOOSE + l + BONUS_YT_WEB,
-          label: formatVariantLabel('YouTube', w.title, w.artists, w.duration, 'loose'),
+          score: tierBase + score + bonuses.ytWeb,
+          label: formatVariantLabel('YouTube', w.title, w.artists, w.duration, 'strict'),
         })
       } else {
-        const p = popularYouTubeFallbackScore(track.title, targetArtists, track.duration, w.title, w.artists, w.duration, w.views)
-        if (p !== null) {
-          popular.push({
+        const l = matchCandidateScore(track.title, targetArtists, track.duration, w.title, w.artists, w.duration, w.views, true)
+        if (l !== null) {
+          loose.push({
             key: `yt:${w.videoId}`,
             kind: 'yt',
             videoId: w.videoId,
-            score: p,
-            label: formatVariantLabel('YouTube', w.title, w.artists, w.duration, 'popular'),
+            score: TIER_LOOSE + l + bonuses.ytWeb,
+            label: formatVariantLabel('YouTube', w.title, w.artists, w.duration, 'loose'),
           })
+        } else {
+          const p = popularYouTubeFallbackScore(track.title, targetArtists, track.duration, w.title, w.artists, w.duration, w.views)
+          if (p !== null) {
+            popular.push({
+              key: `yt:${w.videoId}`,
+              kind: 'yt',
+              videoId: w.videoId,
+              score: p,
+              label: formatVariantLabel('YouTube', w.title, w.artists, w.duration, 'popular'),
+            })
+          }
         }
       }
     }
@@ -1584,7 +1366,7 @@ async function buildMatchState(track: Track, full = false): Promise<MatchState> 
           key: yid,
           kind: 'ya',
           track: yt,
-          score: TIER_STRICT + score + BONUS_YANDEX,
+          score: TIER_STRICT + score + bonuses.ya,
           label: formatVariantLabel(tr('Яндекс Музыка'), yt.title, candArtist, yt.duration, 'strict'),
         })
       } else {
@@ -1594,7 +1376,7 @@ async function buildMatchState(track: Track, full = false): Promise<MatchState> 
             key: yid,
             kind: 'ya',
             track: yt,
-            score: TIER_LOOSE + l + BONUS_YANDEX,
+            score: TIER_LOOSE + l + bonuses.ya,
             label: formatVariantLabel(tr('Яндекс Музыка'), yt.title, candArtist, yt.duration, 'loose'),
           })
         }
@@ -1602,33 +1384,8 @@ async function buildMatchState(track: Track, full = false): Promise<MatchState> 
     }
   }
 
-  for (const s of scRes) {
-    const streams = s.media?.transcodings ?? []
-    if (s.streamable === false || s.policy === 'BLOCK' || s.policy === 'SNIP') continue
-    if (streams.length && !streams.some((x) => !x.format.protocol.includes('encrypted') && !x.snipped)) continue
-    const candArtist = s.publisher_metadata?.artist?.trim() || s.user?.username || ''
-    const candDur = Math.round((s.full_duration ?? s.duration ?? 0) / 1000)
-    const score = matchCandidateScore(track.title, targetArtists, track.duration, s.title ?? '', candArtist, candDur, undefined, false)
-    if (score !== null) {
-      strict.push({
-        key: `sc:${s.id}`,
-        kind: 'sc',
-        track: s,
-        score: TIER_STRICT + score + BONUS_SOUNDCLOUD,
-        label: formatVariantLabel('SoundCloud', s.title ?? '', candArtist, candDur, 'strict'),
-      })
-    } else {
-      const l = matchCandidateScore(track.title, targetArtists, track.duration, s.title ?? '', candArtist, candDur, undefined, true)
-      if (l !== null) {
-        loose.push({
-          key: `sc:${s.id}`,
-          kind: 'sc',
-          track: s,
-          score: TIER_LOOSE + l + BONUS_SOUNDCLOUD,
-          label: formatVariantLabel('SoundCloud', s.title ?? '', candArtist, candDur, 'loose'),
-        })
-      }
-    }
+  if (scConnected && !scCollected) {
+    collectSoundCloud(scRes)
   }
 
   strict.sort((a, b) => b.score - a.score)
@@ -1648,7 +1405,9 @@ async function buildMatchState(track: Track, full = false): Promise<MatchState> 
 async function getMatchState(track: Track, forceFull = false): Promise<MatchState> {
   const existing = resolved.get(track.id)
   if (existing && (!forceFull || !existing.partial)) return existing
-  if (!forceFull) {
+  const priority = getSpotifyAudioPriority()
+  const preferSoundCloud = priority === 'sc' && !!accounts.sc
+  if (!forceFull && !preferSoundCloud && (accounts.yt || (await youtube.signedIn().catch(() => false)))) {
     const stored = loadStoredMatches()[track.id]
     if (stored?.videoId) {
       const state: MatchState = {

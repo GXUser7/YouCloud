@@ -359,6 +359,73 @@ class SpotifyTest {
     }
 
     @Test
+    fun rejectsGamingMontagesLikeValorantMontage() {
+        val target = SoundCloudTrack(
+            100L,
+            title = "Jeff the Killer",
+            duration = 103_000L,
+            user = SoundCloudUser(username = "unki"),
+            artists = listOf(SoundCloudUser(username = "unki"), SoundCloudUser(username = "sly sheen"))
+        )
+        val montage = SoundCloudTrack(
+            101L,
+            title = "unki, sly sheen - Jeff the Killer | VALORANT montage",
+            duration = 104_000L,
+            user = SoundCloudUser(username = "desolated")
+        )
+        assertNull(spotifyMatchScore(target, montage))
+        assertNull(spotifyMatchScore(target, montage, allowArtistMismatch = true))
+        assertNull(spotifyLooseDurationMatchScore(target, montage))
+        assertNull(spotifyLooseDurationMatchScore(target, montage, allowArtistMismatch = true))
+        assertNull(spotifyPopularYouTubeFallbackScore(target, montage))
+    }
+
+    @Test
+    fun allowsSoundCloudArtistMismatchWhilePreservingEditionAndRankingGuards() {
+        val target = SoundCloudTrack(
+            100L,
+            title = "Jeff the Killer",
+            duration = 103_000L,
+            user = SoundCloudUser(username = "unki"),
+            artists = listOf(SoundCloudUser(username = "unki"), SoundCloudUser(username = "sly sheen"))
+        )
+        val scReupload = SoundCloudTrack(
+            102L,
+            title = "Jeff the Killer",
+            duration = 103_000L,
+            user = SoundCloudUser(username = "archive_reuploads")
+        )
+        assertNull(spotifyMatchScore(target, scReupload, allowArtistMismatch = false))
+        val reuploadScore = spotifyMatchScore(target, scReupload, allowArtistMismatch = true)
+        assertNotNull(reuploadScore)
+
+        val prefixedSc = scReupload.copy(id = 103L, title = "archive - Jeff the Killer", user = SoundCloudUser(username = "random_user"))
+        assertNotNull(spotifyMatchScore(target, prefixedSc, allowArtistMismatch = true))
+
+        val titleArtistSc = scReupload.copy(id = 104L, title = "unki - Jeff the Killer")
+        val titleArtistScore = spotifyMatchScore(target, titleArtistSc, allowArtistMismatch = true)!!
+        val officialSc = scReupload.copy(id = 105L, title = "Jeff the Killer", user = SoundCloudUser(username = "unki"))
+        val officialScore = spotifyMatchScore(target, officialSc, allowArtistMismatch = true)!!
+        assertTrue(officialScore > titleArtistScore)
+        assertTrue(titleArtistScore > reuploadScore!!)
+
+        // Wrong editions and short previews must still be rejected even with allowArtistMismatch = true.
+        assertNull(spotifyMatchScore(target, scReupload.copy(title = "Jeff the Killer (slowed + reverb)"), allowArtistMismatch = true))
+        assertNull(spotifyMatchScore(target, scReupload.copy(title = "Jeff the Killer | VALORANT montage"), allowArtistMismatch = true))
+        assertNull(spotifyMatchScore(target, scReupload.copy(title = "Jeff the Killer (karaoke)"), allowArtistMismatch = true))
+        assertNull(spotifyLooseDurationMatchScore(target, scReupload.copy(duration = 30_000L), allowArtistMismatch = true))
+    }
+
+    @Test
+    fun prioritizesSoundCloudOverYouTubeWhenSoundCloudPrioritySelected() {
+        val target = SoundCloudTrack(1L, title = "Track Title", duration = 180_000L, user = SoundCloudUser(username = "Artist"))
+        val scReupload = SoundCloudTrack(2L, title = "Track Title", duration = 180_000L, user = SoundCloudUser(username = "random_uploader"))
+        val ytStrict = spotifyMatchScore(target, target)!! + SpotifyAudio.BONUS_YT_FALLBACK_SONG
+        val scPriority = spotifyMatchScore(target, scReupload, allowArtistMismatch = true)!! + SpotifyAudio.BONUS_SC_PRIORITY
+        assertTrue(scPriority > ytStrict)
+    }
+
+    @Test
     fun infersCastMimeTypeFromCachedSpotifyStreamKeys() {
         assertEquals("audio/webm", StreamCache.mimeTypeForSpotifyKey("stream:spotify:$id:yt_abc12345678_251"))
         assertEquals("audio/mp4", StreamCache.mimeTypeForSpotifyKey("stream:spotify:$id:yt_abc12345678_140"))

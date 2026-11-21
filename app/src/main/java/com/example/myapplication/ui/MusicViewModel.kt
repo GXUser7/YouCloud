@@ -143,10 +143,12 @@ enum class AppScreen {
     YANDEX_PLAYLIST_DETAIL,
     YTM_SET_DETAIL,
     HISTORY,
-    // The account: one's own profile (or signing in), the friends, and someone's profile.
+    // The account: one's own profile (or signing in), the friends, someone's profile, and music chats.
     PROFILE,
     FRIENDS,
-    PERSON
+    PERSON,
+    CHATS,
+    CHAT
 }
 
 /** Where search looks. YouTube Music and Yandex only once they are connected. */
@@ -300,6 +302,7 @@ class MusicViewModel(
     private val favoritesSync = FavoritesSync.get(context)
     private val favoritesSyncLock = Mutex()
     private var favoritesLive: AutoCloseable? = null
+    private var socialLive: AutoCloseable? = null
     private var inForeground = false
     private val mixesRepository = SoundCloudMixesRepository(service, context)
 
@@ -1037,10 +1040,23 @@ class MusicViewModel(
             ) { trackId, _ -> trackId }
                 .collectLatest { trackId ->
                     if (trackId == null) return@collectLatest
-                    
-                    val trackIndex = _activeQueue.value.indexOfFirst { it.id == trackId }
-                    if (trackIndex == -1) return@collectLatest
-                    
+
+                    var trackIndex = _activeQueue.value.indexOfFirst { it.id == trackId }
+                    if (trackIndex == -1) {
+                        delay(300)
+                        if (musicPlayer.shownTrackId.value != trackId) return@collectLatest
+                        trackIndex = _activeQueue.value.indexOfFirst { it.id == trackId }
+                        if (trackIndex == -1) {
+                            val playerItem = musicPlayer.queueSnapshot().firstOrNull { it.id == trackId }
+                            if (playerItem != null) {
+                                val fallback = favoritesRepository.get(trackId)?.toSoundCloudTrack() ?: playerItem.toStubTrack()
+                                _currentPlayingTrack.value = fallback
+                                if (_selectedTrack.value != null) _selectedTrack.value = fallback
+                            }
+                            return@collectLatest
+                        }
+                    }
+
                     val track = _activeQueue.value[trackIndex]
                     _currentPlayingTrack.value = track
                     if (_selectedTrack.value != null) {
@@ -1178,6 +1194,20 @@ class MusicViewModel(
                 }
         }
         viewModelScope.launch {
+            val social = Social.get(context)
+            social.session
+                .map { it?.userId }
+                .distinctUntilChanged()
+                .collect { userId ->
+                    socialLive?.close()
+                    socialLive = null
+                    if (userId != null) {
+                        if (inForeground) socialLive = social.watchLive()
+                        social.reloadChatInbox()
+                    }
+                }
+        }
+        viewModelScope.launch {
             // A burst of changes (a likes sync saving a hundred) goes as one.
             favoritesSync.wanted.drop(1).collectLatest {
                 delay(FAVORITES_SYNC_SETTLE_MS)
@@ -1189,8 +1219,11 @@ class MusicViewModel(
     /** The app out of sight: «Любимое» stops hearing of changes elsewhere until it is back. */
     fun onAppBackground() {
         inForeground = false
+        com.example.myapplication.data.social.ChatNotifications.onAppBackground()
         favoritesLive?.close()
         favoritesLive = null
+        socialLive?.close()
+        socialLive = null
     }
 
     private fun syncFavorites() {
@@ -1647,7 +1680,11 @@ class MusicViewModel(
                     localStreamUrl(resolveTarget.id)
                         ?: runCatching {
                             kotlinx.coroutines.withTimeout(15_000L) {
-                                playbackResolver.resolve(resolveTarget, clientId)
+                                playbackResolver.resolve(
+                                    resolveTarget,
+                                    clientId,
+                                    progressiveFirst = com.example.myapplication.player.AudioOutputs.castingTo.value != null
+                                )
                             }
                         }.onFailure { if (it is CancellationException) throw it }.getOrNull()
                         ?: ""
@@ -1963,7 +2000,11 @@ class MusicViewModel(
                         localStreamUrl(startTrack.id)
                             ?: if (clientIdValue.isNotBlank()) {
                                 kotlinx.coroutines.withTimeout(15_000L) {
-                                    playbackResolver.resolve(startTrack, clientIdValue)
+                                    playbackResolver.resolve(
+                                        startTrack,
+                                        clientIdValue,
+                                        progressiveFirst = com.example.myapplication.player.AudioOutputs.castingTo.value != null
+                                    )
                                 } ?: ""
                             } else {
                                 ""
@@ -2035,7 +2076,11 @@ class MusicViewModel(
                 localStreamUrl(track.id) ?: serviceUrl
             } else {
                 localStreamUrl(track.id)
-                    ?: playbackResolver.resolve(track, settingsRepository.clientId.value)
+                    ?: playbackResolver.resolve(
+                        track,
+                        settingsRepository.clientId.value,
+                        progressiveFirst = com.example.myapplication.player.AudioOutputs.castingTo.value != null
+                    )
                     ?: ""
             }
             
@@ -2081,7 +2126,11 @@ class MusicViewModel(
             try {
                 val streamUrl = localUrl ?: serviceUrl
                     ?: kotlinx.coroutines.withTimeout(15_000L) {
-                        playbackResolver.resolve(track, clientId)
+                        playbackResolver.resolve(
+                            track,
+                            clientId,
+                            progressiveFirst = com.example.myapplication.player.AudioOutputs.castingTo.value != null
+                        )
                     }
 
                 ensureActive()
@@ -2260,11 +2309,14 @@ class MusicViewModel(
         }
     }
 
+    private var ytSetFrom: AppScreen = AppScreen.HOME
+
     /** Opens an album/playlist/mix set; serves cached tracks immediately without waiting on network. */
     fun openYtSet(set: SoundCloudPlaylist, forceRefresh: Boolean = false) {
         ytSetJob?.cancel()
         _ytSetLoading.value = false
         _ytSetError.value = null
+        if (_screen.value != AppScreen.YTM_SET_DETAIL) ytSetFrom = _screen.value
         _screen.value = AppScreen.YTM_SET_DETAIL
         val isSoundCloudSet = set.permalinkUrl?.startsWith("yandex:") != true &&
             set.permalinkUrl?.startsWith(YT_SET_REF) != true &&
@@ -2612,7 +2664,7 @@ class MusicViewModel(
      * YouTube Music, by its radio, as their own apps do); an album or playlist opens as a set; an
      * artist or channel opens its page.
      */
-    fun openSharedText(text: String) {
+    fun openSharedText(text: String, openPlayer: Boolean = true) {
         val url = SharedLinks.findUrl(text)
         if (url == null) {
             Toast.makeText(context, tr("Здесь нет ссылки"), Toast.LENGTH_SHORT).show()
@@ -2628,7 +2680,7 @@ class MusicViewModel(
             }
             Log.d("MusicViewModel", "Opening link $link")
             try {
-                openLink(link)
+                openLink(link, openPlayer = openPlayer)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -2638,7 +2690,74 @@ class MusicViewModel(
         }
     }
 
-    private suspend fun openLink(link: SharedLink) {
+    /** Resolves a track-level share URL into a playable [SoundCloudTrack] or null with user feedback. */
+    private suspend fun resolveTrackFromLink(url: String): SoundCloudTrack? {
+        var link = SharedLinks.parse(url)
+        if (link is SharedLink.Short) link = SharedLinks.follow(link.url)
+        return when (link) {
+            is SharedLink.YandexTrack -> {
+                if (settingsRepository.yandexTokenValue().isBlank()) {
+                    Toast.makeText(context, tr("Чтобы слушать треки Яндекс Музыки, войдите в неё в настройках"), Toast.LENGTH_LONG).show()
+                    return null
+                }
+                val ids = if (link.albumId != null) "${link.trackId}:${link.albumId}" else link.trackId
+                yandexService.getTracksDetails(ids).result.orEmpty().firstOrNull()
+                    ?.toSoundCloudTrack(customAlbumId = link.albumId)
+                    ?: throw IllegalStateException(tr("трек не найден"))
+            }
+            is SharedLink.YouTubeVideo -> {
+                val queue = ytMusic.radio(link.videoId)
+                val id = com.example.myapplication.data.youTubeTrackId(link.videoId)
+                queue.firstOrNull { it.id == id || it.youTubeVideoId == link.videoId || it.liveVideoId == link.videoId }
+                    ?: queue.firstOrNull()
+                    ?: throw IllegalStateException(tr("видео не найдено"))
+            }
+            is SharedLink.Spotify -> {
+                if (link.type != "track") return null
+                if (spotifyAccount.value == null) {
+                    openSpotifyLogin()
+                    return null
+                }
+                spotify.track(link.id)
+            }
+            is SharedLink.SoundCloud -> {
+                val clientId = settingsRepository.clientId.value
+                if (clientId.isBlank()) {
+                    Toast.makeText(context, tr("Укажите SoundCloud client_id в настройках"), Toast.LENGTH_LONG).show()
+                    return null
+                }
+                val found = try {
+                    service.resolve(link.url, clientId)
+                } catch (e: Exception) {
+                    handleSoundCloudApiError(e)
+                    throw e
+                }
+                if (found.get("kind")?.takeIf { it.isJsonPrimitive }?.asString != "track") return null
+                com.google.gson.Gson().fromJson(found, SoundCloudTrack::class.java)
+            }
+            else -> null
+        }
+    }
+
+    fun likeTrackFromLink(url: String) {
+        viewModelScope.launch {
+            try {
+                val track = resolveTrackFromLink(url) ?: return@launch
+                if (favoritesRepository.isFavorite(track.id)) {
+                    Toast.makeText(context, tr("Уже в любимом"), Toast.LENGTH_SHORT).show()
+                } else {
+                    toggleFavorite(track)
+                    Toast.makeText(context, tr("Добавлено в любимое"), Toast.LENGTH_SHORT).show()
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Toast.makeText(context, readableMessage(e), Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
+    private suspend fun openLink(link: SharedLink, openPlayer: Boolean = true) {
         when (link) {
             is SharedLink.YandexTrack -> {
                 if (settingsRepository.yandexTokenValue().isBlank()) {
@@ -2649,9 +2768,9 @@ class MusicViewModel(
                 val track = yandexService.getTracksDetails(ids).result.orEmpty().firstOrNull()
                     ?.toSoundCloudTrack(customAlbumId = link.albumId)
                     ?: throw IllegalStateException(tr("трек не найден"))
-                playFromLink(track)
+                playFromLink(track, openPlayer = openPlayer)
                 // Then on with its radio: the queue grows behind the track as it plays.
-                playYandexRadio(track)
+                playYandexRadio(track, keepMiniPlayer = !openPlayer)
             }
             is SharedLink.YandexAlbum -> openSetFromLink(
                 yandexAlbum(link.albumId) ?: throw IllegalStateException(tr("альбом не найден"))
@@ -2671,7 +2790,7 @@ class MusicViewModel(
                 val track = queue.firstOrNull { it.id == id || it.youTubeVideoId == link.videoId || it.liveVideoId == link.videoId }
                     ?: queue.firstOrNull()
                     ?: throw IllegalStateException(tr("видео не найдено"))
-                playFromLink(track, queue)
+                playFromLink(track, queue, openPlayer = openPlayer)
             }
             is SharedLink.YouTubeSet -> {
                 val set = ytMusic.setFromLink(link.browseId, link.playlistId)
@@ -2687,18 +2806,18 @@ class MusicViewModel(
                     return
                 }
                 when (link.type) {
-                    "track" -> playFromLink(spotify.track(link.id))
+                    "track" -> playFromLink(spotify.track(link.id), openPlayer = openPlayer)
                     "artist" -> openArtistFromLink { openArtistDetails(0L, SPOTIFY_ARTIST + link.id, null) }
                     "album" -> openSetFromLink(spotify.set(SPOTIFY_ALBUM + link.id))
                     "playlist" -> openSetFromLink(spotify.set(SPOTIFY_PLAYLIST + link.id))
                 }
             }
-            is SharedLink.SoundCloud -> openSoundCloudLink(link.url)
+            is SharedLink.SoundCloud -> openSoundCloudLink(link.url, openPlayer = openPlayer)
             is SharedLink.Short -> Unit // followed already in openSharedText
         }
     }
 
-    private suspend fun openSoundCloudLink(url: String) {
+    private suspend fun openSoundCloudLink(url: String, openPlayer: Boolean = true) {
         val clientId = settingsRepository.clientId.value
         if (clientId.isBlank()) {
             Toast.makeText(context, tr("Укажите SoundCloud client_id в настройках"), Toast.LENGTH_LONG).show()
@@ -2714,8 +2833,8 @@ class MusicViewModel(
         when (found.get("kind")?.takeIf { it.isJsonPrimitive }?.asString) {
             "track" -> {
                 val track = gson.fromJson(found, SoundCloudTrack::class.java)
-                playFromLink(track)
-                playSoundCloudRadio(track)
+                playFromLink(track, openPlayer = openPlayer)
+                playSoundCloudRadio(track, keepMiniPlayer = !openPlayer)
             }
             "playlist", "system-playlist" -> {
                 val set = gson.fromJson(found, SoundCloudPlaylist::class.java)
@@ -2729,10 +2848,10 @@ class MusicViewModel(
         }
     }
 
-    /** A track from a link: playing at once, with the player up over whatever screen is open. */
-    private fun playFromLink(track: SoundCloudTrack, queue: List<SoundCloudTrack> = listOf(track)) {
+    /** A track from a link: playing at once, with the player up over whatever screen is open unless kept minimal. */
+    private fun playFromLink(track: SoundCloudTrack, queue: List<SoundCloudTrack> = listOf(track), openPlayer: Boolean = true) {
         _selectedMix.value = null
-        playQueuedTrack(track, queue, openPlayer = true)
+        playQueuedTrack(track, queue, openPlayer = openPlayer, keepMiniPlayer = !openPlayer)
     }
 
     /** An album or playlist from a link, its tracks known already, on the set screen. */
@@ -2835,7 +2954,7 @@ class MusicViewModel(
         ytSetJob?.cancel()
         _ytOpenedSet.value = null
         _ytSetLoading.value = false
-        _screen.value = AppScreen.HOME
+        _screen.value = ytSetFrom
     }
 
     fun playSpotifyRadio(track: SoundCloudTrack) {
@@ -2903,7 +3022,7 @@ class MusicViewModel(
     }
 
     /** Plays SoundCloud's endless radio from [track]: related tracks (or uploader tracks as fallback), refilling as it plays. */
-    fun playSoundCloudRadio(track: SoundCloudTrack) {
+    fun playSoundCloudRadio(track: SoundCloudTrack, keepMiniPlayer: Boolean = false) {
         if (!isSoundCloudTrack(track)) return
         val clientId = settingsRepository.clientId.value
         if (clientId.isBlank()) {
@@ -2927,7 +3046,7 @@ class MusicViewModel(
                 if (batch.isEmpty()) throw IllegalStateException(tr("радио ничего не предложило"))
                 session.rememberSeeds(batch)
                 Log.d("MusicViewModel", "SoundCloud radio from ${track.id}: ${batch.size} tracks")
-                playQueueFrom(track, listOf(track) + batch, trackRadioSession = session)
+                playQueueFrom(track, listOf(track) + batch, trackRadioSession = session, keepMiniPlayer = keepMiniPlayer)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -3117,13 +3236,55 @@ class MusicViewModel(
         _screen.value = personFrom
     }
 
+    private val _chatPeerId = MutableStateFlow<String?>(null)
+    /** Friend whose thread [AppScreen.CHAT] shows. */
+    val chatPeerId = _chatPeerId.asStateFlow()
+    private var chatsFrom = AppScreen.HOME
+
+    fun openChats() {
+        if (_screen.value != AppScreen.CHATS && _screen.value != AppScreen.CHAT) {
+            chatsFrom = if (_screen.value == AppScreen.PROFILE) AppScreen.PROFILE else AppScreen.HOME
+        }
+        _screen.value = AppScreen.CHATS
+    }
+
+    fun closeChats() {
+        _screen.value = chatsFrom
+    }
+
+    fun openChat(peerId: String) {
+        _chatPeerId.value = peerId
+        _screen.value = AppScreen.CHAT
+    }
+
+    fun openChatFromNotification(peerId: String?) {
+        _selectedTrack.value = null
+        _selectedMix.value = null
+        if (!peerId.isNullOrBlank()) {
+            chatsFrom = AppScreen.HOME
+            _chatPeerId.value = peerId
+            _screen.value = AppScreen.CHAT
+        } else {
+            openChats()
+        }
+    }
+
+    fun closeChat() {
+        _screen.value = AppScreen.CHATS
+    }
+
     /**
      * The page [screen] goes back to, when that is a page rather than home: what pulling it down
      * uncovers (the friends were opened from the profile, someone's page from the friends).
      */
     fun pageUnder(screen: AppScreen?): AppScreen? = when (screen) {
         AppScreen.FRIENDS -> friendsFrom.takeIf { it == AppScreen.PROFILE }
-        AppScreen.PERSON -> personFrom.takeIf { it == AppScreen.FRIENDS || it == AppScreen.PROFILE }
+        AppScreen.PERSON -> personFrom.takeIf { it == AppScreen.FRIENDS || it == AppScreen.PROFILE || it == AppScreen.CHAT }
+        AppScreen.CHATS -> chatsFrom.takeIf { it == AppScreen.PROFILE }
+        AppScreen.CHAT -> AppScreen.CHATS
+        AppScreen.YTM_SET_DETAIL -> ytSetFrom.takeIf {
+            it == AppScreen.CHATS || it == AppScreen.CHAT || it == AppScreen.PROFILE || it == AppScreen.PERSON || it == AppScreen.SEARCH
+        }
         // An artist opened from search's results is pulled off onto them, not onto home: home
         // showed under the pull, and search came in over it afresh once the artist had gone.
         AppScreen.ARTIST_DETAIL -> AppScreen.SEARCH.takeIf { returnToSearchFromArtist }
@@ -3913,7 +4074,13 @@ class MusicViewModel(
     fun onAppForeground() {
         // «Любимое»: what changed on other devices comes, and keeps coming while the app is in sight.
         inForeground = true
+        com.example.myapplication.data.social.ChatNotifications.onAppForeground()
         if (favoritesLive == null) favoritesLive = favoritesSync.watchLive()
+        val social = Social.get(context)
+        if (social.session.value != null) {
+            if (socialLive == null) socialLive = social.watchLive()
+            social.reloadChatInbox()
+        }
         syncFavorites()
         if (System.currentTimeMillis() - lastLikeBlockAt >= LIKE_RETRY_AFTER_BLOCK_MS) {
             flushPendingSoundCloudLikes()
@@ -4678,6 +4845,8 @@ class MusicViewModel(
         runCatching { context.getSystemService(android.net.ConnectivityManager::class.java)?.unregisterNetworkCallback(networkBack) }
         favoritesRepository.listener = null
         favoritesLive?.close()
+        socialLive?.close()
+        socialLive = null
         together.leave()
         musicPlayer.release()
     }
@@ -4773,6 +4942,7 @@ class MusicViewModel(
                 ?: user?.username
                 ?: "Unknown Artist",
             artworkUrl = artworkUrl,
+            durationMs = duration,
             leadArtist = artists?.firstNotNullOfOrNull { it.username?.takeIf(String::isNotBlank) } ?: user?.username,
             source = sourceOf(urn),
             link = pageLink()
@@ -4816,6 +4986,7 @@ class MusicViewModel(
             title = title,
             artist = displayArtist,
             artworkUrl = artworkUrl,
+            durationMs = duration,
             leadArtist = artists?.firstNotNullOfOrNull { it.username?.takeIf(String::isNotBlank) } ?: artist,
             source = sourceOf(urn),
             link = toSoundCloudTrack().pageLink()
@@ -5803,13 +5974,15 @@ class MusicViewModel(
         queue: List<SoundCloudTrack>,
         radio: YandexRadio? = null,
         trackRadioSession: TrackRadioSession? = null,
-        multiWaveSession: MultiWaveSession? = null
+        multiWaveSession: MultiWaveSession? = null,
+        keepMiniPlayer: Boolean = false
     ) {
         val startingRadio = radio != null || trackRadioSession != null || multiWaveSession != null
         if (musicPlayer.currentTrackId.value != track.id) {
             playQueuedTrackInternal(
                 track = track,
                 customQueue = queue,
+                keepMiniPlayer = keepMiniPlayer,
                 radio = radio,
                 trackRadioSession = trackRadioSession,
                 multiWaveSession = multiWaveSession
@@ -5856,7 +6029,9 @@ class MusicViewModel(
         // The player opened whatever the settings say: a track opened from a link.
         openPlayer: Boolean = false,
         // Picked by a guest listening together: the host's player stays as it is, open or not.
-        fromGuest: Boolean = false
+        fromGuest: Boolean = false,
+        // Started from Chat where the mini player stays in view instead of opening the full player.
+        keepMiniPlayer: Boolean = false
     ) {
         playQueuedTrackInternal(
             track = track,
@@ -5865,6 +6040,7 @@ class MusicViewModel(
             source = source,
             openPlayer = openPlayer,
             fromGuest = fromGuest,
+            keepMiniPlayer = keepMiniPlayer,
             radio = null
         )
     }
@@ -5876,6 +6052,7 @@ class MusicViewModel(
         source: String? = null,
         openPlayer: Boolean = false,
         fromGuest: Boolean = false,
+        keepMiniPlayer: Boolean = false,
         radio: YandexRadio? = null,
         trackRadioSession: TrackRadioSession? = null,
         multiWaveSession: MultiWaveSession? = null
@@ -5934,6 +6111,7 @@ class MusicViewModel(
             _currentPlayingTrack.value = track
             when {
                 openPlayer -> _selectedTrack.value = track
+                keepMiniPlayer -> if (_selectedTrack.value != null) _selectedTrack.value = track
                 fromGuest -> if (_selectedTrack.value != null) _selectedTrack.value = track
                 else -> showPlayerFor(track)
             }
@@ -5947,7 +6125,11 @@ class MusicViewModel(
                         localStreamUrl(startTrack.id)
                             ?: if (clientIdValue.isNotBlank()) {
                                 kotlinx.coroutines.withTimeout(15_000L) {
-                                    playbackResolver.resolve(startTrack, clientIdValue)
+                                    playbackResolver.resolve(
+                                        startTrack,
+                                        clientIdValue,
+                                        progressiveFirst = com.example.myapplication.player.AudioOutputs.castingTo.value != null
+                                    )
                                 } ?: ""
                             } else {
                                 ""
@@ -6949,7 +7131,7 @@ class MusicViewModel(
      * then what the radio puts after it, and more whenever the queue runs low, for as long as it
      * plays. What is heard, skipped or finished goes back to the radio and steers what comes next.
      */
-    fun playYandexRadio(track: SoundCloudTrack) {
+    fun playYandexRadio(track: SoundCloudTrack, keepMiniPlayer: Boolean = false) {
         val urn = track.urn?.takeIf { it.startsWith("yandex:track:") } ?: return
         val trackId = urn.removePrefix("yandex:track:")
         val seed = "track:" + trackId.substringBefore(':')
@@ -6975,7 +7157,7 @@ class MusicViewModel(
                 val batch = rawBatch.filterNot { it.id == track.id }
                 if (batch.isEmpty()) throw IllegalStateException(tr("радио ничего не предложило"))
                 Log.d("MusicViewModel", "Yandex radio from $seed: session ${radio.sessionId}, ${batch.size} tracks")
-                playQueueFrom(track, listOf(track) + batch, radio = radio)
+                playQueueFrom(track, listOf(track) + batch, radio = radio, keepMiniPlayer = keepMiniPlayer)
                 sendRadioFeedback(radio, YandexRotorEvent(type = "radioStarted", timestamp = rotorNow()), firstBatchId ?: session.batchId)
             } catch (e: CancellationException) {
                 throw e

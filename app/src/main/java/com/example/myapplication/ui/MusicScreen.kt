@@ -269,6 +269,10 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import com.example.myapplication.data.SettingsRepository
+import com.example.myapplication.data.SpotifyAudioPriority
+import com.example.myapplication.data.social.ChatSharePayload
+import com.example.myapplication.data.social.Relation
+import com.example.myapplication.data.social.Social
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
@@ -493,6 +497,7 @@ fun MusicScreen(viewModel: MusicViewModel) {
     // whole screen each time. Only the seek bar, the lyrics and the mini player's progress read it.
     val playbackPosition = viewModel.playbackPositionMs.collectAsState()
     val playbackDurationMs by viewModel.playbackDurationMs.collectAsState()
+    val isCasting = com.example.myapplication.player.AudioOutputs.castingTo.collectAsState().value != null
     val screen by viewModel.screen.collectAsState()
     val activeQueue by viewModel.activeQueue.collectAsState()
     val userId by viewModel.userId.collectAsState()
@@ -619,6 +624,24 @@ fun MusicScreen(viewModel: MusicViewModel) {
     val accountMenu = rememberAccountMenuState()
     // Signed in, the profile has a dock at its foot, as search has, for the mini player to stand on.
     val socialSession by remember { com.example.myapplication.data.social.Social.get(coverContext) }.session.collectAsState()
+    val notifPermissionLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) {
+            com.example.myapplication.data.social.ChatNotifications.ensureChannel(coverContext)
+            com.example.myapplication.data.social.ChatNotifications.ensureScheduled(coverContext)
+        }
+    }
+    LaunchedEffect(socialSession?.userId) {
+        if (socialSession != null) {
+            if (com.example.myapplication.data.social.ChatNotifications.hasPermission(coverContext)) {
+                com.example.myapplication.data.social.ChatNotifications.ensureChannel(coverContext)
+            } else if (!com.example.myapplication.data.social.ChatNotifications.wasPermissionAsked(coverContext)) {
+                com.example.myapplication.data.social.ChatNotifications.markPermissionAsked(coverContext)
+                notifPermissionLauncher.launch(android.Manifest.permission.POST_NOTIFICATIONS)
+            }
+        }
+    }
     LaunchedEffect(screen, selectedMix != null, selectedTrack != null) {
         if (screen != AppScreen.HOME || selectedMix != null || selectedTrack != null) accountMenu.close()
     }
@@ -663,6 +686,8 @@ fun MusicScreen(viewModel: MusicViewModel) {
             AppScreen.PROFILE -> viewModel.closeProfile()
             AppScreen.FRIENDS -> viewModel.closeFriends()
             AppScreen.PERSON -> viewModel.closePerson()
+            AppScreen.CHATS -> viewModel.closeChats()
+            AppScreen.CHAT -> viewModel.closeChat()
             AppScreen.PLAYLISTS -> viewModel.closePlaylists()
             AppScreen.SETTINGS -> viewModel.closeSettings()
             AppScreen.MIX_DETAIL -> viewModel.closeMix()
@@ -892,6 +917,10 @@ fun MusicScreen(viewModel: MusicViewModel) {
                                 haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                                 viewModel.openPerson(id)
                             },
+                            onOpenChats = {
+                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                viewModel.openChats()
+                            },
                             accountMenu = accountMenu,
                             onOpenMix = { mix ->
                                 haptic.performHapticFeedback(HapticFeedbackType.LongPress)
@@ -956,6 +985,43 @@ fun MusicScreen(viewModel: MusicViewModel) {
                                     viewModel.closePerson()
                                 },
                                 onPlayLink = viewModel::openSharedText
+                            )
+                        }
+                    }
+                    AppScreen.CHATS -> ChatListScreen(
+                        onClose = {
+                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                            viewModel.closeChats()
+                        },
+                        onOpenChat = { id ->
+                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                            viewModel.openChat(id)
+                        },
+                        onOpenItem = { link ->
+                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                            viewModel.openSharedText(link, openPlayer = false)
+                        }
+                    )
+                    AppScreen.CHAT -> {
+                        val chatPeerId by viewModel.chatPeerId.collectAsState()
+                        chatPeerId?.let { id ->
+                            ChatThreadScreen(
+                                peerId = id,
+                                onClose = {
+                                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                    viewModel.closeChat()
+                                },
+                                onOpenPerson = { pid ->
+                                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                    viewModel.openPerson(pid)
+                                },
+                                onPlayTrackLink = { link ->
+                                    viewModel.openSharedText(link, openPlayer = false)
+                                },
+                                onOpenAlbumLink = { link ->
+                                    viewModel.openSharedText(link, openPlayer = false)
+                                },
+                                onLikeTrackLink = viewModel::likeTrackFromLink
                             )
                         }
                     }
@@ -1113,7 +1179,7 @@ fun MusicScreen(viewModel: MusicViewModel) {
                 ) {
                 when (screen) {
                     AppScreen.HOME, AppScreen.MIX_DETAIL -> Unit
-                    AppScreen.PROFILE, AppScreen.FRIENDS, AppScreen.PERSON -> accountPage(screen)
+                    AppScreen.PROFILE, AppScreen.FRIENDS, AppScreen.PERSON, AppScreen.CHATS, AppScreen.CHAT -> accountPage(screen)
                     AppScreen.HISTORY -> HistoryScreen(
                         tracks = history,
                         favorites = favorites,
@@ -1258,7 +1324,9 @@ fun MusicScreen(viewModel: MusicViewModel) {
                     }
 
                     AppScreen.PLAYLIST_DETAIL -> {
-                        selectedPlaylist?.let { playlist ->
+                        val rememberedPlaylist = remember { mutableStateOf(selectedPlaylist) }
+                        if (selectedPlaylist != null) rememberedPlaylist.value = selectedPlaylist
+                        (selectedPlaylist ?: rememberedPlaylist.value)?.let { playlist ->
                             PlaylistDetailScreen(
                                 playlist = playlist,
                                 currentTrackId = currentTrackId,
@@ -1303,7 +1371,9 @@ fun MusicScreen(viewModel: MusicViewModel) {
                     AppScreen.YANDEX_PLAYLIST_DETAIL -> {
                         val selectedYandexPlaylist by viewModel.selectedYandexPlaylist.collectAsState()
                         val yandexPlaylistLoading by viewModel.yandexPlaylistLoading.collectAsState()
-                        selectedYandexPlaylist?.let { playlist ->
+                        val rememberedYandexPlaylist = remember { mutableStateOf(selectedYandexPlaylist) }
+                        if (selectedYandexPlaylist != null) rememberedYandexPlaylist.value = selectedYandexPlaylist
+                        (selectedYandexPlaylist ?: rememberedYandexPlaylist.value)?.let { playlist ->
                             YandexPlaylistDetailScreen(
                                 playlist = playlist,
                                 isLoading = yandexPlaylistLoading,
@@ -1334,7 +1404,13 @@ fun MusicScreen(viewModel: MusicViewModel) {
                         val ytOpenedSet by viewModel.ytOpenedSet.collectAsState()
                         val ytSetLoading by viewModel.ytSetLoading.collectAsState()
                         val ytSetError by viewModel.ytSetError.collectAsState()
-                        val set = ytOpenedSet
+                        val rememberedSet = remember { mutableStateOf(ytOpenedSet) }
+                        if (ytOpenedSet != null) {
+                            rememberedSet.value = ytOpenedSet
+                        } else if (ytSetLoading) {
+                            rememberedSet.value = null
+                        }
+                        val set = ytOpenedSet ?: rememberedSet.value
                         if (set != null) {
                             SetDetailContent(
                                 playlist = set,
@@ -1367,7 +1443,7 @@ fun MusicScreen(viewModel: MusicViewModel) {
                                     )
                                 }
                             )
-                        } else {
+                        } else if (ytSetLoading) {
                             Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                                 AppLoadingIndicator()
                             }
@@ -1387,7 +1463,14 @@ fun MusicScreen(viewModel: MusicViewModel) {
                         val artistShelves by viewModel.artistShelves.collectAsState()
                         val ytArtistShowAll by viewModel.settingsRepo.ytArtistShowAll.collectAsState()
                         val artistTracksAreVideos by viewModel.artistTracksAreVideos.collectAsState()
-                        currentArtist?.let { artist ->
+                        val rememberedArtist = remember { mutableStateOf(currentArtist) }
+                        if (currentArtist != null) {
+                            rememberedArtist.value = currentArtist
+                        } else if (artistLoading) {
+                            rememberedArtist.value = null
+                        }
+                        val shownArtist = currentArtist ?: rememberedArtist.value
+                        shownArtist?.let { artist ->
                             ArtistDetailScreen(
                                 artist = artist,
                                 tracks = currentArtistTracks,
@@ -1458,7 +1541,7 @@ fun MusicScreen(viewModel: MusicViewModel) {
                                 }
                             )
                         }
-                        if (currentArtist == null) {
+                        if (shownArtist == null && artistLoading) {
                             Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                                 AppLoadingIndicator()
                             }
@@ -1530,6 +1613,7 @@ fun MusicScreen(viewModel: MusicViewModel) {
                     screen == AppScreen.HOME -> HomeToolbarClearance
                     searchTabsShown -> searchDockHeight(listOf(soundCloudConnected, hasYandexToken, ytMusicAccount != null, spotifyAccount != null).count { it } > 1) - 4.dp
                     screen == AppScreen.FRIENDS && selectedMix == null -> searchDockHeight(tabs = true) - 4.dp
+                    screen == AppScreen.CHATS && selectedMix == null -> searchDockHeight(tabs = false) - 4.dp
                     screen == AppScreen.PROFILE && socialSession != null && selectedMix == null -> searchDockHeight(tabs = true) - 4.dp
                     else -> 0.dp
                 },
@@ -1585,13 +1669,18 @@ fun MusicScreen(viewModel: MusicViewModel) {
                     artworkUrl = currentPlayingTrack?.artworkUrl,
                     isPlaying = isPlaying,
                     progress = {
+                        val barDurationMs = effectivePlaybackDurationMs(
+                            trackDurationMs = currentPlayingTrack?.duration ?: 0L,
+                            playerDurationMs = playbackDurationMs,
+                            isCasting = isCasting
+                        )
                         // A broadcast has no end to be part way to: the line runs full. Playing,
                         // where the player is this very frame, not the twice-a-second sample.
                         if (currentPlayingTrack?.liveVideoId != null) {
                             1f
-                        } else if (playbackDurationMs > 0L) {
+                        } else if (barDurationMs > 0L) {
                             val at = if (isPlaying) viewModel.livePositionMs() else playbackPosition.value
-                            at.coerceIn(0L, playbackDurationMs).toFloat() / playbackDurationMs.toFloat()
+                            at.coerceIn(0L, barDurationMs).toFloat() / barDurationMs.toFloat()
                         } else {
                             0f
                         }
@@ -1652,8 +1741,13 @@ fun MusicScreen(viewModel: MusicViewModel) {
                         shuffleEnabled = shuffleEnabled,
                         positionMs = { playbackPosition.value },
                         // Prefer the actual playing stream's duration once ExoPlayer knows it, so a
-                        // shorter resolved audio (e.g. 1:20 vs Spotify's 2:06 metadata) shrinks the seekbar cleanly.
-                        durationMs = if (currentTrackId == track.id && playbackDurationMs > 0L) playbackDurationMs else track.duration,
+                        // shorter resolved audio (e.g. 1:20 vs Spotify's 2:06 metadata) shrinks the seekbar cleanly,
+                        // while shielding Cast from reporting a single 10s HLS segment as the whole track.
+                        durationMs = effectivePlaybackDurationMs(
+                            trackDurationMs = track.duration,
+                            playerDurationMs = if (currentTrackId == track.id) playbackDurationMs else 0L,
+                            isCasting = isCasting
+                        ),
                         lyrics = lyrics?.takeIf { it.trackId == track.id }?.lines,
                         video = trackVideo?.takeIf { it.trackId == track.id },
                         upcomingVideo = pendingTrackVideo?.takeIf { it.trackId == track.id },
@@ -1830,10 +1924,13 @@ fun MusicScreen(viewModel: MusicViewModel) {
                 viewModel.createPlaylist(name)
             },
             onShare = {
-                capturedTrack.permalinkUrl?.let { url ->
+                val url = capturedTrack.permalinkUrl?.takeIf {
+                    it.startsWith("http://") || it.startsWith("https://")
+                } ?: ChatSharePayload.fromTrack(capturedTrack)?.itemUrl
+                url?.let { link ->
                     val sendIntent = Intent().apply {
                         action = Intent.ACTION_SEND
-                        putExtra(Intent.EXTRA_TEXT, url)
+                        putExtra(Intent.EXTRA_TEXT, link)
                         type = "text/plain"
                     }
                     val shareIntent = Intent.createChooser(sendIntent, null)
@@ -2227,6 +2324,7 @@ private fun HomeScreen(
     onOpenProfile: () -> Unit,
     onOpenFriends: (requests: Boolean) -> Unit,
     onOpenPerson: (String) -> Unit,
+    onOpenChats: () -> Unit,
     accountMenu: AccountMenuState,
     onOpenMix: (SoundCloudMix) -> Unit,
     onReloadMixes: () -> Unit,
@@ -2663,7 +2761,8 @@ private fun HomeScreen(
         onOpenProfile = onOpenProfile,
         onOpenSettings = onOpenSettings,
         onOpenFriends = onOpenFriends,
-        onOpenPerson = onOpenPerson
+        onOpenPerson = onOpenPerson,
+        onOpenChats = onOpenChats
     )
     val notices: @Composable () -> Unit = {
         if (hasWarning) {
@@ -6473,6 +6572,55 @@ private fun SettingsScreen(
             }
         }
 
+        item {
+            val priority by settingsRepository.spotifyAudioPriority.collectAsState()
+            val ytConnected = ytMusicAccount != null
+            val scConnected = soundCloudConnected
+            val yaConnected = hasYandexToken
+            val subtitle = when {
+                !ytConnected && !scConnected && !yaConnected ->
+                    tr("Ни один сервис воспроизведения не подключён — войдите в YouTube Music, SoundCloud или Яндекс Музыку в «Аккаунтах»")
+                priority == SpotifyAudioPriority.SOUNDCLOUD && !scConnected ->
+                    tr("SoundCloud не подключён — треки Spotify будут подбираться через подключённые сервисы")
+                priority == SpotifyAudioPriority.YOUTUBE && !ytConnected ->
+                    tr("YouTube Music не подключён — треки Spotify будут подбираться через подключённые сервисы")
+                priority == SpotifyAudioPriority.SOUNDCLOUD ->
+                    tr("Сначала ищет на SoundCloud (с допуском несовпадения имени канала), при отсутствии — YouTube и Яндекс")
+                else ->
+                    tr("Сначала ищет на YouTube Music, при отсутствии — SoundCloud и Яндекс")
+            }
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(
+                    text = "SPOTIFY",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.padding(start = 12.dp)
+                )
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .glassOr(MaterialTheme.shapes.extraLarge, MaterialTheme.colorScheme.surfaceContainer),
+                    shape = MaterialTheme.shapes.extraLarge,
+                    colors = CardDefaults.cardColors(containerColor = glassFill(MaterialTheme.colorScheme.surfaceContainer))
+                ) {
+                    Column(modifier = Modifier.padding(vertical = 4.dp)) {
+                        SettingsChoiceRow(
+                            icon = ServiceIcons.Spotify,
+                            title = tr("Приоритет источника звука"),
+                            subtitle = subtitle,
+                            items = listOf("YouTube", "SoundCloud"),
+                            selectedIndex = if (priority == SpotifyAudioPriority.SOUNDCLOUD) 1 else 0,
+                            onSelect = { index ->
+                                settingsRepository.setSpotifyAudioPriority(
+                                    if (index == 1) SpotifyAudioPriority.SOUNDCLOUD else SpotifyAudioPriority.YOUTUBE
+                                )
+                            }
+                        )
+                    }
+                }
+            }
+        }
+
         // The services' links: opened here when shared from their apps, and when Android is
         // allowed to send them here.
         item {
@@ -9401,17 +9549,35 @@ private fun CollectionSheet(
     subtitle: String?,
     tiles: List<CollectionAction>,
     rows: List<CollectionAction>,
+    sharePayload: ChatSharePayload? = null,
+    onExternalShare: (() -> Unit)? = null,
     onDismiss: () -> Unit
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val sheetScope = rememberCoroutineScope()
     val colors = MaterialTheme.colorScheme
+    val context = LocalContext.current
+    val haptic = LocalHapticFeedback.current
+    val social = remember { Social.get(context) }
+    val session by social.session.collectAsState()
+    val friendsAll by social.friends.collectAsState()
+    LaunchedEffect(session?.userId) {
+        if (session != null && friendsAll == null) social.reloadFriends()
+    }
+    val acceptedFriends = remember(friendsAll) {
+        friendsAll.orEmpty().filter { it.relationKind == Relation.FRIEND }
+    }
+    var choosingShare by remember { mutableStateOf(false) }
+    val canShareToFriend = session != null && acceptedFriends.isNotEmpty() && sharePayload != null
     // An action plays the sheet's own close, as a swipe or a scrim tap does.
-    val run: (CollectionAction) -> Unit = { action ->
-        action.onClick()
+    val hideAndDismiss: () -> Unit = {
         sheetScope.launch { sheetState.hide() }.invokeOnCompletion {
             if (!sheetState.isVisible) onDismiss()
         }
+    }
+    val run: (CollectionAction) -> Unit = { action ->
+        action.onClick()
+        hideAndDismiss()
     }
     ModalBottomSheet(
         onDismissRequest = onDismiss,
@@ -9468,17 +9634,43 @@ private fun CollectionSheet(
             if (tiles.isNotEmpty()) {
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     tiles.forEach { tile ->
+                        val isShareToggle = canShareToFriend && tile.icon == Icons.Default.Share
                         SheetTile(
                             icon = tile.icon,
                             label = tile.label,
                             description = tile.subtitle,
-                            selected = tile.selected,
-                            onClick = { run(tile) },
+                            selected = if (isShareToggle) choosingShare else tile.selected,
+                            onClick = {
+                                if (isShareToggle) {
+                                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                    choosingShare = !choosingShare
+                                } else {
+                                    run(tile)
+                                }
+                            },
                             modifier = Modifier.weight(1f)
                         )
                     }
                     // A lone tile keeps to half the width rather than a bar across the sheet.
                     if (tiles.size == 1) Spacer(modifier = Modifier.weight(1f))
+                }
+            }
+            AnimatedVisibility(
+                visible = choosingShare && canShareToFriend,
+                enter = expandVertically(spring(dampingRatio = 0.85f, stiffness = Spring.StiffnessMediumLow)) + fadeIn(),
+                exit = shrinkVertically(spring(dampingRatio = 1f, stiffness = Spring.StiffnessMedium)) + fadeOut()
+            ) {
+                sharePayload?.let { payload ->
+                    ShareToFriendPanel(
+                        payload = payload,
+                        friends = acceptedFriends,
+                        social = social,
+                        onSent = hideAndDismiss,
+                        onExternalShare = {
+                            onExternalShare?.invoke() ?: shareText(context, payload.itemUrl)
+                            hideAndDismiss()
+                        }
+                    )
                 }
             }
             if (rows.isNotEmpty()) {
@@ -9524,26 +9716,24 @@ private fun CollapsingTopBar(
         label = "collapsingBar"
     )
     val glass = LocalGlass.current
-    val barShown by animateFloatAsState(if (collapsed) 1f else 0f, tween(220), label = "collapsingBarGlass")
+    val barShownState = animateFloatAsState(if (collapsed) 1f else 0f, tween(220), label = "collapsingBarGlass")
+    val barShownAmount = remember(barShownState) { { barShownState.value } }
     Box(
         modifier = Modifier
             .fillMaxWidth()
             .then(if (glass) Modifier else Modifier.background(barColor))
     ) {
         if (glass) {
-            // Only drawn once there is a bar to show: glass under a see-through bar would blur
-            // the picture it lies over.
             Box(
                 modifier = Modifier
                     .matchParentSize()
-                    .graphicsLayer { alpha = barShown }
-                    .then(
-                        if (barShown > 0f) {
-                            Modifier.frosted(tint = MaterialTheme.colorScheme.background.copy(alpha = PageGlassAlpha))
-                        } else {
-                            Modifier
-                        }
-                    )
+                    .graphicsLayer {
+                        alpha = barShownState.value
+                        compositingStrategy = androidx.compose.ui.graphics.CompositingStrategy.ModulateAlpha
+                    }
+                    .drawWithContent { if (barShownState.value > 0f) drawContent() }
+                    .glassShown(barShownAmount)
+                    .frosted(tint = MaterialTheme.colorScheme.background.copy(alpha = PageGlassAlpha))
             )
         }
     Box(
@@ -9559,8 +9749,8 @@ private fun CollapsingTopBar(
             Box(modifier = Modifier.weight(1f).padding(start = 4.dp)) {
                 androidx.compose.animation.AnimatedVisibility(
                     visible = collapsed,
-                    enter = fadeIn() + slideInVertically { it / 2 },
-                    exit = fadeOut() + slideOutVertically { it / 2 }
+                    enter = fadeIn(tween(220)) + slideInVertically(tween(220)) { it / 2 },
+                    exit = fadeOut(tween(220)) + slideOutVertically(tween(220)) { it / 2 }
                 ) {
                     Text(
                         text = title,
@@ -10164,14 +10354,14 @@ private fun TrackRowFrame(
         flat -> Color.Transparent
         else -> MaterialTheme.colorScheme.surfaceContainerHigh
     }
-    val glass = LocalGlass.current && fill != Color.Transparent
+    val glass = LocalGlass.current && !flat && fill != Color.Transparent
     // The surface clips to its shape, so the ripple of the clickable inside keeps to the row.
     Surface(
         modifier = Modifier
             .fillMaxWidth()
             .then(if (glass) Modifier.glassOr(shape, fill, if (isSelected) 0.8f else GlassAlpha) else Modifier),
         shape = shape,
-        color = if (glass) Color.Transparent else fill,
+        color = if (glass) Color.Transparent else if (flat && isSelected && LocalGlass.current) fill.copy(alpha = lightened(0.8f)) else fill,
         contentColor = if (isSelected) {
             MaterialTheme.colorScheme.onSecondaryContainer
         } else {
@@ -11674,8 +11864,6 @@ private fun PlayerPanel(
                                 },
                                 onLongClick = {
                                     haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                    val summary = com.example.myapplication.data.SpotifyAudio.resolvedVariantSummary(context, spId)
-                                    android.widget.Toast.makeText(context, summary, android.widget.Toast.LENGTH_LONG).show()
                                     spotifyVariantOpen = true
                                 }
                             )
@@ -13466,6 +13654,14 @@ private fun QueueManagerPanel(
                     )
                 }
 
+            val queueKeys = remember(activeQueue) {
+                val counts = HashMap<Long, Int>(activeQueue.size)
+                activeQueue.map { track ->
+                    val seen = counts[track.id] ?: 0
+                    counts[track.id] = seen + 1
+                    if (seen == 0) "queue-${track.id}" else "queue-${track.id}-$seen"
+                }
+            }
             LazyColumn(
                 state = lazyListState,
                 modifier = Modifier
@@ -13514,7 +13710,7 @@ private fun QueueManagerPanel(
                         }
                     }
                 }
-                itemsIndexed(activeQueue, key = { _, track -> "queue-${track.id}" }) { index, trackItem ->
+                itemsIndexed(activeQueue, key = { index, _ -> queueKeys[index] }) { index, trackItem ->
                     val currentIndex by rememberUpdatedState(index)
                     val isCurrent = trackItem.id == currentTrack.id
                     val isThisDragged = currentIndex == draggedIndex
@@ -14832,6 +15028,20 @@ private fun PlaylistDetailScreen(
                     danger = true
                 )
             ),
+            sharePayload = link?.let { url ->
+                SharedLinks.serviceOf(url)?.let { service ->
+                    ChatSharePayload(
+                        kind = "album",
+                        service = service,
+                        itemUrl = url,
+                        title = playlist.name,
+                        artist = tracks.firstNotNullOfOrNull { it.artist.takeIf(String::isNotBlank) }.orEmpty(),
+                        coverUrl = playlist.artworkUrl,
+                        trackCount = tracks.size.takeIf { it > 0 }
+                    )
+                }
+            },
+            onExternalShare = link?.let { url -> { shareText(context, url) } },
             onDismiss = { showMore = false }
         )
     }
@@ -14959,7 +15169,7 @@ private fun YandexPlaylistDetailScreen(
         { albumLibrary.onShuffle(tracks, "set-${playlist.id}") }
     }
     val context = LocalContext.current
-    val link = remember(playlist.permalinkUrl) { SharedLinks.linkOf(playlist) }
+    val link = if (isLikedPlaylist) null else remember(playlist.permalinkUrl) { SharedLinks.linkOf(playlist) }
 
     CollectionPage(
         onBack = onBack,
@@ -15051,6 +15261,20 @@ private fun YandexPlaylistDetailScreen(
                 CollectionAction(Icons.Default.Image, tr("Обложка"), onClick = { imagePicker.launch(arrayOf("image/*")) })
             ),
             rows = emptyList(),
+            sharePayload = link?.let { url ->
+                SharedLinks.serviceOf(url)?.let { service ->
+                    ChatSharePayload(
+                        kind = "album",
+                        service = service,
+                        itemUrl = url,
+                        title = title,
+                        artist = tracks.firstNotNullOfOrNull { it.user?.username?.takeIf(String::isNotBlank) }.orEmpty(),
+                        coverUrl = playlist.artworkUrl,
+                        trackCount = maxOf(playlist.trackCount, tracks.size).takeIf { it > 0 }
+                    )
+                }
+            },
+            onExternalShare = link?.let { url -> { shareText(context, url) } },
             onDismiss = { showMore = false }
         )
     }
@@ -15711,6 +15935,10 @@ private fun SetDetailContent(
                     danger = true
                 ).takeIf { liked != null && library != null }
             ),
+            sharePayload = link?.let { url ->
+                ChatSharePayload.fromSet(playlist, link = url, artistFallback = byName.orEmpty())
+            },
+            onExternalShare = link?.let { url -> { shareText(context, url) } },
             onDismiss = { showMore = false }
         )
     }
@@ -15769,6 +15997,19 @@ fun TrackActionsDialog(
     var choosingOutput by remember { mutableStateOf(false) }
     var showCreatePlaylistDialog by remember { mutableStateOf(false) }
     var playlistNameInput by remember { mutableStateOf("") }
+    val shareContext = LocalContext.current
+    val social = remember { Social.get(shareContext) }
+    val session by social.session.collectAsState()
+    val friendsAll by social.friends.collectAsState()
+    LaunchedEffect(demo, session?.userId) {
+        if (!demo && session != null && friendsAll == null) social.reloadFriends()
+    }
+    val acceptedFriends = remember(friendsAll) {
+        friendsAll.orEmpty().filter { it.relationKind == Relation.FRIEND }
+    }
+    val sharePayload = remember(track) { ChatSharePayload.fromTrack(track) }
+    val canShareToFriend = !demo && session != null && acceptedFriends.isNotEmpty() && sharePayload != null
+    var choosingShare by remember { mutableStateOf(false) }
     val colors = MaterialTheme.colorScheme
 
     ModalBottomSheet(
@@ -15847,6 +16088,7 @@ fun TrackActionsDialog(
                     onClick = {
                         haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                         choosingPlaylist = !choosingPlaylist
+                        choosingShare = false
                         choosingSleep = false
                         choosingCrossfade = false
                         choosingOutput = false
@@ -15856,9 +16098,19 @@ fun TrackActionsDialog(
                 SheetTile(
                     icon = Icons.Default.Share,
                     label = tr("Поделиться"),
+                    selected = choosingShare && canShareToFriend,
                     onClick = {
-                        onShare()
-                        dismissSheet()
+                        if (canShareToFriend) {
+                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                            choosingShare = !choosingShare
+                            choosingPlaylist = false
+                            choosingSleep = false
+                            choosingCrossfade = false
+                            choosingOutput = false
+                        } else {
+                            onShare()
+                            dismissSheet()
+                        }
                     },
                     modifier = Modifier.weight(1f)
                 )
@@ -15922,6 +16174,7 @@ fun TrackActionsDialog(
                         onClick = {
                             haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                             choosingSleep = !choosingSleep
+                            choosingShare = false
                             choosingCrossfade = false
                             choosingPlaylist = false
                             choosingOutput = false
@@ -15936,6 +16189,7 @@ fun TrackActionsDialog(
                         onClick = {
                             haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                             choosingCrossfade = !choosingCrossfade
+                            choosingShare = false
                             choosingSleep = false
                             choosingPlaylist = false
                             choosingOutput = false
@@ -15959,6 +16213,7 @@ fun TrackActionsDialog(
                             onClick = {
                                 haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                                 choosingOutput = !choosingOutput
+                                choosingShare = false
                                 choosingSleep = false
                                 choosingCrossfade = false
                                 choosingPlaylist = false
@@ -16084,6 +16339,25 @@ fun TrackActionsDialog(
                             }
                         )
                     }
+                }
+            }
+
+            AnimatedVisibility(
+                visible = choosingShare && canShareToFriend,
+                enter = expandVertically(spring(dampingRatio = 0.85f, stiffness = Spring.StiffnessMediumLow)) + fadeIn(),
+                exit = shrinkVertically(spring(dampingRatio = 1f, stiffness = Spring.StiffnessMedium)) + fadeOut()
+            ) {
+                sharePayload?.let { payload ->
+                    ShareToFriendPanel(
+                        payload = payload,
+                        friends = acceptedFriends,
+                        social = social,
+                        onSent = dismissSheet,
+                        onExternalShare = {
+                            onShare()
+                            dismissSheet()
+                        }
+                    )
                 }
             }
 
@@ -16825,3 +17099,12 @@ fun YandexLoginDialog(
 
 
 
+private fun effectivePlaybackDurationMs(
+    trackDurationMs: Long,
+    playerDurationMs: Long,
+    isCasting: Boolean
+): Long = when {
+    isCasting && trackDurationMs >= 30_000L && playerDurationMs in 1L..25_000L -> trackDurationMs
+    playerDurationMs > 0L -> playerDurationMs
+    else -> trackDurationMs
+}

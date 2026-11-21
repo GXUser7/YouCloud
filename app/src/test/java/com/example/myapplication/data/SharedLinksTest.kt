@@ -61,4 +61,23 @@ class SharedLinksTest {
         assertNull(parse("https://soundcloud.com/discover"))
         assertNull(parse("https://example.com/radiohead/creep"))
     }
+
+    @Test
+    fun skipsPersonalAccountPlaylists() {
+        assertNull(SharedLinks.linkOfRef("ytmusic:set:VLLM"))
+        assertNull(SharedLinks.linkOfRef("ytmusic:set:VLLM:LM"))
+        assertNull(SharedLinks.linkOfRef("ytmusic:set::LM"))
+        assertNull(SharedLinks.linkOfRef("ytmusic:set:VLWL:WL"))
+        assertNull(SharedLinks.linkOfRef("ytmusic:set:VLSE:SE"))
+        assertNull(SharedLinks.linkOfRef("ytmusic:set:VLLL:LL"))
+        assertNull(SharedLinks.linkOfRef("ytmusic:set:FEmusic_liked_videos"))
+        assertNull(SharedLinks.linkOfRef("spotify:liked"))
+        assertNull(SharedLinks.linkOfRef("https://soundcloud.com/you/likes"))
+
+        assertEquals("https://music.youtube.com/browse/MPREb_abc", SharedLinks.linkOfRef("ytmusic:set:MPREb_abc"))
+        assertEquals("https://music.youtube.com/browse/VLPL123", SharedLinks.linkOfRef("ytmusic:set:VLPL123:PL123"))
+        assertEquals("https://music.youtube.com/playlist?list=OLAK5uy_kx", SharedLinks.linkOfRef("ytmusic:set::OLAK5uy_kx"))
+        assertEquals("https://open.spotify.com/album/1A2B3C4D5E6F7G8H9I0J12", SharedLinks.linkOfRef("spotify:album:1A2B3C4D5E6F7G8H9I0J12"))
+        assertEquals("https://soundcloud.com/radiohead/sets/ok-computer", SharedLinks.linkOfRef("https://soundcloud.com/radiohead/sets/ok-computer"))
+    }
 }

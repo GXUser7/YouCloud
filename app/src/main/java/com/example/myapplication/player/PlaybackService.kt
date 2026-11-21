@@ -23,6 +23,8 @@ import com.google.common.collect.ImmutableList
 import com.google.common.util.concurrent.Futures
 import com.google.common.util.concurrent.ListenableFuture
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import java.io.IOException
 
@@ -72,6 +74,7 @@ class PlaybackService : MediaLibraryService() {
     // Every track heard, for "Итоги".
     private var playLog: PlayLog.Tracker? = null
     private var nowPlaying: com.example.myapplication.data.social.NowPlayingPublisher? = null
+    private var chatLive: AutoCloseable? = null
 
     // Follows what the app says of the track playing, for the buttons beside play and skip.
     private val scope = kotlinx.coroutines.MainScope()
@@ -313,6 +316,20 @@ class PlaybackService : MediaLibraryService() {
         playLog = PlayLog.Tracker(this, player).also(player::addListener)
         // Friends see what plays (when signed in, and only if the account lets them).
         nowPlaying = com.example.myapplication.data.social.NowPlayingPublisher(this, player).also(player::addListener)
+        scope.launch {
+            val social = com.example.myapplication.data.social.Social.get(this@PlaybackService)
+            social.session
+                .map { it?.userId }
+                .distinctUntilChanged()
+                .collect { userId ->
+                    chatLive?.close()
+                    chatLive = null
+                    if (userId != null && social.configured) {
+                        chatLive = social.watchLive()
+                        social.reloadChatInbox()
+                    }
+                }
+        }
         // A new run of the player, empty until the app hands it its queue: the widget hears so.
         publishToWidget(player)
         // The home screen widget follows what plays.
@@ -1072,6 +1089,8 @@ class PlaybackService : MediaLibraryService() {
         scope.cancel()
         playLog?.release()
         playLog = null
+        chatLive?.close()
+        chatLive = null
         nowPlaying?.release()
         nowPlaying = null
         fades?.release()

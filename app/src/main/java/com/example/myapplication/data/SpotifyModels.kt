@@ -187,11 +187,11 @@ private val editionWords = Regex(
     RegexOption.IGNORE_CASE
 )
 private val suspiciousChannelWords = Regex(
-    """\b(?:backing\s+track(?:s)?|minus(?:\s+tracks?|\s+one)?|karaoke|instrumental(?:s)?|covers?|piano|guitar|violin|drum(?:s)?|bass|trio|quartet|orchestra|music\s+box|lullaby|acapella|a\s+cappella|jammable|soundfont|synthesia|tabs?|tutorial(?:s)?|nightcore|slowed|sped[\s-]+up|8d\s+audio|gameplay|liveplay|beatmaps?|typing|keyboard|asmr|beat\s+saber|clone\s+hero|geometry\s+dash|минус(?:овка|овки)?|караоке|кавер(?:ы)?|прохождение|геймплей)\b|(?<![\p{L}\p{N}])osu(?:![\p{L}]*)?(?![\p{L}\p{N}])|歌っちゃ王""",
+    """\b(?:backing\s+track(?:s)?|minus(?:\s+tracks?|\s+one)?|karaoke|instrumental(?:s)?|covers?|piano|guitar|violin|drum(?:s)?|bass|trio|quartet|orchestra|music\s+box|lullaby|acapella|a\s+cappella|jammable|soundfont|synthesia|tabs?|tutorial(?:s)?|nightcore|slowed|sped[\s-]+up|8d\s+audio|gameplay|liveplay|beatmaps?|typing|keyboard|asmr|beat\s+saber|clone\s+hero|geometry\s+dash|montage|fragmovie|valorant|highlights?|минус(?:овка|овки)?|караоке|кавер(?:ы)?|прохождение|геймплей)\b|(?<![\p{L}\p{N}])osu(?:![\p{L}]*)?(?![\p{L}\p{N}])|歌っちゃ王""",
     RegexOption.IGNORE_CASE
 )
 private val gameplayPatterns = Regex(
-    """(?:^\s*\d{6}\s+|(?<![\p{L}\p{N}])osu(?:![\p{L}]*)?(?![\p{L}\p{N}])|\b(?:gameplay|playthrough|liveplay|handcam|beatmap|full\s+combo|all\s+perfect|beat\s+saber|geometry\s+dash|clone\s+hero|guitar\s+hero|rock\s+band|stepmania|etterna|quaver|muse\s+dash|project\s+sekai|proseka|arcaea|cytus|phigros|friday\s+night\s+funkin|fnf|maimai|chunithm|sound\s+voltex|sdvx|typing|keyboard|keycaps|sound\s+test|asmr|speedrun|прохождение|геймплей)\b|\b(?:hd|hr|dt|nc|ez|fl|ht){2,}\b|\+\s*(?:hd|hr|dt|nc|ez|fl|ht)+\b|\b\d{2,4}\s*pp\b|\b\d{2,3}\.\d{1,2}\s*%|[\[(]\s*(?:fc|ss|choke|nomod|nm|dt|hr)\s*[)\]])""",
+    """(?:^\s*\d{6}\s+|(?<![\p{L}\p{N}])osu(?:![\p{L}]*)?(?![\p{L}\p{N}])|\b(?:gameplay|playthrough|liveplay|handcam|beatmap|full\s+combo|all\s+perfect|beat\s+saber|geometry\s+dash|clone\s+hero|guitar\s+hero|rock\s+band|stepmania|etterna|quaver|muse\s+dash|project\s+sekai|proseka|arcaea|cytus|phigros|friday\s+night\s+funkin|fnf|maimai|chunithm|sound\s+voltex|sdvx|typing|keyboard|keycaps|sound\s+test|asmr|speedrun|montage|fragmovie|frag\s+movie|highlights?|valorant|csgo|cs2|fortnite|warzone|apex\s+legends|overwatch|roblox|minecraft|amv|gmv|mmv|прохождение|геймплей)\b|\b(?:hd|hr|dt|nc|ez|fl|ht){2,}\b|\+\s*(?:hd|hr|dt|nc|ez|fl|ht)+\b|\b\d{2,4}\s*pp\b|\b\d{2,3}\.\d{1,2}\s*%|[\[(]\s*(?:fc|ss|choke|nomod|nm|dt|hr)\s*[)\]])""",
     RegexOption.IGNORE_CASE
 )
 private val titleSplit = Regex("""\s*[-–—|]\s+|\s+[-–—|:]\s*|:\s+""")
@@ -435,8 +435,11 @@ private fun titleSimilarityScore(targetTitle: String, candidateTitle: String): L
 }
 
 /** A download or play must have the same recording, not merely a similar title. */
-internal fun spotifyMatchScore(target: SoundCloudTrack, candidate: SoundCloudTrack): Long? =
-    spotifyMatchScoreInternal(target, candidate, looseDuration = false)
+internal fun spotifyMatchScore(
+    target: SoundCloudTrack,
+    candidate: SoundCloudTrack,
+    allowArtistMismatch: Boolean = false
+): Long? = spotifyMatchScoreInternal(target, candidate, looseDuration = false, allowArtistMismatch = allowArtistMismatch)
 
 /**
  * Fallback used only when strict matching found zero candidates across all services: allows a
@@ -444,13 +447,17 @@ internal fun spotifyMatchScore(target: SoundCloudTrack, candidate: SoundCloudTra
  * lead-artist matches with clean edition and channel tags (e.g. shorter reuploads of underground
  * tracks without ever accepting covers, backing tracks or 30s previews).
  */
-internal fun spotifyLooseDurationMatchScore(target: SoundCloudTrack, candidate: SoundCloudTrack): Long? =
-    spotifyMatchScoreInternal(target, candidate, looseDuration = true)
+internal fun spotifyLooseDurationMatchScore(
+    target: SoundCloudTrack,
+    candidate: SoundCloudTrack,
+    allowArtistMismatch: Boolean = false
+): Long? = spotifyMatchScoreInternal(target, candidate, looseDuration = true, allowArtistMismatch = allowArtistMismatch)
 
 private fun spotifyMatchScoreInternal(
     target: SoundCloudTrack,
     candidate: SoundCloudTrack,
-    looseDuration: Boolean
+    looseDuration: Boolean,
+    allowArtistMismatch: Boolean
 ): Long? {
     if (candidate.duration <= 0 || target.duration <= 0) return null
 
@@ -488,7 +495,8 @@ private fun spotifyMatchScoreInternal(
         return null
     }
 
-    var bestTitleScore = titleSimilarityScore(cleanTarget, normalized(cleanAudioTitle(rawCandidateTitle)))
+    val cleanCand = normalized(cleanAudioTitle(rawCandidateTitle))
+    var bestTitleScore = titleSimilarityScore(cleanTarget, cleanCand)
     var bestArtistBonus = channelArtistBonus
 
     // SoundCloud & YouTube uploads often put "Artist - Title", "Title - Artist", "Prefix: Artist - Title"
@@ -520,9 +528,31 @@ private fun spotifyMatchScoreInternal(
         considerSplit(artistPart = byParts[1], titlePart = byParts[0])
     }
 
+    if (allowArtistMismatch && bestArtistBonus == null && bestTitleScore == null) {
+        for (part in allParts) {
+            val partTitleScore = titleSimilarityScore(cleanTarget, normalized(cleanAudioTitle(part)))
+            if (partTitleScore != null && (bestTitleScore == null || partTitleScore > bestTitleScore!!)) {
+                bestTitleScore = partTitleScore
+            }
+        }
+        if (byParts.size == 2) {
+            val partTitleScore = titleSimilarityScore(cleanTarget, normalized(cleanAudioTitle(byParts[0])))
+            if (partTitleScore != null && (bestTitleScore == null || partTitleScore > bestTitleScore!!)) {
+                bestTitleScore = partTitleScore
+            }
+        }
+    }
+
     val titleScore = bestTitleScore ?: return null
-    val artistScore = bestArtistBonus ?: return null
-    if ((looseDuration || isOfficialMvOverrun) && (titleScore < 9_500L || artistScore < 2_000L)) return null
+    val artistScore = bestArtistBonus ?: if (allowArtistMismatch) {
+        val paddedCand = " $cleanCand "
+        if (targetArtists.any { it.length >= 2 && paddedCand.contains(" $it ") }) 800L else 0L
+    } else {
+        return null
+    }
+    if ((looseDuration || isOfficialMvOverrun) && (titleScore < 9_500L || (!allowArtistMismatch && artistScore < 2_000L))) {
+        return null
+    }
     // Official artist / Topic channels decisively outrank third-party reuploads, and micro-view
     // third-party uploads (e.g. 47-view osu! replays) are heavily penalized so official MVs win.
     val officialChannelBonus = if (channelArtistBonus != null) 2_500L else 0L
@@ -539,7 +569,11 @@ private fun spotifyMatchScoreInternal(
     return maxOf(1L, titleScore + artistScore + officialChannelBonus + viewsAdjustment - durationPenalty)
 }
 
-internal fun spotifyMatchRejectReason(target: SoundCloudTrack, candidate: SoundCloudTrack): String {
+internal fun spotifyMatchRejectReason(
+    target: SoundCloudTrack,
+    candidate: SoundCloudTrack,
+    allowArtistMismatch: Boolean = false
+): String {
     if (candidate.duration <= 0) return "no_duration"
     val diff = kotlin.math.abs(target.duration - candidate.duration)
     val tol = spotifyTrackDurationTolerance(target.duration)
@@ -557,17 +591,19 @@ internal fun spotifyMatchRejectReason(target: SoundCloudTrack, candidate: SoundC
         val extra = candChannelVariants.filterNot { it in allowed }
         if (extra.isNotEmpty()) return "channel_variant($extra)"
     }
-    val tArtists = splitArtistCredits(target)
-    val cArtists = splitArtistCredits(candidate)
-    val lead = tArtists.firstOrNull() ?: return "no_target_artist"
-    if (artistMatchBonus(tArtists, cArtists, lead) == null) {
-        fun partHits(part: String) = artistMatchBonus(tArtists, artistPartVariants(part), lead) != null
-        val rawCand = candidate.title.orEmpty()
-        val allParts = titleSplit.split(rawCand).map { it.trim() }.filter { it.isNotEmpty() }
-        val byParts = bySplit.split(rawCand, limit = 2)
-        val titleArtistHit = (allParts.size >= 2 && allParts.any(::partHits)) ||
-            (byParts.size == 2 && partHits(byParts[1]))
-        if (!titleArtistHit) return "artist(target=${tArtists.take(3)}, cand=${cArtists.take(3)})"
+    if (!allowArtistMismatch) {
+        val tArtists = splitArtistCredits(target)
+        val cArtists = splitArtistCredits(candidate)
+        val lead = tArtists.firstOrNull() ?: return "no_target_artist"
+        if (artistMatchBonus(tArtists, cArtists, lead) == null) {
+            fun partHits(part: String) = artistMatchBonus(tArtists, artistPartVariants(part), lead) != null
+            val rawCand = candidate.title.orEmpty()
+            val allParts = titleSplit.split(rawCand).map { it.trim() }.filter { it.isNotEmpty() }
+            val byParts = bySplit.split(rawCand, limit = 2)
+            val titleArtistHit = (allParts.size >= 2 && allParts.any(::partHits)) ||
+                (byParts.size == 2 && partHits(byParts[1]))
+            if (!titleArtistHit) return "artist(target=${tArtists.take(3)}, cand=${cArtists.take(3)})"
+        }
     }
     return "title(target='${cleanAudioTitle(target.title.orEmpty())}', cand='${cleanAudioTitle(candidate.title.orEmpty())}')"
 }

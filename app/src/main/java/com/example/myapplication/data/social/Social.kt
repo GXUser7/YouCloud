@@ -163,12 +163,24 @@ class Social private constructor(private val context: Context) {
     /** Friends and requests either way; null until first fetched. */
     val friends: StateFlow<List<Person>?> = _friends.asStateFlow()
 
+    private val _chatInbox = MutableStateFlow<ChatInbox?>(null)
+    /** Friend chat summary, recent incoming items, and unread counters. */
+    val chatInbox: StateFlow<ChatInbox?> = _chatInbox.asStateFlow()
+
+    private val _unreadChatCount = MutableStateFlow(0)
+    val unreadChatCount: StateFlow<Int> = _unreadChatCount.asStateFlow()
+
     init {
         scope.launch {
             supabase.session.collect { session ->
                 if (session == null) {
                     keepMe(null)
                     _friends.value = null
+                    _chatInbox.value = null
+                    _unreadChatCount.value = 0
+                    ChatNotifications.onSignedOut(context)
+                } else if (configured) {
+                    ChatNotifications.ensureScheduled(context)
                 }
             }
         }
@@ -330,8 +342,11 @@ class Social private constructor(private val context: Context) {
         scope.launch { runCatching { loadFriends() }.onFailure { Log.w(TAG, "Friends not loaded", it) } }
     }
 
-    // What the server tells as it changes (see Realtime): a friend's track, a friendship, a profile.
-    private val realtime = Realtime(supabase) { serverChanged() }
+    // What the server tells as it changes (see Realtime): friends, now_playing, and chat updates.
+    private val realtime = Realtime(
+        supabase,
+        tables = listOf("now_playing", "friendships", "profiles", "chat_messages", "chat_reactions")
+    ) { table -> serverChanged(table) }
     private var settling: kotlinx.coroutines.Job? = null
     private val _changes = MutableStateFlow(0L)
 
@@ -350,12 +365,15 @@ class Social private constructor(private val context: Context) {
         if (configured && supabase.session.value != null) realtime.watch() else AutoCloseable { }
 
     // A burst of changes (a friend's track ending: paused, the next one) is one reload.
-    private fun serverChanged() {
+    private fun serverChanged(table: String) {
         synchronized(this) {
             settling?.cancel()
             settling = scope.launch {
                 kotlinx.coroutines.delay(LIVE_SETTLE_MS)
-                runCatching { loadFriends() }.onFailure { Log.w(TAG, "Friends not loaded", it) }
+                if (table != "chat_messages" && table != "chat_reactions") {
+                    runCatching { loadFriends() }.onFailure { Log.w(TAG, "Friends not loaded", it) }
+                }
+                runCatching { loadChatInbox() }.onFailure { Log.w(TAG, "Chat inbox not loaded", it) }
                 _changes.value = _changes.value + 1
             }
         }
@@ -381,6 +399,85 @@ class Social private constructor(private val context: Context) {
 
     private fun people(json: JsonElement): List<Person> =
         if (json.isJsonArray) gson.fromJson(json, object : TypeToken<List<Person>>() {}.type) else emptyList()
+
+    // endregion
+
+    // region Chat
+
+    suspend fun loadChatInbox(awaitNotifications: Boolean = false): ChatInbox {
+        val userId = supabase.session.value?.userId ?: return ChatInbox()
+        val json = supabase.rpc("chat_inbox")
+        val inbox = if (json.isJsonObject) {
+            gson.fromJson(json, ChatInbox::class.java)
+        } else {
+            ChatInbox()
+        }
+        _chatInbox.value = inbox
+        _unreadChatCount.value = inbox.unreadTotal
+        val notifyJob = ChatNotifications.onInboxLoadedAsync(scope, context, userId, inbox) { peerId, avatarV ->
+            avatarUrl(peerId, avatarV)
+        }
+        if (awaitNotifications) notifyJob?.join()
+        return inbox
+    }
+
+    fun reloadChatInbox() {
+        if (!configured || supabase.session.value == null) return
+        scope.launch { runCatching { loadChatInbox() }.onFailure { Log.w(TAG, "Chat inbox not loaded", it) } }
+    }
+
+    suspend fun loadChatMessages(peerId: String, limit: Int = 80): List<ChatMessage> {
+        val json = supabase.rpc("chat_messages_with", mapOf("peer" to peerId, "p_limit" to limit))
+        return if (json.isJsonArray) gson.fromJson(json, object : TypeToken<List<ChatMessage>>() {}.type) else emptyList()
+    }
+
+    suspend fun sendChatItem(recipientIds: List<String>, payload: ChatSharePayload): Int {
+        val sent = supabase.rpc(
+            "send_chat_item",
+            mapOf(
+                "recipients" to recipientIds,
+                "p_kind" to payload.kind,
+                "p_service" to payload.service,
+                "p_item_url" to payload.itemUrl,
+                "p_title" to payload.title,
+                "p_artist" to payload.artist,
+                "p_cover_url" to payload.coverUrl,
+                "p_duration_ms" to payload.durationMs,
+                "p_track_count" to payload.trackCount
+            )
+        ).asInt
+        reloadChatInbox()
+        return sent
+    }
+
+    suspend fun markChatRead(peerId: String) {
+        ChatNotifications.cancelForPeer(context, peerId)
+        supabase.rpc("mark_chat_read", mapOf("peer" to peerId))
+        reloadChatInbox()
+    }
+
+    suspend fun setChatReaction(
+        messageId: String,
+        emoji: String? = null,
+        clearEmoji: Boolean = false,
+        rating: Int? = null,
+        clearRating: Boolean = false
+    ): List<ChatReaction> {
+        val args = buildMap<String, Any?> {
+            put("p_message_id", messageId)
+            put("p_emoji", emoji)
+            put("p_clear_emoji", clearEmoji)
+            put("p_rating", rating)
+            put("p_clear_rating", clearRating)
+        }
+        val json = supabase.rpc("set_chat_reaction", args)
+        return if (json.isJsonArray) gson.fromJson(json, object : TypeToken<List<ChatReaction>>() {}.type) else emptyList()
+    }
+
+    suspend fun deleteChatMessage(messageId: String) {
+        supabase.rpc("delete_chat_message", mapOf("p_message_id" to messageId))
+        reloadChatInbox()
+    }
 
     // endregion
 
